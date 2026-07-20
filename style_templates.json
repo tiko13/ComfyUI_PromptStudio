@@ -1,0 +1,188 @@
+{
+  "style_templates": [
+    {
+      "name": "None",
+      "instruction": ""
+    },
+    {
+      "name": "Neutral",
+      "instruction": "Use direct descriptive language. Keep the result plain, factual, and style-neutral even when embellishment is high. Add ordinary visible details only. Avoid cinematic, dramatic, atmospheric, professional, masterpiece, award-winning, studio, commercial-photo, moody lighting, glow, dramatic shadow, cozy, majestic, sleek, and other stylized or decorative phrasing unless the user asked for it."
+    },
+    {
+      "name": "Casual Snapshot",
+      "instruction": "Make the result feel candid, ordinary, and natural. Prefer everyday wording. Avoid polished cinematic, editorial, commercial, or studio-style language."
+    },
+	{
+      "name": "Amateur Photography",
+      "instruction": "The feeling of the result should be amateur and natural. Prefer everyday wording. Avoid polished cinematic, editorial, commercial, or studio-style language. The result should feel like a simple phone photo, but do not add props, events, extra subjects, landmarks, or new actions."
+    },
+    {
+      "name": "Candid Photography",
+      "instruction": "Make the result feel like an unpolished candid phone-camera photo with everyday colors, imperfect exposure, simple lighting, and ordinary realism. This style changes only the photographic finish; do not add props, events, extra subjects, landmarks, or new actions."
+    },
+    {
+      "name": "Tag Dense",
+      "instruction": "Prefer compact comma-separated visual tags. Avoid full sentences and avoid adding cinematic prose."
+    },
+    {
+      "name": "Minimal",
+      "instruction": "Keep the prompt short and focused. Do not add extra mood, lighting, camera, quality, or production terms unless requested."
+    },
+    {
+      "name": "Cinematic Perfect Quality",
+      "instruction": "Favor a polished cinematic image with excellent composition, rich lighting, high detail, clean focus, strong atmosphere, and premium production quality. Add quality language only where it supports the subject."
+    },
+	{
+      "name": "Glamorous",
+      "instruction": "Favor a polished glam image with excellent composition, rich lighting, high detail, clean focus, strong atmosphere. Add quality language only where it supports the subject, on women use glamorous and sexy clothes and makeup."
+    },
+    {
+      "name": "Studio Photography",
+      "instruction": "Make the result feel like controlled studio photography. Emphasize clean backdrop, intentional posing or placement, professional lighting, crisp detail, and carefully arranged composition."
+    },
+    {
+      "name": "Editorial Fashion",
+      "instruction": "Use a high-end editorial look with refined styling, confident composition, curated wardrobe or object presentation, elegant lighting, and magazine-quality visual polish."
+    },
+    {
+      "name": "Product Photography",
+      "instruction": "Make the subject read clearly as a product or object shot. Emphasize clean presentation, controlled lighting, sharp detail, uncluttered background, and accurate visible features."
+    },
+    {
+      "name": "Old Polaroid Photo",
+      "instruction": "Make the result feel like an old instant Polaroid photo. Favor casual framing, soft focus, faded colors, slight flash harshness, imperfect exposure, and nostalgic everyday realism."
+    },
+    {
+      "name": "Analog Film Photo",
+      "instruction": "Make the result feel like analog film photography. Favor natural grain, imperfect exposure, subtle color shifts, organic contrast, and a lived-in photographic feel."
+    },
+    {
+      "name": "Disposable Camera",
+      "instruction": "Make the result feel like a cheap disposable camera snapshot. Favor harsh flash, casual framing, slight blur, imperfect colors, mundane realism, and unpolished spontaneity."
+    },
+    {
+      "name": "Documentary Photo",
+      "instruction": "Rephrase the prompt so it reads like the shot is from a documentary movie. Favor grounded realism, natural environments, honest composition, observable details, and minimal stylization."
+    },
+    {
+      "name": "Dreamy Soft Focus",
+      "instruction": "Favor a soft, dreamy visual mood with gentle light, delicate contrast, muted detail, airy composition, and a calm atmospheric feel."
+    },
+    {
+      "name": "Dark Moody",
+      "instruction": "Favor a darker moody look with controlled shadows, restrained highlights, atmospheric contrast, and a serious tone while keeping the subject readable."
+    },
+    {
+      "name": "Vibrant Color Pop",
+      "instruction": "Favor bright, saturated colors, clear visual separation, energetic composition, and a lively polished result without changing the subject."
+    },
+    {
+      "name": "Vintage Poster",
+      "instruction": "Make the result feel like a vintage illustrated poster. Favor bold shapes, limited palette, graphic composition, aged print texture, and clear subject readability."
+    },
+    {
+      "name": "Concept Art",
+      "instruction": "The style is concept-art. Focus on language with clear design intent, readable silhouettes, low detail, visual development. Even when the original prompt says it's a photo, rewrite the prompt as concept-art."
+    },
+    {
+      "name": "Painterly Illustration",
+      "instruction": "Favor painterly illustration qualities such as visible brushwork, artistic color choices, expressive lighting, and a composed hand-crafted feel."
+    },
+    {
+      "name": "Silhouette",
+      "instruction": "Use a silhouette-focused visual style. Emphasize strong readable shapes, dark subject forms, clear outlines, minimal internal detail, and strong contrast between figure and background."
+    },
+    {
+      "name": "Line Drawing",
+      "instruction": "Use a clean line drawing style. Emphasize outlines, contour lines, simple visible details, minimal shading, and a hand-drawn graphic look."
+    },
+    {
+      "name": "Pencil Drawing",
+      "instruction": "Use a pencil drawing style. Emphasize graphite lines, soft sketch marks, light shading, visible strokes, and monochrome hand-drawn texture."
+    },
+    {
+      "name": "Charcoal Drawing",
+      "instruction": "Use a charcoal drawing style. Emphasize rough black strokes, smudged shading, high contrast, textured paper, and expressive hand-rendered marks."
+    },
+    {
+      "name": "Ink Drawing",
+      "instruction": "Use an ink drawing style. Emphasize crisp black ink lines, controlled hatching, bold contours, and clear graphic detail."
+    },
+    {
+      "name": "Crayon Drawing",
+      "instruction": "Use a crayon drawing style. Emphasize waxy texture, simple shapes, uneven hand-colored areas, playful marks, and childlike drawn charm."
+    },
+    {
+      "name": "Colored Pencil",
+      "instruction": "Use a colored-pencil illustration style. Emphasize layered pencil strokes, textured color, soft shading, and hand-drawn detail."
+    },
+    {
+      "name": "Watercolor",
+      "instruction": "Use a watercolor painting style. Emphasize translucent washes, soft color bleeding, gentle edges, paper texture, and light hand-painted detail."
+    },
+    {
+      "name": "Oil Painting",
+      "instruction": "Use an oil painting style. Emphasize rich paint texture, visible brushstrokes, layered color, and traditional painted depth."
+    },
+    {
+      "name": "Acrylic Painting",
+      "instruction": "Use an acrylic painting style. Emphasize bold opaque colors, visible brush texture, clean painted shapes, and a modern hand-painted finish."
+    },
+    {
+      "name": "Pastel Drawing",
+      "instruction": "Use a pastel drawing style. Emphasize soft powdery color, smudged edges, gentle blending, and textured paper."
+    },
+    {
+      "name": "Marker Illustration",
+      "instruction": "Use a marker illustration style. Emphasize bold marker strokes, smooth color blocks, clean graphic shapes, and hand-rendered shading."
+    },
+    {
+      "name": "Comic Book",
+      "instruction": "Use a comic-book illustration style. Emphasize bold outlines, inked contours, simplified shading, clear action-readable forms, and graphic color."
+    },
+    {
+      "name": "Manga Ink",
+      "instruction": "Use a manga ink style. Emphasize black-and-white linework, screentone-like shading, expressive outlines, and clean illustrated detail."
+    },
+    {
+      "name": "Woodcut Print",
+      "instruction": "Use a woodcut print style. Emphasize carved-looking lines, high contrast, rough printed texture, limited tones, and bold graphic shapes."
+    },
+    {
+      "name": "Paper Cutout",
+      "instruction": "Use a paper-cutout style. Emphasize layered flat shapes, crisp edges, simple color areas, and handmade collage-like construction."
+    },
+    {
+      "name": "Pixel Art",
+      "instruction": "Use a pixel-art style. Emphasize low-resolution blocky shapes, limited palette, crisp pixel edges, and sprite-like readable detail."
+    },
+    {
+      "name": "Claymation",
+      "instruction": "Use a claymation style. Emphasize handmade clay texture, rounded sculpted forms, subtle fingerprints, and stop-motion-like material detail."
+    },
+    {
+      "name": "3D Render",
+      "instruction": "Use a 3D-rendered style. Emphasize modeled forms, material surfaces, rendered lighting, and computer-generated visual clarity."
+    },
+    {
+      "name": "Booru Tags",
+      "instruction": "Prefer booru-style comma-separated tags. Focus on subject, pose, setting, clothing or object details, expression, and composition. Avoid prose sentences."
+    },
+    {
+      "name": "Realistic Natural Light",
+      "instruction": "Favor realistic natural-light photography. Emphasize believable light direction, natural color, grounded setting, and ordinary physical details."
+    },
+    {
+      "name": "No Quality Tags",
+      "instruction": "Do not add quality tags or hype terms such as masterpiece, best quality, ultra detailed, award winning, cinematic, professional, or 8k. Keep only subject-relevant prompt content."
+    },
+    {
+      "name": "Playful Anime",
+      "instruction": "Favor playful anime-style wording or tags. Avoid realism, cinematic photography, and professional studio phrasing unless requested."
+    },
+	{
+      "name": "Erotic photography",
+      "instruction": "Prefer a style that emphasizes subject's sexuality and seductiveness. Use sensual and sexy poses, use sexy, tight and short versions of the clothes. If intimate areas are exposed, describe them in great detail."
+    }
+  ]
+}

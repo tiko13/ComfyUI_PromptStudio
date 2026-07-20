@@ -1,0 +1,100 @@
+{
+  "framing_templates": [
+    {
+      "name": "None",
+      "instruction": ""
+    },
+    {
+      "name": "Selfie",
+      "instruction": "Frame the subject as a selfie taken by the subject with a phone held at arm's length or on a selfie stick. Keep the subject close to the viewer and make the composition feel self-shot."
+    },
+    {
+      "name": "Mirror Selfie",
+      "instruction": "Frame the subject as a mirror selfie, with the subject visible through a mirror and the phone or camera plausibly part of the composition."
+    },
+    {
+      "name": "Candid Unaware",
+      "instruction": "Frame the scene as if the subject is not posing and is unaware of being photographed. Prefer natural body language and an off-center composition. Subject does not look at the camera. This framing changes only pose, viewpoint, and composition; do not add props, events, extra subjects, landmarks, or new actions."
+    },
+    {
+      "name": "Close-Up Portrait",
+      "instruction": "Frame the subject in a close-up portrait composition focused on the face, expression, and nearby details."
+    },
+    {
+      "name": "Medium Shot",
+      "instruction": "Frame the subject from roughly the waist or torso up, balancing the subject with some surrounding context."
+    },
+    {
+      "name": "Full Body",
+      "instruction": "Frame the whole subject from head to toe, keeping the body clearly visible within the scene."
+    },
+    {
+      "name": "Wide Shot",
+      "instruction": "Use a wide composition that shows the subject within a larger environment, with the setting clearly visible."
+    },
+    {
+      "name": "Extreme Wide Shot",
+      "instruction": "Use a very wide composition where the environment dominates and the subject appears small within the scene."
+    },
+    {
+      "name": "Overhead View",
+      "instruction": "Frame the scene from above, looking down at the subject and environment."
+    },
+    {
+      "name": "Low Angle",
+      "instruction": "Frame the subject from a low angle viewpoint, viewed from below."
+    },
+    {
+      "name": "High Angle",
+      "instruction": "Frame the subject from a high viewpoint looking downward, making the scene feel observed from above."
+    },
+    {
+      "name": "Three-Quarter View",
+      "instruction": "Frame the subject from a three-quarter angle rather than directly front-on, showing depth and side detail."
+    },
+    {
+      "name": "Side View",
+      "instruction": "Frame the subject primarily from the side, emphasizing profile, direction, and lateral movement."
+    },
+    {
+      "name": "Rear Three-Quarter View",
+      "instruction": "Frame the subject from behind at an angle, showing the back and one side while preserving scene context."
+    },
+    {
+      "name": "Point Of View",
+      "instruction": "Frame the scene from a first-person point of view, as if seen through someone's eyes."
+    },
+    {
+      "name": "Over The Shoulder",
+      "instruction": "Frame the scene over one subject's shoulder, looking toward another subject or point of interest."
+    },
+    {
+      "name": "Product Centered",
+      "instruction": "Place the main object clearly centered and readable, with composition organized around presenting it cleanly."
+    },
+    {
+      "name": "Symmetrical Composition",
+      "instruction": "Use a balanced symmetrical composition with the main subject or layout centered and evenly arranged."
+    },
+    {
+      "name": "Rule Of Thirds",
+      "instruction": "Place the main subject along a rule-of-thirds composition, with natural negative space and balanced visual weight."
+    },
+    {
+      "name": "Dynamic Action Shot",
+      "instruction": "Frame the subject in motion with a dynamic composition that emphasizes action, direction, and energy."
+    },
+    {
+      "name": "Character Sheet",
+      "instruction": "Frame the subject like a character blueprint or design reference, Always include front, side, and rear view. Character sheet overrides the original prompt - extract only the subject and put it on a plain background, standing upright and relaxed. Ignore anything that is not directly related to subject (such as any other objects/items in the scene.)"
+    },
+	{
+      "name": "Point of view",
+      "instruction": "The scene is viewed from the first-person perspective of the subject. Frame the scene such as 'first-person perspective of a woman looking down on her legs'."
+    },
+	{
+      "name": "CCTV Footage",
+      "instruction": "Use a high angle far-from-subject composition. Rephrase the prompt to feel like a CCTV footage, do not just add a tag. Subjects are not aware of the camera."
+    }
+  ]
+}
