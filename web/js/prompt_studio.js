@@ -275,9 +275,33 @@ async function imageReferenceWithDimensions(value) {
   const width = Number(data.width);
   const height = Number(data.height);
   if (!response.ok || !Number.isInteger(width) || width <= 0 || !Number.isInteger(height) || height <= 0) {
-    throw new Error(data.error || `Image dimensions could not be read (${response.status}).`);
+    const serverError = data.error || `Image dimensions could not be read (${response.status}).`;
+    try {
+      // Frontend assets can refresh before ComfyUI restarts and registers a newly added Python route.
+      const dimensions = await imageDimensionsFromView(reference);
+      return { ...reference, ...dimensions };
+    } catch {
+      throw new Error(serverError);
+    }
   }
   return { ...reference, width, height };
+}
+
+function imageDimensionsFromView(reference) {
+  return new Promise((resolve, reject) => {
+    const image = new Image();
+    image.addEventListener("load", () => {
+      const width = Number(image.naturalWidth);
+      const height = Number(image.naturalHeight);
+      if (Number.isInteger(width) && width > 0 && Number.isInteger(height) && height > 0) {
+        resolve({ width, height });
+      } else {
+        reject(new Error("The image loaded without readable dimensions."));
+      }
+    }, { once: true });
+    image.addEventListener("error", () => reject(new Error("The image could not be loaded.")), { once: true });
+    image.src = imageReferenceUrl(reference);
+  });
 }
 
 function normalizeLastGeneration(value) {
@@ -733,11 +757,13 @@ function renderChatList() {
   }
 }
 
-function scrollHistoryToEnd() {
+function scrollHistoryToEnd({ instant = false } = {}) {
   const history = state.panel?.querySelector("#lllm-history");
   if (!history) return;
   const scroll = () => {
+    if (instant) history.classList.add("lllm-instant-scroll");
     history.scrollTop = history.scrollHeight;
+    if (instant) history.classList.remove("lllm-instant-scroll");
   };
   scroll();
   const view = history.ownerDocument.defaultView;
@@ -751,8 +777,8 @@ function renderChatHistory() {
   const history = state.panel?.querySelector("#lllm-history");
   if (!history) return;
   history.replaceChildren();
-  for (const message of activeChat()?.messages || []) renderMessage(message);
-  scrollHistoryToEnd();
+  for (const message of activeChat()?.messages || []) renderMessage(message, { scroll: false });
+  scrollHistoryToEnd({ instant: true });
   updateComposeMode();
 }
 
@@ -1109,7 +1135,7 @@ function selectImageSource(reference, generationData = null) {
   if (editAction) editAction.checked = true;
   const promptRestored = restoreStoredCanonicalPrompt(generationData);
   saveChats();
-  renderChatHistory();
+  refreshRenderedImageSources();
   updateComposeMode();
   if (promptRestored && controlsNeedApply()) {
     setStatus(`Selected ${value.filename} and restored its prompt. KoboldCpp will apply the current controls before generation.`, "warning");
@@ -1123,6 +1149,16 @@ function selectImageSource(reference, generationData = null) {
   }
 }
 
+function refreshRenderedImageSources() {
+  const selectedKey = encodeURIComponent(imageReferenceKey(activeChat()?.selectedSource));
+  for (const card of state.panel?.querySelectorAll(".lllm-image-card") || []) {
+    const selected = card.dataset.imageKey === selectedKey;
+    card.dataset.source = selected ? "true" : "false";
+    const button = card.querySelector(".lllm-use-source");
+    if (button) button.textContent = selected ? "Editing source" : "Edit this image";
+  }
+}
+
 function renderImageGallery(message, images, generationData = null) {
   if (!message || !images?.length) return;
   message.classList.add("lllm-has-images");
@@ -1133,6 +1169,7 @@ function renderImageGallery(message, images, generationData = null) {
     if (!reference) continue;
     const card = document.createElement("div");
     card.className = "lllm-image-card";
+    card.dataset.imageKey = encodeURIComponent(imageReferenceKey(reference));
     card.dataset.source = imageReferenceKey(activeChat()?.selectedSource) === imageReferenceKey(reference) ? "true" : "false";
     const preview = document.createElement("button");
     preview.type = "button";
@@ -1141,6 +1178,10 @@ function renderImageGallery(message, images, generationData = null) {
     const image = document.createElement("img");
     image.src = url;
     image.alt = item.filename || "Generated image";
+    if (reference.width && reference.height) {
+      image.width = reference.width;
+      image.height = reference.height;
+    }
     preview.title = `Preview ${image.alt}`;
     preview.setAttribute("aria-label", preview.title);
     preview.addEventListener("click", () => openImageLightbox(url, image.alt, preview));
@@ -1205,7 +1246,7 @@ function renderPromptInfo(message, data) {
   message.appendChild(details);
 }
 
-function renderMessage(data) {
+function renderMessage(data, { scroll = true } = {}) {
   const history = state.panel?.querySelector("#lllm-history");
   if (!history) return null;
   const message = document.createElement("div");
@@ -1238,7 +1279,7 @@ function renderMessage(data) {
   renderPromptInfo(message, data);
 
   history.appendChild(message);
-  history.scrollTop = history.scrollHeight;
+  if (scroll) history.scrollTop = history.scrollHeight;
   return message;
 }
 
