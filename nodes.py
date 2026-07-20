@@ -1,9 +1,17 @@
+import hashlib
+import ipaddress
 import json
 import os
 import re
 import urllib.error
 import urllib.parse
 import urllib.request
+
+import numpy as np
+import torch
+from PIL import Image, ImageOps, ImageSequence
+
+import folder_paths
 
 
 BASE_DIR = os.path.dirname(os.path.realpath(__file__))
@@ -31,6 +39,9 @@ DEFAULT_FRAMING_TEMPLATE = {
     "name": "None",
     "instruction": "",
 }
+LEGACY_FRAMING_ALIASES = {
+    "Point of view": "First-Person Downward View",
+}
 FINAL_PROMPT_MARKER = "Final prompt:"
 DEFAULT_CONTINUATION_STOPS = [
     "\nWait,",
@@ -54,6 +65,29 @@ DEFAULT_CONTINUATION_STOPS = [
 ]
 
 
+def _allowed_kobold_hosts():
+    configured = os.environ.get("LLLM_KOBOLD_ALLOWED_HOSTS", "").strip()
+    if not configured:
+        return {"localhost", "127.0.0.1", "::1"}
+    return {item.strip().casefold() for item in configured.split(",") if item.strip()}
+
+
+def _validate_unique_names(items, label):
+    seen = set()
+    for item in items:
+        name = str(item.get("name") or "").strip()
+        key = name.casefold()
+        if key in seen:
+            raise ValueError(f"Duplicate {label} name: {name}")
+        seen.add(key)
+
+
+def _require_json_object(data, label):
+    if not isinstance(data, dict):
+        raise ValueError(f"{label} JSON must contain an object at the root.")
+    return data
+
+
 def _load_profiles():
     try:
         with open(PROFILES_PATH, "r", encoding="utf-8") as file:
@@ -63,6 +97,7 @@ def _load_profiles():
     except json.JSONDecodeError as exc:
         raise ValueError(f"Invalid KoboldCpp profile JSON: {PROFILES_PATH}: {exc}") from exc
 
+    _require_json_object(data, "KoboldCpp profile")
     profiles = data.get("profiles", [])
     if not isinstance(profiles, list):
         raise ValueError("KoboldCpp profile JSON must contain a 'profiles' list.")
@@ -73,11 +108,19 @@ def _load_profiles():
             continue
         merged = dict(DEFAULT_PROFILE)
         merged.update(profile)
-        merged["name"] = str(merged.get("name") or f"Profile {index + 1}")
+        merged["name"] = str(merged.get("name") or "").strip() or f"Profile {index + 1}"
+        try:
+            merged["default_max_response_tokens"] = int(merged["default_max_response_tokens"])
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"Model profile {merged['name']} has an invalid default token limit") from exc
+        if not 1 <= merged["default_max_response_tokens"] <= 8192:
+            raise ValueError(f"Model profile {merged['name']} default token limit must be between 1 and 8192")
         merged["example_prompts"] = _profile_examples(merged)
         normalized.append(merged)
 
-    return normalized or [DEFAULT_PROFILE]
+    normalized = normalized or [DEFAULT_PROFILE]
+    _validate_unique_names(normalized, "model profile")
+    return normalized
 
 
 def _profile_examples(profile):
@@ -130,6 +173,7 @@ def _load_style_templates():
     except json.JSONDecodeError as exc:
         raise ValueError(f"Invalid KoboldCpp style template JSON: {STYLE_TEMPLATES_PATH}: {exc}") from exc
 
+    _require_json_object(data, "KoboldCpp style template")
     templates = data.get("style_templates", [])
     if not isinstance(templates, list):
         raise ValueError("KoboldCpp style template JSON must contain a 'style_templates' list.")
@@ -140,10 +184,12 @@ def _load_style_templates():
             continue
         merged = dict(DEFAULT_STYLE_TEMPLATE)
         merged.update(template)
-        merged["name"] = str(merged.get("name") or f"Style {index + 1}")
+        merged["name"] = str(merged.get("name") or "").strip() or f"Style {index + 1}"
         normalized.append(merged)
 
-    return normalized or [DEFAULT_STYLE_TEMPLATE]
+    normalized = normalized or [DEFAULT_STYLE_TEMPLATE]
+    _validate_unique_names(normalized, "style template")
+    return normalized
 
 
 def _load_framing_templates():
@@ -155,6 +201,7 @@ def _load_framing_templates():
     except json.JSONDecodeError as exc:
         raise ValueError(f"Invalid framing template JSON: {FRAMING_TEMPLATES_PATH}: {exc}") from exc
 
+    _require_json_object(data, "Framing template")
     templates = data.get("framing_templates", [])
     if not isinstance(templates, list):
         raise ValueError("Framing template JSON must contain a 'framing_templates' list.")
@@ -165,10 +212,12 @@ def _load_framing_templates():
             continue
         merged = dict(DEFAULT_FRAMING_TEMPLATE)
         merged.update(template)
-        merged["name"] = str(merged.get("name") or f"Framing {index + 1}")
+        merged["name"] = str(merged.get("name") or "").strip() or f"Framing {index + 1}"
         normalized.append(merged)
 
-    return normalized or [DEFAULT_FRAMING_TEMPLATE]
+    normalized = normalized or [DEFAULT_FRAMING_TEMPLATE]
+    _validate_unique_names(normalized, "framing template")
+    return normalized
 
 
 def _get_profile(profile_name):
@@ -189,6 +238,7 @@ def _get_style_template(style_name):
 
 def _get_framing_template(framing_name):
     templates = _load_framing_templates()
+    framing_name = LEGACY_FRAMING_ALIASES.get(framing_name, framing_name)
     for template in templates:
         if template["name"] == framing_name:
             return template
@@ -213,7 +263,34 @@ def _clean_base_url(url):
         cleaned = "http://localhost:5001"
     if "://" not in cleaned:
         cleaned = "http://" + cleaned
-    return cleaned.rstrip("/")
+    cleaned = cleaned.rstrip("/")
+    parsed = urllib.parse.urlsplit(cleaned)
+    if parsed.scheme not in {"http", "https"}:
+        raise ValueError("KoboldCpp URL must use http or https")
+    if not parsed.hostname:
+        raise ValueError("KoboldCpp URL must include a hostname")
+    if parsed.username is not None or parsed.password is not None:
+        raise ValueError("KoboldCpp URL must not contain credentials")
+    try:
+        parsed.port
+    except ValueError as exc:
+        raise ValueError("KoboldCpp URL contains an invalid port") from exc
+    if parsed.query or parsed.fragment:
+        raise ValueError("KoboldCpp URL must not contain a query string or fragment")
+
+    hostname = parsed.hostname.casefold()
+    allowed_hosts = _allowed_kobold_hosts()
+    if "*" not in allowed_hosts and hostname not in allowed_hosts:
+        try:
+            is_loopback = ipaddress.ip_address(hostname).is_loopback
+        except ValueError:
+            is_loopback = False
+        if not is_loopback:
+            raise ValueError(
+                f"KoboldCpp host '{parsed.hostname}' is not allowed. "
+                "Add it to LLLM_KOBOLD_ALLOWED_HOSTS or use '*' to allow remote hosts."
+            )
+    return cleaned
 
 
 def _post_json(url, payload, timeout):
@@ -442,7 +519,7 @@ def _strip_response(text):
         maxsplit=1,
         flags=re.IGNORECASE,
     )[0]
-    return text.strip(" \t\r\n\"'`.:")
+    return text.strip()
 
 
 def _strip_apply_response(text):
@@ -458,7 +535,7 @@ def _strip_apply_response(text):
         text = output_match.group(1)
     text = re.sub(r"</?output>", "", text, flags=re.IGNORECASE)
     text = re.split(r"<(?:\|channel\>|channel\|)", text, maxsplit=1, flags=re.IGNORECASE)[0]
-    return text.strip(" \t\r\n\"'`")
+    return text.strip()
 
 
 def _reasoning_effort(thinking_mode):
@@ -468,6 +545,47 @@ def _reasoning_effort(thinking_mode):
     if mode in {"minimal", "low", "medium", "high"}:
         return mode
     return "none"
+
+
+def _profile_wrappers(profile):
+    return (
+        str(profile.get("final_prompt_prefix") or ""),
+        str(profile.get("final_prompt_suffix") or ""),
+    )
+
+
+def _remove_profile_wrappers(text, profile):
+    value = str(text or "")
+    prefix, suffix = _profile_wrappers(profile)
+    while prefix and value.startswith(prefix):
+        value = value[len(prefix):]
+    while suffix and value.endswith(suffix):
+        value = value[:-len(suffix)]
+    return value
+
+
+def _remove_known_profile_wrappers(text, profiles=None):
+    value = str(text or "")
+    known_profiles = profiles if profiles is not None else _load_profiles()
+    while True:
+        previous = value
+        for profile in known_profiles:
+            value = _remove_profile_wrappers(value, profile)
+        if value == previous:
+            return value
+
+
+def _apply_profile_wrappers(text, profile):
+    prefix, suffix = _profile_wrappers(profile)
+    return prefix + _remove_profile_wrappers(text, profile) + suffix
+
+
+def _llm_node_change_token(sampler_seed):
+    try:
+        seed = int(sampler_seed)
+    except (TypeError, ValueError):
+        return float("nan")
+    return float("nan") if seed < 0 else seed
 
 
 def _thinking_instruction(thinking_mode):
@@ -634,8 +752,10 @@ def _needs_expansion_retry(original, rewritten, embellishment_level, profile):
     level = str(embellishment_level or "Clean").strip().lower()
     if level not in {"maximum", "ultra maximum"}:
         return False
-    if not str(original or "").strip() or not str(rewritten or "").strip():
+    if not str(original or "").strip():
         return False
+    if not str(rewritten or "").strip():
+        return True
 
     style = str(profile.get("style") or "").lower()
     if "tag" in style:
@@ -1287,6 +1407,10 @@ class KCPP_PromptAmplify:
     FUNCTION = "amplify"
     CATEGORY = "KoboldCpp"
 
+    @classmethod
+    def IS_CHANGED(cls, sampler_seed=-1, **kwargs):
+        return _llm_node_change_token(sampler_seed)
+
     def amplify(
         self,
         text,
@@ -1374,12 +1498,12 @@ class KCPP_PromptAmplify:
                 include_default_continuation_stops=True,
             )
             retry = _strip_response(retry)
-            if _density_count(retry, profile) > _density_count(amplified, profile):
+            if retry and _density_count(retry, profile) > _density_count(amplified, profile):
                 amplified = retry
 
-        final_prefix = str(profile.get("final_prompt_prefix") or "")
-        final_suffix = str(profile.get("final_prompt_suffix") or "")
-        return (final_prefix + amplified + final_suffix, secondary_instructions)
+        if not amplified:
+            raise RuntimeError("KoboldCpp returned an empty prompt")
+        return (_apply_profile_wrappers(amplified, profile), secondary_instructions)
 
 
 class KCPP_PromptSlot:
@@ -1420,6 +1544,124 @@ class KCPP_PromptSlot:
         return (prompt, secondary_instructions)
 
 
+def _parse_chat_image_reference(image_ref):
+    try:
+        reference = json.loads(str(image_ref or ""))
+    except json.JSONDecodeError as exc:
+        raise ValueError("Image reference must be valid Prompt Studio JSON") from exc
+    if not isinstance(reference, dict):
+        raise ValueError("Image reference must be a JSON object")
+
+    storage_type = str(reference.get("type") or "output").strip().lower()
+    roots = {
+        "input": folder_paths.get_input_directory,
+        "output": folder_paths.get_output_directory,
+        "temp": folder_paths.get_temp_directory,
+    }
+    if storage_type not in roots:
+        raise ValueError("Image reference type must be input, output, or temp")
+
+    filename = str(reference.get("filename") or "").strip()
+    subfolder = str(reference.get("subfolder") or "").strip()
+    if not filename:
+        raise ValueError("Image reference filename is required")
+    if os.path.basename(filename) != filename or os.path.isabs(filename):
+        raise ValueError("Image reference filename must not contain a path")
+    if os.path.isabs(subfolder):
+        raise ValueError("Image reference subfolder must be relative")
+
+    root = os.path.realpath(roots[storage_type]())
+    relative_path = os.path.normpath(os.path.join(subfolder, filename))
+    if relative_path == os.pardir or relative_path.startswith(os.pardir + os.sep):
+        raise ValueError("Image reference cannot leave its ComfyUI storage directory")
+    path = os.path.realpath(os.path.join(root, relative_path))
+    try:
+        inside_root = os.path.commonpath((root, path)) == root
+    except ValueError:
+        inside_root = False
+    if not inside_root:
+        raise ValueError("Image reference cannot leave its ComfyUI storage directory")
+    if not os.path.isfile(path):
+        raise ValueError(f"Referenced image does not exist: {relative_path}")
+    return reference, path
+
+
+class KCPP_ChatImageInput:
+    """Load a Prompt Studio chat image directly from ComfyUI storage."""
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "image_ref": (
+                    "STRING",
+                    {
+                        "default": "",
+                        "multiline": False,
+                        "tooltip": "Injected by Prompt Studio. References an existing input, output, or temp image without copying it.",
+                    },
+                ),
+                "source_name": (
+                    "STRING",
+                    {
+                        "default": "Edit Source",
+                        "multiline": False,
+                        "tooltip": "Name shown when an editing workflow has multiple image inputs.",
+                    },
+                ),
+            },
+        }
+
+    RETURN_TYPES = ("IMAGE", "MASK")
+    RETURN_NAMES = ("image", "mask")
+    FUNCTION = "load_image"
+    CATEGORY = "KoboldCpp"
+
+    def load_image(self, image_ref, source_name="Edit Source"):
+        _, path = _parse_chat_image_reference(image_ref)
+        output_images = []
+        output_masks = []
+        with Image.open(path) as source:
+            expected_size = None
+            for frame in ImageSequence.Iterator(source):
+                frame = ImageOps.exif_transpose(frame)
+                has_alpha = "A" in frame.getbands() or "transparency" in frame.info or "transparency" in source.info
+                rgba = frame.convert("RGBA") if has_alpha else None
+                rgb = rgba.convert("RGB") if rgba is not None else frame.convert("RGB")
+                if expected_size is None:
+                    expected_size = rgb.size
+                if rgb.size != expected_size:
+                    continue
+                image = np.asarray(rgb).astype(np.float32) / 255.0
+                output_images.append(torch.from_numpy(image)[None,])
+                if rgba is not None:
+                    alpha = np.asarray(rgba.getchannel("A")).astype(np.float32) / 255.0
+                    output_masks.append((1.0 - torch.from_numpy(alpha))[None,])
+                else:
+                    output_masks.append(torch.zeros((1, rgb.height, rgb.width), dtype=torch.float32))
+
+        if not output_images:
+            raise ValueError("Referenced image did not contain a readable frame")
+        return (torch.cat(output_images, dim=0), torch.cat(output_masks, dim=0))
+
+    @classmethod
+    def IS_CHANGED(cls, image_ref, source_name="Edit Source"):
+        _, path = _parse_chat_image_reference(image_ref)
+        digest = hashlib.sha256()
+        with open(path, "rb") as file:
+            for chunk in iter(lambda: file.read(1024 * 1024), b""):
+                digest.update(chunk)
+        return digest.hexdigest()
+
+    @classmethod
+    def VALIDATE_INPUTS(cls, image_ref, source_name="Edit Source"):
+        try:
+            _parse_chat_image_reference(image_ref)
+        except ValueError as exc:
+            return str(exc)
+        return True
+
+
 class KCPP_Apply:
     @classmethod
     def INPUT_TYPES(cls):
@@ -1434,6 +1676,10 @@ class KCPP_Apply:
     RETURN_NAMES = ("text",)
     FUNCTION = "apply"
     CATEGORY = "KoboldCpp"
+
+    @classmethod
+    def IS_CHANGED(cls, sampler_seed=-1, **kwargs):
+        return _llm_node_change_token(sampler_seed)
 
     def apply(
         self,
@@ -1532,6 +1778,10 @@ class KCPP_Ideogram4:
     RETURN_NAMES = ("json_output",)
     FUNCTION = "process"
     CATEGORY = "KoboldCpp"
+
+    @classmethod
+    def IS_CHANGED(cls, sampler_seed=-1, **kwargs):
+        return _llm_node_change_token(sampler_seed)
 
     def _field_seed(self, sampler_seed, seed_mode, offset):
         seed = int(sampler_seed)
@@ -1753,6 +2003,7 @@ class KCPP_Ideogram4:
 NODE_CLASS_MAPPINGS = {
     "KCPP_PromptAmplify": KCPP_PromptAmplify,
     "KCPP_PromptSlot": KCPP_PromptSlot,
+    "KCPP_ChatImageInput": KCPP_ChatImageInput,
     "KCPP_Apply": KCPP_Apply,
     "KCPP_Ideogram4": KCPP_Ideogram4,
 }
@@ -1760,6 +2011,7 @@ NODE_CLASS_MAPPINGS = {
 NODE_DISPLAY_NAME_MAPPINGS = {
     "KCPP_PromptAmplify": "KoboldCpp Prompt Amplify",
     "KCPP_PromptSlot": "KoboldCpp Prompt Slot",
+    "KCPP_ChatImageInput": "Prompt Studio Image Source",
     "KCPP_Apply": "KoboldCpp Apply",
     "KCPP_Ideogram4": "Ideogram4-KoboldCPP",
 }

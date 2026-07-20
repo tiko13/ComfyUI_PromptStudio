@@ -47,3 +47,5 @@ Desktop.ini
 # Prompt Studio runtime state
 prompt_studio_chats.json
 prompt_studio_chats.json.tmp
+prompt_studio_workflows.json
+prompt_studio_workflows.json.tmp

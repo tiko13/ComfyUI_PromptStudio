@@ -9,9 +9,23 @@ let connected = false;
 let connecting = false;
 let channel = null;
 let hostPoll = null;
+let fallbackTimer = null;
+let failureTimer = null;
 
 function setStatus(message) {
   if (status) status.textContent = message;
+}
+
+function finishConnection() {
+  connected = true;
+  channel?.close();
+  channel = null;
+  if (hostPoll) window.clearInterval(hostPoll);
+  hostPoll = null;
+  if (fallbackTimer) window.clearTimeout(fallbackTimer);
+  fallbackTimer = null;
+  if (failureTimer) window.clearTimeout(failureTimer);
+  failureTimer = null;
 }
 
 async function connectToHost(host) {
@@ -21,9 +35,7 @@ async function connectToHost(host) {
     if (!host || host.closed || host.location.origin !== window.location.origin) return false;
     const attached = await host.__lllmPromptStudioHost?.attach?.(window);
     if (!attached) return false;
-    connected = true;
-    channel?.close();
-    if (hostPoll) window.clearInterval(hostPoll);
+    finishConnection();
     return true;
   } catch (_) {
     return false;
@@ -32,27 +44,42 @@ async function connectToHost(host) {
   }
 }
 
-if (!await connectToHost(window.opener) && typeof BroadcastChannel === "function") {
-  channel = new BroadcastChannel(CHANNEL_NAME);
-  channel.addEventListener("message", (event) => {
-    if (event.data?.requestId !== requestId) return;
-    if (event.data.type === "connected") {
-      connected = true;
-      channel.close();
-    } else if (event.data.type === "failed") {
-      setStatus("ComfyUI found Prompt Studio, but the standalone window could not be attached.");
-    }
-  });
-  channel.postMessage({ type: "connect", requestId, windowName });
-}
-
 async function connectEmbeddedHost() {
   if (!connected) await connectToHost(embeddedHost?.contentWindow);
 }
 
-embeddedHost?.addEventListener("load", connectEmbeddedHost);
-hostPoll = window.setInterval(connectEmbeddedHost, 250);
+function startEmbeddedHost() {
+  if (connected || !embeddedHost || embeddedHost.hasAttribute("src")) return;
+  setStatus("Starting a private ComfyUI workflow host…");
+  embeddedHost.src = "/";
+  hostPoll = window.setInterval(connectEmbeddedHost, 500);
+}
 
-window.setTimeout(() => {
-  if (!connected) setStatus("Prompt Studio could not start its ComfyUI workflow host. Refresh after ComfyUI has finished loading.");
+if (!await connectToHost(window.opener)) {
+  if (typeof BroadcastChannel === "function") {
+    channel = new BroadcastChannel(CHANNEL_NAME);
+    channel.addEventListener("message", (event) => {
+      if (event.data?.requestId !== requestId) return;
+      if (event.data.type === "connected") finishConnection();
+      else if (event.data.type === "failed") startEmbeddedHost();
+    });
+    channel.postMessage({ type: "connect", requestId, windowName });
+  }
+  fallbackTimer = window.setTimeout(startEmbeddedHost, 1500);
+}
+
+embeddedHost?.addEventListener("load", connectEmbeddedHost);
+
+failureTimer = window.setTimeout(() => {
+  if (connected) return;
+  if (hostPoll) window.clearInterval(hostPoll);
+  hostPoll = null;
+  setStatus("Prompt Studio could not start its ComfyUI workflow host. Refresh after ComfyUI has finished loading.");
 }, 12000);
+
+window.addEventListener("beforeunload", () => {
+  channel?.close();
+  if (hostPoll) window.clearInterval(hostPoll);
+  if (fallbackTimer) window.clearTimeout(fallbackTimer);
+  if (failureTimer) window.clearTimeout(failureTimer);
+}, { once: true });
