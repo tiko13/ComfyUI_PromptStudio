@@ -1164,7 +1164,25 @@ function editingSource(sourceImage = null) {
     || latestConversationImage();
 }
 
-function selectImageSource(reference) {
+function restoreStoredCanonicalPrompt(data) {
+  const prompt = String(data?.canonicalPrompt || "");
+  if (!prompt.trim()) return false;
+  const previousVersion = state.versions[state.versionIndex];
+  const chat = activeChat();
+  if (chat) {
+    chat.initialized = true;
+    chat.controlsFingerprint = data.llmAmplified ? String(data.controlsFingerprint || "") : "";
+    chat.pendingGeneration = null;
+  }
+  if (selectedSlot()) writePromptToSlot(prompt);
+  else updatePromptEditor(prompt);
+  if (previousVersion !== prompt) pushVersion(prompt);
+  else syncActiveChat();
+  updateComposeMode();
+  return true;
+}
+
+function selectImageSource(reference, generationData = null) {
   if (state.busy) return setStatus("Wait for the current operation to finish.", "warning");
   const value = normalizeImageReference(reference);
   if (!value) return;
@@ -1174,13 +1192,23 @@ function selectImageSource(reference) {
   chat.updatedAt = Date.now();
   const editAction = state.panel?.querySelector('input[name="lllm-generation-action"][value="edit"]');
   if (editAction) editAction.checked = true;
+  const promptRestored = restoreStoredCanonicalPrompt(generationData);
   saveChats();
   renderChatHistory();
   updateComposeMode();
-  setStatus(`Selected ${value.filename} as the editing source.`, "ready");
+  if (promptRestored && controlsNeedApply()) {
+    setStatus(`Selected ${value.filename} and restored its prompt. KoboldCpp will apply the current controls before generation.`, "warning");
+  } else {
+    setStatus(
+      promptRestored
+        ? `Selected ${value.filename} as the editing source and restored its canonical prompt.`
+        : `Selected ${value.filename} as the editing source.`,
+      "ready",
+    );
+  }
 }
 
-function renderImageGallery(message, images) {
+function renderImageGallery(message, images, generationData = null) {
   if (!message || !images?.length) return;
   message.classList.add("lllm-has-images");
   const gallery = document.createElement("div");
@@ -1208,7 +1236,7 @@ function renderImageGallery(message, images) {
     useSource.dataset.disableBusy = "";
     useSource.disabled = state.busy;
     useSource.textContent = card.dataset.source === "true" ? "Editing source" : "Edit this image";
-    useSource.addEventListener("click", () => selectImageSource(reference));
+    useSource.addEventListener("click", () => selectImageSource(reference, generationData));
     card.append(preview, useSource);
     gallery.appendChild(card);
   }
@@ -1217,20 +1245,7 @@ function renderImageGallery(message, images) {
 
 function useStoredCanonicalPrompt(data, details) {
   if (state.busy) return setStatus("Wait for the current operation to finish.", "warning");
-  const prompt = String(data.canonicalPrompt || "");
-  if (!prompt.trim()) return;
-  const previousVersion = state.versions[state.versionIndex];
-  const chat = activeChat();
-  if (chat) {
-    chat.initialized = true;
-    chat.controlsFingerprint = data.llmAmplified ? String(data.controlsFingerprint || "") : "";
-    chat.pendingGeneration = null;
-  }
-  if (selectedSlot()) writePromptToSlot(prompt);
-  else updatePromptEditor(prompt);
-  if (previousVersion !== prompt) pushVersion(prompt);
-  else syncActiveChat();
-  updateComposeMode();
+  if (!restoreStoredCanonicalPrompt(data)) return;
   details.open = false;
   if (controlsNeedApply()) {
     setStatus("Prompt restored. KoboldCpp will apply the current controls before generation.", "warning");
@@ -1302,7 +1317,7 @@ function renderMessage(data) {
   body.className = "lllm-message-text";
   body.textContent = data.text;
   message.appendChild(body);
-  renderImageGallery(message, data.images);
+  renderImageGallery(message, data.images, data);
   renderPromptInfo(message, data);
 
   history.appendChild(message);
@@ -1341,9 +1356,9 @@ function appendMessage(role, text, options = {}) {
 
 function appendImages(message, images) {
   if (!message || !images.length) return;
-  renderImageGallery(message, images);
   const chat = activeChat();
   const stored = chat?.messages.find((item) => item.id === message.dataset.messageId);
+  renderImageGallery(message, images, stored);
   if (stored) {
     stored.images = images;
     if (images[0] && state.panel?.querySelector("#lllm-auto-advance-source")?.checked) {
@@ -2000,11 +2015,11 @@ function buildPanel() {
             <label>Style<select id="lllm-style"></select></label>
             <label>Framing<select id="lllm-framing"></select></label>
             <label>Embellishment<select id="lllm-embellishment"></select></label>
-            <label>Thinking<select id="lllm-thinking"></select></label>
+            <label title="Controls KoboldCpp reasoning effort. High receives up to 4,096 private-reasoning tokens while preserving the final-answer allowance.">Thinking<select id="lllm-thinking"></select></label>
             <label>KoboldCpp URL<input id="lllm-kobold-url" /></label>
             <label>Style modifier<textarea id="lllm-style-modifier" rows="2"></textarea></label>
             <label>Framing modifier<textarea id="lllm-framing-modifier" rows="2"></textarea></label>
-            <label>Max response tokens<input id="lllm-max-tokens" type="number" min="0" max="8192" /></label>
+            <label title="Final-answer allowance. KoboldCpp receives an additional native-reasoning budget; 0 uses the selected profile default.">Final-answer tokens<input id="lllm-max-tokens" type="number" min="0" max="8192" /></label>
             <label>Temperature<input id="lllm-temperature" type="number" min="0" max="5" step="0.05" /></label>
           </div>
         </details>

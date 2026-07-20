@@ -112,6 +112,123 @@ class RegressionTests(unittest.TestCase):
         self.assertEqual(self.nodes._strip_response('Final prompt: "STOP."'), '"STOP."')
         self.assertEqual(self.nodes._strip_apply_response('  "exact output"  '), '"exact output"')
 
+    def test_chat_budget_adds_reasoning_space_to_the_final_answer_allowance(self):
+        self.assertEqual(self.nodes._chat_generation_budget(300, "Disabled"), (300, None))
+        self.assertEqual(self.nodes._chat_generation_budget(300, "Minimal"), (334, None))
+        self.assertEqual(self.nodes._chat_generation_budget(300, "Low"), (400, None))
+        self.assertEqual(self.nodes._chat_generation_budget(300, "Medium"), (600, None))
+        self.assertEqual(self.nodes._chat_generation_budget(300, "High"), (4396, 4096))
+        self.assertEqual(self.nodes._chat_generation_budget(300, "High", 900), (900, 600))
+
+    def test_high_thinking_length_failure_is_not_retried_without_thinking(self):
+        response = {
+            "choices": [
+                {
+                    "message": {"content": "", "reasoning_content": "unfinished reasoning"},
+                    "finish_reason": "length",
+                }
+            ]
+        }
+        with (
+            mock.patch.object(self.nodes, "_server_capabilities", return_value={"jinja": True}),
+            mock.patch.object(self.nodes, "_server_context_length", return_value=8192),
+            mock.patch.object(self.nodes, "_kobold_token_count", return_value=250),
+            mock.patch.object(self.nodes, "_post_json", return_value=response) as post,
+            self.assertRaisesRegex(RuntimeError, "4396-token completion budget"),
+        ):
+            self.nodes._generate_kcpp(
+                "Rewrite this prompt",
+                "http://localhost:5001",
+                0,
+                300,
+                0.25,
+                0.8,
+                40,
+                0.0,
+                1.05,
+                360,
+                -1,
+                "High",
+                "",
+                120,
+                include_default_continuation_stops=True,
+            )
+
+        self.assertEqual(post.call_count, 1)
+        self.assertEqual(post.call_args.args[1]["reasoning_effort"], "high")
+        self.assertEqual(post.call_args.args[1]["thinking_budget_tokens"], 4096)
+        self.assertEqual(post.call_args.args[1]["stop"], [])
+
+    def test_chat_generation_uses_profile_default_as_final_answer_allowance(self):
+        response = {
+            "choices": [
+                {
+                    "message": {"content": "A finished image prompt.", "reasoning_content": "private"},
+                    "finish_reason": "stop",
+                }
+            ]
+        }
+        with (
+            mock.patch.object(self.nodes, "_server_capabilities", return_value={"jinja": True}),
+            mock.patch.object(self.nodes, "_server_context_length", return_value=8192),
+            mock.patch.object(self.nodes, "_kobold_token_count", return_value=250),
+            mock.patch.object(self.nodes, "_post_json", return_value=response) as post,
+        ):
+            result = self.nodes._generate_kcpp(
+                "Rewrite this prompt",
+                "http://localhost:5001",
+                0,
+                300,
+                0.25,
+                0.8,
+                40,
+                0.0,
+                1.05,
+                360,
+                -1,
+                "Medium",
+                "",
+                120,
+            )
+
+        self.assertEqual(result, "A finished image prompt.")
+        request_url, payload, timeout = post.call_args.args
+        self.assertTrue(request_url.endswith("/v1/chat/completions"))
+        self.assertEqual(timeout, 120)
+        self.assertEqual(payload["max_tokens"], 600)
+        self.assertEqual(payload["reasoning_effort"], "medium")
+        self.assertTrue(payload["chat_template_kwargs"]["enable_thinking"])
+
+    def test_raw_generation_keeps_one_total_continuation_limit(self):
+        response = {"results": [{"text": "raw continuation", "finish_reason": "stop"}]}
+        with (
+            mock.patch.object(self.nodes, "_server_context_length", return_value=8192),
+            mock.patch.object(self.nodes, "_kobold_token_count", return_value=250),
+            mock.patch.object(self.nodes, "_post_json", return_value=response) as post,
+        ):
+            result = self.nodes._generate_kcpp_raw(
+                "Complete this raw text",
+                "http://localhost:5001",
+                0,
+                300,
+                0.25,
+                0.8,
+                40,
+                0.0,
+                1.05,
+                360,
+                -1,
+                "Medium",
+                "",
+                120,
+            )
+
+        self.assertEqual(result, "raw continuation")
+        request_url, payload, timeout = post.call_args.args
+        self.assertTrue(request_url.endswith("/api/v1/generate"))
+        self.assertEqual(timeout, 120)
+        self.assertEqual(payload["max_length"], 300)
+
     def test_bundled_profile_and_preset_files_are_valid_and_unambiguous(self):
         self.assertTrue(self.nodes._load_profiles())
         self.assertTrue(self.nodes._load_style_templates())

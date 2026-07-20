@@ -43,6 +43,11 @@ LEGACY_FRAMING_ALIASES = {
     "Point of view": "First-Person Downward View",
 }
 FINAL_PROMPT_MARKER = "Final prompt:"
+CHAT_SYSTEM_MESSAGE = (
+    "You are an expert image-generation prompt editor. Follow the requested transformation and "
+    "output-format constraints precisely. Keep analysis in the model's private reasoning channel. "
+    "The final answer must contain only the requested prompt output, without commentary or markdown."
+)
 DEFAULT_CONTINUATION_STOPS = [
     "\nWait,",
     "\nLet's try",
@@ -54,14 +59,6 @@ DEFAULT_CONTINUATION_STOPS = [
     "\nResponse:",
     "\nTarget profile:",
     "\nReference:",
-    "<channel|>",
-    "\n<channel|>",
-    "\r\n<channel|>",
-    "<|channel>",
-    "\n<|channel>",
-    "\r\n<|channel>",
-    "<|channel>thought",
-    "<|channel>analysis",
 ]
 
 
@@ -330,9 +327,9 @@ def _get_json(url, timeout):
         return None
 
 
-def _server_max_length(base_url, timeout):
+def _server_context_length(base_url, timeout):
     data = _get_json(
-        urllib.parse.urljoin(base_url + "/", "api/v1/config/max_length"),
+        urllib.parse.urljoin(base_url + "/", "api/extra/true_max_context_length"),
         timeout,
     )
     if not isinstance(data, dict):
@@ -343,19 +340,118 @@ def _server_max_length(base_url, timeout):
         return None
 
 
+def _server_capabilities(base_url, timeout):
+    data = _get_json(
+        urllib.parse.urljoin(base_url + "/", "api/extra/version"),
+        timeout,
+    )
+    return data if isinstance(data, dict) else {}
+
+
+def _kobold_token_count(
+    base_url,
+    timeout,
+    *,
+    prompt=None,
+    messages=None,
+    reasoning_effort=None,
+    enable_thinking=None,
+):
+    payload = {"special": True}
+    if messages is not None:
+        payload["messages"] = messages
+    else:
+        payload["prompt"] = str(prompt or "")
+    if reasoning_effort:
+        payload["reasoning_effort"] = reasoning_effort
+    if enable_thinking is not None:
+        payload["chat_template_kwargs"] = {"enable_thinking": bool(enable_thinking)}
+
+    try:
+        data = _post_json(
+            urllib.parse.urljoin(base_url + "/", "api/extra/tokencount"),
+            payload,
+            timeout,
+        )
+    except RuntimeError:
+        return None
+    if not isinstance(data, dict):
+        return None
+    try:
+        return int(data["value"])
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+def _context_safe_generation_limit(context_length, prompt_tokens):
+    if context_length is None or context_length <= 0:
+        return None
+    limit = max(1, int(context_length * 0.8) - 1)
+    if prompt_tokens is not None and prompt_tokens >= 0:
+        limit = min(limit, max(1, int(context_length) - int(prompt_tokens) - 16))
+    return limit
+
+
+def _requested_response_tokens(max_response_tokens, default_max_response_tokens):
+    requested = int(max_response_tokens)
+    if requested <= 0:
+        requested = int(default_max_response_tokens)
+    return max(1, requested)
+
+
+def _chat_generation_budget(response_tokens, thinking_mode, safe_limit=None):
+    """Return total completion tokens and an optional explicit high-effort thinking cap.
+
+    ``response_tokens`` remains the workflow's final-answer allowance. KoboldCpp counts
+    native reasoning and final content in one completion limit, so lower effort levels
+    receive enough total tokens to leave roughly this allowance after their percentage
+    reasoning budget. High effort is unrestricted upstream; give it a generous explicit
+    budget while reserving the requested final-answer allowance.
+    """
+    response_tokens = max(1, int(response_tokens))
+    effort = _reasoning_effort(thinking_mode)
+    thinking_budget = None
+    if effort == "minimal":
+        total = (response_tokens * 10 + 8) // 9
+    elif effort == "low":
+        total = (response_tokens * 4 + 2) // 3
+    elif effort == "medium":
+        total = response_tokens * 2
+    elif effort == "high":
+        desired_reasoning = 4096
+        total = response_tokens + desired_reasoning
+        thinking_budget = desired_reasoning
+    else:
+        total = response_tokens
+
+    if safe_limit is not None and safe_limit > 0:
+        total = min(total, int(safe_limit))
+    total = max(1, total)
+
+    if thinking_budget is not None:
+        # Preserve the requested final allowance whenever the context window permits it.
+        thinking_budget = min(thinking_budget, max(0, total - min(response_tokens, total)))
+    return total, thinking_budget
+
+
 def _split_stop_sequences(value):
     if not value:
         return []
     return [item.strip() for item in value.splitlines() if item.strip()]
 
 
-def _common_kcpp_inputs(default_max_response_tokens=180):
+def _common_kcpp_inputs(default_max_response_tokens=0, raw_completion=False):
+    token_tooltip = (
+        "Maximum tokens in the raw generated continuation. Use 0 to use the node default."
+        if raw_completion
+        else "Final-answer token allowance. Use 0 to use the profile default. Native reasoning receives an additional budget within the server context window."
+    )
     return {
         "thinking_mode": (
             ["Disabled", "Minimal", "Low", "Medium", "High"],
             {
                 "default": "Disabled",
-                "tooltip": "Controls KoboldCpp reasoning_effort.",
+                "tooltip": "Controls KoboldCpp reasoning_effort. High receives up to 4096 private-reasoning tokens while preserving the final-answer allowance.",
             },
         ),
         "kobold_url": (
@@ -373,7 +469,7 @@ def _common_kcpp_inputs(default_max_response_tokens=180):
                 "min": 0,
                 "max": 8192,
                 "step": 1,
-                "tooltip": "Maximum generated tokens. Use 0 to use the node default. The node clamps to the server max when KoboldCpp reports one.",
+                "tooltip": token_tooltip,
             },
         ),
         "temperature": ("FLOAT", {"default": 0.25, "min": 0.0, "max": 5.0, "step": 0.05}),
@@ -440,16 +536,138 @@ def _generate_kcpp(
 ):
     base_url = _clean_base_url(kobold_url)
     timeout = int(request_timeout)
-    max_length = int(max_response_tokens)
-    if max_length <= 0:
-        max_length = int(default_max_response_tokens)
-    server_max_length = _server_max_length(base_url, timeout)
-    if server_max_length is not None and server_max_length > 0:
-        max_length = min(max_length, server_max_length)
-
+    capabilities = _server_capabilities(base_url, timeout)
+    if capabilities.get("jinja") is False:
+        raise RuntimeError(
+            "KoboldCpp Chat Completions requires Use Jinja for reliable model-native formatting. "
+            "Enable Use Jinja in KoboldCpp, restart the server, and run the workflow again."
+        )
+    messages = [
+        {"role": "system", "content": CHAT_SYSTEM_MESSAGE},
+        {"role": "user", "content": str(prompt or "")},
+    ]
+    response_tokens = _requested_response_tokens(max_response_tokens, default_max_response_tokens)
+    context_length = _server_context_length(base_url, timeout)
     stop_sequences = _split_stop_sequences(stop_sequence)
-    if include_default_continuation_stops:
+    # Native reasoning may legitimately use labels such as "Response:" while moving
+    # from analysis to final content. Legacy textual stops can cut that transition off,
+    # so thinking requests rely on the model's Jinja end-of-turn markers instead.
+    if include_default_continuation_stops and _reasoning_effort(thinking_mode) == "none":
         stop_sequences = _with_default_continuation_stops(stop_sequences)
+
+    def generate_once(request_thinking_mode):
+        effort = _reasoning_effort(request_thinking_mode)
+        enable_thinking = effort != "none"
+        prompt_tokens = _kobold_token_count(
+            base_url,
+            timeout,
+            messages=messages,
+            reasoning_effort=effort,
+            enable_thinking=enable_thinking,
+        )
+        if (
+            context_length is not None
+            and prompt_tokens is not None
+            and prompt_tokens >= context_length - 32
+        ):
+            raise RuntimeError(
+                f"The Jinja-formatted request uses {prompt_tokens} tokens, leaving no usable space "
+                f"in KoboldCpp's {context_length}-token context window. Shorten the instructions or "
+                "increase the KoboldCpp context size."
+            )
+        safe_limit = _context_safe_generation_limit(context_length, prompt_tokens)
+        max_length, thinking_budget = _chat_generation_budget(
+            response_tokens,
+            request_thinking_mode,
+            safe_limit,
+        )
+        payload = {
+            "model": "koboldcpp",
+            "messages": messages,
+            "max_tokens": max_length,
+            "temperature": float(temperature),
+            "top_p": float(top_p),
+            "top_k": int(top_k),
+            "min_p": float(min_p),
+            "rep_pen": float(rep_pen),
+            "rep_pen_range": int(rep_pen_range),
+            "seed": int(sampler_seed),
+            "reasoning_effort": effort,
+            "chat_template_kwargs": {"enable_thinking": enable_thinking},
+            "stop": stop_sequences,
+            "encapsulate_thinking": True,
+            "continue_assistant_turn": False,
+            "stream": False,
+        }
+        if thinking_budget is not None:
+            payload["thinking_budget_tokens"] = thinking_budget
+
+        result = _post_json(
+            urllib.parse.urljoin(base_url + "/", "v1/chat/completions"),
+            payload,
+            timeout,
+        )
+        try:
+            choice = result["choices"][0]
+            message = choice["message"]
+            content = message.get("content") or ""
+            finish_reason = choice.get("finish_reason")
+        except (KeyError, IndexError, TypeError) as exc:
+            raise RuntimeError(f"Unexpected KoboldCpp response: {result}") from exc
+        if finish_reason == "error":
+            raise RuntimeError("KoboldCpp reported an error while generating the chat completion.")
+        return str(content), message, finish_reason, max_length, result
+
+    content, message, finish_reason, max_length, result = generate_once(thinking_mode)
+    if finish_reason == "length":
+        raise RuntimeError(
+            f"KoboldCpp exhausted the {max_length}-token completion budget before finishing. "
+            "Increase max_response_tokens or increase the KoboldCpp context size."
+        )
+    if not content.strip():
+        if message.get("reasoning_content"):
+            raise RuntimeError(
+                "KoboldCpp returned reasoning but no final answer. Increase max_response_tokens "
+                "or increase the KoboldCpp context size."
+            )
+        raise RuntimeError(f"KoboldCpp returned an empty chat completion: {result}")
+    return content
+
+
+def _generate_kcpp_raw(
+    prompt,
+    kobold_url,
+    max_response_tokens,
+    default_max_response_tokens,
+    temperature,
+    top_p,
+    top_k,
+    min_p,
+    rep_pen,
+    rep_pen_range,
+    sampler_seed,
+    thinking_mode,
+    stop_sequence,
+    request_timeout,
+):
+    """Generate a raw continuation for KoboldCpp Apply without chat templating."""
+    base_url = _clean_base_url(kobold_url)
+    timeout = int(request_timeout)
+    max_length = _requested_response_tokens(max_response_tokens, default_max_response_tokens)
+    context_length = _server_context_length(base_url, timeout)
+    prompt_tokens = _kobold_token_count(base_url, timeout, prompt=prompt)
+    if (
+        context_length is not None
+        and prompt_tokens is not None
+        and prompt_tokens >= context_length - 32
+    ):
+        raise RuntimeError(
+            f"The raw prompt uses {prompt_tokens} tokens, leaving no usable generation space "
+            f"in KoboldCpp's {context_length}-token context window."
+        )
+    safe_limit = _context_safe_generation_limit(context_length, prompt_tokens)
+    if safe_limit is not None:
+        max_length = min(max_length, safe_limit)
 
     payload = {
         "prompt": prompt,
@@ -462,18 +680,21 @@ def _generate_kcpp(
         "rep_pen_range": int(rep_pen_range),
         "sampler_seed": int(sampler_seed),
         "reasoning_effort": _reasoning_effort(thinking_mode),
-        "stop_sequence": stop_sequences,
+        "stop_sequence": _split_stop_sequences(stop_sequence),
     }
-
     result = _post_json(
         urllib.parse.urljoin(base_url + "/", "api/v1/generate"),
         payload,
         timeout,
     )
     try:
-        return result["results"][0]["text"]
+        item = result["results"][0]
+        text = item["text"]
     except (KeyError, IndexError, TypeError) as exc:
         raise RuntimeError(f"Unexpected KoboldCpp response: {result}") from exc
+    if item.get("finish_reason") == "error":
+        raise RuntimeError("KoboldCpp reported an error while generating the raw completion.")
+    return text
 
 
 def _strip_response(text):
@@ -590,15 +811,18 @@ def _llm_node_change_token(sampler_seed):
 
 def _thinking_instruction(thinking_mode):
     effort = _reasoning_effort(thinking_mode)
-    if effort == "minimal":
-        return "Write a section starting exactly 'Reasoning:' with one short sentence about what to preserve. Then write a line exactly 'Final prompt:' followed by the final rewritten prompt."
-    if effort == "low":
-        return "Write a section starting exactly 'Reasoning:' with a brief note about the subject, setting, and composition to preserve. Then write a line exactly 'Final prompt:' followed by the final rewritten prompt."
-    if effort == "medium":
-        return "Write a section starting exactly 'Reasoning:' about the subject, setting, composition, and concrete visible details to preserve. Then write a line exactly 'Final prompt:' followed by the final rewritten prompt."
-    if effort == "high":
-        return "Write a section starting exactly 'Reasoning:' and reason carefully about the subject, setting, composition, concrete visible details, style constraints, and anything that should not be added. Then write a line exactly 'Final prompt:' followed by the final rewritten prompt."
-    return ""
+    focus = {
+        "minimal": "Briefly check the central subject and requested output format.",
+        "low": "Check the subject, setting, composition, and requested output format.",
+        "medium": "Check the subject, setting, composition, concrete visible details, and active constraints.",
+        "high": "Carefully verify every preserved detail, active style and framing constraint, forbidden addition, and output-format requirement.",
+    }.get(effort, "")
+    if not focus:
+        return "Do not expose analysis, reasoning, scratchpad notes, or thinking tags in the final answer."
+    return (
+        f"Use the model's private reasoning channel before answering. {focus} "
+        "Do not repeat or summarize that reasoning in the final answer."
+    )
 
 
 def _embellishment_instruction(embellishment_level, profile):
@@ -644,15 +868,18 @@ def _revision_embellishment_instruction(embellishment_level, profile):
 
 def _revision_thinking_instruction(thinking_mode):
     effort = _reasoning_effort(thinking_mode)
-    if effort == "minimal":
-        return "Write a section starting exactly 'Reasoning:' with one short sentence naming the edit scope and what must remain unchanged. Then write a line exactly 'Final prompt:' followed by the final replacement prompt."
-    if effort == "low":
-        return "Write a section starting exactly 'Reasoning:' with a brief edit plan: identify the target, conflicting old details to remove, and protected content to preserve. Then write a line exactly 'Final prompt:' followed by the final replacement prompt."
-    if effort == "medium":
-        return "Write a section starting exactly 'Reasoning:' that identifies the smallest sufficient edit scope, all conflicting references to that target, and the unrelated clauses or tags that must remain unchanged. Then write a line exactly 'Final prompt:' followed by the final replacement prompt."
-    if effort == "high":
-        return "Write a section starting exactly 'Reasoning:' and carefully map the requested change to the smallest sufficient edit scope, locate every obsolete or conflicting target reference, preserve unrelated wording and tag order, and check the final prompt for collateral changes. Then write a line exactly 'Final prompt:' followed by the final replacement prompt."
-    return ""
+    focus = {
+        "minimal": "Briefly identify the edit scope and protected content.",
+        "low": "Identify the target, conflicting old details, and protected content.",
+        "medium": "Determine the smallest sufficient edit scope, every conflicting target reference, and all unrelated clauses or tags that must remain unchanged.",
+        "high": "Carefully map the smallest sufficient edit scope, locate every obsolete or conflicting reference, preserve unrelated wording and tag order, and check for collateral changes.",
+    }.get(effort, "")
+    if not focus:
+        return "Analyze the edit scope silently and do not expose reasoning or change notes in the final answer."
+    return (
+        f"Use the model's private reasoning channel before answering. {focus} "
+        "Do not repeat or summarize that reasoning in the final answer."
+    )
 
 
 def _expansion_requirement(embellishment_level, profile, fragment=False):
@@ -840,12 +1067,12 @@ def _build_expansion_retry_prompt(
         prompt_parts.extend(
             [
                 "",
-                "Thinking:",
-                "Do not include thinking, analysis, reasoning, scratchpad notes, <think> tags, or <thinking> tags in the response.",
+                "Reasoning policy:",
+                _thinking_instruction(thinking_mode),
             ]
         )
     else:
-        prompt_parts.extend(["", "Thinking:", _thinking_instruction(thinking_mode)])
+        prompt_parts.extend(["", "Reasoning policy:", _thinking_instruction(thinking_mode)])
 
     prompt_parts.extend(
         [
@@ -862,7 +1089,7 @@ def _build_expansion_retry_prompt(
             *_expansion_rule_lines(embellishment_level, profile),
             "- Do not explain your changes.",
             "- Do not include markdown.",
-            f"- End with a line exactly '{FINAL_PROMPT_MARKER}' followed by the expanded prompt.",
+            f"- Start the final answer with exactly '{FINAL_PROMPT_MARKER}' followed by the expanded prompt.",
             f"- Stop immediately after the expanded prompt. Do not add notes, rule checks, examples, or another user prompt.",
             "",
             "Original user prompt:",
@@ -870,12 +1097,8 @@ def _build_expansion_retry_prompt(
             "",
             "Current rewritten prompt:",
             str(rewritten_text or "").strip(),
-            "",
-            "Response:",
         ]
     )
-    if _reasoning_effort(thinking_mode) != "none":
-        prompt_parts.append("Reasoning:")
     return "\n".join(prompt_parts)
 
 
@@ -973,15 +1196,15 @@ def _build_instruction_prompt(profile, style_template, style_modifier, framing_t
         prompt_parts.extend(
             [
                 "",
-                "Thinking:",
-                "Do not include thinking, analysis, reasoning, scratchpad notes, <think> tags, or <thinking> tags in the response.",
+                "Reasoning policy:",
+                _thinking_instruction(thinking_mode),
             ]
         )
     else:
         prompt_parts.extend(
             [
                 "",
-                "Thinking:",
+                "Reasoning policy:",
                 _thinking_instruction(thinking_mode),
             ]
         )
@@ -1047,18 +1270,14 @@ def _build_instruction_prompt(profile, style_template, style_modifier, framing_t
             *_expansion_rule_lines(embellishment_level, profile),
             "- Do not explain your changes.",
             "- Do not include markdown.",
-            f"- End with a line exactly '{FINAL_PROMPT_MARKER}' followed by the rewritten prompt.",
+            f"- Start the final answer with exactly '{FINAL_PROMPT_MARKER}' followed by the rewritten prompt.",
             f"- Do not put reasoning, notes, explanations, or parenthetical comments after '{FINAL_PROMPT_MARKER}'.",
             f"- Stop immediately after the rewritten prompt. Do not add notes, rule checks, examples, or another user prompt.",
             "",
             "User prompt:",
             text,
-            "",
-            "Response:",
         ]
     )
-    if _reasoning_effort(thinking_mode) != "none":
-        prompt_parts.append("Reasoning:")
     return "\n".join(prompt_parts)
 
 
@@ -1138,11 +1357,12 @@ def _build_revision_prompt(
         prompt_parts.extend(
             [
                 "",
-                "Analyze the edit scope silently. Start the response with the required final-prompt marker, output only the complete replacement prompt, and stop immediately. Do not include thinking, analysis, explanations, markdown, or change notes before or after it.",
+                "Reasoning policy:",
+                _revision_thinking_instruction(thinking_mode),
             ]
         )
     else:
-        prompt_parts.extend(["", "Thinking:", _revision_thinking_instruction(thinking_mode)])
+        prompt_parts.extend(["", "Reasoning policy:", _revision_thinking_instruction(thinking_mode)])
 
     prompt_parts.extend(
         [
@@ -1171,7 +1391,7 @@ def _build_revision_prompt(
             "- Before responding, silently check for contradictions, duplicated alternatives, obsolete target details, and any collateral change outside the edit scope.",
             "- Do not mention the editing process or describe what changed.",
             "- Do not include markdown.",
-            f"- End with a line exactly '{FINAL_PROMPT_MARKER}' followed by the complete replacement prompt.",
+            f"- Start the final answer with exactly '{FINAL_PROMPT_MARKER}' followed by the complete replacement prompt.",
             f"- Do not put anything after the replacement prompt following '{FINAL_PROMPT_MARKER}'.",
             "",
             "Current prompt:",
@@ -1179,12 +1399,8 @@ def _build_revision_prompt(
             "",
             "Requested revision:",
             str(revision or "").strip(),
-            "",
-            "Response:",
         ]
     )
-    if _reasoning_effort(thinking_mode) != "none":
-        prompt_parts.append("Reasoning:")
     return "\n".join(prompt_parts)
 
 
@@ -1251,15 +1467,15 @@ def _build_fragment_rewrite_prompt(profile, style_template, style_modifier, fram
         prompt_parts.extend(
             [
                 "",
-                "Thinking:",
-                "Do not include thinking, analysis, reasoning, scratchpad notes, <think> tags, or <thinking> tags in the response.",
+                "Reasoning policy:",
+                _thinking_instruction(thinking_mode),
             ]
         )
     else:
         prompt_parts.extend(
             [
                 "",
-                "Thinking:",
+                "Reasoning policy:",
                 _thinking_instruction(thinking_mode),
             ]
         )
@@ -1326,18 +1542,14 @@ def _build_fragment_rewrite_prompt(profile, style_template, style_modifier, fram
             *_expansion_rule_lines(embellishment_level, profile, fragment=True),
             "- Do not explain your changes.",
             "- Do not include markdown.",
-            f"- End with a line exactly '{FINAL_PROMPT_MARKER}' followed by the rewritten fragment.",
+            f"- Start the final answer with exactly '{FINAL_PROMPT_MARKER}' followed by the rewritten fragment.",
             f"- Do not put reasoning, notes, explanations, or parenthetical comments after '{FINAL_PROMPT_MARKER}'.",
             f"- Stop immediately after the rewritten fragment. Do not add notes, rule checks, examples, or another user prompt.",
             "",
             "Prompt fragment:",
             text,
-            "",
-            "Response:",
         ]
     )
-    if _reasoning_effort(thinking_mode) != "none":
-        prompt_parts.append("Reasoning:")
     return "\n".join(prompt_parts)
 
 
@@ -1668,7 +1880,7 @@ class KCPP_Apply:
         return {
             "required": {
                 "text": ("STRING", {"default": "", "multiline": True}),
-                **_common_kcpp_inputs(default_max_response_tokens=300),
+                **_common_kcpp_inputs(default_max_response_tokens=300, raw_completion=True),
             },
         }
 
@@ -1697,7 +1909,7 @@ class KCPP_Apply:
         stop_sequence="",
         request_timeout=120,
     ):
-        result = _generate_kcpp(
+        result = _generate_kcpp_raw(
             text,
             kobold_url,
             max_response_tokens,
@@ -1712,7 +1924,6 @@ class KCPP_Apply:
             thinking_mode,
             stop_sequence,
             request_timeout,
-            include_default_continuation_stops=False,
         )
         return (_strip_apply_response(result),)
 
@@ -1770,7 +1981,7 @@ class KCPP_Ideogram4:
                 "seed_mode": (["Offset per field", "Same seed"],),
                 "on_error": (["Stop", "Keep Original"],),
                 "pretty_json": ("BOOLEAN", {"default": True}),
-                **_common_kcpp_inputs(default_max_response_tokens=180),
+                **_common_kcpp_inputs(),
             },
         }
 
