@@ -1,0 +1,46 @@
+{
+  "profiles": [
+    {
+      "name": "General Natural Language",
+      "style": "natural_language",
+      "default_max_response_tokens": 300,
+      "example_prompts": [
+        "A person standing outdoors while holding an umbrella near a small building with trees in the background.",
+        "A small robot sitting at a workbench while repairing a bicycle wheel in a garage.",
+        "A cat wearing a space suit standing on a dusty moon surface with craters behind it."
+      ],
+      "instruction": "Rewrite the user's prompt as a clear natural-language image prompt. Preserve the original intent and describe only the relevant visible subject, setting, and composition.",
+      "notes": "",
+      "final_prompt_prefix": "",
+      "final_prompt_suffix": ""
+    },
+    {
+      "name": "Tag-Based Anime Model",
+      "style": "comma_tags",
+      "default_max_response_tokens": 120,
+      "example_prompts": [
+        "person, umbrella, small_building, trees, outdoors, standing, full_body",
+        "robot, workbench, bicycle_wheel, garage, repairing, tools, sitting",
+        "cat, space_suit, moon, craters, standing, helmet, full_body"
+      ],
+      "instruction": "Rewrite the user's prompt as concise comma-separated visual tags, use booru tags if possible. Preserve the subject, setting, composition, and concrete visible details without adding unrelated subject tags.",
+      "notes": "",
+      "final_prompt_prefix": "",
+      "final_prompt_suffix": ""
+    },
+    {
+      "name": "Tag-Based Photorealistic Model",
+      "style": "comma_tags",
+      "default_max_response_tokens": 120,
+      "example_prompts": [
+        "person, umbrella, small_building, trees, outdoors, standing, full_body",
+        "robot, workbench, bicycle_wheel, garage, repairing, tools, sitting",
+        "cat, space_suit, moon, craters, standing, helmet, full_body"
+      ],
+      "instruction": "Rewrite the user's prompt as concise comma-separated visual tags Preserve the subject, setting, composition, and concrete visible details without adding unrelated subject tags.",
+      "notes": "",
+      "final_prompt_prefix": "",
+      "final_prompt_suffix": ""
+    }
+  ]
+}
