@@ -30,6 +30,8 @@ The extension keeps a complete canonical prompt behind the conversation. Each me
 
 Prompt Studio uses `http://localhost:5001` as the default KoboldCpp endpoint. Change **KoboldCpp URL** in the generation controls if your server uses another local address. For safety, the backend accepts loopback hosts only by default; see [Remote KoboldCpp hosts](#remote-koboldcpp-hosts) before connecting to another machine.
 
+Prompt rewriting uses KoboldCpp's OpenAI-compatible Chat Completions endpoint and the model's native GGUF chat template. Enable **Use Jinja** in KoboldCpp and restart its server after changing that setting. The backend checks this capability and stops with a clear error instead of silently using generic chat formatting. KoboldCpp 1.117.1 or newer is recommended and is the version used for integration testing.
+
 > Want to use the chat UI without an LLM? Turn off **Use LLM amplification**. The composer becomes a direct canonical-prompt editor and **Generate** sends that text straight to ComfyUI.
 
 ## The interactive workflow
@@ -131,10 +133,22 @@ Its prompt controls are:
 - `framing_modifier`: supplies freeform framing guidance for this run and takes precedence over the preset when non-empty.
 - `embellishment_level`: controls expansion after style conversion. **Minimal** stays short; **Clean** lightly polishes; **Detailed** adds useful visible detail; **Rich** produces a denser description; **Maximum** and **Ultra Maximum** allow progressively more expansion. Tag-based profiles increase tag density instead of prose length.
 - `additional_instructions`: adds one-run task guidance without changing the profile files.
-- `thinking_mode`: selects KoboldCpp reasoning effort from **Disabled** through **High**. Reasoning wrappers and text before `Final prompt:` are removed from the node output.
+- `thinking_mode`: selects KoboldCpp native reasoning effort from **Disabled** through **High**. Native thinking is kept in Chat Completions' separate `reasoning_content` field; only the final `content` is used as the image prompt.
 - `secondary_instructions`: passes through unchanged to the second output and is not part of the LLM request.
 
-The remaining controls configure the KoboldCpp request: URL, response-token limit, temperature, `top_p`, `top_k`, `min_p`, repetition penalty and range, sampler seed, stop sequences, and request timeout. Set `max_response_tokens` to `0` to use the selected profile's default. The value is clamped when KoboldCpp reports a lower server maximum. Use one stop sequence per line; `sampler_seed: -1` lets KoboldCpp choose the seed.
+The remaining controls configure the KoboldCpp request: URL, final-answer token allowance, temperature, `top_p`, `top_k`, `min_p`, repetition penalty and range, sampler seed, stop sequences, and request timeout. Set `max_response_tokens` to `0` to use the selected profile's default. The backend adds a reasoning allowance, measures the fully Jinja-formatted prompt with `/api/extra/tokencount`, and caps the combined completion against `/api/extra/true_max_context_length` without treating KoboldCpp's unrelated Horde `config/max_length` value as a server limit. Use one custom stop sequence per line; when native thinking is enabled, the backend does not add legacy textual continuation stops because labels such as `Response:` may occur during the analysis-to-final transition. `sampler_seed: -1` lets KoboldCpp choose the seed.
+
+KoboldCpp counts reasoning and final text inside one completion. To preserve approximately the configured final-answer allowance, the backend requests a larger combined completion for reasoning modes:
+
+| Thinking mode | Native reasoning budget | Combined completion request |
+| --- | --- | --- |
+| Disabled | 0 | final-answer allowance |
+| Minimal | up to 10% | allowance divided by 0.9 |
+| Low | up to 25% | allowance divided by 0.75 |
+| Medium | up to 50% | twice the allowance |
+| High | up to 4,096 tokens | allowance plus 4,096 reasoning tokens |
+
+The server context window remains the hard upper bound, so the High reasoning budget is reduced only when necessary to preserve the final-answer allowance inside that window. A completion that ends with `finish_reason: length`, or returns reasoning without final content, is rejected rather than passing a truncated prompt into the image workflow or silently retrying with thinking disabled.
 
 The node preserves the input subject, action, setting, and concrete visible details while applying the selected prompt grammar, style, framing, and detail level. If an expansive setting produces an output that is still too sparse, it may make a second KoboldCpp request and keep the denser result.
 
@@ -160,7 +174,7 @@ It preserves bounding boxes, element types, literal text elements, unknown keys,
 
 **KoboldCpp Apply** sends its `text` input directly to KoboldCpp as the complete prompt/context and returns the generated text. It does not add image-prompt profiles, style guidance, framing guidance, embellishment rules, or amplification instructions.
 
-Use it when you want a raw local-LLM call inside a workflow rather than an image-prompt rewrite. It shares the connection, sampling, token-limit, timeout, stop-sequence, seed, and thinking controls used by the amplification nodes.
+Use it when you want a raw local-LLM call inside a workflow rather than an image-prompt rewrite. This node intentionally remains on KoboldCpp's native `/api/v1/generate` endpoint so its `text` input continues to mean the complete raw prompt/context. Its token setting is therefore a total raw-generation limit, not the final-answer allowance used by the Chat Completions-based rewriting nodes. Native reasoning separation is most reliable in Prompt Amplify, Ideogram4-KoboldCPP, and Prompt Studio.
 
 ### Remote KoboldCpp hosts
 
@@ -182,7 +196,7 @@ Edit `model_profiles.json` to add prompt formats for different image models:
 {
   "name": "Tag-Based Anime Model",
   "style": "comma_tags",
-  "default_max_response_tokens": 120,
+  "default_max_response_tokens": 300,
   "example_prompts": [
     "person, umbrella, small_building, trees, outdoors, standing, full_body",
     "robot, workbench, bicycle_wheel, garage, repairing, tools, sitting"
@@ -194,7 +208,7 @@ Edit `model_profiles.json` to add prompt formats for different image models:
 }
 ```
 
-`example_prompts` teach format only; their subjects should not be copied into the result. Older profiles containing one `example_prompt` string remain supported. `notes` may be an empty string, a string, or a list of strings. Exact `final_prompt_prefix` and `final_prompt_suffix` values are applied after rewriting.
+`default_max_response_tokens` is the final-answer allowance used when the node or Prompt Studio sends `0`; reasoning allowance is added automatically. `example_prompts` teach format only; their subjects should not be copied into the result. Older profiles containing one `example_prompt` string remain supported. `notes` may be an empty string, a string, or a list of strings. Exact `final_prompt_prefix` and `final_prompt_suffix` values are applied after rewriting.
 
 ### Style presets
 
