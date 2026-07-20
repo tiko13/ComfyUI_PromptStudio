@@ -23,7 +23,9 @@ const state = {
   panel: null,
   launcher: null,
   popup: null,
+  popupCloseTimer: null,
   dockingPopup: false,
+  returnToEmbedded: false,
   standaloneChannel: null,
   config: null,
   selectedSlotId: null,
@@ -819,6 +821,16 @@ function randomizeWorkflowSeeds() {
   }
 }
 
+function generationMatchesLatestQueuedPrompt() {
+  const chat = activeChat();
+  const latestGeneration = [...(chat?.messages || [])]
+    .reverse()
+    .find((message) => Boolean(message.canonicalPrompt));
+  if (!latestGeneration) return false;
+  return latestGeneration.canonicalPrompt === state.currentPrompt
+    && latestGeneration.controlsFingerprint === String(chat?.controlsFingerprint || "");
+}
+
 function historyImages(historyItem) {
   const images = [];
   for (const output of Object.values(historyItem?.outputs || {})) {
@@ -862,12 +874,15 @@ async function waitForResult(promptId, targetMessage, token) {
   }
 }
 
-async function queueCurrentPrompt() {
+async function queueCurrentPrompt({ preserveSeed = false } = {}) {
   if (!selectedSlot()) throw new Error("Select a prompt node before generating.");
   writePromptToSlot(state.currentPrompt);
   const secondaryInstructions = state.panel.querySelector("#lllm-secondary-instructions")?.value || "";
   writeSecondaryInstructionsToNode(secondaryInstructions);
-  if (state.panel.querySelector("#lllm-randomize-seed")?.checked) randomizeWorkflowSeeds();
+  const useNewSeed = !preserveSeed
+    && generationMatchesLatestQueuedPrompt()
+    && state.panel.querySelector("#lllm-randomize-seed")?.checked;
+  if (useNewSeed) randomizeWorkflowSeeds();
   const snapshot = structuredClone(await app.graphToPrompt());
   const apiNode = snapshot.output?.[String(state.selectedSlotId)];
   if (!apiNode || ![SLOT_TYPE, AMPLIFY_TYPE].includes(apiNode.class_type)) {
@@ -912,16 +927,17 @@ async function generateDirectPrompt() {
   const prompt = input.value.trim();
   if (!prompt) return setStatus("Enter a prompt before generating.", "warning");
   const previousVersion = state.versions[state.versionIndex];
+  const promptChanged = previousVersion !== prompt;
   const chat = activeChat();
   if (chat) chat.initialized = true;
   input.value = prompt;
   writePromptToSlot(prompt);
-  if (previousVersion !== prompt) pushVersion(prompt);
+  if (promptChanged) pushVersion(prompt);
   saveSettings();
   setBusy(true);
   setStatus("ComfyUI is generating the direct prompt…", "working");
   try {
-    await queueCurrentPrompt();
+    await queueCurrentPrompt({ preserveSeed: promptChanged });
   } catch (error) {
     setStatus(error.message || String(error), "error");
     setBusy(false);
@@ -997,7 +1013,7 @@ async function reviseAndMaybeGenerate({ controlsOnly = false, forceGenerate = fa
     }
     setStatus(creating ? "Initial prompt created." : "Prompt revised.", "ready");
     if (forceGenerate || state.panel.querySelector("#lllm-auto-generate")?.checked) {
-      await queueCurrentPrompt();
+      await queueCurrentPrompt({ preserveSeed: true });
     } else {
       setBusy(false);
     }
@@ -1018,14 +1034,15 @@ async function reroll({ applyControls = true } = {}) {
   }
   const editedPrompt = state.panel.querySelector("#lllm-current-prompt").value.trim();
   if (!editedPrompt) return setStatus("The current prompt is empty.", "warning");
-  if (editedPrompt !== state.currentPrompt) {
+  const promptChanged = editedPrompt !== state.currentPrompt;
+  if (promptChanged) {
     writePromptToSlot(editedPrompt);
     pushVersion(editedPrompt);
   }
   saveSettings();
   setBusy(true);
   try {
-    await queueCurrentPrompt();
+    await queueCurrentPrompt({ preserveSeed: promptChanged });
   } catch (error) {
     setStatus(error.message || String(error), "error");
     setBusy(false);
@@ -1082,7 +1099,7 @@ function buildPanel() {
         <div class="lllm-compose-footer">
           <div class="lllm-toggles">
             <label class="lllm-auto-generate-toggle"><input id="lllm-auto-generate" type="checkbox" ${settings.auto_generate ? "checked" : ""} /> Generate after revision</label>
-            <label><input id="lllm-randomize-seed" type="checkbox" ${settings.randomize_seed ? "checked" : ""} /> New seed</label>
+            <label><input id="lllm-randomize-seed" type="checkbox" ${settings.randomize_seed ? "checked" : ""} /> New seed on reroll</label>
           </div>
           <div class="lllm-actions">
             <button id="lllm-toggle-inspector" class="lllm-inspector-button" type="button">Settings</button>
@@ -1202,15 +1219,15 @@ function buildPanel() {
   });
   panel.querySelector("#lllm-lightbox-close").addEventListener("click", closeImageLightbox);
   panel.querySelector("#lllm-new-chat").addEventListener("click", createChat);
-  panel.querySelector("#lllm-popout").addEventListener("click", togglePopout);
+  panel.querySelector("#lllm-popout").addEventListener("click", () => togglePopout({ returnToEmbedded: true }));
   panel.querySelector("#lllm-close").addEventListener("click", () => togglePanel(false));
   panel.querySelector("#lllm-refresh-slots").addEventListener("click", refreshSlots);
   panel.querySelector("#lllm-slot-select").addEventListener("change", (event) => {
     state.selectedSlotId = event.target.value || null;
     attachSelectedSlot({ useSlotPrompt: true });
   });
-  panel.querySelector("#lllm-send").addEventListener("click", reviseAndMaybeGenerate);
-  panel.querySelector("#lllm-reroll").addEventListener("click", reroll);
+  panel.querySelector("#lllm-send").addEventListener("click", () => reviseAndMaybeGenerate());
+  panel.querySelector("#lllm-reroll").addEventListener("click", () => reroll());
   panel.querySelector("#lllm-undo").addEventListener("click", undoPrompt);
   panel.querySelector("#lllm-stop").addEventListener("click", interrupt);
   panel.querySelector("#lllm-use-llm-amplification").addEventListener("change", () => updateAmplificationMode());
@@ -1236,14 +1253,28 @@ function buildPanel() {
 }
 
 function buildLauncher() {
-  const button = document.createElement("button");
-  button.id = "lllm-prompt-studio-launcher";
-  button.type = "button";
-  button.title = "Open Prompt Studio";
-  button.textContent = "Prompt Studio";
-  button.addEventListener("click", () => togglePanel());
-  document.body.appendChild(button);
-  state.launcher = button;
+  const launchers = document.createElement("div");
+  launchers.id = "lllm-prompt-studio-launchers";
+  launchers.setAttribute("role", "group");
+  launchers.setAttribute("aria-label", "Prompt Studio launchers");
+
+  const studioButton = document.createElement("button");
+  studioButton.id = "lllm-prompt-studio-launcher";
+  studioButton.type = "button";
+  studioButton.title = "Open Prompt Studio in a new tab";
+  studioButton.textContent = "Prompt Studio";
+  studioButton.addEventListener("click", () => togglePopout());
+
+  const chatButton = document.createElement("button");
+  chatButton.id = "lllm-prompt-chat-launcher";
+  chatButton.type = "button";
+  chatButton.title = "Open Prompt Chat inside ComfyUI";
+  chatButton.textContent = "Prompt chat";
+  chatButton.addEventListener("click", () => togglePanel());
+
+  launchers.append(studioButton, chatButton);
+  document.body.appendChild(launchers);
+  state.launcher = launchers;
 }
 
 function updatePopoutButton() {
@@ -1257,9 +1288,12 @@ function updatePopoutButton() {
 
 function dockPanel({ closePopup = true, keepOpen = true } = {}) {
   const popup = state.popup;
+  if (state.popupCloseTimer) window.clearInterval(state.popupCloseTimer);
+  state.popupCloseTimer = null;
   if (state.panel.ownerDocument !== document) document.body.appendChild(state.panel);
   state.panel.hidden = !keepOpen;
   state.popup = null;
+  state.returnToEmbedded = false;
   updatePopoutButton();
   state.launcher.dataset.open = keepOpen ? "true" : "false";
   if (closePopup && popup && !popup.closed) {
@@ -1284,8 +1318,15 @@ async function attachStandalone(popup) {
   state.panel.hidden = false;
   state.launcher.dataset.open = "true";
   updatePopoutButton();
+  if (state.popupCloseTimer) window.clearInterval(state.popupCloseTimer);
+  state.popupCloseTimer = window.setInterval(() => {
+    if (state.popup !== popup || !popup.closed) return;
+    dockPanel({ closePopup: false, keepOpen: state.returnToEmbedded });
+  }, 250);
   popup.addEventListener("beforeunload", () => {
-    if (!state.dockingPopup && state.popup === popup) dockPanel({ closePopup: false, keepOpen: true });
+    if (!state.dockingPopup && state.popup === popup) {
+      dockPanel({ closePopup: false, keepOpen: state.returnToEmbedded });
+    }
   }, { once: true });
   await togglePanel(true);
   return true;
@@ -1306,7 +1347,7 @@ function setupStandaloneBridge() {
   });
 }
 
-function togglePopout() {
+function togglePopout({ returnToEmbedded = false } = {}) {
   if (state.popup && !state.popup.closed) {
     dockPanel();
     return;
@@ -1320,13 +1361,14 @@ function togglePopout() {
   }
 
   state.popup = popup;
+  state.returnToEmbedded = returnToEmbedded;
   state.launcher.dataset.open = "true";
   const mountPanel = () => {
     if (popup.closed || state.popup !== popup) return;
     attachStandalone(popup).then((connected) => {
       if (connected) return;
       setStatus("Prompt Studio could not initialize its standalone page.", "error");
-      dockPanel();
+      dockPanel({ keepOpen: returnToEmbedded });
     });
   };
   const onStandaloneLoad = () => {

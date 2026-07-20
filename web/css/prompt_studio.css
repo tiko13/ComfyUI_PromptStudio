@@ -43,11 +43,17 @@
   box-sizing: border-box;
 }
 
-#lllm-prompt-studio-launcher {
+#lllm-prompt-studio-launchers {
   position: fixed;
   right: 20px;
   bottom: 20px;
   z-index: 10020;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+
+#lllm-prompt-studio-launchers button {
   padding: 11px 17px;
   color: #fff;
   background: linear-gradient(135deg, #7056dc, #9f7bff);
@@ -58,12 +64,17 @@
   cursor: pointer;
 }
 
-#lllm-prompt-studio-launcher:hover {
+#lllm-prompt-chat-launcher {
+  background: linear-gradient(135deg, #323747, #4a5167);
+  box-shadow: 0 16px 40px rgba(8, 10, 18, 0.38);
+}
+
+#lllm-prompt-studio-launchers button:hover {
   filter: brightness(1.08);
   transform: translateY(-1px);
 }
 
-#lllm-prompt-studio-launcher[data-open="true"] {
+#lllm-prompt-studio-launchers[data-open="true"] {
   display: none;
 }
 

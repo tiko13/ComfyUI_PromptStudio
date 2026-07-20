@@ -6,7 +6,7 @@
     },
     {
       "name": "Selfie",
-      "instruction": "Frame the subject as a selfie taken by the subject with a phone held at arm's length or on a selfie stick. Keep the subject close to the viewer and make the composition feel self-shot."
+      "instruction": "Show the selfie from the subject's front-facing phone-camera viewpoint, as the captured image itself. The subject is close to the lens and looks into it, with natural self-shot perspective and casual arm's-length framing. The viewer occupies the phone camera's position: do not show the subject from an outside observer's viewpoint, and do not add a visible phone, camera, selfie stick, mirror, or a separate photographer."
     },
     {
       "name": "Mirror Selfie",
