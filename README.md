@@ -1,8 +1,8 @@
-# ComfyUI_LLLM
+# ComfyUI_PromptStudio
 
 Chat-first image generation for ComfyUI, powered by a local KoboldCpp model.
 
-ComfyUI_LLLM adds **Prompt Studio**, an interactive workspace where you can describe an image, generate it with a selected `[PS]` workflow saved in ComfyUI, and refine it conversationally:
+ComfyUI_PromptStudio adds **Prompt Studio**, an interactive workspace where you can describe an image, generate it with a selected `[PS]` workflow saved in ComfyUI, and refine it conversationally:
 
 ```text
 "A rain-soaked market at night"
@@ -18,7 +18,7 @@ The extension keeps a complete canonical prompt behind the conversation. Each me
 
 ## Quick start: generate images through chat
 
-1. Install this repository in `ComfyUI/custom_nodes/ComfyUI_LLLM` and restart ComfyUI.
+1. Install this repository in `ComfyUI/custom_nodes/ComfyUI_PromptStudio` and restart ComfyUI.
 2. Add a **KoboldCpp Prompt Slot** or **KoboldCpp Prompt Amplify** node to an image-generation workflow.
 3. Connect its `prompt` output to the positive prompt input or text encoder used by the workflow.
 4. Make sure the rest of the workflow can be queued normally and has exactly one image output.
@@ -62,7 +62,7 @@ Chats are stored in `prompt_studio_chats.json` beside the extension's Python fil
 The standalone page is available at:
 
 ```text
-/extensions/ComfyUI_LLLM/prompt_studio.html
+/extensions/ComfyUI_PromptStudio/prompt_studio.html
 ```
 
 On direct navigation or refresh, it reconnects to an open ComfyUI tab when possible and otherwise starts a hidden same-origin workflow host.
@@ -181,10 +181,10 @@ Use it when you want a raw local-LLM call inside a workflow rather than an image
 
 ### Remote KoboldCpp hosts
 
-The backend rejects non-loopback KoboldCpp URLs by default to prevent a saved workflow or browser request from making arbitrary outbound HTTP calls. To permit a known remote server, set `LLLM_KOBOLD_ALLOWED_HOSTS` before starting ComfyUI. It accepts a comma-separated list of exact hostnames or IP addresses:
+The backend rejects non-loopback KoboldCpp URLs by default to prevent a saved workflow or browser request from making arbitrary outbound HTTP calls. To permit a known remote server, set `PROMPT_STUDIO_KOBOLD_ALLOWED_HOSTS` before starting ComfyUI. It accepts a comma-separated list of exact hostnames or IP addresses:
 
 ```text
-LLLM_KOBOLD_ALLOWED_HOSTS=192.168.1.25,kobold.example.internal
+PROMPT_STUDIO_KOBOLD_ALLOWED_HOSTS=192.168.1.25,kobold.example.internal
 ```
 
 Use `*` only in a trusted environment when arbitrary remote hosts are intentionally allowed. URLs containing embedded credentials are rejected; configure authentication at a trusted proxy instead.
@@ -240,7 +240,7 @@ Edit `framing_templates.json` to add reusable compositions and viewpoints:
 Prompt Studio revisions are served by ComfyUI at:
 
 ```text
-POST /lllm/prompt-studio/revise
+POST /promptstudio/prompt-studio/revise
 ```
 
 KoboldCpp requests remain on the Python side, so the browser does not need direct access to the local model server.

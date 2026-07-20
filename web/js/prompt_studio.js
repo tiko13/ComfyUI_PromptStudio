@@ -1,14 +1,14 @@
 import { app } from "/scripts/app.js";
 import { api } from "/scripts/api.js";
 
-const EXTENSION_NAME = "ComfyUI_LLLM.PromptStudio";
+const EXTENSION_NAME = "ComfyUI_PromptStudio.PromptStudio";
 const SLOT_TYPE = "KCPP_PromptSlot";
 const AMPLIFY_TYPE = "KCPP_PromptAmplify";
 const IMAGE_SOURCE_TYPE = "KCPP_ChatImageInput";
-const STORAGE_KEY = "lllm.promptStudio.settings.v1";
-const STANDALONE_CHANNEL = "lllm.promptStudio.standalone.v1";
-const WORKFLOW_SYNC_CHANNEL = "lllm.promptStudio.workflows.v1";
-const WORKFLOW_OBSERVER_KEY = Symbol.for("ComfyUI_LLLM.PromptStudio.WorkflowObserver");
+const STORAGE_KEY = "promptstudio.promptStudio.settings.v1";
+const STANDALONE_CHANNEL = "promptstudio.promptStudio.standalone.v1";
+const WORKFLOW_SYNC_CHANNEL = "promptstudio.promptStudio.workflows.v1";
+const WORKFLOW_OBSERVER_KEY = Symbol.for("ComfyUI_PromptStudio.PromptStudio.WorkflowObserver");
 const RESOLUTION_ASPECT_RATIOS = [
   "1:1 (Square)",
   "2:3 (Portrait Photo)",
@@ -20,16 +20,16 @@ const RESOLUTION_ASPECT_RATIOS = [
   "21:9 (Ultrawide)",
 ];
 const CONTROL_IDS = [
-  "lllm-kobold-url",
-  "lllm-profile",
-  "lllm-style",
-  "lllm-framing",
-  "lllm-style-modifier",
-  "lllm-framing-modifier",
-  "lllm-thinking",
-  "lllm-embellishment",
-  "lllm-max-tokens",
-  "lllm-temperature",
+  "promptstudio-kobold-url",
+  "promptstudio-profile",
+  "promptstudio-style",
+  "promptstudio-framing",
+  "promptstudio-style-modifier",
+  "promptstudio-framing-modifier",
+  "promptstudio-thinking",
+  "promptstudio-embellishment",
+  "promptstudio-max-tokens",
+  "promptstudio-temperature",
 ];
 
 const state = {
@@ -69,11 +69,11 @@ const state = {
 };
 
 function loadCss() {
-  if (document.querySelector("link[data-lllm-prompt-studio]")) return;
+  if (document.querySelector("link[data-promptstudio-prompt-studio]")) return;
   const link = document.createElement("link");
   link.rel = "stylesheet";
   link.href = new URL("../css/prompt_studio.css", import.meta.url).href;
-  link.dataset.lllmPromptStudio = "true";
+  link.dataset.promptstudioPromptStudio = "true";
   document.head.appendChild(link);
 }
 
@@ -114,25 +114,25 @@ function saveSettings() {
     localStorage.setItem(
       STORAGE_KEY,
       JSON.stringify({
-      kobold_url: value("lllm-kobold-url"),
-      model_profile: value("lllm-profile"),
-      style_preset: value("lllm-style"),
-      framing_preset: value("lllm-framing"),
-      style_modifier: value("lllm-style-modifier"),
-      framing_modifier: value("lllm-framing-modifier"),
-      thinking_mode: value("lllm-thinking"),
-      embellishment_level: value("lllm-embellishment"),
-      max_response_tokens: Number(value("lllm-max-tokens") || 0),
-      temperature: Number(value("lllm-temperature") || 0.7),
-      secondary_instructions: value("lllm-secondary-instructions"),
-      use_llm_amplification: checked("lllm-use-llm-amplification"),
-      randomize_seed: checked("lllm-randomize-seed"),
-      auto_generate: checked("lllm-auto-generate"),
-      auto_advance_source: checked("lllm-auto-advance-source"),
-      image_scale: Number(value("lllm-image-scale") || 100),
-      resolution_aspect_ratio: value("lllm-resolution-aspect-ratio"),
-      resolution_megapixels: Number(value("lllm-resolution-megapixels") || 1),
-      resolution_multiple: Number(value("lllm-resolution-multiple") || 8),
+      kobold_url: value("promptstudio-kobold-url"),
+      model_profile: value("promptstudio-profile"),
+      style_preset: value("promptstudio-style"),
+      framing_preset: value("promptstudio-framing"),
+      style_modifier: value("promptstudio-style-modifier"),
+      framing_modifier: value("promptstudio-framing-modifier"),
+      thinking_mode: value("promptstudio-thinking"),
+      embellishment_level: value("promptstudio-embellishment"),
+      max_response_tokens: Number(value("promptstudio-max-tokens") || 0),
+      temperature: Number(value("promptstudio-temperature") || 0.7),
+      secondary_instructions: value("promptstudio-secondary-instructions"),
+      use_llm_amplification: checked("promptstudio-use-llm-amplification"),
+      randomize_seed: checked("promptstudio-randomize-seed"),
+      auto_generate: checked("promptstudio-auto-generate"),
+      auto_advance_source: checked("promptstudio-auto-advance-source"),
+      image_scale: Number(value("promptstudio-image-scale") || 100),
+      resolution_aspect_ratio: value("promptstudio-resolution-aspect-ratio"),
+      resolution_megapixels: Number(value("promptstudio-resolution-megapixels") || 1),
+      resolution_multiple: Number(value("promptstudio-resolution-multiple") || 8),
       }),
     );
   } catch (error) {
@@ -144,17 +144,17 @@ function applyImageScale(value) {
   if (!state.panel) return;
   const numeric = Number(value);
   const scale = Number.isFinite(numeric) ? Math.max(30, Math.min(100, Math.round(numeric / 5) * 5)) : 100;
-  const input = state.panel.querySelector("#lllm-image-scale");
-  const output = state.panel.querySelector("#lllm-image-scale-value");
+  const input = state.panel.querySelector("#promptstudio-image-scale");
+  const output = state.panel.querySelector("#promptstudio-image-scale-value");
   if (input) input.value = String(scale);
   if (output) output.textContent = `${scale}%`;
   state.panel.style.setProperty("--ps-image-scale", `${scale}%`);
 }
 
 function resolutionSettings() {
-  const aspectRatio = state.panel?.querySelector("#lllm-resolution-aspect-ratio")?.value;
-  const megapixels = state.panel?.querySelector("#lllm-resolution-megapixels")?.valueAsNumber;
-  const multiple = state.panel?.querySelector("#lllm-resolution-multiple")?.valueAsNumber;
+  const aspectRatio = state.panel?.querySelector("#promptstudio-resolution-aspect-ratio")?.value;
+  const megapixels = state.panel?.querySelector("#promptstudio-resolution-megapixels")?.valueAsNumber;
+  const multiple = state.panel?.querySelector("#promptstudio-resolution-multiple")?.valueAsNumber;
   return {
     aspect_ratio: RESOLUTION_ASPECT_RATIOS.includes(aspectRatio) ? aspectRatio : RESOLUTION_ASPECT_RATIOS[0],
     megapixels: Number.isFinite(megapixels) ? Math.max(0.1, Math.min(16, megapixels)) : 1,
@@ -163,8 +163,8 @@ function resolutionSettings() {
 }
 
 function toggleStudioSettings(force) {
-  const popover = state.panel?.querySelector("#lllm-studio-settings");
-  const button = state.panel?.querySelector("#lllm-toggle-studio-settings");
+  const popover = state.panel?.querySelector("#promptstudio-studio-settings");
+  const button = state.panel?.querySelector("#promptstudio-toggle-studio-settings");
   if (!popover || !button) return;
   const show = force ?? popover.hidden;
   popover.hidden = !show;
@@ -266,7 +266,7 @@ async function imageReferenceWithDimensions(value) {
   const reference = normalizeImageReference(value);
   if (!reference) throw new Error("The image reference is invalid.");
   if (reference.width && reference.height) return reference;
-  const response = await api.fetchApi("/lllm/prompt-studio/image-size", {
+  const response = await api.fetchApi("/promptstudio/prompt-studio/image-size", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ image: storedImageReference(reference) }),
@@ -335,7 +335,7 @@ function saveChats({ immediate = false } = {}) {
       .catch(() => {})
       .then(async () => {
         if (state.chatPersistenceBlocked) return;
-        const response = await api.fetchApi("/lllm/prompt-studio/chats", {
+        const response = await api.fetchApi("/promptstudio/prompt-studio/chats", {
           method: "PUT",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ ...snapshot, revision: state.chatRevision }),
@@ -355,7 +355,7 @@ function saveChats({ immediate = false } = {}) {
 
 async function loadChats() {
   try {
-    const response = await api.fetchApi("/lllm/prompt-studio/chats");
+    const response = await api.fetchApi("/promptstudio/prompt-studio/chats");
     const stored = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(stored.error || `Chat load failed (${response.status}).`);
     state.chats = Array.isArray(stored.chats) ? stored.chats.map(normalizeChat) : [];
@@ -387,8 +387,8 @@ function syncActiveChat() {
   chat.versions = [...state.versions];
   chat.versionIndex = state.versionIndex;
   chat.initialized = Boolean(chat.initialized);
-  chat.createWorkflowId = state.panel?.querySelector("#lllm-create-workflow")?.value || "";
-  chat.editWorkflowId = state.panel?.querySelector("#lllm-edit-workflow")?.value || "";
+  chat.createWorkflowId = state.panel?.querySelector("#promptstudio-create-workflow")?.value || "";
+  chat.editWorkflowId = state.panel?.querySelector("#promptstudio-edit-workflow")?.value || "";
   chat.editPromptMode = selectedEditPromptMode();
   chat.updatedAt = Date.now();
   saveChats();
@@ -464,7 +464,7 @@ function setupWorkflowSync() {
     if (data?.type !== "saved-workflows-refreshed") return;
     if (Number(data.revision || 0) < state.workflowRevision) return;
     try {
-      const response = await api.fetchApi("/lllm/prompt-studio/workflows");
+      const response = await api.fetchApi("/promptstudio/prompt-studio/workflows");
       const stored = await response.json().catch(() => ({}));
       if (!response.ok || !Array.isArray(stored.templates)) return;
       state.workflowProfiles = stored.templates.map(normalizeWorkflowProfile);
@@ -567,7 +567,7 @@ async function buildWorkflowTemplate(file, workflowData, cached) {
 }
 
 async function loadWorkflowProfiles() {
-  const response = await api.fetchApi("/lllm/prompt-studio/workflows");
+  const response = await api.fetchApi("/promptstudio/prompt-studio/workflows");
   const data = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(data.error || `Workflow cache could not be loaded (${response.status}).`);
   state.workflowProfiles = Array.isArray(data.templates) ? data.templates.map(normalizeWorkflowProfile) : [];
@@ -584,7 +584,7 @@ async function saveWorkflowProfiles() {
   const operation = state.workflowSaveChain
     .catch(() => {})
     .then(async () => {
-      const response = await api.fetchApi("/lllm/prompt-studio/workflows", {
+      const response = await api.fetchApi("/promptstudio/prompt-studio/workflows", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ version: 2, revision: state.workflowRevision, templates: snapshot }),
@@ -676,7 +676,7 @@ function controlsFingerprint() {
 }
 
 function useLlmAmplification() {
-  return state.panel?.querySelector("#lllm-use-llm-amplification")?.checked !== false;
+  return state.panel?.querySelector("#promptstudio-use-llm-amplification")?.checked !== false;
 }
 
 function controlsNeedApply() {
@@ -723,29 +723,29 @@ function compareChatsNewestFirst(left, right) {
 }
 
 function renderChatList() {
-  const list = state.panel?.querySelector("#lllm-chat-list");
+  const list = state.panel?.querySelector("#promptstudio-chat-list");
   if (!list) return;
   list.replaceChildren();
   const ordered = [...state.chats].sort(compareChatsNewestFirst);
   for (const chat of ordered) {
     const row = document.createElement("div");
-    row.className = "lllm-chat-row";
+    row.className = "promptstudio-chat-row";
     row.dataset.active = chat.id === state.activeChatId ? "true" : "false";
     const button = document.createElement("button");
     button.type = "button";
-    button.className = "lllm-chat-item";
+    button.className = "promptstudio-chat-item";
     button.disabled = state.busy;
     const title = document.createElement("span");
-    title.className = "lllm-chat-title";
+    title.className = "promptstudio-chat-title";
     title.textContent = chatTitle(chat.createdAt);
     const date = document.createElement("span");
-    date.className = "lllm-chat-date";
+    date.className = "promptstudio-chat-date";
     date.textContent = `${chat.messages.length} message${chat.messages.length === 1 ? "" : "s"}`;
     button.append(title, date);
     button.addEventListener("click", () => activateChat(chat.id));
     const remove = document.createElement("button");
     remove.type = "button";
-    remove.className = "lllm-chat-delete";
+    remove.className = "promptstudio-chat-delete";
     remove.dataset.disableBusy = "";
     remove.disabled = state.busy;
     remove.textContent = "Delete";
@@ -758,12 +758,12 @@ function renderChatList() {
 }
 
 function scrollHistoryToEnd({ instant = false } = {}) {
-  const history = state.panel?.querySelector("#lllm-history");
+  const history = state.panel?.querySelector("#promptstudio-history");
   if (!history) return;
   const scroll = () => {
-    if (instant) history.classList.add("lllm-instant-scroll");
+    if (instant) history.classList.add("promptstudio-instant-scroll");
     history.scrollTop = history.scrollHeight;
-    if (instant) history.classList.remove("lllm-instant-scroll");
+    if (instant) history.classList.remove("promptstudio-instant-scroll");
   };
   scroll();
   const view = history.ownerDocument.defaultView;
@@ -774,7 +774,7 @@ function scrollHistoryToEnd({ instant = false } = {}) {
 }
 
 function renderChatHistory() {
-  const history = state.panel?.querySelector("#lllm-history");
+  const history = state.panel?.querySelector("#promptstudio-history");
   if (!history) return;
   history.replaceChildren();
   for (const message of activeChat()?.messages || []) renderMessage(message, { scroll: false });
@@ -786,14 +786,14 @@ function updateComposeMode() {
   if (!state.panel) return;
   const amplificationEnabled = useLlmAmplification();
   const creating = !activeChat()?.initialized;
-  const heading = state.panel.querySelector("#lllm-compose-title");
-  const hint = state.panel.querySelector("#lllm-compose-hint");
-  const input = state.panel.querySelector("#lllm-revision");
-  const send = state.panel.querySelector("#lllm-send");
-  const editor = state.panel.querySelector("#lllm-current-prompt");
+  const heading = state.panel.querySelector("#promptstudio-compose-title");
+  const hint = state.panel.querySelector("#promptstudio-compose-hint");
+  const input = state.panel.querySelector("#promptstudio-revision");
+  const send = state.panel.querySelector("#promptstudio-send");
+  const editor = state.panel.querySelector("#promptstudio-current-prompt");
   const action = selectedAction();
-  const autoGenerate = state.panel.querySelector("#lllm-auto-generate")?.checked !== false;
-  const editPromptAction = state.panel.querySelector("#lllm-edit-prompt-action");
+  const autoGenerate = state.panel.querySelector("#promptstudio-auto-generate")?.checked !== false;
+  const editPromptAction = state.panel.querySelector("#promptstudio-edit-prompt-action");
   if (editPromptAction) editPromptAction.hidden = action !== "edit";
   if (!amplificationEnabled) {
     if (heading) heading.textContent = "Canonical prompt";
@@ -823,7 +823,7 @@ function updateComposeMode() {
 function updateAmplificationMode({ announce = true, persist = true } = {}) {
   const enabled = useLlmAmplification();
   state.panel.dataset.useLlmAmplification = enabled ? "true" : "false";
-  if (enabled) state.panel.querySelector("#lllm-revision").value = "";
+  if (enabled) state.panel.querySelector("#promptstudio-revision").value = "";
   updateComposeMode();
   if (persist) saveSettings();
   if (!announce) return;
@@ -846,7 +846,7 @@ function createChat() {
   if (state.busy) return;
   commitPromptEditorVersion();
   syncActiveChat();
-  const createAction = state.panel?.querySelector('input[name="lllm-generation-action"][value="create"]');
+  const createAction = state.panel?.querySelector('input[name="promptstudio-generation-action"][value="create"]');
   if (createAction) createAction.checked = true;
   const chat = normalizeChat({
     initialized: false,
@@ -854,8 +854,8 @@ function createChat() {
     versions: [""],
     versionIndex: 0,
     controlsFingerprint: "",
-    createWorkflowId: state.panel?.querySelector("#lllm-create-workflow")?.value || "",
-    editWorkflowId: state.panel?.querySelector("#lllm-edit-workflow")?.value || "",
+    createWorkflowId: state.panel?.querySelector("#promptstudio-create-workflow")?.value || "",
+    editWorkflowId: state.panel?.querySelector("#promptstudio-edit-workflow")?.value || "",
     editPromptMode: selectedEditPromptMode(),
     selectedSource: null,
     lastGeneration: null,
@@ -917,9 +917,9 @@ function activateChat(chatId) {
   } else {
     announceWorkflowSelection(selectedAction());
   }
-  const undo = state.panel?.querySelector("#lllm-undo");
+  const undo = state.panel?.querySelector("#promptstudio-undo");
   if (undo) undo.disabled = state.versionIndex <= 0 || state.busy;
-  state.panel?.classList.remove("lllm-chats-open");
+  state.panel?.classList.remove("promptstudio-chats-open");
   saveChats();
 }
 
@@ -933,27 +933,27 @@ function nodeClassName(node) {
 }
 
 function refreshSecondaryInstructionsControl() {
-  const editor = state.panel?.querySelector("#lllm-secondary-instructions");
+  const editor = state.panel?.querySelector("#promptstudio-secondary-instructions");
   if (editor) {
     editor.disabled = state.busy;
   }
 }
 
 function selectedAction() {
-  return state.panel?.querySelector('input[name="lllm-generation-action"]:checked')?.value === "edit"
+  return state.panel?.querySelector('input[name="promptstudio-generation-action"]:checked')?.value === "edit"
     ? "edit"
     : "create";
 }
 
 function selectedEditPromptMode() {
-  return state.panel?.querySelector('input[name="lllm-edit-prompt-mode"]:checked')?.value === "edit_instruction"
+  return state.panel?.querySelector('input[name="promptstudio-edit-prompt-mode"]:checked')?.value === "edit_instruction"
     ? "edit_instruction"
     : "full_prompt";
 }
 
 function setEditPromptMode(mode, { persist = false } = {}) {
   const normalized = mode === "edit_instruction" ? "edit_instruction" : "full_prompt";
-  const control = state.panel?.querySelector(`input[name="lllm-edit-prompt-mode"][value="${normalized}"]`);
+  const control = state.panel?.querySelector(`input[name="promptstudio-edit-prompt-mode"][value="${normalized}"]`);
   if (control) control.checked = true;
   if (persist) syncActiveChat();
 }
@@ -963,7 +963,7 @@ function workflowProfileById(profileId) {
 }
 
 function selectedWorkflowProfileId(action = selectedAction()) {
-  const selectId = action === "edit" ? "#lllm-edit-workflow" : "#lllm-create-workflow";
+  const selectId = action === "edit" ? "#promptstudio-edit-workflow" : "#promptstudio-create-workflow";
   return workflowProfileById(state.panel?.querySelector(selectId)?.value)?.id || "";
 }
 
@@ -1008,8 +1008,8 @@ function fillWorkflowSelect(select, kind, remembered) {
 function refreshWorkflowControls() {
   if (!state.panel) return;
   const chat = activeChat();
-  fillWorkflowSelect(state.panel.querySelector("#lllm-create-workflow"), "create", chat?.createWorkflowId || "");
-  fillWorkflowSelect(state.panel.querySelector("#lllm-edit-workflow"), "edit", chat?.editWorkflowId || "");
+  fillWorkflowSelect(state.panel.querySelector("#promptstudio-create-workflow"), "create", chat?.createWorkflowId || "");
+  fillWorkflowSelect(state.panel.querySelector("#promptstudio-edit-workflow"), "edit", chat?.editWorkflowId || "");
   const editWorkflow = workflowProfileById(chat?.editWorkflowId);
   setEditPromptMode(chat?.editPromptMode || editWorkflow?.promptMode || "full_prompt");
   refreshSecondaryInstructionsControl();
@@ -1018,7 +1018,7 @@ function refreshWorkflowControls() {
 }
 
 function renderWorkflowStatus() {
-  const status = state.panel?.querySelector("#lllm-workflow-template-status");
+  const status = state.panel?.querySelector("#promptstudio-workflow-template-status");
   if (!status) return;
   const cachedCount = state.workflowProfiles.filter((profile) => profile.stale).length;
   const createCount = state.workflowProfiles.filter((profile) => profile.kind === "create").length;
@@ -1031,7 +1031,7 @@ function renderWorkflowStatus() {
 }
 
 function setStatus(text, kind = "") {
-  const el = state.panel?.querySelector("#lllm-status");
+  const el = state.panel?.querySelector("#promptstudio-status");
   if (!el) return;
   el.textContent = text;
   el.dataset.kind = kind;
@@ -1042,35 +1042,35 @@ function setBusy(busy) {
   state.panel?.querySelectorAll("button[data-disable-busy]").forEach((button) => {
     button.disabled = busy;
   });
-  state.panel?.querySelectorAll(".lllm-mode-control input, .lllm-generation-action input, .lllm-workflow-routing select, .lllm-settings input, .lllm-settings select, .lllm-settings textarea, .lllm-resolution-details input, .lllm-resolution-details select, .lllm-current-details textarea, .lllm-secondary-details textarea")
+  state.panel?.querySelectorAll(".promptstudio-mode-control input, .promptstudio-generation-action input, .promptstudio-workflow-routing select, .promptstudio-settings input, .promptstudio-settings select, .promptstudio-settings textarea, .promptstudio-resolution-details input, .promptstudio-resolution-details select, .promptstudio-current-details textarea, .promptstudio-secondary-details textarea")
     .forEach((control) => {
       control.disabled = busy;
     });
-  const undo = state.panel?.querySelector("#lllm-undo");
+  const undo = state.panel?.querySelector("#promptstudio-undo");
   if (undo) undo.disabled = busy || state.versionIndex <= 0;
-  const newChat = state.panel?.querySelector("#lllm-new-chat");
+  const newChat = state.panel?.querySelector("#promptstudio-new-chat");
   if (newChat) newChat.disabled = busy;
-  state.panel?.querySelectorAll(".lllm-chat-item").forEach((button) => {
+  state.panel?.querySelectorAll(".promptstudio-chat-item").forEach((button) => {
     button.disabled = busy;
   });
   refreshWorkflowControls();
 }
 
 function closeImageLightbox() {
-  const lightbox = state.panel?.querySelector("#lllm-lightbox");
+  const lightbox = state.panel?.querySelector("#promptstudio-lightbox");
   if (!lightbox || lightbox.hidden) return;
   lightbox.hidden = true;
-  const image = lightbox.querySelector("#lllm-lightbox-image");
+  const image = lightbox.querySelector("#promptstudio-lightbox-image");
   if (image) image.removeAttribute("src");
   state.lightboxTrigger?.focus({ preventScroll: true });
   state.lightboxTrigger = null;
 }
 
 function openImageLightbox(url, alt, trigger) {
-  const lightbox = state.panel?.querySelector("#lllm-lightbox");
+  const lightbox = state.panel?.querySelector("#promptstudio-lightbox");
   if (!lightbox) return;
-  const image = lightbox.querySelector("#lllm-lightbox-image");
-  const open = lightbox.querySelector("#lllm-lightbox-open");
+  const image = lightbox.querySelector("#promptstudio-lightbox-image");
+  const open = lightbox.querySelector("#promptstudio-lightbox-open");
   image.src = url;
   image.alt = alt;
   open.href = url;
@@ -1133,7 +1133,7 @@ function selectImageSource(reference, generationData = null) {
   if (!chat) return;
   chat.selectedSource = value;
   chat.updatedAt = Date.now();
-  const editAction = state.panel?.querySelector('input[name="lllm-generation-action"][value="edit"]');
+  const editAction = state.panel?.querySelector('input[name="promptstudio-generation-action"][value="edit"]');
   if (editAction) editAction.checked = true;
   const promptRestored = restoreStoredCanonicalPrompt(generationData);
   saveChats();
@@ -1153,29 +1153,29 @@ function selectImageSource(reference, generationData = null) {
 
 function refreshRenderedImageSources() {
   const selectedKey = encodeURIComponent(imageReferenceKey(activeChat()?.selectedSource));
-  for (const card of state.panel?.querySelectorAll(".lllm-image-card") || []) {
+  for (const card of state.panel?.querySelectorAll(".promptstudio-image-card") || []) {
     const selected = card.dataset.imageKey === selectedKey;
     card.dataset.source = selected ? "true" : "false";
-    const button = card.querySelector(".lllm-use-source");
+    const button = card.querySelector(".promptstudio-use-source");
     if (button) button.textContent = selected ? "Editing source" : "Edit this image";
   }
 }
 
 function renderImageGallery(message, images, generationData = null) {
   if (!message || !images?.length) return;
-  message.classList.add("lllm-has-images");
+  message.classList.add("promptstudio-has-images");
   const gallery = document.createElement("div");
-  gallery.className = "lllm-image-grid";
+  gallery.className = "promptstudio-image-grid";
   for (const item of images) {
     const reference = normalizeImageReference(item);
     if (!reference) continue;
     const card = document.createElement("div");
-    card.className = "lllm-image-card";
+    card.className = "promptstudio-image-card";
     card.dataset.imageKey = encodeURIComponent(imageReferenceKey(reference));
     card.dataset.source = imageReferenceKey(activeChat()?.selectedSource) === imageReferenceKey(reference) ? "true" : "false";
     const preview = document.createElement("button");
     preview.type = "button";
-    preview.className = "lllm-image-preview";
+    preview.className = "promptstudio-image-preview";
     const url = imageReferenceUrl(reference);
     const image = document.createElement("img");
     image.src = url;
@@ -1190,7 +1190,7 @@ function renderImageGallery(message, images, generationData = null) {
     preview.appendChild(image);
     const useSource = document.createElement("button");
     useSource.type = "button";
-    useSource.className = "lllm-use-source";
+    useSource.className = "promptstudio-use-source";
     useSource.dataset.disableBusy = "";
     useSource.disabled = state.busy;
     useSource.textContent = card.dataset.source === "true" ? "Editing source" : "Edit this image";
@@ -1213,20 +1213,20 @@ function useStoredCanonicalPrompt(data, details) {
 }
 
 function renderPromptInfo(message, data) {
-  if (!message || !data?.canonicalPrompt || !data.images?.length || message.querySelector(".lllm-prompt-info")) return;
-  message.classList.add("lllm-has-prompt");
+  if (!message || !data?.canonicalPrompt || !data.images?.length || message.querySelector(".promptstudio-prompt-info")) return;
+  message.classList.add("promptstudio-has-prompt");
   const details = document.createElement("details");
-  details.className = "lllm-prompt-info";
+  details.className = "promptstudio-prompt-info";
   const summary = document.createElement("summary");
   summary.textContent = "i";
   summary.title = "Show the canonical prompt used for this generation";
   summary.setAttribute("aria-label", summary.title);
   const panel = document.createElement("div");
-  panel.className = "lllm-prompt-info-panel";
+  panel.className = "promptstudio-prompt-info-panel";
   const heading = document.createElement("strong");
   heading.textContent = "Canonical prompt used";
   const text = document.createElement("div");
-  text.className = "lllm-prompt-info-text";
+  text.className = "promptstudio-prompt-info-text";
   text.textContent = data.canonicalPrompt;
   const usePrompt = document.createElement("button");
   usePrompt.type = "button";
@@ -1239,7 +1239,7 @@ function renderPromptInfo(message, data) {
     const executionHeading = document.createElement("strong");
     executionHeading.textContent = "Workflow execution prompt";
     const executionText = document.createElement("div");
-    executionText.className = "lllm-prompt-info-text";
+    executionText.className = "promptstudio-prompt-info-text";
     executionText.textContent = data.executionPrompt;
     panel.append(executionHeading, executionText);
   }
@@ -1249,22 +1249,22 @@ function renderPromptInfo(message, data) {
 }
 
 function renderMessage(data, { scroll = true } = {}) {
-  const history = state.panel?.querySelector("#lllm-history");
+  const history = state.panel?.querySelector("#promptstudio-history");
   if (!history) return null;
   const message = document.createElement("div");
-  message.className = `lllm-message lllm-${data.role}`;
+  message.className = `promptstudio-message promptstudio-${data.role}`;
   message.dataset.messageId = data.id;
 
   if (data.label) {
     const label = document.createElement("div");
-    label.className = "lllm-message-label";
+    label.className = "promptstudio-message-label";
     label.textContent = data.label;
     message.appendChild(label);
   }
 
   if (data.canonicalPrompt && data.workflowName) {
     const provenance = document.createElement("div");
-    provenance.className = "lllm-generation-provenance";
+    provenance.className = "promptstudio-generation-provenance";
     provenance.textContent = data.generationAction === "edit"
       ? `Edited source · ${data.workflowName}`
       : `Created new · ${data.workflowName}`;
@@ -1273,7 +1273,7 @@ function renderMessage(data, { scroll = true } = {}) {
 
   if (data.text) {
     const body = document.createElement("div");
-    body.className = "lllm-message-text";
+    body.className = "promptstudio-message-text";
     body.textContent = data.text;
     message.appendChild(body);
   }
@@ -1328,7 +1328,7 @@ async function appendImages(message, images) {
   renderImageGallery(message, enrichedImages, stored);
   if (stored) {
     stored.images = enrichedImages;
-    if (enrichedImages[0] && state.panel?.querySelector("#lllm-auto-advance-source")?.checked) {
+    if (enrichedImages[0] && state.panel?.querySelector("#promptstudio-auto-advance-source")?.checked) {
       chat.selectedSource = normalizeImageReference(enrichedImages[0]);
     } else if (!chat.selectedSource && enrichedImages[0]) {
       chat.selectedSource = normalizeImageReference(enrichedImages[0]);
@@ -1338,13 +1338,13 @@ async function appendImages(message, images) {
     saveChats();
     renderChatList();
   }
-  const history = state.panel?.querySelector("#lllm-history");
+  const history = state.panel?.querySelector("#promptstudio-history");
   if (history) history.scrollTop = history.scrollHeight;
 }
 
 function updatePromptEditor(prompt) {
   state.currentPrompt = prompt;
-  const editor = state.panel?.querySelector("#lllm-current-prompt");
+  const editor = state.panel?.querySelector("#promptstudio-current-prompt");
   if (editor) editor.value = prompt;
 }
 
@@ -1361,7 +1361,7 @@ function syncCanonicalEditor(prompt, { userEdit = false } = {}) {
 }
 
 function commitPromptEditorVersion() {
-  const editor = state.panel?.querySelector("#lllm-current-prompt");
+  const editor = state.panel?.querySelector("#promptstudio-current-prompt");
   if (!editor || editor.readOnly) return;
   const prompt = editor.value;
   syncCanonicalEditor(prompt, { userEdit: prompt !== state.currentPrompt });
@@ -1372,7 +1372,7 @@ function pushVersion(prompt) {
   state.versions = state.versions.slice(0, state.versionIndex + 1);
   state.versions.push(prompt);
   state.versionIndex = state.versions.length - 1;
-  const undo = state.panel?.querySelector("#lllm-undo");
+  const undo = state.panel?.querySelector("#promptstudio-undo");
   if (undo) undo.disabled = state.versionIndex <= 0 || state.busy;
   syncActiveChat();
 }
@@ -1391,15 +1391,15 @@ function setOptions(selectId, values, selected) {
 }
 
 async function loadConfig() {
-  const response = await api.fetchApi("/lllm/prompt-studio/config");
+  const response = await api.fetchApi("/promptstudio/prompt-studio/config");
   if (!response.ok) throw new Error(`Could not load Prompt Studio configuration (${response.status}).`);
   state.config = await response.json();
   const settings = getSettings();
-  setOptions("lllm-profile", state.config.profiles, settings.model_profile);
-  setOptions("lllm-style", state.config.styles, settings.style_preset);
-  setOptions("lllm-framing", state.config.framings, settings.framing_preset);
-  setOptions("lllm-thinking", state.config.thinking_modes, settings.thinking_mode);
-  setOptions("lllm-embellishment", state.config.embellishment_levels, settings.embellishment_level);
+  setOptions("promptstudio-profile", state.config.profiles, settings.model_profile);
+  setOptions("promptstudio-style", state.config.styles, settings.style_preset);
+  setOptions("promptstudio-framing", state.config.framings, settings.framing_preset);
+  setOptions("promptstudio-thinking", state.config.thinking_modes, settings.thinking_mode);
+  setOptions("promptstudio-embellishment", state.config.embellishment_levels, settings.embellishment_level);
 }
 
 function collectRevisionPayload(revision, mode = "revise") {
@@ -1408,16 +1408,16 @@ function collectRevisionPayload(revision, mode = "revise") {
     current_prompt: state.currentPrompt,
     revision,
     mode,
-    kobold_url: value("lllm-kobold-url"),
-    model_profile: value("lllm-profile"),
-    style_preset: value("lllm-style"),
-    framing_preset: value("lllm-framing"),
-    style_modifier: value("lllm-style-modifier"),
-    framing_modifier: value("lllm-framing-modifier"),
-    thinking_mode: value("lllm-thinking"),
-    embellishment_level: value("lllm-embellishment"),
-    max_response_tokens: Number(value("lllm-max-tokens") || 0),
-    temperature: Number(value("lllm-temperature") || 0.7),
+    kobold_url: value("promptstudio-kobold-url"),
+    model_profile: value("promptstudio-profile"),
+    style_preset: value("promptstudio-style"),
+    framing_preset: value("promptstudio-framing"),
+    style_modifier: value("promptstudio-style-modifier"),
+    framing_modifier: value("promptstudio-framing-modifier"),
+    thinking_mode: value("promptstudio-thinking"),
+    embellishment_level: value("promptstudio-embellishment"),
+    max_response_tokens: Number(value("promptstudio-max-tokens") || 0),
+    temperature: Number(value("promptstudio-temperature") || 0.7),
   };
 }
 
@@ -1488,14 +1488,14 @@ function generationFailureMessage(historyItem) {
 function updateMessageText(message, text) {
   if (!message) return;
   const value = String(text || "");
-  const body = message.querySelector(".lllm-message-text");
+  const body = message.querySelector(".promptstudio-message-text");
   if (body && value) body.textContent = value;
   else if (body) body.remove();
   else if (value) {
     const nextBody = document.createElement("div");
-    nextBody.className = "lllm-message-text";
+    nextBody.className = "promptstudio-message-text";
     nextBody.textContent = value;
-    const gallery = message.querySelector(".lllm-image-grid");
+    const gallery = message.querySelector(".promptstudio-image-grid");
     message.insertBefore(nextBody, gallery);
   }
   const chat = activeChat();
@@ -1591,14 +1591,14 @@ async function queueGeneration({
   if (operationToken !== state.operationToken) return false;
   const useNewSeed = !preserveSeed
     && generationMatchesLatestQueuedPrompt()
-    && state.panel.querySelector("#lllm-randomize-seed")?.checked;
+    && state.panel.querySelector("#promptstudio-randomize-seed")?.checked;
   if (useNewSeed) randomizeSnapshotSeeds(context.snapshot);
 
   const apiNode = context.snapshot.output?.[String(context.promptNodeId)];
   if (!apiNode || ![SLOT_TYPE, AMPLIFY_TYPE].includes(apiNode.class_type)) {
     throw new Error("The configured prompt node was not included in the executable workflow.");
   }
-  const secondaryInstructions = state.panel.querySelector("#lllm-secondary-instructions")?.value || "";
+  const secondaryInstructions = state.panel.querySelector("#promptstudio-secondary-instructions")?.value || "";
   const resolution = {
     ...resolutionSettings(),
     resolution_width: action === "edit" ? source.width : 0,
@@ -1685,7 +1685,7 @@ async function generateDirectPrompt(action = selectedAction()) {
   if (action === "edit" && !editingSource()) {
     return setStatus("There is no image in this conversation to edit.", "warning");
   }
-  const input = state.panel.querySelector("#lllm-revision");
+  const input = state.panel.querySelector("#promptstudio-revision");
   const prompt = input.value.trim();
   if (!prompt) return setStatus("Enter a prompt before generating.", "warning");
   const previousVersion = state.versions[state.versionIndex];
@@ -1710,9 +1710,9 @@ async function generateDirectPrompt(action = selectedAction()) {
 async function reviseAndMaybeGenerate({ controlsOnly = false, forceGenerate = false, generationAction = selectedAction() } = {}) {
   if (state.busy) return;
   if (!useLlmAmplification()) return generateDirectPrompt(generationAction);
-  const input = state.panel.querySelector("#lllm-revision");
+  const input = state.panel.querySelector("#promptstudio-revision");
   const revision = input.value.trim();
-  const editedPrompt = state.panel.querySelector("#lllm-current-prompt").value.trim();
+  const editedPrompt = state.panel.querySelector("#promptstudio-current-prompt").value.trim();
   const creating = !activeChat()?.initialized;
   if (!selectedWorkflowProfile(generationAction)) {
     return setStatus("Select a compatible [PS] workflow first.", "warning");
@@ -1750,7 +1750,7 @@ async function reviseAndMaybeGenerate({ controlsOnly = false, forceGenerate = fa
     : revision;
 
   try {
-    const response = await api.fetchApi("/lllm/prompt-studio/revise", {
+    const response = await api.fetchApi("/promptstudio/prompt-studio/revise", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(collectRevisionPayload(effectiveRevision, creating ? "create" : "revise")),
@@ -1790,7 +1790,7 @@ async function reviseAndMaybeGenerate({ controlsOnly = false, forceGenerate = fa
       saveChats();
     }
     setStatus(creating ? "Initial prompt created." : "Prompt revised.", "ready");
-    if (forceGenerate || state.panel.querySelector("#lllm-auto-generate")?.checked) {
+    if (forceGenerate || state.panel.querySelector("#promptstudio-auto-generate")?.checked) {
       const executionPrompt = chat?.pendingGeneration?.executionPrompt || prompt;
       await queueGeneration({ action: generationAction, executionPrompt, preserveSeed: true });
     } else {
@@ -1821,7 +1821,7 @@ async function reroll({ applyControls = true, generationAction = selectedAction(
   if (applyControls && controlsNeedApply()) {
     return reviseAndMaybeGenerate({ controlsOnly: true, forceGenerate: true, generationAction });
   }
-  const editedPrompt = state.panel.querySelector("#lllm-current-prompt").value.trim();
+  const editedPrompt = state.panel.querySelector("#promptstudio-current-prompt").value.trim();
   if (!editedPrompt) return setStatus("The current prompt is empty.", "warning");
   const promptChanged = editedPrompt !== state.currentPrompt;
   if (promptChanged) {
@@ -1858,7 +1858,7 @@ function undoPrompt() {
   writeCanonicalPrompt(prompt);
   updateComposeMode();
   appendMessage("system", `Restored prompt version ${state.versionIndex + 1}.`);
-  state.panel.querySelector("#lllm-undo").disabled = state.versionIndex <= 0;
+  state.panel.querySelector("#promptstudio-undo").disabled = state.versionIndex <= 0;
 }
 
 async function interrupt() {
@@ -1883,141 +1883,141 @@ async function interrupt() {
 function buildPanel() {
   const settings = getSettings();
   const panel = document.createElement("section");
-  panel.id = "lllm-prompt-studio";
+  panel.id = "promptstudio-prompt-studio";
   panel.hidden = true;
   panel.innerHTML = `
-    <aside class="lllm-chat-sidebar">
-      <div class="lllm-chat-sidebar-header">
+    <aside class="promptstudio-chat-sidebar">
+      <div class="promptstudio-chat-sidebar-header">
         <div><span>Prompt Studio</span><strong>Sessions</strong></div>
-        <button id="lllm-new-chat" type="button">New chat</button>
+        <button id="promptstudio-new-chat" type="button">New chat</button>
       </div>
-      <div id="lllm-chat-list" class="lllm-chat-list"></div>
+      <div id="promptstudio-chat-list" class="promptstudio-chat-list"></div>
     </aside>
-    <main class="lllm-main">
-      <div id="lllm-history" class="lllm-history"></div>
-      <div class="lllm-compose">
-        <div class="lllm-compose-heading"><strong id="lllm-compose-title">Describe the next change</strong><span id="lllm-compose-hint">Leave empty to reroll</span></div>
-        <textarea id="lllm-revision" rows="3" placeholder="Make the background more varied…"></textarea>
-        <div class="lllm-compose-footer">
-          <div class="lllm-toggles">
-            <label class="lllm-auto-generate-toggle"><input id="lllm-auto-generate" type="checkbox" ${settings.auto_generate ? "checked" : ""} /> Generate after revision</label>
-            <label><input id="lllm-randomize-seed" type="checkbox" ${settings.randomize_seed ? "checked" : ""} /> New seed on reroll</label>
-            <div class="lllm-generation-action" role="radiogroup" aria-label="Generation action">
-              <label><input type="radio" name="lllm-generation-action" value="create" checked /><span>Create</span></label>
-              <label><input type="radio" name="lllm-generation-action" value="edit" /><span>Edit</span></label>
+    <main class="promptstudio-main">
+      <div id="promptstudio-history" class="promptstudio-history"></div>
+      <div class="promptstudio-compose">
+        <div class="promptstudio-compose-heading"><strong id="promptstudio-compose-title">Describe the next change</strong><span id="promptstudio-compose-hint">Leave empty to reroll</span></div>
+        <textarea id="promptstudio-revision" rows="3" placeholder="Make the background more varied…"></textarea>
+        <div class="promptstudio-compose-footer">
+          <div class="promptstudio-toggles">
+            <label class="promptstudio-auto-generate-toggle"><input id="promptstudio-auto-generate" type="checkbox" ${settings.auto_generate ? "checked" : ""} /> Generate after revision</label>
+            <label><input id="promptstudio-randomize-seed" type="checkbox" ${settings.randomize_seed ? "checked" : ""} /> New seed on reroll</label>
+            <div class="promptstudio-generation-action" role="radiogroup" aria-label="Generation action">
+              <label><input type="radio" name="promptstudio-generation-action" value="create" checked /><span>Create</span></label>
+              <label><input type="radio" name="promptstudio-generation-action" value="edit" /><span>Edit</span></label>
             </div>
-            <div id="lllm-edit-prompt-action" class="lllm-generation-action lllm-edit-prompt-action" role="radiogroup" aria-label="Editing prompt payload" hidden>
-              <label><input type="radio" name="lllm-edit-prompt-mode" value="edit_instruction" /><span>Text only</span></label>
-              <label><input type="radio" name="lllm-edit-prompt-mode" value="full_prompt" checked /><span>Full prompt</span></label>
+            <div id="promptstudio-edit-prompt-action" class="promptstudio-generation-action promptstudio-edit-prompt-action" role="radiogroup" aria-label="Editing prompt payload" hidden>
+              <label><input type="radio" name="promptstudio-edit-prompt-mode" value="edit_instruction" /><span>Text only</span></label>
+              <label><input type="radio" name="promptstudio-edit-prompt-mode" value="full_prompt" checked /><span>Full prompt</span></label>
             </div>
           </div>
-          <div class="lllm-actions">
-            <button id="lllm-toggle-inspector" class="lllm-inspector-button" type="button">Settings</button>
-            <button id="lllm-undo" type="button" data-disable-busy disabled>Undo</button>
-            <button id="lllm-stop" type="button">Stop</button>
-            <button id="lllm-reroll" type="button" data-disable-busy>Reroll</button>
-            <button id="lllm-send" class="lllm-primary" type="button" data-disable-busy>Revise & Generate</button>
+          <div class="promptstudio-actions">
+            <button id="promptstudio-toggle-inspector" class="promptstudio-inspector-button" type="button">Settings</button>
+            <button id="promptstudio-undo" type="button" data-disable-busy disabled>Undo</button>
+            <button id="promptstudio-stop" type="button">Stop</button>
+            <button id="promptstudio-reroll" type="button" data-disable-busy>Reroll</button>
+            <button id="promptstudio-send" class="promptstudio-primary" type="button" data-disable-busy>Revise & Generate</button>
           </div>
         </div>
       </div>
     </main>
-    <aside class="lllm-inspector">
-      <header class="lllm-header">
-        <div class="lllm-brand">
-          <span class="lllm-brand-mark">PS</span>
+    <aside class="promptstudio-inspector">
+      <header class="promptstudio-header">
+        <div class="promptstudio-brand">
+          <span class="promptstudio-brand-mark">PS</span>
           <div><strong>Prompt Studio</strong><span>Iterative local generation</span></div>
         </div>
-        <div class="lllm-header-actions">
-          <button id="lllm-toggle-chats" class="lllm-chats-button" type="button" title="Show chats" aria-label="Show chats">Sessions</button>
-          <button id="lllm-popout" type="button" title="Open Prompt Studio in its own tab" aria-label="Open Prompt Studio in its own tab">↗</button>
-          <button id="lllm-toggle-studio-settings" type="button" title="Prompt Studio settings" aria-label="Prompt Studio settings" aria-expanded="false">⚙</button>
-          <button id="lllm-close" type="button" title="Close Prompt Studio" aria-label="Close Prompt Studio">×</button>
+        <div class="promptstudio-header-actions">
+          <button id="promptstudio-toggle-chats" class="promptstudio-chats-button" type="button" title="Show chats" aria-label="Show chats">Sessions</button>
+          <button id="promptstudio-popout" type="button" title="Open Prompt Studio in its own tab" aria-label="Open Prompt Studio in its own tab">↗</button>
+          <button id="promptstudio-toggle-studio-settings" type="button" title="Prompt Studio settings" aria-label="Prompt Studio settings" aria-expanded="false">⚙</button>
+          <button id="promptstudio-close" type="button" title="Close Prompt Studio" aria-label="Close Prompt Studio">×</button>
         </div>
       </header>
-      <section class="lllm-toolbar">
-        <label class="lllm-slot-control">
+      <section class="promptstudio-toolbar">
+        <label class="promptstudio-slot-control">
           <span>ComfyUI workflow templates</span>
-          <div class="lllm-attach-row">
-            <div id="lllm-workflow-template-status" class="lllm-workflow-template-status">Checking [PS] workflows…</div>
-            <button id="lllm-refresh-workflows" type="button" title="Refresh [PS] workflows">↻</button>
+          <div class="promptstudio-attach-row">
+            <div id="promptstudio-workflow-template-status" class="promptstudio-workflow-template-status">Checking [PS] workflows…</div>
+            <button id="promptstudio-refresh-workflows" type="button" title="Refresh [PS] workflows">↻</button>
           </div>
         </label>
-        <div id="lllm-status" class="lllm-status">Loading…</div>
+        <div id="promptstudio-status" class="promptstudio-status">Loading…</div>
       </section>
-      <section class="lllm-mode-control">
+      <section class="promptstudio-mode-control">
         <label>
-          <input id="lllm-use-llm-amplification" type="checkbox" ${settings.use_llm_amplification ? "checked" : ""} />
+          <input id="promptstudio-use-llm-amplification" type="checkbox" ${settings.use_llm_amplification ? "checked" : ""} />
           <span><strong>Use LLM amplification</strong><small>Rewrite prompts through KoboldCpp</small></span>
         </label>
       </section>
-      <section class="lllm-control-deck">
-        <details class="lllm-current-details" open>
+      <section class="promptstudio-control-deck">
+        <details class="promptstudio-current-details" open>
           <summary><span>Canonical prompt</span><small>Used for the next generation</small></summary>
-          <textarea id="lllm-current-prompt" rows="8" placeholder="The selected prompt node's current text"></textarea>
+          <textarea id="promptstudio-current-prompt" rows="8" placeholder="The selected prompt node's current text"></textarea>
         </details>
-        <details class="lllm-settings" open>
+        <details class="promptstudio-settings" open>
           <summary><span>Generation controls</span><small>Model, style and LLM settings</small></summary>
-          <div class="lllm-settings-grid">
-            <label>Model profile<select id="lllm-profile"></select></label>
-            <label>Style<select id="lllm-style"></select></label>
-            <label>Framing<select id="lllm-framing"></select></label>
-            <label>Embellishment<select id="lllm-embellishment"></select></label>
-            <label title="Controls KoboldCpp reasoning effort. High receives up to 4,096 private-reasoning tokens while preserving the final-answer allowance.">Thinking<select id="lllm-thinking"></select></label>
-            <label>KoboldCpp URL<input id="lllm-kobold-url" /></label>
-            <label>Style modifier<textarea id="lllm-style-modifier" rows="2"></textarea></label>
-            <label>Framing modifier<textarea id="lllm-framing-modifier" rows="2"></textarea></label>
-            <label title="Final-answer allowance. KoboldCpp receives an additional native-reasoning budget; 0 uses the selected profile default.">Final-answer tokens<input id="lllm-max-tokens" type="number" min="0" max="8192" /></label>
-            <label>Temperature<input id="lllm-temperature" type="number" min="0" max="5" step="0.05" /></label>
+          <div class="promptstudio-settings-grid">
+            <label>Model profile<select id="promptstudio-profile"></select></label>
+            <label>Style<select id="promptstudio-style"></select></label>
+            <label>Framing<select id="promptstudio-framing"></select></label>
+            <label>Embellishment<select id="promptstudio-embellishment"></select></label>
+            <label title="Controls KoboldCpp reasoning effort. High receives up to 4,096 private-reasoning tokens while preserving the final-answer allowance.">Thinking<select id="promptstudio-thinking"></select></label>
+            <label>KoboldCpp URL<input id="promptstudio-kobold-url" /></label>
+            <label>Style modifier<textarea id="promptstudio-style-modifier" rows="2"></textarea></label>
+            <label>Framing modifier<textarea id="promptstudio-framing-modifier" rows="2"></textarea></label>
+            <label title="Final-answer allowance. KoboldCpp receives an additional native-reasoning budget; 0 uses the selected profile default.">Final-answer tokens<input id="promptstudio-max-tokens" type="number" min="0" max="8192" /></label>
+            <label>Temperature<input id="promptstudio-temperature" type="number" min="0" max="5" step="0.05" /></label>
           </div>
         </details>
-        <details class="lllm-resolution-details" open>
+        <details class="promptstudio-resolution-details" open>
           <summary><span>Resolution</span><small>Create size; Edit preserves source</small></summary>
-          <div class="lllm-resolution-grid">
-            <label>Aspect ratio<select id="lllm-resolution-aspect-ratio">${RESOLUTION_ASPECT_RATIOS.map((value) => `<option value="${value}">${value}</option>`).join("")}</select></label>
-            <label>Megapixels<input id="lllm-resolution-megapixels" type="number" min="0.1" max="16" step="0.1" value="1" /></label>
-            <label>Multiple<input id="lllm-resolution-multiple" type="number" min="8" max="128" step="4" value="8" /></label>
+          <div class="promptstudio-resolution-grid">
+            <label>Aspect ratio<select id="promptstudio-resolution-aspect-ratio">${RESOLUTION_ASPECT_RATIOS.map((value) => `<option value="${value}">${value}</option>`).join("")}</select></label>
+            <label>Megapixels<input id="promptstudio-resolution-megapixels" type="number" min="0.1" max="16" step="0.1" value="1" /></label>
+            <label>Multiple<input id="promptstudio-resolution-multiple" type="number" min="8" max="128" step="4" value="8" /></label>
           </div>
         </details>
-        <details class="lllm-secondary-details" open>
+        <details class="promptstudio-secondary-details" open>
           <summary><span>Secondary instructions</span><small>Optional pass-through output</small></summary>
-          <textarea id="lllm-secondary-instructions" rows="3" placeholder="Returned unchanged from the secondary output"></textarea>
+          <textarea id="promptstudio-secondary-instructions" rows="3" placeholder="Returned unchanged from the secondary output"></textarea>
         </details>
       </section>
     </aside>
-    <div id="lllm-studio-settings" class="lllm-studio-settings" hidden>
-      <header class="lllm-studio-settings-header">
+    <div id="promptstudio-studio-settings" class="promptstudio-studio-settings" hidden>
+      <header class="promptstudio-studio-settings-header">
         <div><strong>Settings</strong><span>Configure how Prompt Studio looks and connects to ComfyUI.</span></div>
-        <span class="lllm-studio-settings-context">Prompt Studio</span>
+        <span class="promptstudio-studio-settings-context">Prompt Studio</span>
       </header>
-      <div class="lllm-studio-settings-layout">
-        <section class="lllm-studio-settings-card" aria-labelledby="lllm-interface-settings-title">
-          <header class="lllm-studio-settings-card-header">
-            <div><strong id="lllm-interface-settings-title">Interface</strong><span>Chat display and editing behavior</span></div>
+      <div class="promptstudio-studio-settings-layout">
+        <section class="promptstudio-studio-settings-card" aria-labelledby="promptstudio-interface-settings-title">
+          <header class="promptstudio-studio-settings-card-header">
+            <div><strong id="promptstudio-interface-settings-title">Interface</strong><span>Chat display and editing behavior</span></div>
           </header>
-          <div class="lllm-studio-settings-list">
-            <label class="lllm-studio-setting lllm-image-scale-control">
-              <span class="lllm-studio-setting-copy"><strong>Image scale</strong><small>Scale generated images in chat. Full-size preview is unchanged.</small></span>
-              <span class="lllm-image-scale-field">
-                <output id="lllm-image-scale-value" for="lllm-image-scale">100%</output>
-                <input id="lllm-image-scale" type="range" min="30" max="100" step="5" value="${settings.image_scale}" />
+          <div class="promptstudio-studio-settings-list">
+            <label class="promptstudio-studio-setting promptstudio-image-scale-control">
+              <span class="promptstudio-studio-setting-copy"><strong>Image scale</strong><small>Scale generated images in chat. Full-size preview is unchanged.</small></span>
+              <span class="promptstudio-image-scale-field">
+                <output id="promptstudio-image-scale-value" for="promptstudio-image-scale">100%</output>
+                <input id="promptstudio-image-scale" type="range" min="30" max="100" step="5" value="${settings.image_scale}" />
               </span>
             </label>
-            <label class="lllm-studio-setting lllm-studio-setting-toggle">
-              <span class="lllm-studio-setting-copy"><strong>Continue from newest result</strong><small>Automatically use the latest generated image as the next editing source.</small></span>
-              <input id="lllm-auto-advance-source" type="checkbox" role="switch" ${settings.auto_advance_source ? "checked" : ""} />
+            <label class="promptstudio-studio-setting promptstudio-studio-setting-toggle">
+              <span class="promptstudio-studio-setting-copy"><strong>Continue from newest result</strong><small>Automatically use the latest generated image as the next editing source.</small></span>
+              <input id="promptstudio-auto-advance-source" type="checkbox" role="switch" ${settings.auto_advance_source ? "checked" : ""} />
             </label>
           </div>
         </section>
-        <section class="lllm-studio-settings-card" aria-labelledby="lllm-workflow-settings-title">
-          <header class="lllm-studio-settings-card-header">
-            <div><strong id="lllm-workflow-settings-title">ComfyUI workflows</strong><span>Live templates prefixed with [PS]</span></div>
+        <section class="promptstudio-studio-settings-card" aria-labelledby="promptstudio-workflow-settings-title">
+          <header class="promptstudio-studio-settings-card-header">
+            <div><strong id="promptstudio-workflow-settings-title">ComfyUI workflows</strong><span>Live templates prefixed with [PS]</span></div>
           </header>
-          <div class="lllm-workflow-routing">
-            <div class="lllm-workflow-routing-fields">
-              <label><span>Create template</span><select id="lllm-create-workflow"></select></label>
-              <label><span>Edit template</span><select id="lllm-edit-workflow"></select></label>
+          <div class="promptstudio-workflow-routing">
+            <div class="promptstudio-workflow-routing-fields">
+              <label><span>Create template</span><select id="promptstudio-create-workflow"></select></label>
+              <label><span>Edit template</span><select id="promptstudio-edit-workflow"></select></label>
             </div>
-            <div class="lllm-studio-settings-note">
+            <div class="promptstudio-studio-settings-note">
               <p>Name saved ComfyUI workflows with a <strong>[PS]</strong> prefix. Each needs a Prompt Slot or Prompt Amplify node and exactly one image output; editing workflows also need Prompt Studio Image Source.</p>
               <p>Saved workflows refresh here immediately and are checked before generation. Invalid updates keep the last working copy marked <strong>cached</strong>.</p>
             </div>
@@ -2025,122 +2025,122 @@ function buildPanel() {
         </section>
       </div>
     </div>
-    <div id="lllm-lightbox" class="lllm-lightbox" role="dialog" aria-modal="true" aria-label="Image preview" tabindex="-1" hidden>
-      <img id="lllm-lightbox-image" alt="" />
-      <div class="lllm-lightbox-actions">
-        <a id="lllm-lightbox-open" href="#" target="_blank" rel="noopener" title="Open image in new tab" aria-label="Open image in new tab">↗</a>
-        <button id="lllm-lightbox-close" type="button" title="Close image preview" aria-label="Close image preview">×</button>
+    <div id="promptstudio-lightbox" class="promptstudio-lightbox" role="dialog" aria-modal="true" aria-label="Image preview" tabindex="-1" hidden>
+      <img id="promptstudio-lightbox-image" alt="" />
+      <div class="promptstudio-lightbox-actions">
+        <a id="promptstudio-lightbox-open" href="#" target="_blank" rel="noopener" title="Open image in new tab" aria-label="Open image in new tab">↗</a>
+        <button id="promptstudio-lightbox-close" type="button" title="Close image preview" aria-label="Close image preview">×</button>
       </div>
     </div>`;
   document.body.appendChild(panel);
   state.panel = panel;
 
-  panel.querySelector("#lllm-kobold-url").value = settings.kobold_url;
-  panel.querySelector("#lllm-max-tokens").value = settings.max_response_tokens;
-  panel.querySelector("#lllm-temperature").value = settings.temperature;
-  panel.querySelector("#lllm-style-modifier").value = settings.style_modifier;
-  panel.querySelector("#lllm-framing-modifier").value = settings.framing_modifier;
-  panel.querySelector("#lllm-secondary-instructions").value = settings.secondary_instructions;
-  panel.querySelector("#lllm-resolution-aspect-ratio").value = RESOLUTION_ASPECT_RATIOS.includes(settings.resolution_aspect_ratio)
+  panel.querySelector("#promptstudio-kobold-url").value = settings.kobold_url;
+  panel.querySelector("#promptstudio-max-tokens").value = settings.max_response_tokens;
+  panel.querySelector("#promptstudio-temperature").value = settings.temperature;
+  panel.querySelector("#promptstudio-style-modifier").value = settings.style_modifier;
+  panel.querySelector("#promptstudio-framing-modifier").value = settings.framing_modifier;
+  panel.querySelector("#promptstudio-secondary-instructions").value = settings.secondary_instructions;
+  panel.querySelector("#promptstudio-resolution-aspect-ratio").value = RESOLUTION_ASPECT_RATIOS.includes(settings.resolution_aspect_ratio)
     ? settings.resolution_aspect_ratio
     : RESOLUTION_ASPECT_RATIOS[0];
-  panel.querySelector("#lllm-resolution-megapixels").value = String(Math.max(0.1, Math.min(16, Number(settings.resolution_megapixels) || 1)));
-  panel.querySelector("#lllm-resolution-multiple").value = String(Math.max(8, Math.min(128, Math.round((Number(settings.resolution_multiple) || 8) / 4) * 4)));
+  panel.querySelector("#promptstudio-resolution-megapixels").value = String(Math.max(0.1, Math.min(16, Number(settings.resolution_megapixels) || 1)));
+  panel.querySelector("#promptstudio-resolution-multiple").value = String(Math.max(8, Math.min(128, Math.round((Number(settings.resolution_multiple) || 8) / 4) * 4)));
   applyImageScale(settings.image_scale);
   updateAmplificationMode({ announce: false, persist: false });
-  panel.querySelector("#lllm-toggle-chats").addEventListener("click", () => {
-    panel.classList.remove("lllm-inspector-open");
-    panel.classList.toggle("lllm-chats-open");
+  panel.querySelector("#promptstudio-toggle-chats").addEventListener("click", () => {
+    panel.classList.remove("promptstudio-inspector-open");
+    panel.classList.toggle("promptstudio-chats-open");
   });
-  panel.querySelector("#lllm-toggle-inspector").addEventListener("click", () => {
-    panel.classList.remove("lllm-chats-open");
-    panel.classList.toggle("lllm-inspector-open");
+  panel.querySelector("#promptstudio-toggle-inspector").addEventListener("click", () => {
+    panel.classList.remove("promptstudio-chats-open");
+    panel.classList.toggle("promptstudio-inspector-open");
   });
-  panel.querySelector("#lllm-toggle-studio-settings").addEventListener("click", () => toggleStudioSettings());
+  panel.querySelector("#promptstudio-toggle-studio-settings").addEventListener("click", () => toggleStudioSettings());
   panel.addEventListener("click", (event) => {
-    const popover = panel.querySelector("#lllm-studio-settings");
-    if (popover.hidden || popover.contains(event.target) || event.target === panel.querySelector("#lllm-toggle-studio-settings")) return;
+    const popover = panel.querySelector("#promptstudio-studio-settings");
+    if (popover.hidden || popover.contains(event.target) || event.target === panel.querySelector("#promptstudio-toggle-studio-settings")) return;
     toggleStudioSettings(false);
   });
   panel.addEventListener("keydown", (event) => {
-    if (event.key !== "Escape" || panel.querySelector("#lllm-studio-settings").hidden) return;
+    if (event.key !== "Escape" || panel.querySelector("#promptstudio-studio-settings").hidden) return;
     toggleStudioSettings(false);
-    panel.querySelector("#lllm-toggle-studio-settings").focus();
+    panel.querySelector("#promptstudio-toggle-studio-settings").focus();
   });
-  panel.querySelector("#lllm-lightbox").addEventListener("click", (event) => {
+  panel.querySelector("#promptstudio-lightbox").addEventListener("click", (event) => {
     if (event.target === event.currentTarget) closeImageLightbox();
   });
-  panel.querySelector("#lllm-lightbox").addEventListener("keydown", (event) => {
+  panel.querySelector("#promptstudio-lightbox").addEventListener("keydown", (event) => {
     if (event.key === "Escape") closeImageLightbox();
   });
-  panel.querySelector("#lllm-lightbox-close").addEventListener("click", closeImageLightbox);
-  panel.querySelector("#lllm-new-chat").addEventListener("click", createChat);
-  panel.querySelector("#lllm-popout").addEventListener("click", () => togglePopout({ returnToEmbedded: true }));
-  panel.querySelector("#lllm-close").addEventListener("click", () => togglePanel(false));
-  panel.querySelector("#lllm-refresh-workflows").addEventListener("click", () => refreshWorkflowTemplates());
-  panel.querySelector("#lllm-create-workflow").addEventListener("change", () => {
+  panel.querySelector("#promptstudio-lightbox-close").addEventListener("click", closeImageLightbox);
+  panel.querySelector("#promptstudio-new-chat").addEventListener("click", createChat);
+  panel.querySelector("#promptstudio-popout").addEventListener("click", () => togglePopout({ returnToEmbedded: true }));
+  panel.querySelector("#promptstudio-close").addEventListener("click", () => togglePanel(false));
+  panel.querySelector("#promptstudio-refresh-workflows").addEventListener("click", () => refreshWorkflowTemplates());
+  panel.querySelector("#promptstudio-create-workflow").addEventListener("change", () => {
     announceWorkflowSelection("create");
   });
-  panel.querySelector("#lllm-edit-workflow").addEventListener("change", () => {
+  panel.querySelector("#promptstudio-edit-workflow").addEventListener("change", () => {
     announceWorkflowSelection("edit");
     setEditPromptMode(selectedEditPromptMode(), { persist: true });
   });
-  panel.querySelectorAll('input[name="lllm-generation-action"]').forEach((control) => {
+  panel.querySelectorAll('input[name="promptstudio-generation-action"]').forEach((control) => {
     control.addEventListener("change", () => {
       updateComposeMode();
       refreshSecondaryInstructionsControl();
       announceWorkflowSelection(selectedAction());
     });
   });
-  panel.querySelectorAll('input[name="lllm-edit-prompt-mode"]').forEach((control) => {
+  panel.querySelectorAll('input[name="promptstudio-edit-prompt-mode"]').forEach((control) => {
     control.addEventListener("change", () => syncActiveChat());
   });
-  panel.querySelector("#lllm-send").addEventListener("click", () => reviseAndMaybeGenerate());
-  panel.querySelector("#lllm-reroll").addEventListener("click", () => reroll());
-  panel.querySelector("#lllm-undo").addEventListener("click", undoPrompt);
-  panel.querySelector("#lllm-stop").addEventListener("click", interrupt);
-  panel.querySelector("#lllm-use-llm-amplification").addEventListener("change", () => updateAmplificationMode());
-  panel.querySelector("#lllm-secondary-instructions").addEventListener("change", saveSettings);
-  panel.querySelector("#lllm-current-prompt").addEventListener("input", (event) => {
+  panel.querySelector("#promptstudio-send").addEventListener("click", () => reviseAndMaybeGenerate());
+  panel.querySelector("#promptstudio-reroll").addEventListener("click", () => reroll());
+  panel.querySelector("#promptstudio-undo").addEventListener("click", undoPrompt);
+  panel.querySelector("#promptstudio-stop").addEventListener("click", interrupt);
+  panel.querySelector("#promptstudio-use-llm-amplification").addEventListener("change", () => updateAmplificationMode());
+  panel.querySelector("#promptstudio-secondary-instructions").addEventListener("change", saveSettings);
+  panel.querySelector("#promptstudio-current-prompt").addEventListener("input", (event) => {
     syncCanonicalEditor(event.target.value, { userEdit: true });
   });
-  panel.querySelector("#lllm-current-prompt").addEventListener("change", commitPromptEditorVersion);
-  panel.querySelector("#lllm-revision").addEventListener("input", (event) => {
+  panel.querySelector("#promptstudio-current-prompt").addEventListener("change", commitPromptEditorVersion);
+  panel.querySelector("#promptstudio-revision").addEventListener("input", (event) => {
     syncManualPrompt(event.target.value);
   });
-  panel.querySelector("#lllm-revision").addEventListener("keydown", (event) => {
+  panel.querySelector("#promptstudio-revision").addEventListener("keydown", (event) => {
     if (event.key === "Enter" && !event.shiftKey) {
       event.preventDefault();
       reviseAndMaybeGenerate();
     }
   });
-  panel.querySelectorAll(".lllm-settings input, .lllm-settings select, .lllm-settings textarea")
+  panel.querySelectorAll(".promptstudio-settings input, .promptstudio-settings select, .promptstudio-settings textarea")
     .forEach((element) => element.addEventListener("change", markControlsChanged));
-  panel.querySelectorAll(".lllm-resolution-details input, .lllm-resolution-details select")
+  panel.querySelectorAll(".promptstudio-resolution-details input, .promptstudio-resolution-details select")
     .forEach((element) => element.addEventListener("change", saveSettings));
-  panel.querySelectorAll(".lllm-toggles input")
+  panel.querySelectorAll(".promptstudio-toggles input")
     .forEach((element) => element.addEventListener("change", saveSettings));
-  panel.querySelector("#lllm-auto-generate").addEventListener("change", updateComposeMode);
-  panel.querySelector("#lllm-image-scale").addEventListener("input", (event) => applyImageScale(event.target.value));
-  panel.querySelector("#lllm-image-scale").addEventListener("change", saveSettings);
-  panel.querySelector("#lllm-auto-advance-source").addEventListener("change", saveSettings);
+  panel.querySelector("#promptstudio-auto-generate").addEventListener("change", updateComposeMode);
+  panel.querySelector("#promptstudio-image-scale").addEventListener("input", (event) => applyImageScale(event.target.value));
+  panel.querySelector("#promptstudio-image-scale").addEventListener("change", saveSettings);
+  panel.querySelector("#promptstudio-auto-advance-source").addEventListener("change", saveSettings);
 }
 
 function buildLauncher() {
   const launchers = document.createElement("div");
-  launchers.id = "lllm-prompt-studio-launchers";
+  launchers.id = "promptstudio-prompt-studio-launchers";
   launchers.setAttribute("role", "group");
   launchers.setAttribute("aria-label", "Prompt Studio launchers");
 
   const studioButton = document.createElement("button");
-  studioButton.id = "lllm-prompt-studio-launcher";
+  studioButton.id = "promptstudio-prompt-studio-launcher";
   studioButton.type = "button";
   studioButton.title = "Open Prompt Studio in a new tab";
   studioButton.textContent = "Prompt Studio";
   studioButton.addEventListener("click", () => togglePopout());
 
   const chatButton = document.createElement("button");
-  chatButton.id = "lllm-prompt-chat-launcher";
+  chatButton.id = "promptstudio-prompt-chat-launcher";
   chatButton.type = "button";
   chatButton.title = "Open Prompt Chat inside ComfyUI";
   chatButton.textContent = "Prompt chat";
@@ -2152,7 +2152,7 @@ function buildLauncher() {
 }
 
 function updatePopoutButton() {
-  const button = state.panel?.querySelector("#lllm-popout");
+  const button = state.panel?.querySelector("#promptstudio-popout");
   if (!button) return;
   const popped = Boolean(state.popup && !state.popup.closed && state.panel.ownerDocument === state.popup.document);
   button.textContent = popped ? "↙" : "↗";
@@ -2184,7 +2184,7 @@ async function attachStandalone(popup) {
   } catch (_) {
     return false;
   }
-  const mount = popup.document.querySelector("#lllm-popout-mount");
+  const mount = popup.document.querySelector("#promptstudio-popout-mount");
   if (!mount) return false;
   if (state.popup && state.popup !== popup && !state.popup.closed) dockPanel();
   state.popup = popup;
@@ -2207,7 +2207,7 @@ async function attachStandalone(popup) {
 }
 
 function setupStandaloneBridge() {
-  globalThis.__lllmPromptStudioHost = { attach: attachStandalone };
+  globalThis.__promptstudioPromptStudioHost = { attach: attachStandalone };
   if (typeof BroadcastChannel !== "function") return;
   state.standaloneChannel?.close();
   const channel = new BroadcastChannel(STANDALONE_CHANNEL);

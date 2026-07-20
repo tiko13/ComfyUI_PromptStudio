@@ -1,8 +1,8 @@
-const CHANNEL_NAME = "lllm.promptStudio.standalone.v1";
+const CHANNEL_NAME = "promptstudio.promptStudio.standalone.v1";
 const requestId = globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(36).slice(2)}`;
-const status = document.querySelector("#lllm-standalone-status");
-const embeddedHost = document.querySelector("#lllm-standalone-host");
-const windowName = window.name || `lllm-prompt-studio-${requestId}`;
+const status = document.querySelector("#promptstudio-standalone-status");
+const embeddedHost = document.querySelector("#promptstudio-standalone-host");
+const windowName = window.name || `promptstudio-prompt-studio-${requestId}`;
 window.name = windowName;
 
 let connected = false;
@@ -33,7 +33,7 @@ async function connectToHost(host) {
   connecting = true;
   try {
     if (!host || host.closed || host.location.origin !== window.location.origin) return false;
-    const attached = await host.__lllmPromptStudioHost?.attach?.(window);
+    const attached = await host.__promptstudioPromptStudioHost?.attach?.(window);
     if (!attached) return false;
     finishConnection();
     return true;
