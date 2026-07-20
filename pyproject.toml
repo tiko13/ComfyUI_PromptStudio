@@ -1,7 +1,7 @@
 [project]
 name = "ComfyUI_PromptStudio"
 description = "A local ChatGPT like extension for ComfyUI allowing iterative image creation and editing with help of a local LLM"
-version = "1.0.0"
+version = "1.0.1"
 license = "MIT"
 
 [project.urls]
@@ -9,7 +9,7 @@ Repository = "https://github.com/tiko13/ComfyUI_PromptStudio"
 #  Used by Comfy Registry https://registry.comfy.org
 
 [tool.comfy]
-PublisherId = ""
+PublisherId = "tiko13"
 DisplayName = "ComfyUI_PromptStudio"
 Icon = ""
 includes = []
