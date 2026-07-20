@@ -341,7 +341,7 @@ def _revise(data):
     return _apply_profile_wrappers(revised, profile)
 
 
-@PromptServer.instance.routes.get("/lllm/prompt-studio/config")
+@PromptServer.instance.routes.get("/promptstudio/prompt-studio/config")
 async def prompt_studio_config(request):
     return web.json_response(
         {
@@ -361,7 +361,7 @@ async def prompt_studio_config(request):
     )
 
 
-@PromptServer.instance.routes.post("/lllm/prompt-studio/image-size")
+@PromptServer.instance.routes.post("/promptstudio/prompt-studio/image-size")
 async def prompt_studio_image_size(request):
     try:
         if request.content_length is not None and request.content_length > MAX_IMAGE_REFERENCE_BYTES:
@@ -377,7 +377,7 @@ async def prompt_studio_image_size(request):
         return web.json_response({"error": str(exc)}, status=500)
 
 
-@PromptServer.instance.routes.get("/lllm/prompt-studio/chats")
+@PromptServer.instance.routes.get("/promptstudio/prompt-studio/chats")
 async def prompt_studio_get_chats(request):
     try:
         async with CHAT_STORE_LOCK:
@@ -387,7 +387,7 @@ async def prompt_studio_get_chats(request):
         return web.json_response({"error": str(exc)}, status=500)
 
 
-@PromptServer.instance.routes.put("/lllm/prompt-studio/chats")
+@PromptServer.instance.routes.put("/promptstudio/prompt-studio/chats")
 async def prompt_studio_save_chats(request):
     try:
         if request.content_length is not None and request.content_length > MAX_CHAT_STORE_BYTES:
@@ -404,7 +404,7 @@ async def prompt_studio_save_chats(request):
         return web.json_response({"error": str(exc)}, status=500)
 
 
-@PromptServer.instance.routes.get("/lllm/prompt-studio/workflows")
+@PromptServer.instance.routes.get("/promptstudio/prompt-studio/workflows")
 async def prompt_studio_get_workflows(request):
     try:
         async with WORKFLOW_STORE_LOCK:
@@ -414,7 +414,7 @@ async def prompt_studio_get_workflows(request):
         return web.json_response({"error": str(exc)}, status=500)
 
 
-@PromptServer.instance.routes.put("/lllm/prompt-studio/workflows")
+@PromptServer.instance.routes.put("/promptstudio/prompt-studio/workflows")
 async def prompt_studio_save_workflows(request):
     try:
         if request.content_length is not None and request.content_length > MAX_WORKFLOW_STORE_BYTES:
@@ -431,7 +431,7 @@ async def prompt_studio_save_workflows(request):
         return web.json_response({"error": str(exc)}, status=500)
 
 
-@PromptServer.instance.routes.post("/lllm/prompt-studio/revise")
+@PromptServer.instance.routes.post("/promptstudio/prompt-studio/revise")
 async def prompt_studio_revise(request):
     try:
         if request.content_length is not None and request.content_length > MAX_REVISE_REQUEST_BYTES:

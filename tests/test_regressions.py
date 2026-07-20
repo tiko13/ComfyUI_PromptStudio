@@ -61,16 +61,16 @@ def install_runtime_stubs(storage_root):
 
 def load_modules(storage_root):
     install_runtime_stubs(storage_root)
-    package = types.ModuleType("ComfyUI_LLLM")
+    package = types.ModuleType("ComfyUI_PromptStudio")
     package.__path__ = [str(REPO_ROOT)]
-    sys.modules["ComfyUI_LLLM"] = package
+    sys.modules["ComfyUI_PromptStudio"] = package
 
-    nodes_spec = importlib.util.spec_from_file_location("ComfyUI_LLLM.nodes", REPO_ROOT / "nodes.py")
+    nodes_spec = importlib.util.spec_from_file_location("ComfyUI_PromptStudio.nodes", REPO_ROOT / "nodes.py")
     nodes = importlib.util.module_from_spec(nodes_spec)
     sys.modules[nodes_spec.name] = nodes
     nodes_spec.loader.exec_module(nodes)
 
-    routes_spec = importlib.util.spec_from_file_location("ComfyUI_LLLM.routes", REPO_ROOT / "routes.py")
+    routes_spec = importlib.util.spec_from_file_location("ComfyUI_PromptStudio.routes", REPO_ROOT / "routes.py")
     routes = importlib.util.module_from_spec(routes_spec)
     sys.modules[routes_spec.name] = routes
     routes_spec.loader.exec_module(routes)
@@ -289,7 +289,7 @@ class RegressionTests(unittest.TestCase):
                 self.nodes._clean_base_url("https://example.com")
             with self.assertRaisesRegex(ValueError, "invalid port"):
                 self.nodes._clean_base_url("http://localhost:99999")
-        with mock.patch.dict(os.environ, {"LLLM_KOBOLD_ALLOWED_HOSTS": "example.com"}, clear=True):
+        with mock.patch.dict(os.environ, {"PROMPT_STUDIO_KOBOLD_ALLOWED_HOSTS": "example.com"}, clear=True):
             self.assertEqual(self.nodes._clean_base_url("https://example.com"), "https://example.com")
 
     def test_image_reference_rejects_directory_escape(self):

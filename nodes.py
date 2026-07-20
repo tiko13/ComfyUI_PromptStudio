@@ -138,7 +138,7 @@ def _resolve_prompt_resolution(
 
 
 def _allowed_kobold_hosts():
-    configured = os.environ.get("LLLM_KOBOLD_ALLOWED_HOSTS", "").strip()
+    configured = os.environ.get("PROMPT_STUDIO_KOBOLD_ALLOWED_HOSTS", "").strip()
     if not configured:
         return {"localhost", "127.0.0.1", "::1"}
     return {item.strip().casefold() for item in configured.split(",") if item.strip()}
@@ -360,7 +360,7 @@ def _clean_base_url(url):
         if not is_loopback:
             raise ValueError(
                 f"KoboldCpp host '{parsed.hostname}' is not allowed. "
-                "Add it to LLLM_KOBOLD_ALLOWED_HOSTS or use '*' to allow remote hosts."
+                "Add it to PROMPT_STUDIO_KOBOLD_ALLOWED_HOSTS or use '*' to allow remote hosts."
             )
     return cleaned
 
@@ -2176,7 +2176,7 @@ class KCPP_Ideogram4:
             return rewritten if rewritten else value
         except Exception as exc:
             if on_error == "Keep Original":
-                print(f"[ComfyUI_LLLM] Keeping original {field_label} after KoboldCpp error: {exc}")
+                print(f"[ComfyUI_PromptStudio] Keeping original {field_label} after KoboldCpp error: {exc}")
                 return value
             raise RuntimeError(f"Failed to rewrite {field_label}: {exc}") from exc
 
