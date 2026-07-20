@@ -1,6 +1,7 @@
 import hashlib
 import ipaddress
 import json
+import math
 import os
 import re
 import urllib.error
@@ -60,6 +61,80 @@ DEFAULT_CONTINUATION_STOPS = [
     "\nTarget profile:",
     "\nReference:",
 ]
+
+RESOLUTION_ASPECT_RATIOS = {
+    "1:1 (Square)": (1, 1),
+    "2:3 (Portrait Photo)": (2, 3),
+    "3:2 (Photo)": (3, 2),
+    "3:4 (Portrait Standard)": (3, 4),
+    "4:3 (Standard)": (4, 3),
+    "9:16 (Portrait Widescreen)": (9, 16),
+    "16:9 (Widescreen)": (16, 9),
+    "21:9 (Ultrawide)": (21, 9),
+}
+
+
+def _resolution_inputs():
+    return {
+        "aspect_ratio": (
+            list(RESOLUTION_ASPECT_RATIOS),
+            {
+                "default": "1:1 (Square)",
+                "tooltip": "The aspect ratio for the output dimensions.",
+            },
+        ),
+        "megapixels": (
+            "FLOAT",
+            {
+                "default": 1.0,
+                "min": 0.1,
+                "max": 16.0,
+                "step": 0.1,
+                "tooltip": "Target total megapixels. 1.0 MP ≈ 1024x1024 for square.",
+            },
+        ),
+        "multiple": (
+            "INT",
+            {
+                "default": 8,
+                "min": 8,
+                "max": 128,
+                "step": 4,
+                "advanced": True,
+                "tooltip": "Nearest multiple of the result to set the selected resolution to.",
+            },
+        ),
+    }
+
+
+def _resolution_override_inputs():
+    return {
+        "resolution_width": ("INT", {"default": 0}),
+        "resolution_height": ("INT", {"default": 0}),
+    }
+
+
+def _calculate_resolution(aspect_ratio="1:1 (Square)", megapixels=1.0, multiple=8):
+    w_ratio, h_ratio = RESOLUTION_ASPECT_RATIOS[aspect_ratio]
+    total_pixels = float(megapixels) * 1024 * 1024
+    scale = math.sqrt(total_pixels / (w_ratio * h_ratio))
+    width = round(w_ratio * scale / int(multiple)) * int(multiple)
+    height = round(h_ratio * scale / int(multiple)) * int(multiple)
+    return width, height
+
+
+def _resolve_prompt_resolution(
+    aspect_ratio="1:1 (Square)",
+    megapixels=1.0,
+    multiple=8,
+    resolution_width=0,
+    resolution_height=0,
+):
+    width = int(resolution_width or 0)
+    height = int(resolution_height or 0)
+    if width > 0 and height > 0:
+        return width, height
+    return _calculate_resolution(aspect_ratio, megapixels, multiple)
 
 
 def _allowed_kobold_hosts():
@@ -414,9 +489,9 @@ def _chat_generation_budget(response_tokens, thinking_mode, safe_limit=None):
     if effort == "minimal":
         total = (response_tokens * 10 + 8) // 9
     elif effort == "low":
-        total = (response_tokens * 4 + 2) // 3
+        total = (response_tokens * 10 + 6) // 7
     elif effort == "medium":
-        total = response_tokens * 2
+        total = (response_tokens * 5 + 1) // 2
     elif effort == "high":
         desired_reasoning = 4096
         total = response_tokens + desired_reasoning
@@ -1611,11 +1686,13 @@ class KCPP_PromptAmplify:
                         "tooltip": "Optional text returned unchanged from the secondary_instructions output.",
                     },
                 ),
+                **_resolution_inputs(),
             },
+            "hidden": _resolution_override_inputs(),
         }
 
-    RETURN_TYPES = ("STRING", "STRING")
-    RETURN_NAMES = ("amplified_text", "secondary_instructions")
+    RETURN_TYPES = ("STRING", "STRING", "INT", "INT")
+    RETURN_NAMES = ("amplified_text", "secondary_instructions", "width", "height")
     FUNCTION = "amplify"
     CATEGORY = "KoboldCpp"
 
@@ -1646,6 +1723,11 @@ class KCPP_PromptAmplify:
         secondary_instructions="",
         stop_sequence="",
         request_timeout=120,
+        aspect_ratio="1:1 (Square)",
+        megapixels=1.0,
+        multiple=8,
+        resolution_width=0,
+        resolution_height=0,
     ):
         profile = _get_profile(model_profile)
         style_template = _get_style_template(style_preset)
@@ -1715,7 +1797,14 @@ class KCPP_PromptAmplify:
 
         if not amplified:
             raise RuntimeError("KoboldCpp returned an empty prompt")
-        return (_apply_profile_wrappers(amplified, profile), secondary_instructions)
+        width, height = _resolve_prompt_resolution(
+            aspect_ratio,
+            megapixels,
+            multiple,
+            resolution_width,
+            resolution_height,
+        )
+        return (_apply_profile_wrappers(amplified, profile), secondary_instructions, width, height)
 
 
 class KCPP_PromptSlot:
@@ -1745,15 +1834,33 @@ class KCPP_PromptSlot:
                     },
                 ),
             },
+            "hidden": {**_resolution_inputs(), **_resolution_override_inputs()},
         }
 
-    RETURN_TYPES = ("STRING", "STRING")
-    RETURN_NAMES = ("prompt", "secondary_instructions")
+    RETURN_TYPES = ("STRING", "STRING", "INT", "INT")
+    RETURN_NAMES = ("prompt", "secondary_instructions", "width", "height")
     FUNCTION = "get_prompt"
     CATEGORY = "KoboldCpp"
 
-    def get_prompt(self, prompt, slot_name="Positive Prompt", secondary_instructions=""):
-        return (prompt, secondary_instructions)
+    def get_prompt(
+        self,
+        prompt,
+        slot_name="Positive Prompt",
+        secondary_instructions="",
+        aspect_ratio="1:1 (Square)",
+        megapixels=1.0,
+        multiple=8,
+        resolution_width=0,
+        resolution_height=0,
+    ):
+        width, height = _resolve_prompt_resolution(
+            aspect_ratio,
+            megapixels,
+            multiple,
+            resolution_width,
+            resolution_height,
+        )
+        return (prompt, secondary_instructions, width, height)
 
 
 def _parse_chat_image_reference(image_ref):
@@ -1796,6 +1903,13 @@ def _parse_chat_image_reference(image_ref):
     if not os.path.isfile(path):
         raise ValueError(f"Referenced image does not exist: {relative_path}")
     return reference, path
+
+
+def _chat_image_dimensions(image_ref):
+    _, path = _parse_chat_image_reference(image_ref)
+    with Image.open(path) as source:
+        image = ImageOps.exif_transpose(source)
+        return image.width, image.height
 
 
 class KCPP_ChatImageInput:

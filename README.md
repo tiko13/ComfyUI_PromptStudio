@@ -2,7 +2,7 @@
 
 Chat-first image generation for ComfyUI, powered by a local KoboldCpp model.
 
-ComfyUI_LLLM adds **Prompt Studio**, an interactive workspace where you can describe an image, generate it with the active ComfyUI workflow, and refine it conversationally:
+ComfyUI_LLLM adds **Prompt Studio**, an interactive workspace where you can describe an image, generate it with a selected `[PS]` workflow saved in ComfyUI, and refine it conversationally:
 
 ```text
 "A rain-soaked market at night"
@@ -19,14 +19,15 @@ The extension keeps a complete canonical prompt behind the conversation. Each me
 ## Quick start: generate images through chat
 
 1. Install this repository in `ComfyUI/custom_nodes/ComfyUI_LLLM` and restart ComfyUI.
-2. Add a **KoboldCpp Prompt Slot** node to an image-generation workflow.
+2. Add a **KoboldCpp Prompt Slot** or **KoboldCpp Prompt Amplify** node to an image-generation workflow.
 3. Connect its `prompt` output to the positive prompt input or text encoder used by the workflow.
-4. Make sure the rest of the workflow can be queued normally and ends in an image output.
-5. Use one of the launchers at the lower-right of ComfyUI:
+4. Make sure the rest of the workflow can be queued normally and has exactly one image output.
+5. Save it in ComfyUI with a filename beginning `[PS]`, such as `[PS] Flux Create`.
+6. Use one of the launchers at the lower-right of ComfyUI:
    - **Prompt chat** opens the embedded interface.
    - **Prompt Studio** opens the same interface in its own tab.
-6. Select the workflow prompt node in the right inspector, then describe the image you want.
-7. Click **Create & Generate**. After the first result, ask for changes such as `use a wider composition`, `replace the coat with a red rain jacket`, or `make the lighting softer`.
+7. Select the saved workflow under **ComfyUI workflows** in Prompt Studio settings, then describe the image you want.
+8. Click **Create & Generate**. After the first result, ask for changes such as `use a wider composition`, `replace the coat with a red rain jacket`, or `make the lighting softer`.
 
 Prompt Studio uses `http://localhost:5001` as the default KoboldCpp endpoint. Change **KoboldCpp URL** in the generation controls if your server uses another local address. For safety, the backend accepts loopback hosts only by default; see [Remote KoboldCpp hosts](#remote-koboldcpp-hosts) before connecting to another machine.
 
@@ -46,7 +47,7 @@ The **Canonical prompt** panel shows the current complete target prompt. You can
 
 ### Generate and reroll
 
-With **Generate after revision** enabled, creating or revising a prompt immediately queues an API-format snapshot of the active ComfyUI workflow. Turn it off to create or revise the canonical prompt without queueing an image; **Generate** can queue it later. Generated images appear in the chat, can be opened at full size, and can be scaled down in the conversation with the interface **Image scale** setting.
+With **Generate after revision** enabled, creating or revising a prompt immediately queues an API-format snapshot of the selected saved `[PS]` workflow. Turn it off to create or revise the canonical prompt without queueing an image; **Generate** can queue it later. Generated images appear in the chat, can be opened at full size, and can be scaled down in the conversation with the interface **Image scale** setting.
 
 Prompt changes keep the current ComfyUI seed, making before-and-after comparisons easier. **New seed on reroll** randomizes widgets named `seed` or `noise_seed` only when **Reroll**, or an unchanged **Generate**, queues the same prompt and controls again. Turn it off to keep the current seed on rerolls too.
 
@@ -54,7 +55,7 @@ If you change the model profile, style, framing, modifiers, or embellishment lev
 
 ### Sessions and persistence
 
-The **Sessions** sidebar creates, switches, and deletes independent prompt conversations. Each session remembers its canonical prompt, prompt versions, messages, selected workflow prompt node, and the generation controls last applied by KoboldCpp.
+The **Sessions** sidebar creates, switches, and deletes independent prompt conversations. Each session remembers its canonical prompt, prompt versions, messages, selected creation and editing workflows, and the generation controls last applied by KoboldCpp.
 
 Chats are stored in `prompt_studio_chats.json` beside the extension's Python files. The file is excluded from Git and is shared by browsers connected to the same ComfyUI installation. Saves use revision checks so an older browser cannot silently overwrite a newer save. A conflicting client stops saving and asks for a reload. Before replacing a store, the backend keeps the previous valid copy as a `.bak` file.
 
@@ -68,47 +69,48 @@ On direct navigation or refresh, it reconnects to an open ComfyUI tab when possi
 
 ## Choosing a workflow prompt node
 
-Prompt Studio can attach to either of these nodes:
+Prompt Studio can use either of these nodes in a saved `[PS]` workflow:
 
 | Node | Interactive Prompt Studio generation | Normal ComfyUI queue |
 | --- | --- | --- |
 | **KoboldCpp Prompt Slot** | Passes the canonical prompt into the workflow | Passes its `prompt` input through unchanged |
 | **KoboldCpp Prompt Amplify** | Temporarily behaves like Prompt Slot in the queued Studio snapshot | Rewrites its `text` input through KoboldCpp before passing it on |
 
-Using Prompt Amplify as the attachment point does not cause double amplification. Prompt Studio converts it to a Prompt Slot only in the temporary workflow snapshot it submits. The saved workflow and ordinary ComfyUI runs retain the node's normal amplification behavior.
+Using Prompt Amplify as the prompt input does not cause double amplification. Prompt Studio converts it to a Prompt Slot only in the temporary workflow snapshot it submits. The saved workflow and ordinary ComfyUI runs retain the node's normal amplification behavior.
 
-Both nodes return two strings. The first is the image prompt. The optional `secondary_instructions` input is returned unchanged from the second output and is never sent to KoboldCpp. This keeps downstream wiring compatible whether Studio uses a Slot or bypasses an Amplify node.
+Both nodes return the image prompt and unchanged `secondary_instructions` as their first two outputs, followed by optional integer `width` and `height` outputs. Prompt Studio supplies the resolution from its **Resolution** controls whenever it queues either node. Prompt Amplify also exposes the same controls on the ComfyUI canvas for normal workflow runs; Prompt Slot keeps them Studio-only. The aspect-ratio presets, megapixel range, multiple range, defaults, and rounding match ComfyUI's built-in **Resolution Selector**.
 
-Use `slot_name` on **KoboldCpp Prompt Slot** to give each attachment point a recognizable name when a workflow contains multiple prompts.
+If a `[PS]` workflow contains more than one compatible prompt node, Prompt Studio uses the first executable one in graph order.
 
 ## Creation and image-editing workflows
 
-Prompt Studio can capture multiple queue-ready workflow profiles while keeping **Current canvas** available for the original behavior. Creation and editing profiles are selected independently, so every generation can explicitly choose **Create new** or **Edit selected** without changing the chat into a permanent mode.
+Prompt Studio uses normal workflows saved in ComfyUI's workflow library. Prefix a workflow's filename with `[PS]` to make it visible to Prompt Studio; other saved workflows remain available for manual use without cluttering Studio's selectors.
 
-To register a creation workflow:
+A `[PS]` workflow is accepted only when:
 
-1. Open and test the workflow normally in ComfyUI.
-2. Open **Workflow profile library** and click **Refresh canvas nodes** after switching to the workflow canvas.
-3. Start a **New profile**, enter a name, choose **Creation**, and select that canvas's **KoboldCpp Prompt Slot** or **Prompt Amplify** node under **Current canvas prompt**.
-4. Select the primary result node when desired. Custom output nodes such as `SaveAsWebpConditional` are supported by node ID; use automatic discovery when they return normal `images` or `gifs` history fields.
-5. Click **Save as new**. This always creates a separate profile and never overwrites an existing one.
+- its filename starts with `[PS]` and ends in `.json`;
+- it contains an executable **KoboldCpp Prompt Slot** or **KoboldCpp Prompt Amplify** node;
+- it contains exactly one executable image-output node;
+- if it is an editing workflow, it contains an executable **Prompt Studio Image Source** node.
 
-To register an editing workflow:
+Workflows with a **Prompt Studio Image Source** are listed as editing templates; workflows without one are listed as creation templates. Saving, renaming, or deleting a `[PS]` workflow through ComfyUI refreshes Prompt Studio immediately after the operation succeeds. The refresh button remains available, and the selected workflow is checked again immediately before it is queued. Widget values and other workflow settings therefore stay owned by ComfyUI and automatically flow into Prompt Studio.
+
+To prepare an editing workflow:
 
 1. Replace the workflow's normal **Load Image** node with **Prompt Studio Image Source** and connect its `image` output to the editing pipeline.
 2. Keep the workflow's prompt input connected through a Prompt Slot or Prompt Amplify node.
-3. Capture the workflow as **Editing** and select either **Full target prompt** or **Edit instruction** prompting.
-4. Select the image-source node and the primary final-output node.
+3. Ensure only the intended final image-output node is active.
+4. Save it in ComfyUI with a name such as `[PS] Kontext Edit`.
 
 Generated images have an **Edit this image** action. The selected chat image is injected into the saved editing workflow as a small JSON reference containing `filename`, `subfolder`, and `type`. If no image was explicitly selected, **Edit** automatically uses the last image in the active conversation. The image-source node loads that existing file directly from ComfyUI's `output`, `temp`, or `input` storage; it never copies a generated image into `input`.
 
-When **Edit** is selected, a second switch controls the workflow prompt payload. **Text only** sends the current revision text as the editing instruction, while **Full prompt** sends the complete revised target prompt. An editing profile's **Default edit payload** initializes this switch when that workflow is selected, but the switch can be changed per chat before any operation.
+Prompt Studio records each result's actual pixel dimensions. Editing an image injects those exact dimensions into the Prompt Slot or bypassed Prompt Amplify outputs, preserving the source size even when it does not match a Resolution Selector preset. Switching back to **Create** for a revised new image uses the aspect ratio, megapixels, and multiple currently selected in Prompt Studio again.
+
+When **Edit** is selected, a second switch controls the workflow prompt payload. **Text only** sends the current revision text as the editing instruction, while **Full prompt** sends the complete revised target prompt. The switch is remembered per chat.
 
 The interface can automatically advance the editing source to the newest result, while still allowing any earlier image to be selected at any time. **Reroll** repeats the previous execution prompt and source image while both the Create/Edit action and selected workflow are unchanged. Switching either control before rerolling routes through the newly selected workflow instead. Workflow seeds change only when seed randomization is enabled.
 
-Workflow routing and profile management are deliberately separate. The **Create workflow** and **Edit workflow** dropdowns only choose what a chat runs. To change a saved profile, select it under **Workflow profile library** and click the named **Update** button; Prompt Studio asks for confirmation before replacing its snapshot. **Save as new** always creates a new profile, and duplicate names within the same profile type are rejected.
-
-Workflow profiles are stored in the ignored runtime file `prompt_studio_workflows.json`. Each profile contains the captured executable snapshot, prompt and image entry points, result-node filters, configurable history fields, and any literal widget values present in that snapshot. Review workflows before capturing them if custom nodes can contain credentials or other secrets. Updating a workflow in ComfyUI does not silently alter a profile. Workflow saves use the same revision checks and `.bak` recovery copy as chat saves.
+The ignored runtime file `prompt_studio_workflows.json` is now only a last-known-good cache. If a changed `[PS]` workflow becomes invalid or cannot be converted, Prompt Studio marks it as **cached**, reports why the live update was rejected, and continues using the previous working snapshot. Correct and save the ComfyUI workflow, then refresh or generate again to replace the cache. Cache writes keep the existing revision checks and `.bak` recovery copy.
 
 ## Amplification nodes
 
@@ -135,6 +137,7 @@ Its prompt controls are:
 - `additional_instructions`: adds one-run task guidance without changing the profile files.
 - `thinking_mode`: selects KoboldCpp native reasoning effort from **Disabled** through **High**. Native thinking is kept in Chat Completions' separate `reasoning_content` field; only the final `content` is used as the image prompt.
 - `secondary_instructions`: passes through unchanged to the second output and is not part of the LLM request.
+- `aspect_ratio`, `megapixels`, and `multiple`: calculate the optional `width` and `height` outputs using the same settings and rounding as ComfyUI's **Resolution Selector**.
 
 The remaining controls configure the KoboldCpp request: URL, final-answer token allowance, temperature, `top_p`, `top_k`, `min_p`, repetition penalty and range, sampler seed, stop sequences, and request timeout. Set `max_response_tokens` to `0` to use the selected profile's default. The backend adds a reasoning allowance, measures the fully Jinja-formatted prompt with `/api/extra/tokencount`, and caps the combined completion against `/api/extra/true_max_context_length` without treating KoboldCpp's unrelated Horde `config/max_length` value as a server limit. Use one custom stop sequence per line; when native thinking is enabled, the backend does not add legacy textual continuation stops because labels such as `Response:` may occur during the analysis-to-final transition. `sampler_seed: -1` lets KoboldCpp choose the seed.
 
@@ -144,8 +147,8 @@ KoboldCpp counts reasoning and final text inside one completion. To preserve app
 | --- | --- | --- |
 | Disabled | 0 | final-answer allowance |
 | Minimal | up to 10% | allowance divided by 0.9 |
-| Low | up to 25% | allowance divided by 0.75 |
-| Medium | up to 50% | twice the allowance |
+| Low | up to 30% | allowance divided by 0.7 |
+| Medium | up to 60% | allowance divided by 0.4 |
 | High | up to 4,096 tokens | allowance plus 4,096 reasoning tokens |
 
 The server context window remains the hard upper bound, so the High reasoning budget is reduced only when necessary to preserve the final-answer allowance inside that window. A completion that ends with `finish_reason: length`, or returns reasoning without final content, is rejected rather than passing a truncated prompt into the image workflow or silently retrying with thinking disabled.
@@ -246,10 +249,11 @@ KoboldCpp requests remain on the Python side, so the browser does not need direc
 
 - Restart ComfyUI after changing Python files or updating this extension.
 - Refresh the browser after frontend-only changes.
-- If Prompt Studio cannot find a workflow prompt, add or refresh a **KoboldCpp Prompt Slot** or **KoboldCpp Prompt Amplify** node.
+- If Prompt Studio does not list a workflow, make sure its saved ComfyUI filename starts with `[PS]` and that it meets all four validation rules above.
+- If a workflow is marked **cached**, hover the workflow status for the validation error, correct the saved workflow in ComfyUI, and refresh it.
 - If prompt creation fails, confirm that KoboldCpp is running and that its URL is correct. The default is `http://localhost:5001`.
 - If prompt creation succeeds but no image appears, queue the workflow normally in ComfyUI and fix any disconnected or invalid generation nodes first.
-- If Prompt Studio reports a save conflict, reload it to obtain the newest chat or workflow-profile revision before making further changes.
+- If Prompt Studio reports a save conflict, reload it to obtain the newest chat or workflow-cache revision before making further changes.
 
 ## Development checks
 

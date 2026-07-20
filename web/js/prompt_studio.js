@@ -7,6 +7,18 @@ const AMPLIFY_TYPE = "KCPP_PromptAmplify";
 const IMAGE_SOURCE_TYPE = "KCPP_ChatImageInput";
 const STORAGE_KEY = "lllm.promptStudio.settings.v1";
 const STANDALONE_CHANNEL = "lllm.promptStudio.standalone.v1";
+const WORKFLOW_SYNC_CHANNEL = "lllm.promptStudio.workflows.v1";
+const WORKFLOW_OBSERVER_KEY = Symbol.for("ComfyUI_LLLM.PromptStudio.WorkflowObserver");
+const RESOLUTION_ASPECT_RATIOS = [
+  "1:1 (Square)",
+  "2:3 (Portrait Photo)",
+  "3:2 (Photo)",
+  "3:4 (Portrait Standard)",
+  "4:3 (Standard)",
+  "9:16 (Portrait Widescreen)",
+  "16:9 (Widescreen)",
+  "21:9 (Ultrawide)",
+];
 const CONTROL_IDS = [
   "lllm-kobold-url",
   "lllm-profile",
@@ -28,8 +40,8 @@ const state = {
   dockingPopup: false,
   returnToEmbedded: false,
   standaloneChannel: null,
+  workflowSyncChannel: null,
   config: null,
-  selectedSlotId: null,
   currentPrompt: "",
   versions: [],
   versionIndex: -1,
@@ -44,11 +56,13 @@ const state = {
   chatStoreLoaded: false,
   chatPersistenceBlocked: false,
   workflowProfiles: [],
-  managedWorkflowProfileId: null,
+  workflowIssues: [],
   workflowRevision: 0,
   workflowStoreLoaded: false,
   workflowSaveChain: Promise.resolve(),
   workflowBusy: false,
+  workflowRefreshTimer: null,
+  workflowRefreshBroadcast: false,
   chatSaveTimer: null,
   chatSaveChain: Promise.resolve(),
   lightboxTrigger: null,
@@ -81,6 +95,9 @@ function getSettings() {
     auto_generate: true,
     auto_advance_source: true,
     image_scale: 100,
+    resolution_aspect_ratio: "1:1 (Square)",
+    resolution_megapixels: 1.0,
+    resolution_multiple: 8,
   };
   try {
     return { ...defaults, ...JSON.parse(localStorage.getItem(STORAGE_KEY) || "{}") };
@@ -113,6 +130,9 @@ function saveSettings() {
       auto_generate: checked("lllm-auto-generate"),
       auto_advance_source: checked("lllm-auto-advance-source"),
       image_scale: Number(value("lllm-image-scale") || 100),
+      resolution_aspect_ratio: value("lllm-resolution-aspect-ratio"),
+      resolution_megapixels: Number(value("lllm-resolution-megapixels") || 1),
+      resolution_multiple: Number(value("lllm-resolution-multiple") || 8),
       }),
     );
   } catch (error) {
@@ -129,6 +149,17 @@ function applyImageScale(value) {
   if (input) input.value = String(scale);
   if (output) output.textContent = `${scale}%`;
   state.panel.style.setProperty("--ps-image-scale", `${scale}%`);
+}
+
+function resolutionSettings() {
+  const aspectRatio = state.panel?.querySelector("#lllm-resolution-aspect-ratio")?.value;
+  const megapixels = state.panel?.querySelector("#lllm-resolution-megapixels")?.valueAsNumber;
+  const multiple = state.panel?.querySelector("#lllm-resolution-multiple")?.valueAsNumber;
+  return {
+    aspect_ratio: RESOLUTION_ASPECT_RATIOS.includes(aspectRatio) ? aspectRatio : RESOLUTION_ASPECT_RATIOS[0],
+    megapixels: Number.isFinite(megapixels) ? Math.max(0.1, Math.min(16, megapixels)) : 1,
+    multiple: Number.isFinite(multiple) ? Math.max(8, Math.min(128, Math.round(multiple / 4) * 4)) : 8,
+  };
 }
 
 function toggleStudioSettings(force) {
@@ -149,6 +180,13 @@ function activeChat() {
 }
 
 function normalizeChat(chat) {
+  const normalizedAt = (value, fallback) => {
+    const timestamp = Number(value);
+    return Number.isFinite(timestamp) ? timestamp : fallback;
+  };
+  const now = Date.now();
+  const createdAt = normalizedAt(chat?.createdAt, normalizedAt(chat?.updatedAt, now));
+  const updatedAt = normalizedAt(chat?.updatedAt, createdAt);
   const currentPrompt = String(chat?.currentPrompt || "");
   const versions = Array.isArray(chat?.versions) && chat.versions.length
     ? chat.versions.map((value) => String(value))
@@ -159,7 +197,7 @@ function normalizeChat(chat) {
         role: ["user", "assistant", "system"].includes(message?.role) ? message.role : "system",
         text: String(message?.text || ""),
         label: String(message?.label || ""),
-        images: Array.isArray(message?.images) ? message.images : [],
+        images: Array.isArray(message?.images) ? message.images.map(normalizeImageReference).filter(Boolean) : [],
         canonicalPrompt: String(message?.canonicalPrompt || ""),
         controlsFingerprint: String(message?.controlsFingerprint || ""),
         llmAmplified: Boolean(message?.llmAmplified),
@@ -170,7 +208,7 @@ function normalizeChat(chat) {
         sourceImage: normalizeImageReference(message?.sourceImage),
         resultNodeIds: Array.isArray(message?.resultNodeIds) ? message.resultNodeIds.map(String) : [],
         resultFields: Array.isArray(message?.resultFields) && message.resultFields.length ? message.resultFields.map(String) : ["images", "gifs"],
-        createdAt: Number(message?.createdAt || Date.now()),
+        createdAt: normalizedAt(message?.createdAt, updatedAt),
       }))
     : [];
   const requestedIndex = Number(chat?.versionIndex ?? versions.length - 1);
@@ -179,9 +217,8 @@ function normalizeChat(chat) {
     : versions.length - 1;
   return {
     id: String(chat?.id || makeId()),
-    createdAt: Number(chat?.createdAt || Date.now()),
-    updatedAt: Number(chat?.updatedAt || Date.now()),
-    slotId: chat?.slotId == null ? null : String(chat.slotId),
+    createdAt,
+    updatedAt,
     initialized: chat?.initialized == null ? Boolean(currentPrompt) : Boolean(chat.initialized),
     currentPrompt,
     versions,
@@ -201,11 +238,46 @@ function normalizeImageReference(value) {
   if (!value || typeof value !== "object") return null;
   const filename = String(value.filename || "").trim();
   if (!filename) return null;
-  return {
+  const width = Number(value.width);
+  const height = Number(value.height);
+  const normalized = {
     filename,
     subfolder: String(value.subfolder || ""),
     type: ["input", "output", "temp"].includes(value.type) ? value.type : "output",
   };
+  if (Number.isInteger(width) && width > 0 && Number.isInteger(height) && height > 0) {
+    normalized.width = width;
+    normalized.height = height;
+  }
+  return normalized;
+}
+
+function storedImageReference(value) {
+  const reference = normalizeImageReference(value);
+  if (!reference) return null;
+  return {
+    filename: reference.filename,
+    subfolder: reference.subfolder,
+    type: reference.type,
+  };
+}
+
+async function imageReferenceWithDimensions(value) {
+  const reference = normalizeImageReference(value);
+  if (!reference) throw new Error("The image reference is invalid.");
+  if (reference.width && reference.height) return reference;
+  const response = await api.fetchApi("/lllm/prompt-studio/image-size", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ image: storedImageReference(reference) }),
+  });
+  const data = await response.json().catch(() => ({}));
+  const width = Number(data.width);
+  const height = Number(data.height);
+  if (!response.ok || !Number.isInteger(width) || width <= 0 || !Number.isInteger(height) || height <= 0) {
+    throw new Error(data.error || `Image dimensions could not be read (${response.status}).`);
+  }
+  return { ...reference, width, height };
 }
 
 function normalizeLastGeneration(value) {
@@ -291,7 +363,6 @@ function syncActiveChat() {
   chat.versions = [...state.versions];
   chat.versionIndex = state.versionIndex;
   chat.initialized = Boolean(chat.initialized);
-  chat.slotId = state.selectedSlotId == null ? null : String(state.selectedSlotId);
   chat.createWorkflowId = state.panel?.querySelector("#lllm-create-workflow")?.value || "";
   chat.editWorkflowId = state.panel?.querySelector("#lllm-edit-workflow")?.value || "";
   chat.editPromptMode = selectedEditPromptMode();
@@ -302,32 +373,189 @@ function syncActiveChat() {
 
 function normalizeWorkflowProfile(profile) {
   const snapshot = profile?.snapshot && typeof profile.snapshot === "object" ? profile.snapshot : null;
+  const path = String(profile?.path || profile?.id || "").replaceAll("\\", "/");
   return {
-    id: String(profile?.id || makeId()),
-    name: String(profile?.name || "Workflow").trim() || "Workflow",
+    id: path,
+    path,
+    name: String(profile?.name || workflowNameFromPath(path) || "Workflow").trim() || "Workflow",
     kind: profile?.kind === "edit" ? "edit" : "create",
-    promptMode: profile?.promptMode === "edit_instruction" ? "edit_instruction" : "full_prompt",
+    promptMode: "full_prompt",
     promptNodeId: String(profile?.promptNodeId || ""),
     imageNodeId: String(profile?.imageNodeId || ""),
     resultNodeIds: Array.isArray(profile?.resultNodeIds) ? profile.resultNodeIds.map(String) : [],
-    resultFields: Array.isArray(profile?.resultFields) && profile.resultFields.length ? profile.resultFields.map(String) : ["images", "gifs"],
+    resultFields: ["images", "gifs"],
     snapshot,
     updatedAt: Number(profile?.updatedAt || Date.now()),
+    sourceModified: Number(profile?.sourceModified || 0),
+    stale: Boolean(profile?.stale),
+    error: String(profile?.error || ""),
   };
+}
+
+function workflowNameFromPath(path) {
+  const filename = String(path || "").replaceAll("\\", "/").split("/").pop() || "";
+  return filename.replace(/\.json$/i, "");
+}
+
+function isPromptStudioWorkflowPath(path) {
+  const normalized = String(path || "").replaceAll("\\", "/");
+  const filename = normalized.split("/").pop() || "";
+  return normalized.startsWith("workflows/")
+    && filename.startsWith("[PS]")
+    && filename.toLowerCase().endsWith(".json");
+}
+
+function scheduleWorkflowRefresh({ broadcast = false } = {}) {
+  state.workflowRefreshBroadcast ||= broadcast;
+  if (state.workflowRefreshTimer) clearTimeout(state.workflowRefreshTimer);
+  const refreshWhenReady = () => {
+    if (state.workflowBusy) {
+      state.workflowRefreshTimer = setTimeout(refreshWhenReady, 100);
+      return;
+    }
+    state.workflowRefreshTimer = null;
+    const shouldBroadcast = state.workflowRefreshBroadcast;
+    state.workflowRefreshBroadcast = false;
+    refreshWorkflowTemplates()
+      .then(() => {
+        if (!shouldBroadcast) return;
+        state.workflowSyncChannel?.postMessage({
+          type: "saved-workflows-refreshed",
+          issues: state.workflowIssues,
+          revision: state.workflowRevision,
+        });
+      })
+      .catch((error) => {
+        setStatus(error.message || "Saved ComfyUI workflows could not be refreshed.", "warning");
+      });
+  };
+  state.workflowRefreshTimer = setTimeout(refreshWhenReady, 50);
+}
+
+function setupWorkflowSync() {
+  if (typeof BroadcastChannel !== "function" || state.workflowSyncChannel) return;
+  const channel = new BroadcastChannel(WORKFLOW_SYNC_CHANNEL);
+  channel.addEventListener("message", async (event) => {
+    const data = event.data;
+    if (data?.type !== "saved-workflows-refreshed") return;
+    if (Number(data.revision || 0) < state.workflowRevision) return;
+    try {
+      const response = await api.fetchApi("/lllm/prompt-studio/workflows");
+      const stored = await response.json().catch(() => ({}));
+      if (!response.ok || !Array.isArray(stored.templates)) return;
+      state.workflowProfiles = stored.templates.map(normalizeWorkflowProfile);
+      state.workflowIssues = Array.isArray(data.issues) ? data.issues.map(String) : [];
+      state.workflowRevision = Number(stored.revision || state.workflowRevision);
+      state.workflowStoreLoaded = true;
+      refreshWorkflowControls();
+      announceWorkflowSelection(selectedAction(), { persist: false });
+    } catch (error) {
+      setStatus(error.message || "Saved ComfyUI workflows could not be synchronized.", "warning");
+    }
+  });
+  state.workflowSyncChannel = channel;
+}
+
+function installWorkflowSaveObserver() {
+  if (api[WORKFLOW_OBSERVER_KEY]) return;
+  const storeUserData = api.storeUserData;
+  const moveUserData = api.moveUserData;
+  const deleteUserData = api.deleteUserData;
+  if (typeof storeUserData !== "function") return;
+
+  api.storeUserData = async function observedStoreUserData(path, ...args) {
+    const response = await storeUserData.call(this, path, ...args);
+    if (isPromptStudioWorkflowPath(path)) scheduleWorkflowRefresh({ broadcast: true });
+    return response;
+  };
+  if (typeof moveUserData === "function") {
+    api.moveUserData = async function observedMoveUserData(source, destination, ...args) {
+      const response = await moveUserData.call(this, source, destination, ...args);
+      if (isPromptStudioWorkflowPath(source) || isPromptStudioWorkflowPath(destination)) scheduleWorkflowRefresh({ broadcast: true });
+      return response;
+    };
+  }
+  if (typeof deleteUserData === "function") {
+    api.deleteUserData = async function observedDeleteUserData(path, ...args) {
+      const response = await deleteUserData.call(this, path, ...args);
+      if (isPromptStudioWorkflowPath(path)) scheduleWorkflowRefresh({ broadcast: true });
+      return response;
+    };
+  }
+  api[WORKFLOW_OBSERVER_KEY] = true;
+}
+
+function imageOutputNode(node) {
+  const data = node?.constructor?.nodeData;
+  if (!data?.output_node) return false;
+  const sockets = [...(node?.inputs || []), ...(node?.outputs || [])];
+  if (sockets.some((socket) => String(socket?.type || "").split(",").includes("IMAGE"))) return true;
+  const identity = `${nodeClassName(node)} ${node?.type || ""} ${node?.title || ""}`;
+  return /(?:image.*(?:save|preview|output)|(?:save|preview|output).*image|save.*(?:png|jpe?g|webp))/i.test(identity);
+}
+
+function firstExecutableNode(graph, snapshot, classTypes) {
+  const output = snapshot?.output || {};
+  return (graph?._nodes || []).find((node) => (
+    Object.hasOwn(output, String(node.id)) && classTypes.includes(output[String(node.id)]?.class_type)
+  ));
+}
+
+async function buildWorkflowTemplate(file, workflowData, cached) {
+  const Graph = app.rootGraph?.constructor || app.graph?.constructor;
+  if (typeof Graph !== "function") throw new Error("ComfyUI's workflow graph is not ready.");
+  const graph = new Graph();
+  const configureErrors = graph.configure(structuredClone(workflowData));
+  if (Array.isArray(configureErrors) && configureErrors.length) {
+    throw new Error(`ComfyUI could not load ${configureErrors.length} workflow node${configureErrors.length === 1 ? "" : "s"}.`);
+  }
+  const snapshot = structuredClone(await app.graphToPrompt(graph));
+  const promptNode = firstExecutableNode(graph, snapshot, [SLOT_TYPE, AMPLIFY_TYPE]);
+  if (!promptNode) throw new Error("Add an executable KoboldCpp Prompt Slot or Prompt Amplify node.");
+
+  const graphImageSources = (graph._nodes || []).filter((node) => nodeClassName(node) === IMAGE_SOURCE_TYPE);
+  const editingWorkflow = graphImageSources.length > 0 || cached?.kind === "edit";
+  const imageNode = firstExecutableNode(graph, snapshot, [IMAGE_SOURCE_TYPE]);
+  if (editingWorkflow && !imageNode) {
+    throw new Error("Editing workflows need an executable Prompt Studio Image Source node.");
+  }
+
+  const output = snapshot?.output || {};
+  const imageOutputs = (graph._nodes || []).filter((node) => (
+    Object.hasOwn(output, String(node.id)) && imageOutputNode(node)
+  ));
+  if (imageOutputs.length !== 1) {
+    throw new Error(`Workflow must have exactly one image output; found ${imageOutputs.length}.`);
+  }
+
+  return normalizeWorkflowProfile({
+    id: file.path,
+    path: file.path,
+    name: workflowNameFromPath(file.path),
+    kind: editingWorkflow ? "edit" : "create",
+    promptNodeId: String(promptNode.id),
+    imageNodeId: editingWorkflow ? String(imageNode.id) : "",
+    resultNodeIds: [String(imageOutputs[0].id)],
+    snapshot,
+    updatedAt: Date.now(),
+    sourceModified: Number(file.modified || 0),
+  });
 }
 
 async function loadWorkflowProfiles() {
   const response = await api.fetchApi("/lllm/prompt-studio/workflows");
   const data = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(data.error || `Workflow profiles could not be loaded (${response.status}).`);
-  state.workflowProfiles = Array.isArray(data.profiles) ? data.profiles.map(normalizeWorkflowProfile) : [];
+  if (!response.ok) throw new Error(data.error || `Workflow cache could not be loaded (${response.status}).`);
+  state.workflowProfiles = Array.isArray(data.templates) ? data.templates.map(normalizeWorkflowProfile) : [];
   state.workflowRevision = Number(data.revision || 0);
   state.workflowStoreLoaded = true;
+  await refreshWorkflowTemplates({ announce: false });
   refreshWorkflowControls();
+  announceWorkflowSelection(selectedAction());
 }
 
 async function saveWorkflowProfiles() {
-  if (!state.workflowStoreLoaded) throw new Error("Workflow profiles were not loaded, so saving is disabled to protect the existing store.");
+  if (!state.workflowStoreLoaded) throw new Error("The workflow cache was not loaded, so saving is disabled to protect it.");
   const snapshot = structuredClone(state.workflowProfiles);
   const operation = state.workflowSaveChain
     .catch(() => {})
@@ -335,17 +563,87 @@ async function saveWorkflowProfiles() {
       const response = await api.fetchApi("/lllm/prompt-studio/workflows", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ version: 1, revision: state.workflowRevision, profiles: snapshot }),
+        body: JSON.stringify({ version: 2, revision: state.workflowRevision, templates: snapshot }),
       });
       const data = await response.json().catch(() => ({}));
       if (!response.ok) {
         if (response.status === 409) state.workflowStoreLoaded = false;
-        throw new Error(data.error || `Workflow profiles could not be saved (${response.status}).`);
+        throw new Error(data.error || `Workflow cache could not be saved (${response.status}).`);
       }
       state.workflowRevision = Number(data.revision || state.workflowRevision);
     });
   state.workflowSaveChain = operation;
   return operation;
+}
+
+async function refreshWorkflowTemplates({ announce = true } = {}) {
+  if (state.workflowBusy) return;
+  state.workflowBusy = true;
+  renderWorkflowStatus();
+  const previous = state.workflowProfiles;
+  const cachedByPath = new Map(previous.map((profile) => [profile.path, profile]));
+  const next = [];
+  const issues = [];
+  try {
+    const response = await api.fetchApi("/userdata?dir=workflows&recurse=true&full_info=true");
+    if (!response.ok) throw new Error(`ComfyUI workflows could not be listed (${response.status}).`);
+    const files = (await response.json())
+      .filter((file) => (
+        file && typeof file.path === "string"
+        && file.path.split("/").pop().startsWith("[PS]")
+        && file.path.toLowerCase().endsWith(".json")
+      ))
+      .sort((left, right) => left.path.localeCompare(right.path));
+
+    for (const file of files) {
+      const cached = cachedByPath.get(file.path);
+      if (cached && !cached.stale && cached.sourceModified === Number(file.modified || 0)) {
+        next.push(cached);
+        continue;
+      }
+      try {
+        const userDataPath = `workflows/${file.path}`;
+        const workflowResponse = typeof api.getUserData === "function"
+          ? await api.getUserData(userDataPath)
+          : await api.fetchApi(`/userdata/${encodeURIComponent(userDataPath)}`);
+        if (!workflowResponse.ok) throw new Error(`ComfyUI could not read the workflow (${workflowResponse.status}).`);
+        const workflowData = await workflowResponse.json();
+        next.push(await buildWorkflowTemplate(file, workflowData, cached));
+      } catch (error) {
+        const message = error.message || String(error);
+        issues.push(`${workflowNameFromPath(file.path)}: ${message}`);
+        if (cached?.snapshot?.output) {
+          next.push(normalizeWorkflowProfile({ ...cached, stale: true, error: message }));
+        }
+      }
+    }
+    state.workflowProfiles = next;
+    state.workflowIssues = issues;
+    refreshWorkflowControls();
+    if (JSON.stringify(previous) !== JSON.stringify(next)) await saveWorkflowProfiles();
+    if (announce) {
+      const cachedCount = next.filter((profile) => profile.stale).length;
+      if (issues.length) {
+        setStatus(
+          cachedCount
+            ? `${issues.length} ComfyUI workflow update${issues.length === 1 ? "" : "s"} failed; ${cachedCount} cached workflow${cachedCount === 1 ? " is" : "s are"} still available.`
+            : `${issues.length} [PS] workflow${issues.length === 1 ? " is" : "s are"} invalid and were not accepted.`,
+          "warning",
+        );
+      } else {
+        setStatus(`Loaded ${next.length} compatible [PS] workflow${next.length === 1 ? "" : "s"} from ComfyUI.`, "ready");
+      }
+    }
+  } catch (error) {
+    const message = error.message || String(error);
+    state.workflowProfiles = previous.map((profile) => normalizeWorkflowProfile({ ...profile, stale: true, error: message }));
+    state.workflowIssues = [message];
+    refreshWorkflowControls();
+    if (announce) setStatus(`${message} The last working cache remains available.`, "warning");
+  } finally {
+    state.workflowBusy = false;
+    refreshWorkflowControls();
+  }
 }
 
 function controlsFingerprint() {
@@ -370,8 +668,8 @@ function markControlsChanged() {
     setStatus("Describe an image to create the first prompt.", "ready");
   } else if (controlsNeedApply()) {
     setStatus("Generation controls changed. KoboldCpp will update the prompt before generation.", "warning");
-  } else if (selectedSlot()) {
-    setStatus(`Attached to ${slotLabel(selectedSlot())}`, "ready");
+  } else if (selectedWorkflowProfile(selectedAction())) {
+    announceWorkflowSelection(selectedAction());
   }
 }
 
@@ -386,11 +684,25 @@ function chatTitle(timestamp) {
   });
 }
 
+function chatActivityAt(chat) {
+  if (!chat.messages.length) return chat.createdAt;
+  return chat.messages.reduce(
+    (newest, message) => Math.max(newest, message.createdAt),
+    Number.NEGATIVE_INFINITY,
+  );
+}
+
+function compareChatsNewestFirst(left, right) {
+  return chatActivityAt(right) - chatActivityAt(left)
+    || right.createdAt - left.createdAt
+    || left.id.localeCompare(right.id);
+}
+
 function renderChatList() {
   const list = state.panel?.querySelector("#lllm-chat-list");
   if (!list) return;
   list.replaceChildren();
-  const ordered = [...state.chats].sort((a, b) => b.updatedAt - a.updatedAt);
+  const ordered = [...state.chats].sort(compareChatsNewestFirst);
   for (const chat of ordered) {
     const row = document.createElement("div");
     row.className = "lllm-chat-row";
@@ -500,12 +812,8 @@ function syncManualPrompt(value) {
   if (useLlmAmplification()) return;
   const chat = activeChat();
   if (chat) chat.initialized = Boolean(value.trim());
-  if (selectedSlot()) {
-    writePromptToSlot(value);
-  } else {
-    updatePromptEditor(value);
-    syncActiveChat();
-  }
+  updatePromptEditor(value);
+  syncActiveChat();
 }
 
 function createChat() {
@@ -513,7 +821,6 @@ function createChat() {
   commitPromptEditorVersion();
   syncActiveChat();
   const chat = normalizeChat({
-    slotId: state.selectedSlotId,
     initialized: false,
     currentPrompt: "",
     versions: [""],
@@ -544,11 +851,11 @@ function deleteChat(chatId) {
   const wasActive = chat.id === state.activeChatId;
   state.chats.splice(index, 1);
   if (!state.chats.length) {
-    const replacement = normalizeChat({ slotId: state.selectedSlotId });
+    const replacement = normalizeChat({});
     state.chats.push(replacement);
   }
   if (wasActive) {
-    const replacement = [...state.chats].sort((a, b) => b.updatedAt - a.updatedAt)[0];
+    const replacement = [...state.chats].sort(compareChatsNewestFirst)[0];
     state.activeChatId = replacement.id;
     activateChat(replacement.id);
   } else {
@@ -563,35 +870,24 @@ function activateChat(chatId) {
   const chat = state.chats.find((item) => item.id === chatId);
   if (!chat) return;
   state.activeChatId = chat.id;
-  const available = slots();
-  const rememberedSlot = available.find((node) => String(node.id) === String(chat.slotId));
-  if (rememberedSlot) state.selectedSlotId = String(rememberedSlot.id);
-  else state.selectedSlotId = available.length ? String(available[0].id) : null;
-  const slotSelect = state.panel?.querySelector("#lllm-slot-select");
-  if (slotSelect && state.selectedSlotId != null) slotSelect.value = String(state.selectedSlotId);
   state.currentPrompt = chat.currentPrompt;
   state.versions = [...chat.versions];
   state.versionIndex = chat.versionIndex;
   refreshWorkflowControls();
   renderChatHistory();
   renderChatList();
-  const node = selectedSlot();
-  if (node) {
-    chat.slotId = String(state.selectedSlotId);
-    updatePromptEditor(chat.currentPrompt);
-    loadSecondaryInstructionsFromNode(node);
-    if (!useLlmAmplification()) {
-      setStatus("Direct prompt mode. KoboldCpp will not be used.", "ready");
-    } else if (!chat.initialized) {
-      setStatus("Describe an image to create the first prompt.", "ready");
-    } else if (controlsNeedApply()) {
-      setStatus("Generation controls differ from this prompt. KoboldCpp will update it before generation.", "warning");
-    } else {
-      setStatus(`Attached to ${slotLabel(node)}`, "ready");
-    }
+  updatePromptEditor(chat.currentPrompt);
+  refreshSecondaryInstructionsControl();
+  if (!selectedWorkflowProfile(selectedAction())) {
+    setStatus("No compatible [PS] workflow is selected for this action.", "warning");
+  } else if (!useLlmAmplification()) {
+    setStatus("Direct prompt mode. KoboldCpp will not be used.", "ready");
+  } else if (!chat.initialized) {
+    setStatus("Describe an image to create the first prompt.", "ready");
+  } else if (controlsNeedApply()) {
+    setStatus("Generation controls differ from this prompt. KoboldCpp will update it before generation.", "warning");
   } else {
-    updatePromptEditor(chat.currentPrompt);
-    setStatus("This chat's prompt node is not available in the current workflow.", "warning");
+    announceWorkflowSelection(selectedAction());
   }
   const undo = state.panel?.querySelector("#lllm-undo");
   if (undo) undo.disabled = state.versionIndex <= 0 || state.busy;
@@ -608,90 +904,11 @@ function nodeClassName(node) {
   );
 }
 
-function slots() {
-  return (app.graph?._nodes || []).filter((node) => [SLOT_TYPE, AMPLIFY_TYPE].includes(nodeClassName(node)));
-}
-
-function imageSources() {
-  return (app.graph?._nodes || []).filter((node) => {
-    const identifiers = [
-      nodeClassName(node),
-      String(node?.type || ""),
-      String(node?.title || ""),
-      String(node?.constructor?.nodeData?.display_name || ""),
-    ];
-    return identifiers.includes(IMAGE_SOURCE_TYPE)
-      || identifiers.includes("Prompt Studio Image Source");
-  });
-}
-
-function incompatibleImageLoaders() {
-  const compatible = new Set(imageSources());
-  return (app.graph?._nodes || []).filter((node) => {
-    if (compatible.has(node)) return false;
-    const identity = `${nodeClassName(node)} ${node?.type || ""} ${node?.title || ""}`;
-    return /(?:load\s*image|image\s*loader)/i.test(identity);
-  });
-}
-
-function widget(node, name) {
-  return node?.widgets?.find((item) => item.name === name);
-}
-
-function promptWidget(node) {
-  return widget(node, nodeClassName(node) === AMPLIFY_TYPE ? "text" : "prompt");
-}
-
-function secondaryInstructionsWidget(node) {
-  return widget(node, "secondary_instructions");
-}
-
-function loadSecondaryInstructionsFromNode(node) {
+function refreshSecondaryInstructionsControl() {
   const editor = state.panel?.querySelector("#lllm-secondary-instructions");
-  const profile = selectedWorkflowProfile(selectedAction());
-  if (editor && profile) {
-    editor.value = String(profile.snapshot?.output?.[profile.promptNodeId]?.inputs?.secondary_instructions || "");
-    editor.disabled = true;
-    editor.title = "Captured by the selected workflow profile. Update the profile from its canvas to change it.";
-    return;
-  }
-  const input = secondaryInstructionsWidget(node);
   if (editor) {
-    if (input) editor.value = String(input.value || "");
     editor.disabled = state.busy;
-    editor.removeAttribute("title");
   }
-}
-
-function writeSecondaryInstructionsToNode(value) {
-  if (selectedWorkflowProfile(selectedAction())) return;
-  const node = selectedSlot();
-  const input = secondaryInstructionsWidget(node);
-  if (!node || !input) return;
-  input.value = value;
-  input.callback?.(value, app.canvas, node, app.canvas?.graph_mouse, {});
-  node.graph?.setDirtyCanvas?.(true, true);
-}
-
-function slotLabel(node) {
-  const named = String(widget(node, "slot_name")?.value || "").trim();
-  return `${named || node.title || "Prompt Slot"} · node ${node.id}`;
-}
-
-function imageSourceLabel(node) {
-  const named = String(widget(node, "source_name")?.value || "").trim();
-  return `${named || node.title || "Edit Source"} · node ${node.id}`;
-}
-
-function outputNodeLabel(node) {
-  return `${node.title || node.type || "Output"} · node ${node.id}`;
-}
-
-function outputCandidates() {
-  return (app.graph?._nodes || []).filter((node) => {
-    const data = node.constructor?.nodeData;
-    return Boolean(data?.output_node || /(?:save|preview|output)/i.test(node.type || ""));
-  });
 }
 
 function selectedAction() {
@@ -726,26 +943,37 @@ function selectedWorkflowProfile(action = selectedAction()) {
   return workflowProfileById(selectedWorkflowProfileId(action));
 }
 
-function announceWorkflowSelection(action) {
-  syncActiveChat();
+function announceWorkflowSelection(action, { persist = true } = {}) {
+  if (persist) syncActiveChat();
   const profile = selectedWorkflowProfile(action);
-  loadSecondaryInstructionsFromNode(selectedSlot());
-  setStatus(`${action === "edit" ? "Edit" : "Create"} will use ${profile ? `“${profile.name}”` : "the current canvas"}.`, "ready");
+  refreshSecondaryInstructionsControl();
+  if (!profile) {
+    setStatus(`No compatible [PS] ${action === "edit" ? "editing" : "creation"} workflow is available.`, "warning");
+  } else if (profile.stale) {
+    setStatus(`“${profile.name}” is invalid in ComfyUI. Prompt Studio will use its last working cache.`, "warning");
+  } else {
+    setStatus(`${action === "edit" ? "Edit" : "Create"} will use “${profile.name}” from ComfyUI.`, "ready");
+  }
 }
 
 function fillWorkflowSelect(select, kind, remembered) {
   if (!select) return;
   select.replaceChildren();
-  const current = document.createElement("option");
-  current.value = "";
-  current.textContent = "Current canvas";
-  select.appendChild(current);
   for (const profile of state.workflowProfiles.filter((item) => item.kind === kind)) {
     const option = document.createElement("option");
     option.value = profile.id;
-    option.textContent = profile.name;
+    option.textContent = `${profile.name}${profile.stale ? " · cached" : ""}`;
     select.appendChild(option);
   }
+  if (!select.options.length) {
+    const unavailable = document.createElement("option");
+    unavailable.value = "";
+    unavailable.textContent = `No compatible ${kind === "edit" ? "editing" : "creation"} workflows`;
+    select.appendChild(unavailable);
+    select.disabled = true;
+    return;
+  }
+  select.disabled = state.busy || state.workflowBusy;
   if ([...select.options].some((option) => option.value === remembered)) select.value = remembered;
 }
 
@@ -756,333 +984,22 @@ function refreshWorkflowControls() {
   fillWorkflowSelect(state.panel.querySelector("#lllm-edit-workflow"), "edit", chat?.editWorkflowId || "");
   const editWorkflow = workflowProfileById(chat?.editWorkflowId);
   setEditPromptMode(chat?.editPromptMode || editWorkflow?.promptMode || "full_prompt");
-  refreshWorkflowManagerSelect();
-
-  const sourceSelect = state.panel.querySelector("#lllm-current-image-source");
-  if (sourceSelect) {
-    const previous = sourceSelect.value;
-    sourceSelect.replaceChildren();
-    for (const node of imageSources()) {
-      const option = document.createElement("option");
-      option.value = String(node.id);
-      option.textContent = imageSourceLabel(node);
-      sourceSelect.appendChild(option);
-    }
-    if ([...sourceSelect.options].some((option) => option.value === previous)) sourceSelect.value = previous;
-  }
-  refreshRegistrationControls();
-  loadSecondaryInstructionsFromNode(selectedSlot());
+  refreshSecondaryInstructionsControl();
   updateComposeMode();
-  if (!selectedSlot() && (selectedWorkflowProfile("create") || selectedWorkflowProfile("edit"))) {
-    setStatus("Saved workflow profiles are ready; the current canvas prompt node is optional.", "ready");
-  }
+  renderWorkflowStatus();
 }
 
-function refreshWorkflowManagerSelect() {
-  const select = state.panel?.querySelector("#lllm-managed-workflow");
-  if (!select) return;
-  select.replaceChildren();
-  const placeholder = document.createElement("option");
-  placeholder.value = "";
-  placeholder.textContent = "New profile draft";
-  select.appendChild(placeholder);
-  for (const profile of state.workflowProfiles) {
-    const option = document.createElement("option");
-    option.value = profile.id;
-    option.textContent = `${profile.name} · ${profile.kind === "edit" ? "Editing" : "Creation"}`;
-    select.appendChild(option);
-  }
-  if (workflowProfileById(state.managedWorkflowProfileId)) {
-    select.value = state.managedWorkflowProfileId;
-  } else {
-    state.managedWorkflowProfileId = null;
-    select.value = "";
-  }
-  updateWorkflowManagerState();
-}
-
-function updateWorkflowManagerState() {
-  const profile = workflowProfileById(state.managedWorkflowProfileId);
-  const update = state.panel?.querySelector("#lllm-update-workflow");
-  const remove = state.panel?.querySelector("#lllm-delete-workflow");
-  const mode = state.panel?.querySelector("#lllm-workflow-manager-mode");
-  const unavailable = state.busy || state.workflowBusy || !state.workflowStoreLoaded;
-  if (update) {
-    update.disabled = unavailable || !profile;
-    update.textContent = profile ? `Update “${profile.name}”` : "Update selected";
-  }
-  if (remove) remove.disabled = unavailable || !profile;
-  const saveNew = state.panel?.querySelector("#lllm-save-new-workflow");
-  if (saveNew) saveNew.disabled = unavailable;
-  if (mode) {
-    mode.textContent = profile
-      ? `Editing saved profile “${profile.name}”. Changes are not applied until you explicitly update it.`
-      : "New profile draft. Saving creates a separate profile and never overwrites an existing one.";
-    mode.dataset.existing = profile ? "true" : "false";
-  }
-}
-
-function refreshRegistrationControls({ resetCanvasSelections = false } = {}) {
-  if (!state.panel) return;
-  const promptSelect = state.panel.querySelector("#lllm-register-prompt-node");
-  const sourceSelect = state.panel.querySelector("#lllm-register-image-node");
-  const resultSelect = state.panel.querySelector("#lllm-register-result-node");
-  if (promptSelect) {
-    const previous = resetCanvasSelections ? "" : promptSelect.value;
-    promptSelect.replaceChildren();
-    for (const node of slots()) {
-      const option = document.createElement("option");
-      option.value = String(node.id);
-      option.textContent = slotLabel(node);
-      promptSelect.appendChild(option);
-    }
-    if ([...promptSelect.options].some((option) => option.value === previous)) promptSelect.value = previous;
-  }
-  if (sourceSelect) {
-    const previous = resetCanvasSelections ? "" : sourceSelect.value;
-    sourceSelect.replaceChildren();
-    for (const node of imageSources()) {
-      const option = document.createElement("option");
-      option.value = String(node.id);
-      option.textContent = imageSourceLabel(node);
-      sourceSelect.appendChild(option);
-    }
-    if ([...sourceSelect.options].some((option) => option.value === previous)) sourceSelect.value = previous;
-  }
-  if (resultSelect) {
-    const previous = resetCanvasSelections ? "" : resultSelect.value;
-    resultSelect.replaceChildren();
-    const automatic = document.createElement("option");
-    automatic.value = "";
-    automatic.textContent = "Automatic · all image results";
-    resultSelect.appendChild(automatic);
-    for (const node of outputCandidates()) {
-      const option = document.createElement("option");
-      option.value = String(node.id);
-      option.textContent = outputNodeLabel(node);
-      resultSelect.appendChild(option);
-    }
-    if ([...resultSelect.options].some((option) => option.value === previous)) resultSelect.value = previous;
-  }
-  const kind = state.panel.querySelector("#lllm-register-kind")?.value || "create";
-  state.panel.querySelector("#lllm-register-image-row")?.toggleAttribute("hidden", kind !== "edit");
-  state.panel.querySelector("#lllm-register-prompt-mode-row")?.toggleAttribute("hidden", kind !== "edit");
-  const canvasStatus = state.panel.querySelector("#lllm-profile-canvas-status");
-  if (canvasStatus) canvasStatus.textContent = `Current canvas: ${profileCanvasSummary()}`;
-}
-
-function profileCanvasSummary() {
-  const promptCount = slots().length;
-  const imageCount = imageSources().length;
-  const resultCount = outputCandidates().length;
-  const ignoredLoaders = incompatibleImageLoaders();
-  let summary = `${promptCount} prompt ${promptCount === 1 ? "node" : "nodes"}, ${imageCount} Prompt Studio image ${imageCount === 1 ? "input" : "inputs"}, ${resultCount} result ${resultCount === 1 ? "node" : "nodes"}`;
-  if (!imageCount && ignoredLoaders.length) {
-    const names = ignoredLoaders.slice(0, 3).map((node) => nodeClassName(node) || node.title || "Image loader").join(", ");
-    summary += `; ignored incompatible ${names}`;
-  }
-  return summary;
-}
-
-function refreshProfileCanvasNodes() {
-  refreshRegistrationControls({ resetCanvasSelections: true });
-  const summary = profileCanvasSummary();
-  const canvasStatus = state.panel?.querySelector("#lllm-profile-canvas-status");
-  if (canvasStatus) canvasStatus.textContent = `Current canvas: ${summary}`;
-  setStatus(`Refreshed profile fields from the current canvas: ${summary}.`, "ready");
-}
-
-function loadWorkflowProfileIntoManager(profileId) {
-  const profile = workflowProfileById(profileId);
-  if (!profile) return resetWorkflowManager();
-  state.managedWorkflowProfileId = profile.id;
-  state.panel.querySelector("#lllm-register-kind").value = profile.kind;
-  state.panel.querySelector("#lllm-register-name").value = profile.name;
-  state.panel.querySelector("#lllm-register-prompt-mode").value = profile.promptMode;
-  state.panel.querySelector("#lllm-register-result-fields").value = profile.resultFields.join(",");
-  refreshRegistrationControls();
-  const promptSelect = state.panel.querySelector("#lllm-register-prompt-node");
-  const imageSelect = state.panel.querySelector("#lllm-register-image-node");
-  const resultSelect = state.panel.querySelector("#lllm-register-result-node");
-  if (promptSelect && [...promptSelect.options].some((option) => option.value === profile.promptNodeId)) {
-    promptSelect.value = profile.promptNodeId;
-  }
-  if (imageSelect && [...imageSelect.options].some((option) => option.value === profile.imageNodeId)) {
-    imageSelect.value = profile.imageNodeId;
-  }
-  const resultNodeId = profile.resultNodeIds[0] || "";
-  if (resultSelect && [...resultSelect.options].some((option) => option.value === resultNodeId)) {
-    resultSelect.value = resultNodeId;
-  }
-  updateWorkflowManagerState();
-}
-
-function resetWorkflowManager() {
-  if (!state.panel) return;
-  state.managedWorkflowProfileId = null;
-  const managerSelect = state.panel.querySelector("#lllm-managed-workflow");
-  if (managerSelect) managerSelect.value = "";
-  state.panel.querySelector("#lllm-register-name").value = "";
-  state.panel.querySelector("#lllm-register-kind").value = selectedAction();
-  state.panel.querySelector("#lllm-register-prompt-mode").value = "full_prompt";
-  state.panel.querySelector("#lllm-register-result-fields").value = "images,gifs";
-  refreshRegistrationControls();
-  const resultSelect = state.panel.querySelector("#lllm-register-result-node");
-  if (resultSelect) resultSelect.value = "";
-  updateWorkflowManagerState();
-  state.panel.querySelector("#lllm-register-name").focus();
-}
-
-async function captureWorkflowProfile({ existingProfileId = "", confirmUpdate = false } = {}) {
-  if (state.busy || state.workflowBusy) return;
-  if (!state.workflowStoreLoaded) {
-    return setStatus("Workflow profiles could not be loaded. Reload Prompt Studio before saving.", "error");
-  }
-  const promptNodeId = state.panel.querySelector("#lllm-register-prompt-node")?.value || "";
-  const node = slots().find((candidate) => String(candidate.id) === promptNodeId);
-  if (!node) return setStatus("Refresh the current canvas and select its workflow prompt node before saving a profile.", "warning");
-  const kind = state.panel.querySelector("#lllm-register-kind")?.value === "edit" ? "edit" : "create";
-  const existing = workflowProfileById(existingProfileId);
-  if (existingProfileId && !existing) return setStatus("Select a saved workflow profile to update.", "warning");
-  const name = state.panel.querySelector("#lllm-register-name")?.value.trim() || existing?.name || "";
-  const imageNodeId = state.panel.querySelector("#lllm-register-image-node")?.value || "";
-  const resultNodeId = state.panel.querySelector("#lllm-register-result-node")?.value || "";
-  const resultFields = String(state.panel.querySelector("#lllm-register-result-fields")?.value || "images,gifs")
-    .split(/[\s,]+/)
-    .map((value) => value.trim())
-    .filter(Boolean);
-  const promptMode = state.panel.querySelector("#lllm-register-prompt-mode")?.value === "edit_instruction"
-    ? "edit_instruction"
-    : "full_prompt";
-  if (!name) return setStatus("Enter a workflow profile name.", "warning");
-  if (kind === "edit" && !imageNodeId) {
-    return setStatus("Add and select a Prompt Studio Image Source node for an editing profile.", "warning");
-  }
-  const duplicate = state.workflowProfiles.find((profile) => (
-    profile.id !== existing?.id
-    && profile.kind === kind
-    && profile.name.localeCompare(name, undefined, { sensitivity: "accent" }) === 0
-  ));
-  if (duplicate) {
-    return setStatus(`A ${kind} profile named “${name}” already exists. Choose a different name or update that profile explicitly.`, "warning");
-  }
-
-  let previousProfiles = null;
-  state.workflowBusy = true;
-  updateWorkflowManagerState();
-  try {
-    const snapshot = structuredClone(await app.graphToPrompt());
-    const promptApiNode = snapshot.output?.[String(node.id)];
-    if (!promptApiNode || ![SLOT_TYPE, AMPLIFY_TYPE].includes(promptApiNode.class_type)) {
-      throw new Error("The selected prompt node is not part of the executable workflow.");
-    }
-    if (kind === "edit" && snapshot.output?.[imageNodeId]?.class_type !== IMAGE_SOURCE_TYPE) {
-      throw new Error("The selected image source node is not part of the executable workflow.");
-    }
-    if (resultNodeId && !snapshot.output?.[resultNodeId]) {
-      throw new Error("The selected result node is not part of the executable workflow.");
-    }
-    if (existing && confirmUpdate) {
-      const view = state.panel.ownerDocument.defaultView;
-      const confirmed = view?.confirm(
-        `Update “${existing.name}”?\n\nThis replaces its saved workflow snapshot with the current ComfyUI canvas.`,
-      );
-      if (!confirmed) return;
-    }
-    const profile = normalizeWorkflowProfile({
-      id: existing?.id || makeId(),
-      name,
-      kind,
-      promptMode,
-      promptNodeId,
-      imageNodeId: kind === "edit" ? imageNodeId : "",
-      resultNodeIds: resultNodeId ? [resultNodeId] : [],
-      resultFields,
-      snapshot,
-      updatedAt: Date.now(),
-    });
-    previousProfiles = state.workflowProfiles;
-    if (existing) {
-      state.workflowProfiles = state.workflowProfiles.map((item) => item.id === existing.id ? profile : item);
-    } else {
-      state.workflowProfiles = [...state.workflowProfiles, profile];
-    }
-    await saveWorkflowProfiles();
-    if (existing && existing.kind !== profile.kind) {
-      for (const chat of state.chats) {
-        if (existing.kind === "create" && chat.createWorkflowId === profile.id) chat.createWorkflowId = "";
-        if (existing.kind === "edit" && chat.editWorkflowId === profile.id) chat.editWorkflowId = "";
-      }
-      saveChats({ immediate: true });
-    }
-    state.managedWorkflowProfileId = profile.id;
-    refreshWorkflowControls();
-    loadWorkflowProfileIntoManager(profile.id);
-    setStatus(`Saved ${kind} workflow “${profile.name}”.`, "ready");
-  } catch (error) {
-    if (previousProfiles) state.workflowProfiles = previousProfiles;
-    refreshWorkflowControls();
-    setStatus(error.message || String(error), "error");
-  } finally {
-    state.workflowBusy = false;
-    updateWorkflowManagerState();
-  }
-}
-
-function saveNewWorkflowProfile() {
-  return captureWorkflowProfile();
-}
-
-function updateManagedWorkflowProfile() {
-  return captureWorkflowProfile({
-    existingProfileId: state.managedWorkflowProfileId || "",
-    confirmUpdate: true,
-  });
-}
-
-async function deleteSelectedWorkflowProfile() {
-  if (state.busy || state.workflowBusy) return;
-  if (!state.workflowStoreLoaded) return setStatus("Workflow profiles must be reloaded before deleting.", "error");
-  const profile = workflowProfileById(state.managedWorkflowProfileId);
-  if (!profile) return setStatus("Select a saved workflow profile to delete.", "warning");
-  const view = state.panel.ownerDocument.defaultView;
-  if (!view?.confirm(`Delete the workflow profile “${profile.name}”?`)) return;
-  state.workflowBusy = true;
-  updateWorkflowManagerState();
-  const previousProfiles = state.workflowProfiles;
-  const previousRoutes = state.chats.map((chat) => ({
-    chat,
-    createWorkflowId: chat.createWorkflowId,
-    editWorkflowId: chat.editWorkflowId,
-  }));
-  state.workflowProfiles = state.workflowProfiles.filter((item) => item.id !== profile.id);
-  for (const chat of state.chats) {
-    if (chat.createWorkflowId === profile.id) chat.createWorkflowId = "";
-    if (chat.editWorkflowId === profile.id) chat.editWorkflowId = "";
-  }
-  try {
-    await saveWorkflowProfiles();
-    state.managedWorkflowProfileId = null;
-    refreshWorkflowControls();
-    resetWorkflowManager();
-    saveChats({ immediate: true });
-    setStatus(`Deleted workflow profile “${profile.name}”.`, "ready");
-  } catch (error) {
-    state.workflowProfiles = previousProfiles;
-    for (const route of previousRoutes) {
-      route.chat.createWorkflowId = route.createWorkflowId;
-      route.chat.editWorkflowId = route.editWorkflowId;
-    }
-    refreshWorkflowControls();
-    setStatus(error.message || String(error), "error");
-  } finally {
-    state.workflowBusy = false;
-    updateWorkflowManagerState();
-  }
-}
-
-function selectedSlot() {
-  return slots().find((node) => String(node.id) === String(state.selectedSlotId)) || null;
+function renderWorkflowStatus() {
+  const status = state.panel?.querySelector("#lllm-workflow-template-status");
+  if (!status) return;
+  const cachedCount = state.workflowProfiles.filter((profile) => profile.stale).length;
+  const createCount = state.workflowProfiles.filter((profile) => profile.kind === "create").length;
+  const editCount = state.workflowProfiles.filter((profile) => profile.kind === "edit").length;
+  status.textContent = state.workflowBusy
+    ? "Checking ComfyUI workflows…"
+    : `${createCount} creation · ${editCount} editing${cachedCount ? ` · ${cachedCount} cached` : ""}${state.workflowIssues.length ? ` · ${state.workflowIssues.length} rejected update${state.workflowIssues.length === 1 ? "" : "s"}` : ""}`;
+  status.dataset.kind = state.workflowIssues.length ? "warning" : "ready";
+  status.title = state.workflowIssues.join("\n");
 }
 
 function setStatus(text, kind = "") {
@@ -1097,7 +1014,7 @@ function setBusy(busy) {
   state.panel?.querySelectorAll("button[data-disable-busy]").forEach((button) => {
     button.disabled = busy;
   });
-  state.panel?.querySelectorAll(".lllm-mode-control input, .lllm-generation-action input, .lllm-workflow-routing select, .lllm-workflow-manager input, .lllm-workflow-manager select, .lllm-workflow-manager button, .lllm-settings input, .lllm-settings select, .lllm-settings textarea, .lllm-current-details textarea, .lllm-secondary-details textarea")
+  state.panel?.querySelectorAll(".lllm-mode-control input, .lllm-generation-action input, .lllm-workflow-routing select, .lllm-settings input, .lllm-settings select, .lllm-settings textarea, .lllm-resolution-details input, .lllm-resolution-details select, .lllm-current-details textarea, .lllm-secondary-details textarea")
     .forEach((control) => {
       control.disabled = busy;
     });
@@ -1108,8 +1025,7 @@ function setBusy(busy) {
   state.panel?.querySelectorAll(".lllm-chat-item").forEach((button) => {
     button.disabled = busy;
   });
-  loadSecondaryInstructionsFromNode(selectedSlot());
-  updateWorkflowManagerState();
+  refreshWorkflowControls();
 }
 
 function closeImageLightbox() {
@@ -1141,7 +1057,7 @@ function imageReferenceKey(reference) {
 }
 
 function imageReferenceUrl(reference) {
-  const value = normalizeImageReference(reference);
+  const value = storedImageReference(reference);
   if (!value) return "";
   return `/view?${new URLSearchParams(value)}`;
 }
@@ -1174,8 +1090,7 @@ function restoreStoredCanonicalPrompt(data) {
     chat.controlsFingerprint = data.llmAmplified ? String(data.controlsFingerprint || "") : "";
     chat.pendingGeneration = null;
   }
-  if (selectedSlot()) writePromptToSlot(prompt);
-  else updatePromptEditor(prompt);
+  updatePromptEditor(prompt);
   if (previousVersion !== prompt) pushVersion(prompt);
   else syncActiveChat();
   updateComposeMode();
@@ -1313,10 +1228,12 @@ function renderMessage(data) {
     message.appendChild(provenance);
   }
 
-  const body = document.createElement("div");
-  body.className = "lllm-message-text";
-  body.textContent = data.text;
-  message.appendChild(body);
+  if (data.text) {
+    const body = document.createElement("div");
+    body.className = "lllm-message-text";
+    body.textContent = data.text;
+    message.appendChild(body);
+  }
   renderImageGallery(message, data.images, data);
   renderPromptInfo(message, data);
 
@@ -1354,17 +1271,24 @@ function appendMessage(role, text, options = {}) {
   return renderMessage(data);
 }
 
-function appendImages(message, images) {
+async function appendImages(message, images) {
   if (!message || !images.length) return;
   const chat = activeChat();
   const stored = chat?.messages.find((item) => item.id === message.dataset.messageId);
-  renderImageGallery(message, images, stored);
+  const enrichedImages = await Promise.all(images.map(async (image) => {
+    try {
+      return await imageReferenceWithDimensions(image);
+    } catch (_) {
+      return normalizeImageReference(image);
+    }
+  }));
+  renderImageGallery(message, enrichedImages, stored);
   if (stored) {
-    stored.images = images;
-    if (images[0] && state.panel?.querySelector("#lllm-auto-advance-source")?.checked) {
-      chat.selectedSource = normalizeImageReference(images[0]);
-    } else if (!chat.selectedSource && images[0]) {
-      chat.selectedSource = normalizeImageReference(images[0]);
+    stored.images = enrichedImages;
+    if (enrichedImages[0] && state.panel?.querySelector("#lllm-auto-advance-source")?.checked) {
+      chat.selectedSource = normalizeImageReference(enrichedImages[0]);
+    } else if (!chat.selectedSource && enrichedImages[0]) {
+      chat.selectedSource = normalizeImageReference(enrichedImages[0]);
     }
     renderPromptInfo(message, stored);
     chat.updatedAt = Date.now();
@@ -1401,17 +1325,6 @@ function commitPromptEditorVersion() {
   if (state.versions[state.versionIndex] !== prompt) pushVersion(prompt);
 }
 
-function writePromptToSlot(prompt, { sync = true } = {}) {
-  const node = selectedSlot();
-  const input = promptWidget(node);
-  if (!node || !input) throw new Error("The selected prompt node is no longer available.");
-  input.value = prompt;
-  input.callback?.(prompt, app.canvas, node, app.canvas?.graph_mouse, {});
-  node.graph?.setDirtyCanvas?.(true, true);
-  updatePromptEditor(prompt);
-  if (sync) syncActiveChat();
-}
-
 function pushVersion(prompt) {
   state.versions = state.versions.slice(0, state.versionIndex + 1);
   state.versions.push(prompt);
@@ -1419,64 +1332,6 @@ function pushVersion(prompt) {
   const undo = state.panel?.querySelector("#lllm-undo");
   if (undo) undo.disabled = state.versionIndex <= 0 || state.busy;
   syncActiveChat();
-}
-
-function attachSelectedSlot({ announce = true, useSlotPrompt = false } = {}) {
-  const node = selectedSlot();
-  if (!node) {
-    updatePromptEditor(activeChat()?.currentPrompt || "");
-    setStatus("Add a KoboldCpp Prompt Slot or Prompt Amplify node to this workflow.", "warning");
-    return;
-  }
-  const chat = activeChat();
-  loadSecondaryInstructionsFromNode(node);
-  const slotPrompt = String(promptWidget(node)?.value || "");
-  const prompt = useSlotPrompt ? slotPrompt : String(chat?.currentPrompt || "");
-  if (useSlotPrompt) {
-    if (chat) chat.initialized = Boolean(prompt.trim());
-    state.versions = [prompt];
-    state.versionIndex = 0;
-  } else {
-    state.versions = [...(chat?.versions || [""])];
-    state.versionIndex = chat?.versionIndex || 0;
-  }
-  updatePromptEditor(prompt);
-  if (chat) chat.slotId = String(node.id);
-  syncActiveChat();
-  if (!useLlmAmplification()) {
-    setStatus("Direct prompt mode. KoboldCpp will not be used.", "ready");
-  } else if (!chat?.initialized) {
-    setStatus("Describe an image to create the first prompt.", "ready");
-  } else if (controlsNeedApply()) {
-    setStatus("Generation controls differ from this prompt. KoboldCpp will update it before generation.", "warning");
-  } else {
-    setStatus(`Attached to ${slotLabel(node)}`, "ready");
-  }
-  if (announce) appendMessage("system", `Attached to ${slotLabel(node)}.`);
-}
-
-function refreshSlots() {
-  const select = state.panel?.querySelector("#lllm-slot-select");
-  if (!select) return;
-  const available = slots();
-  const previous = String(activeChat()?.slotId ?? state.selectedSlotId ?? "");
-  select.replaceChildren();
-  for (const node of available) {
-    const option = document.createElement("option");
-    option.value = String(node.id);
-    option.textContent = slotLabel(node);
-    select.appendChild(option);
-  }
-  if (available.some((node) => String(node.id) === previous)) {
-    select.value = previous;
-  } else if (available.length) {
-    select.value = String(available[0].id);
-  }
-  state.selectedSlotId = select.value || null;
-  attachSelectedSlot({ announce: false });
-  refreshWorkflowControls();
-  renderChatHistory();
-  renderChatList();
 }
 
 function setOptions(selectId, values, selected) {
@@ -1555,6 +1410,60 @@ function historyImages(historyItem, resultNodeIds = [], resultFields = ["images"
   return images;
 }
 
+function compactErrorText(value) {
+  const text = String(value || "").replace(/\s+/g, " ").trim();
+  return text.length > 1000 ? `${text.slice(0, 997)}...` : text;
+}
+
+function generationFailureMessage(historyItem) {
+  const status = historyItem?.status;
+  if (String(status?.status_str || "").toLowerCase() !== "error") return "";
+
+  let eventName = "";
+  let details = null;
+  const messages = Array.isArray(status?.messages) ? status.messages : [];
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const entry = messages[index];
+    if (!Array.isArray(entry) || !["execution_error", "execution_interrupted"].includes(entry[0])) continue;
+    eventName = entry[0];
+    details = entry[1] && typeof entry[1] === "object" ? entry[1] : null;
+    break;
+  }
+
+  const reason = compactErrorText(
+    details?.exception_message || details?.error || details?.message || details?.exception_type,
+  );
+  const nodeType = compactErrorText(details?.node_type);
+  const nodeId = compactErrorText(details?.node_id);
+  const node = nodeType && nodeId ? `${nodeType}, node ${nodeId}` : nodeType || (nodeId ? `node ${nodeId}` : "");
+  const fallback = eventName === "execution_interrupted"
+    ? "ComfyUI interrupted execution."
+    : "ComfyUI reported an execution error without further details.";
+  return `Generation failed: ${reason || fallback}${node ? ` (${node})` : ""}`;
+}
+
+function updateMessageText(message, text) {
+  if (!message) return;
+  const value = String(text || "");
+  const body = message.querySelector(".lllm-message-text");
+  if (body && value) body.textContent = value;
+  else if (body) body.remove();
+  else if (value) {
+    const nextBody = document.createElement("div");
+    nextBody.className = "lllm-message-text";
+    nextBody.textContent = value;
+    const gallery = message.querySelector(".lllm-image-grid");
+    message.insertBefore(nextBody, gallery);
+  }
+  const chat = activeChat();
+  const stored = chat?.messages.find((item) => item.id === message.dataset.messageId);
+  if (!stored) return;
+  stored.text = value;
+  chat.updatedAt = Date.now();
+  saveChats();
+  renderChatList();
+}
+
 async function waitForResult(promptId, targetMessage, token, resultNodeIds = [], resultFields = ["images", "gifs"]) {
   const started = Date.now();
   while (token === state.pollToken && Date.now() - started < 10 * 60 * 1000) {
@@ -1567,11 +1476,14 @@ async function waitForResult(promptId, targetMessage, token, resultNodeIds = [],
       if (item) {
         const images = historyImages(item, resultNodeIds, resultFields);
         const completed = Boolean(item.status?.completed);
-        if (images.length || completed) {
-          appendImages(targetMessage, images);
-          if (item.status?.status_str === "error") {
-            setStatus("Generation failed. See the ComfyUI console for details.", "error");
+        const failureMessage = generationFailureMessage(item);
+        if (failureMessage || images.length || completed) {
+          await appendImages(targetMessage, images);
+          if (failureMessage) {
+            updateMessageText(targetMessage, failureMessage);
+            setStatus(failureMessage, "error");
           } else if (images.length) {
+            updateMessageText(targetMessage, "");
             setStatus(`Generated ${images.length} image${images.length === 1 ? "" : "s"}.`, "ready");
           } else {
             setStatus("Generation completed without an image output.", "warning");
@@ -1592,46 +1504,26 @@ async function waitForResult(promptId, targetMessage, token, resultNodeIds = [],
 }
 
 function writeCanonicalPrompt(prompt, { sync = true } = {}) {
-  if (selectedSlot()) return writePromptToSlot(prompt, { sync });
   updatePromptEditor(prompt);
   if (sync) syncActiveChat();
 }
 
 async function workflowQueueContext(action, profileId = null) {
-  const selectedProfile = profileId == null ? selectedWorkflowProfile(action) : workflowProfileById(profileId);
-  if (profileId != null && profileId !== "" && !selectedProfile) {
-    throw new Error("The workflow profile used by the previous generation no longer exists.");
+  const requestedId = profileId == null ? selectedWorkflowProfileId(action) : String(profileId || "");
+  await refreshWorkflowTemplates({ announce: false });
+  const selectedProfile = workflowProfileById(requestedId);
+  if (!selectedProfile || selectedProfile.kind !== action) {
+    throw new Error(`The selected [PS] ${action === "edit" ? "editing" : "creation"} workflow is no longer available.`);
   }
-  if (selectedProfile) {
-    if (!selectedProfile.snapshot?.output) throw new Error(`Workflow profile “${selectedProfile.name}” has no executable snapshot.`);
-    return {
-      profile: selectedProfile,
-      snapshot: structuredClone(selectedProfile.snapshot),
-      promptNodeId: selectedProfile.promptNodeId,
-      imageNodeId: selectedProfile.imageNodeId,
-      resultNodeIds: selectedProfile.resultNodeIds,
-      resultFields: selectedProfile.resultFields,
-      workflowName: selectedProfile.name,
-    };
-  }
-
-  if (!selectedSlot()) throw new Error("Select a prompt node or a saved workflow profile before generating.");
-  const secondaryInstructions = state.panel.querySelector("#lllm-secondary-instructions")?.value || "";
-  writePromptToSlot(state.currentPrompt);
-  writeSecondaryInstructionsToNode(secondaryInstructions);
-  const snapshot = structuredClone(await app.graphToPrompt());
-  const imageNodeId = action === "edit" ? state.panel.querySelector("#lllm-current-image-source")?.value || "" : "";
-  if (action === "edit" && !imageNodeId) {
-    throw new Error("Add a Prompt Studio Image Source node or select a saved editing workflow.");
-  }
+  if (!selectedProfile.snapshot?.output) throw new Error(`Workflow “${selectedProfile.name}” has no executable cache.`);
   return {
-    profile: null,
-    snapshot,
-    promptNodeId: String(state.selectedSlotId),
-    imageNodeId,
-    resultNodeIds: [],
-    resultFields: ["images", "gifs"],
-    workflowName: "Current canvas",
+    profile: selectedProfile,
+    snapshot: structuredClone(selectedProfile.snapshot),
+    promptNodeId: selectedProfile.promptNodeId,
+    imageNodeId: selectedProfile.imageNodeId,
+    resultNodeIds: selectedProfile.resultNodeIds,
+    resultFields: selectedProfile.resultFields,
+    workflowName: selectedProfile.name,
   };
 }
 
@@ -1643,8 +1535,15 @@ async function queueGeneration({
   sourceImage = null,
 } = {}) {
   const operationToken = state.operationToken;
-  const source = action === "edit" ? editingSource(sourceImage) : null;
+  let source = action === "edit" ? editingSource(sourceImage) : null;
   if (action === "edit" && !source) throw new Error("There is no image in this conversation to edit.");
+  if (action === "edit") {
+    try {
+      source = await imageReferenceWithDimensions(source);
+    } catch (error) {
+      throw new Error(`The editing source size could not be preserved: ${error.message || String(error)}`);
+    }
+  }
   const context = await workflowQueueContext(action, workflowProfileId);
   if (operationToken !== state.operationToken) return false;
   const useNewSeed = !preserveSeed
@@ -1656,16 +1555,20 @@ async function queueGeneration({
   if (!apiNode || ![SLOT_TYPE, AMPLIFY_TYPE].includes(apiNode.class_type)) {
     throw new Error("The configured prompt node was not included in the executable workflow.");
   }
-  const secondaryInstructions = context.profile
-    ? String(apiNode.inputs?.secondary_instructions || "")
-    : state.panel.querySelector("#lllm-secondary-instructions")?.value || "";
+  const secondaryInstructions = state.panel.querySelector("#lllm-secondary-instructions")?.value || "";
+  const resolution = {
+    ...resolutionSettings(),
+    resolution_width: action === "edit" ? source.width : 0,
+    resolution_height: action === "edit" ? source.height : 0,
+  };
   if (apiNode.class_type === AMPLIFY_TYPE) {
     const slotName = apiNode.inputs?.slot_name || context.workflowName;
     apiNode.class_type = SLOT_TYPE;
-    apiNode.inputs = { prompt: executionPrompt, slot_name: slotName, secondary_instructions: secondaryInstructions };
+    apiNode.inputs = { prompt: executionPrompt, slot_name: slotName, secondary_instructions: secondaryInstructions, ...resolution };
   } else {
     apiNode.inputs.prompt = executionPrompt;
     apiNode.inputs.secondary_instructions = secondaryInstructions;
+    Object.assign(apiNode.inputs, resolution);
   }
 
   if (action === "edit") {
@@ -1673,7 +1576,7 @@ async function queueGeneration({
     if (!imageNode || imageNode.class_type !== IMAGE_SOURCE_TYPE) {
       throw new Error("The configured Prompt Studio Image Source node was not included in the editing workflow.");
     }
-    imageNode.inputs.image_ref = JSON.stringify(source);
+    imageNode.inputs.image_ref = JSON.stringify(storedImageReference(source));
   }
 
   if (operationToken !== state.operationToken) return false;
@@ -1694,6 +1597,7 @@ async function queueGeneration({
   }
   const chat = activeChat();
   if (chat) {
+    if (action === "edit") chat.selectedSource = source;
     chat.lastGeneration = {
       action,
       canonicalPrompt: state.currentPrompt,
@@ -1732,8 +1636,8 @@ async function queueGeneration({
 
 async function generateDirectPrompt(action = selectedAction()) {
   if (state.busy) return;
-  if (!selectedSlot() && !selectedWorkflowProfile(action)) {
-    return setStatus("Add a prompt node or select a saved workflow profile first.", "warning");
+  if (!selectedWorkflowProfile(action)) {
+    return setStatus("Select a compatible [PS] workflow first.", "warning");
   }
   if (action === "edit" && !editingSource()) {
     return setStatus("There is no image in this conversation to edit.", "warning");
@@ -1767,8 +1671,8 @@ async function reviseAndMaybeGenerate({ controlsOnly = false, forceGenerate = fa
   const revision = input.value.trim();
   const editedPrompt = state.panel.querySelector("#lllm-current-prompt").value.trim();
   const creating = !activeChat()?.initialized;
-  if (!selectedSlot() && !selectedWorkflowProfile(generationAction)) {
-    return setStatus("Add a prompt node or select a saved workflow profile first.", "warning");
+  if (!selectedWorkflowProfile(generationAction)) {
+    return setStatus("Select a compatible [PS] workflow first.", "warning");
   }
   if (generationAction === "edit" && !editingSource()) {
     return setStatus("There is no image in this conversation to edit.", "warning");
@@ -1989,10 +1893,10 @@ function buildPanel() {
       </header>
       <section class="lllm-toolbar">
         <label class="lllm-slot-control">
-          <span>Workflow prompt</span>
+          <span>ComfyUI workflow templates</span>
           <div class="lllm-attach-row">
-            <select id="lllm-slot-select" aria-label="Prompt node"></select>
-            <button id="lllm-refresh-slots" type="button" title="Refresh prompt nodes">↻</button>
+            <div id="lllm-workflow-template-status" class="lllm-workflow-template-status">Checking [PS] workflows…</div>
+            <button id="lllm-refresh-workflows" type="button" title="Refresh [PS] workflows">↻</button>
           </div>
         </label>
         <div id="lllm-status" class="lllm-status">Loading…</div>
@@ -2023,6 +1927,14 @@ function buildPanel() {
             <label>Temperature<input id="lllm-temperature" type="number" min="0" max="5" step="0.05" /></label>
           </div>
         </details>
+        <details class="lllm-resolution-details" open>
+          <summary><span>Resolution</span><small>Create size; Edit preserves source</small></summary>
+          <div class="lllm-resolution-grid">
+            <label>Aspect ratio<select id="lllm-resolution-aspect-ratio">${RESOLUTION_ASPECT_RATIOS.map((value) => `<option value="${value}">${value}</option>`).join("")}</select></label>
+            <label>Megapixels<input id="lllm-resolution-megapixels" type="number" min="0.1" max="16" step="0.1" value="1" /></label>
+            <label>Multiple<input id="lllm-resolution-multiple" type="number" min="8" max="128" step="4" value="8" /></label>
+          </div>
+        </details>
         <details class="lllm-secondary-details" open>
           <summary><span>Secondary instructions</span><small>Optional pass-through output</small></summary>
           <textarea id="lllm-secondary-instructions" rows="3" placeholder="Returned unchanged from the secondary output"></textarea>
@@ -2030,44 +1942,45 @@ function buildPanel() {
       </section>
     </aside>
     <div id="lllm-studio-settings" class="lllm-studio-settings" hidden>
-      <div class="lllm-studio-settings-heading"><strong>Settings</strong><span>Interface</span></div>
-      <label class="lllm-image-scale-control">
-        <span><strong>Image scale</strong><output id="lllm-image-scale-value" for="lllm-image-scale">100%</output></span>
-        <input id="lllm-image-scale" type="range" min="30" max="100" step="5" value="${settings.image_scale}" />
-        <small>Scale generated images in chat. Full-size preview is unchanged.</small>
-      </label>
-      <label class="lllm-studio-checkbox"><input id="lllm-auto-advance-source" type="checkbox" ${settings.auto_advance_source ? "checked" : ""} /> Use the newest result as the next editing source</label>
-      <div class="lllm-studio-settings-heading lllm-studio-settings-section"><strong>Workflows</strong><span>Routing and profiles</span></div>
-      <div class="lllm-workflow-routing">
-        <label><span>Create workflow</span><select id="lllm-create-workflow"></select></label>
-        <label><span>Edit workflow</span><select id="lllm-edit-workflow"></select></label>
-        <label><span>Current canvas image input</span><select id="lllm-current-image-source"></select></label>
+      <header class="lllm-studio-settings-header">
+        <div><strong>Settings</strong><span>Configure how Prompt Studio looks and connects to ComfyUI.</span></div>
+        <span class="lllm-studio-settings-context">Prompt Studio</span>
+      </header>
+      <div class="lllm-studio-settings-layout">
+        <section class="lllm-studio-settings-card" aria-labelledby="lllm-interface-settings-title">
+          <header class="lllm-studio-settings-card-header">
+            <div><strong id="lllm-interface-settings-title">Interface</strong><span>Chat display and editing behavior</span></div>
+          </header>
+          <div class="lllm-studio-settings-list">
+            <label class="lllm-studio-setting lllm-image-scale-control">
+              <span class="lllm-studio-setting-copy"><strong>Image scale</strong><small>Scale generated images in chat. Full-size preview is unchanged.</small></span>
+              <span class="lllm-image-scale-field">
+                <output id="lllm-image-scale-value" for="lllm-image-scale">100%</output>
+                <input id="lllm-image-scale" type="range" min="30" max="100" step="5" value="${settings.image_scale}" />
+              </span>
+            </label>
+            <label class="lllm-studio-setting lllm-studio-setting-toggle">
+              <span class="lllm-studio-setting-copy"><strong>Continue from newest result</strong><small>Automatically use the latest generated image as the next editing source.</small></span>
+              <input id="lllm-auto-advance-source" type="checkbox" role="switch" ${settings.auto_advance_source ? "checked" : ""} />
+            </label>
+          </div>
+        </section>
+        <section class="lllm-studio-settings-card" aria-labelledby="lllm-workflow-settings-title">
+          <header class="lllm-studio-settings-card-header">
+            <div><strong id="lllm-workflow-settings-title">ComfyUI workflows</strong><span>Live templates prefixed with [PS]</span></div>
+          </header>
+          <div class="lllm-workflow-routing">
+            <div class="lllm-workflow-routing-fields">
+              <label><span>Create template</span><select id="lllm-create-workflow"></select></label>
+              <label><span>Edit template</span><select id="lllm-edit-workflow"></select></label>
+            </div>
+            <div class="lllm-studio-settings-note">
+              <p>Name saved ComfyUI workflows with a <strong>[PS]</strong> prefix. Each needs a Prompt Slot or Prompt Amplify node and exactly one image output; editing workflows also need Prompt Studio Image Source.</p>
+              <p>Saved workflows refresh here immediately and are checked before generation. Invalid updates keep the last working copy marked <strong>cached</strong>.</p>
+            </div>
+          </div>
+        </section>
       </div>
-      <details class="lllm-workflow-manager">
-        <summary>Workflow profile library</summary>
-        <div class="lllm-workflow-library-row">
-          <label><span>Profile to manage</span><select id="lllm-managed-workflow"></select></label>
-          <button id="lllm-new-workflow" type="button">New profile</button>
-          <button id="lllm-refresh-profile-canvas" type="button">Refresh canvas nodes</button>
-        </div>
-        <div id="lllm-profile-canvas-status" class="lllm-profile-canvas-status">Current canvas nodes have not been scanned yet.</div>
-        <div id="lllm-workflow-manager-mode" class="lllm-workflow-manager-mode"></div>
-        <div class="lllm-workflow-manager-grid">
-          <label>Name<input id="lllm-register-name" placeholder="Kontext instruction edit" /></label>
-          <label>Kind<select id="lllm-register-kind"><option value="create">Creation</option><option value="edit">Editing</option></select></label>
-          <label>Current canvas prompt<select id="lllm-register-prompt-node"></select></label>
-          <label id="lllm-register-prompt-mode-row" hidden>Default edit payload<select id="lllm-register-prompt-mode"><option value="full_prompt">Full target prompt</option><option value="edit_instruction">Text box only</option></select></label>
-          <label id="lllm-register-image-row" hidden>Image input<select id="lllm-register-image-node"></select></label>
-          <label>Primary result<select id="lllm-register-result-node"></select></label>
-          <label>History fields<input id="lllm-register-result-fields" value="images,gifs" placeholder="images,gifs" /></label>
-        </div>
-        <div class="lllm-workflow-manager-actions">
-          <button id="lllm-save-new-workflow" class="lllm-primary-action" type="button">Save as new</button>
-          <button id="lllm-update-workflow" type="button" disabled>Update selected</button>
-          <button id="lllm-delete-workflow" class="lllm-danger-action" type="button" disabled>Delete selected</button>
-        </div>
-        <small>Saving captures the current ComfyUI canvas and selected Workflow Prompt. Routing above only controls what runs; it never chooses an overwrite target.</small>
-      </details>
     </div>
     <div id="lllm-lightbox" class="lllm-lightbox" role="dialog" aria-modal="true" aria-label="Image preview" tabindex="-1" hidden>
       <img id="lllm-lightbox-image" alt="" />
@@ -2085,6 +1998,11 @@ function buildPanel() {
   panel.querySelector("#lllm-style-modifier").value = settings.style_modifier;
   panel.querySelector("#lllm-framing-modifier").value = settings.framing_modifier;
   panel.querySelector("#lllm-secondary-instructions").value = settings.secondary_instructions;
+  panel.querySelector("#lllm-resolution-aspect-ratio").value = RESOLUTION_ASPECT_RATIOS.includes(settings.resolution_aspect_ratio)
+    ? settings.resolution_aspect_ratio
+    : RESOLUTION_ASPECT_RATIOS[0];
+  panel.querySelector("#lllm-resolution-megapixels").value = String(Math.max(0.1, Math.min(16, Number(settings.resolution_megapixels) || 1)));
+  panel.querySelector("#lllm-resolution-multiple").value = String(Math.max(8, Math.min(128, Math.round((Number(settings.resolution_multiple) || 8) / 4) * 4)));
   applyImageScale(settings.image_scale);
   updateAmplificationMode({ announce: false, persist: false });
   panel.querySelector("#lllm-toggle-chats").addEventListener("click", () => {
@@ -2116,31 +2034,19 @@ function buildPanel() {
   panel.querySelector("#lllm-new-chat").addEventListener("click", createChat);
   panel.querySelector("#lllm-popout").addEventListener("click", () => togglePopout({ returnToEmbedded: true }));
   panel.querySelector("#lllm-close").addEventListener("click", () => togglePanel(false));
-  panel.querySelector("#lllm-refresh-slots").addEventListener("click", refreshSlots);
-  panel.querySelector("#lllm-slot-select").addEventListener("change", (event) => {
-    state.selectedSlotId = event.target.value || null;
-    attachSelectedSlot({ useSlotPrompt: true });
-  });
+  panel.querySelector("#lllm-refresh-workflows").addEventListener("click", () => refreshWorkflowTemplates());
   panel.querySelector("#lllm-create-workflow").addEventListener("change", () => {
     announceWorkflowSelection("create");
   });
   panel.querySelector("#lllm-edit-workflow").addEventListener("change", () => {
     announceWorkflowSelection("edit");
-    setEditPromptMode(selectedWorkflowProfile("edit")?.promptMode || "full_prompt", { persist: true });
+    setEditPromptMode(selectedEditPromptMode(), { persist: true });
   });
-  panel.querySelector("#lllm-managed-workflow").addEventListener("change", (event) => {
-    loadWorkflowProfileIntoManager(event.target.value);
-  });
-  panel.querySelector("#lllm-new-workflow").addEventListener("click", resetWorkflowManager);
-  panel.querySelector("#lllm-refresh-profile-canvas").addEventListener("click", refreshProfileCanvasNodes);
-  panel.querySelector("#lllm-register-kind").addEventListener("change", refreshRegistrationControls);
-  panel.querySelector("#lllm-save-new-workflow").addEventListener("click", saveNewWorkflowProfile);
-  panel.querySelector("#lllm-update-workflow").addEventListener("click", updateManagedWorkflowProfile);
-  panel.querySelector("#lllm-delete-workflow").addEventListener("click", deleteSelectedWorkflowProfile);
   panel.querySelectorAll('input[name="lllm-generation-action"]').forEach((control) => {
     control.addEventListener("change", () => {
       updateComposeMode();
-      loadSecondaryInstructionsFromNode(selectedSlot());
+      refreshSecondaryInstructionsControl();
+      announceWorkflowSelection(selectedAction());
     });
   });
   panel.querySelectorAll('input[name="lllm-edit-prompt-mode"]').forEach((control) => {
@@ -2151,9 +2057,6 @@ function buildPanel() {
   panel.querySelector("#lllm-undo").addEventListener("click", undoPrompt);
   panel.querySelector("#lllm-stop").addEventListener("click", interrupt);
   panel.querySelector("#lllm-use-llm-amplification").addEventListener("change", () => updateAmplificationMode());
-  panel.querySelector("#lllm-secondary-instructions").addEventListener("input", (event) => {
-    writeSecondaryInstructionsToNode(event.target.value);
-  });
   panel.querySelector("#lllm-secondary-instructions").addEventListener("change", saveSettings);
   panel.querySelector("#lllm-current-prompt").addEventListener("input", (event) => {
     syncCanonicalEditor(event.target.value, { userEdit: true });
@@ -2170,6 +2073,8 @@ function buildPanel() {
   });
   panel.querySelectorAll(".lllm-settings input, .lllm-settings select, .lllm-settings textarea")
     .forEach((element) => element.addEventListener("change", markControlsChanged));
+  panel.querySelectorAll(".lllm-resolution-details input, .lllm-resolution-details select")
+    .forEach((element) => element.addEventListener("change", saveSettings));
   panel.querySelectorAll(".lllm-toggles input")
     .forEach((element) => element.addEventListener("change", saveSettings));
   panel.querySelector("#lllm-auto-generate").addEventListener("change", updateComposeMode);
@@ -2323,10 +2228,9 @@ async function togglePanel(force) {
   state.panel.hidden = !show;
   state.launcher.dataset.open = show ? "true" : "false";
   if (!show) return saveSettings();
-  refreshSlots();
   try {
     if (!state.config) await loadConfig();
-    refreshSlots();
+    await refreshWorkflowTemplates({ announce: false });
   } catch (error) {
     setStatus(error.message || String(error), "error");
   }
@@ -2337,6 +2241,8 @@ app.registerExtension({
   async setup() {
     loadCss();
     buildPanel();
+    setupWorkflowSync();
+    installWorkflowSaveObserver();
     await loadChats();
     try {
       await loadWorkflowProfiles();
@@ -2344,7 +2250,7 @@ app.registerExtension({
       setStatus(error.message || String(error), "warning");
     }
     buildLauncher();
-    refreshSlots();
+    refreshWorkflowControls();
     setupStandaloneBridge();
   },
 });

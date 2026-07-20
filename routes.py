@@ -14,6 +14,7 @@ from .nodes import (
     _build_expansion_retry_prompt,
     _build_instruction_prompt,
     _build_revision_prompt,
+    _chat_image_dimensions,
     _density_count,
     _generate_kcpp,
     _get_framing_template,
@@ -36,6 +37,7 @@ WORKFLOW_STORE_PATH = os.path.join(BASE_DIR, "prompt_studio_workflows.json")
 WORKFLOW_STORE_LOCK = asyncio.Lock()
 MAX_WORKFLOW_STORE_BYTES = 100 * 1024 * 1024
 MAX_REVISE_REQUEST_BYTES = 1024 * 1024
+MAX_IMAGE_REFERENCE_BYTES = 16 * 1024
 
 
 class StoreConflictError(RuntimeError):
@@ -65,7 +67,7 @@ def _empty_chat_store():
 
 
 def _empty_workflow_store():
-    return {"version": 1, "revision": 0, "profiles": []}
+    return {"version": 2, "revision": 0, "templates": []}
 
 
 def _revision(value):
@@ -147,72 +149,79 @@ def _read_workflow_store():
     except FileNotFoundError:
         return _empty_workflow_store()
     except json.JSONDecodeError as exc:
-        raise RuntimeError(f"Invalid Prompt Studio workflow store: {exc}") from exc
-    if not isinstance(data, dict) or not isinstance(data.get("profiles"), list):
-        raise RuntimeError("Prompt Studio workflow store must contain a profiles list")
+        raise RuntimeError(f"Invalid Prompt Studio workflow cache: {exc}") from exc
+    if not isinstance(data, dict):
+        raise RuntimeError("Prompt Studio workflow cache must be an object")
+    if isinstance(data.get("profiles"), list) and "templates" not in data:
+        # Version 1 stored manually captured profiles. They are intentionally not
+        # migrated because ComfyUI's live [PS] workflows are now the source of truth.
+        return {"version": 2, "revision": _revision(data.get("revision")), "templates": []}
+    if not isinstance(data.get("templates"), list):
+        raise RuntimeError("Prompt Studio workflow cache must contain a templates list")
     try:
-        _validate_workflow_profiles(data["profiles"])
+        _validate_workflow_templates(data["templates"])
     except ValueError as exc:
-        raise RuntimeError(f"Invalid Prompt Studio workflow profile: {exc}") from exc
+        raise RuntimeError(f"Invalid Prompt Studio workflow cache: {exc}") from exc
     data["revision"] = _revision(data.get("revision"))
     return data
 
 
-def _validate_workflow_profiles(profiles):
-    ids = set()
-    names = set()
-    for index, profile in enumerate(profiles):
-        if not isinstance(profile, dict):
-            raise ValueError(f"Workflow profile {index + 1} must be an object")
-        profile_id = _text(profile.get("id")).strip()
-        if not profile_id or profile_id in ids:
-            raise ValueError("Workflow profiles must have unique non-empty IDs")
-        ids.add(profile_id)
-        profile_name = _text(profile.get("name")).strip()
-        if not profile_name:
-            raise ValueError(f"Workflow profile {index + 1} must have a name")
-        kind = profile.get("kind")
+def _validate_workflow_templates(templates):
+    paths = set()
+    for index, template in enumerate(templates):
+        if not isinstance(template, dict):
+            raise ValueError(f"Workflow cache entry {index + 1} must be an object")
+        path = _text(template.get("path") or template.get("id")).strip().replace("\\", "/")
+        filename = path.rsplit("/", 1)[-1]
+        if not path or path in paths:
+            raise ValueError("Workflow cache entries must have unique non-empty paths")
+        if not filename.startswith("[PS]") or not filename.lower().endswith(".json"):
+            raise ValueError(f"Workflow cache entry {index + 1} is not a [PS] JSON workflow")
+        paths.add(path)
+        if not _text(template.get("name")).strip():
+            raise ValueError(f"Workflow cache entry {index + 1} must have a name")
+        kind = template.get("kind")
         if kind not in {"create", "edit"}:
-            raise ValueError(f"Workflow profile {index + 1} kind must be create or edit")
-        name_key = (kind, profile_name.casefold())
-        if name_key in names:
-            raise ValueError(f"Workflow profile names must be unique within the {kind} library")
-        names.add(name_key)
-        snapshot = profile.get("snapshot")
+            raise ValueError(f"Workflow cache entry {index + 1} kind must be create or edit")
+        snapshot = template.get("snapshot")
         output = snapshot.get("output") if isinstance(snapshot, dict) else None
-        prompt_node_id = _text(profile.get("promptNodeId")).strip()
+        prompt_node_id = _text(template.get("promptNodeId")).strip()
         if not isinstance(output, dict) or not prompt_node_id or prompt_node_id not in output:
-            raise ValueError(f"Workflow profile {index + 1} has no executable prompt node")
+            raise ValueError(f"Workflow cache entry {index + 1} has no executable prompt node")
         prompt_node = output[prompt_node_id]
         if not isinstance(prompt_node, dict) or prompt_node.get("class_type") not in {"KCPP_PromptSlot", "KCPP_PromptAmplify"}:
-            raise ValueError(f"Workflow profile {index + 1} prompt node has an incompatible class")
+            raise ValueError(f"Workflow cache entry {index + 1} prompt node has an incompatible class")
         if kind == "edit":
-            image_node_id = _text(profile.get("imageNodeId")).strip()
+            image_node_id = _text(template.get("imageNodeId")).strip()
             if not image_node_id or image_node_id not in output:
-                raise ValueError(f"Workflow profile {index + 1} has no executable image source node")
+                raise ValueError(f"Workflow cache entry {index + 1} has no executable image source node")
             image_node = output[image_node_id]
             if not isinstance(image_node, dict) or image_node.get("class_type") != "KCPP_ChatImageInput":
-                raise ValueError(f"Workflow profile {index + 1} image source has an incompatible class")
-        result_node_ids = profile.get("resultNodeIds", [])
-        if not isinstance(result_node_ids, list) or any(_text(node_id) not in output for node_id in result_node_ids):
-            raise ValueError(f"Workflow profile {index + 1} has an invalid result-node filter")
-        result_fields = profile.get("resultFields", ["images", "gifs"])
+                raise ValueError(f"Workflow cache entry {index + 1} image source has an incompatible class")
+        result_node_ids = template.get("resultNodeIds", [])
+        if (
+            not isinstance(result_node_ids, list)
+            or len(result_node_ids) != 1
+            or _text(result_node_ids[0]) not in output
+        ):
+            raise ValueError(f"Workflow cache entry {index + 1} must identify exactly one image output")
+        result_fields = template.get("resultFields", ["images", "gifs"])
         if not isinstance(result_fields, list) or not result_fields or any(not _text(field).strip() for field in result_fields):
-            raise ValueError(f"Workflow profile {index + 1} has invalid history fields")
+            raise ValueError(f"Workflow cache entry {index + 1} has invalid history fields")
 
 
 def _write_workflow_store(data, current_revision=None):
-    if not isinstance(data, dict) or not isinstance(data.get("profiles"), list):
-        raise ValueError("Workflow store must contain a profiles list")
-    _validate_workflow_profiles(data["profiles"])
+    if not isinstance(data, dict) or not isinstance(data.get("templates"), list):
+        raise ValueError("Workflow cache must contain a templates list")
+    _validate_workflow_templates(data["templates"])
     if current_revision is None:
         current_revision = _revision(data.get("revision"))
-    normalized = {"version": 1, "revision": current_revision + 1, "profiles": data["profiles"]}
+    normalized = {"version": 2, "revision": current_revision + 1, "templates": data["templates"]}
     return _atomic_write_store(
         WORKFLOW_STORE_PATH,
         normalized,
         MAX_WORKFLOW_STORE_BYTES,
-        "Prompt Studio workflow store exceeds the 100 MB limit",
+        "Prompt Studio workflow cache exceeds the 100 MB limit",
     )
 
 
@@ -221,7 +230,7 @@ def _update_workflow_store(data):
     expected = _revision(data.get("revision")) if isinstance(data, dict) else 0
     actual = _revision(current.get("revision"))
     if expected != actual:
-        raise StoreConflictError("Workflow profiles changed in another browser. Reload Prompt Studio before saving again.")
+        raise StoreConflictError("The Prompt Studio workflow cache changed in another browser. Reload Prompt Studio before saving again.")
     return _write_workflow_store(data, actual)
 
 
@@ -352,6 +361,22 @@ async def prompt_studio_config(request):
     )
 
 
+@PromptServer.instance.routes.post("/lllm/prompt-studio/image-size")
+async def prompt_studio_image_size(request):
+    try:
+        if request.content_length is not None and request.content_length > MAX_IMAGE_REFERENCE_BYTES:
+            raise ValueError("Prompt Studio image reference exceeds the 16 KB limit")
+        data = await request.json()
+        if not isinstance(data, dict) or not isinstance(data.get("image"), dict):
+            raise ValueError("JSON body must contain an image reference")
+        width, height = await asyncio.to_thread(_chat_image_dimensions, json.dumps(data["image"]))
+        return web.json_response({"width": width, "height": height})
+    except (ValueError, json.JSONDecodeError, OSError) as exc:
+        return web.json_response({"error": str(exc)}, status=400)
+    except Exception as exc:
+        return web.json_response({"error": str(exc)}, status=500)
+
+
 @PromptServer.instance.routes.get("/lllm/prompt-studio/chats")
 async def prompt_studio_get_chats(request):
     try:
@@ -393,7 +418,7 @@ async def prompt_studio_get_workflows(request):
 async def prompt_studio_save_workflows(request):
     try:
         if request.content_length is not None and request.content_length > MAX_WORKFLOW_STORE_BYTES:
-            raise ValueError("Prompt Studio workflow store exceeds the 100 MB limit")
+            raise ValueError("Prompt Studio workflow cache exceeds the 100 MB limit")
         data = await request.json()
         async with WORKFLOW_STORE_LOCK:
             saved = await asyncio.to_thread(_update_workflow_store, data)
