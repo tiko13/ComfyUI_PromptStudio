@@ -846,6 +846,8 @@ function createChat() {
   if (state.busy) return;
   commitPromptEditorVersion();
   syncActiveChat();
+  const createAction = state.panel?.querySelector('input[name="lllm-generation-action"][value="create"]');
+  if (createAction) createAction.checked = true;
   const chat = normalizeChat({
     initialized: false,
     currentPrompt: "",
