@@ -34,7 +34,7 @@
     },
 	{
       "name": "Glamorous",
-      "instruction": "Favor a polished glam image with excellent composition, rich lighting, high detail, clean focus, strong atmosphere. Add quality language only where it supports the subject, on women use glamorous and sexy clothes and makeup."
+      "instruction": "Favor a polished glam image with excellent composition, rich lighting, high detail, clean focus, and strong atmosphere. Add quality language only where it supports the subject. Use sexualized clothing, posing, or makeup only when the prompt explicitly describes an adult subject aged 18 or older; otherwise keep the styling glamorous but non-sexualized."
     },
     {
       "name": "Studio Photography",
@@ -182,7 +182,7 @@
     },
 	{
       "name": "Erotic photography",
-      "instruction": "Prefer a style that emphasizes subject's sexuality and seductiveness. Use sensual and sexy poses, use sexy, tight and short versions of the clothes. If intimate areas are exposed, describe them in great detail."
+      "instruction": "Apply an erotic-photography style only when the prompt explicitly describes every depicted person as an adult aged 18 or older. If age is absent, ambiguous, or under 18, do not sexualize the subject or expose intimate areas. For explicitly adult subjects, favor consensual sensual posing and styling without adding coercion, violence, or extra participants."
     }
   ]
 }

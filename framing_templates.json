@@ -89,7 +89,7 @@
       "instruction": "Frame the subject like a character blueprint or design reference, Always include front, side, and rear view. Character sheet overrides the original prompt - extract only the subject and put it on a plain background, standing upright and relaxed. Ignore anything that is not directly related to subject (such as any other objects/items in the scene.)"
     },
 	{
-      "name": "Point of view",
+      "name": "First-Person Downward View",
       "instruction": "The scene is viewed from the first-person perspective of the subject. Frame the scene such as 'first-person perspective of a woman looking down on her legs'."
     },
 	{
