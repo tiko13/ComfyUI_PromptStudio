@@ -513,6 +513,10 @@ body.lllm-popout-body {
   scroll-behavior: smooth;
 }
 
+.lllm-history.lllm-instant-scroll {
+  scroll-behavior: auto;
+}
+
 .lllm-history:empty::before {
   content: "Your generated images and revision requests will appear here.";
   display: grid;
