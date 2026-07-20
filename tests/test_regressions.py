@@ -91,6 +91,52 @@ class RegressionTests(unittest.TestCase):
         self.assertTrue(math.isnan(self.nodes.KCPP_Ideogram4.IS_CHANGED(sampler_seed=-1)))
         self.assertEqual(self.nodes.KCPP_Apply.IS_CHANGED(sampler_seed=42), 42)
 
+    def test_prompt_nodes_match_comfyui_resolution_selector(self):
+        self.assertEqual(self.nodes._calculate_resolution("1:1 (Square)", 1.0, 8), (1024, 1024))
+        self.assertEqual(self.nodes._calculate_resolution("16:9 (Widescreen)", 1.0, 64), (1344, 768))
+        self.assertEqual(self.nodes._calculate_resolution("2:3 (Portrait Photo)", 2.0, 8), (1184, 1776))
+
+        prompt, secondary, width, height = self.nodes.KCPP_PromptSlot().get_prompt(
+            "A lighthouse",
+            secondary_instructions="negative prompt",
+            aspect_ratio="21:9 (Ultrawide)",
+            megapixels=1.5,
+            multiple=32,
+        )
+        self.assertEqual((prompt, secondary), ("A lighthouse", "negative prompt"))
+        self.assertEqual((width, height), self.nodes._calculate_resolution("21:9 (Ultrawide)", 1.5, 32))
+
+        _, _, edit_width, edit_height = self.nodes.KCPP_PromptSlot().get_prompt(
+            "Edit the lighthouse",
+            aspect_ratio="1:1 (Square)",
+            megapixels=1.0,
+            multiple=8,
+            resolution_width=1237,
+            resolution_height=811,
+        )
+        self.assertEqual((edit_width, edit_height), (1237, 811))
+
+    def test_prompt_resolution_inputs_and_outputs_are_backward_compatible(self):
+        slot_inputs = self.nodes.KCPP_PromptSlot.INPUT_TYPES()
+        amplify_inputs = self.nodes.KCPP_PromptAmplify.INPUT_TYPES()
+        self.assertNotIn("aspect_ratio", slot_inputs["optional"])
+        for resolution_inputs in (slot_inputs["hidden"], amplify_inputs["optional"]):
+            self.assertEqual(resolution_inputs["aspect_ratio"][1]["default"], "1:1 (Square)")
+            self.assertEqual(resolution_inputs["megapixels"][1]["default"], 1.0)
+            self.assertEqual(resolution_inputs["multiple"][1]["default"], 8)
+
+        for node_class in (self.nodes.KCPP_PromptSlot, self.nodes.KCPP_PromptAmplify):
+            hidden = node_class.INPUT_TYPES()["hidden"]
+            self.assertEqual(hidden["resolution_width"][1]["default"], 0)
+            self.assertEqual(hidden["resolution_height"][1]["default"], 0)
+            self.assertEqual(node_class.RETURN_TYPES[-2:], ("INT", "INT"))
+            self.assertEqual(node_class.RETURN_NAMES[-2:], ("width", "height"))
+
+        self.assertEqual(
+            self.nodes.KCPP_PromptSlot().get_prompt("legacy prompt"),
+            ("legacy prompt", "", 1024, 1024),
+        )
+
     def test_profile_wrappers_are_idempotent(self):
         profile = {"final_prompt_prefix": "PRE[", "final_prompt_suffix": "]SUF"}
         once = self.nodes._apply_profile_wrappers("prompt.", profile)
@@ -115,8 +161,8 @@ class RegressionTests(unittest.TestCase):
     def test_chat_budget_adds_reasoning_space_to_the_final_answer_allowance(self):
         self.assertEqual(self.nodes._chat_generation_budget(300, "Disabled"), (300, None))
         self.assertEqual(self.nodes._chat_generation_budget(300, "Minimal"), (334, None))
-        self.assertEqual(self.nodes._chat_generation_budget(300, "Low"), (400, None))
-        self.assertEqual(self.nodes._chat_generation_budget(300, "Medium"), (600, None))
+        self.assertEqual(self.nodes._chat_generation_budget(300, "Low"), (429, None))
+        self.assertEqual(self.nodes._chat_generation_budget(300, "Medium"), (750, None))
         self.assertEqual(self.nodes._chat_generation_budget(300, "High"), (4396, 4096))
         self.assertEqual(self.nodes._chat_generation_budget(300, "High", 900), (900, 600))
 
@@ -195,7 +241,7 @@ class RegressionTests(unittest.TestCase):
         request_url, payload, timeout = post.call_args.args
         self.assertTrue(request_url.endswith("/v1/chat/completions"))
         self.assertEqual(timeout, 120)
-        self.assertEqual(payload["max_tokens"], 600)
+        self.assertEqual(payload["max_tokens"], 750)
         self.assertEqual(payload["reasoning_effort"], "medium")
         self.assertTrue(payload["chat_template_kwargs"]["enable_thinking"])
 
@@ -251,6 +297,12 @@ class RegressionTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "cannot leave"):
             self.nodes._parse_chat_image_reference(reference)
 
+    def test_chat_image_dimensions_reads_the_stored_image_size(self):
+        path = Path(self.temp.name) / "sized.png"
+        Image.new("RGB", (1237, 811), color="navy").save(path)
+        reference = json.dumps({"filename": path.name, "subfolder": "", "type": "output"})
+        self.assertEqual(self.nodes._chat_image_dimensions(reference), (1237, 811))
+
     def test_palette_transparency_produces_a_mask(self):
         path = Path(self.temp.name) / "palette.png"
         image = Image.new("P", (2, 2), color=0)
@@ -274,29 +326,60 @@ class RegressionTests(unittest.TestCase):
 
     def test_workflow_store_validates_snapshots_and_detects_conflicts(self):
         workflow_path = str(Path(self.temp.name) / "workflows.json")
-        profile = {
-            "id": "profile-1",
-            "name": "Create",
+        template = {
+            "id": "[PS] Create.json",
+            "path": "[PS] Create.json",
+            "name": "[PS] Create",
             "kind": "create",
             "promptNodeId": "1",
             "imageNodeId": "",
-            "snapshot": {"output": {"1": {"class_type": "KCPP_PromptSlot", "inputs": {}}}},
+            "resultNodeIds": ["2"],
+            "resultFields": ["images", "gifs"],
+            "snapshot": {"output": {
+                "1": {"class_type": "KCPP_PromptSlot", "inputs": {}},
+                "2": {"class_type": "SaveImage", "inputs": {}},
+            }},
         }
         with mock.patch.object(self.routes, "WORKFLOW_STORE_PATH", workflow_path):
-            saved = self.routes._update_workflow_store({"revision": 0, "profiles": [profile]})
+            saved = self.routes._update_workflow_store({"revision": 0, "templates": [template]})
             self.assertEqual(saved["revision"], 1)
             with self.assertRaises(self.routes.StoreConflictError):
-                self.routes._update_workflow_store({"revision": 0, "profiles": [profile]})
-            invalid = {**profile, "id": "profile-2", "promptNodeId": "missing"}
+                self.routes._update_workflow_store({"revision": 0, "templates": [template]})
+            invalid = {**template, "path": "[PS] Invalid.json", "id": "[PS] Invalid.json", "promptNodeId": "missing"}
             with self.assertRaisesRegex(ValueError, "prompt node"):
-                self.routes._write_workflow_store({"revision": 1, "profiles": [invalid]}, 1)
+                self.routes._write_workflow_store({"revision": 1, "templates": [invalid]}, 1)
             incompatible = {
-                **profile,
-                "id": "profile-2",
-                "snapshot": {"output": {"1": {"class_type": "SaveImage", "inputs": {}}}},
+                **template,
+                "path": "[PS] Incompatible.json",
+                "id": "[PS] Incompatible.json",
+                "snapshot": {"output": {
+                    "1": {"class_type": "SaveImage", "inputs": {}},
+                    "2": {"class_type": "SaveImage", "inputs": {}},
+                }},
             }
             with self.assertRaisesRegex(ValueError, "incompatible class"):
-                self.routes._write_workflow_store({"revision": 1, "profiles": [incompatible]}, 1)
+                self.routes._write_workflow_store({"revision": 1, "templates": [incompatible]}, 1)
+            missing_image_source = {
+                **template,
+                "path": "[PS] Edit.json",
+                "id": "[PS] Edit.json",
+                "kind": "edit",
+            }
+            with self.assertRaisesRegex(ValueError, "image source"):
+                self.routes._write_workflow_store({"revision": 1, "templates": [missing_image_source]}, 1)
+            multiple_outputs = {**template, "resultNodeIds": ["1", "2"]}
+            with self.assertRaisesRegex(ValueError, "exactly one image output"):
+                self.routes._write_workflow_store({"revision": 1, "templates": [multiple_outputs]}, 1)
+            manual_workflow = {**template, "path": "Manual.json", "id": "Manual.json"}
+            with self.assertRaisesRegex(ValueError, r"\[PS\]"):
+                self.routes._write_workflow_store({"revision": 1, "templates": [manual_workflow]}, 1)
+
+    def test_legacy_workflow_profiles_are_not_used_as_live_templates(self):
+        workflow_path = Path(self.temp.name) / "legacy-workflows.json"
+        workflow_path.write_text(json.dumps({"version": 1, "revision": 7, "profiles": [{}]}), encoding="utf-8")
+        with mock.patch.object(self.routes, "WORKFLOW_STORE_PATH", str(workflow_path)):
+            loaded = self.routes._read_workflow_store()
+        self.assertEqual(loaded, {"version": 2, "revision": 7, "templates": []})
 
 
 if __name__ == "__main__":

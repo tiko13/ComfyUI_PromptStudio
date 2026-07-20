@@ -204,13 +204,12 @@ body.lllm-popout-body {
   left: 18px;
   bottom: 18px;
   z-index: 100;
-  display: grid;
-  grid-template-columns: minmax(240px, 0.7fr) minmax(420px, 1.3fr);
-  gap: 13px;
+  display: flex;
+  flex-direction: column;
   width: auto;
   max-height: none;
   overflow-y: auto;
-  padding: 13px;
+  padding: 0;
   background: rgba(20, 22, 31, 0.98);
   border: 1px solid rgba(169, 145, 255, 0.26);
   border-radius: 13px;
@@ -222,50 +221,166 @@ body.lllm-popout-body {
   display: none;
 }
 
-.lllm-studio-settings-heading,
-.lllm-image-scale-control > span {
+.lllm-studio-settings-header {
+  position: sticky;
+  top: 0;
+  z-index: 2;
   display: flex;
-  align-items: baseline;
+  align-items: center;
   justify-content: space-between;
-  gap: 12px;
+  gap: 20px;
+  min-height: 78px;
+  padding: 16px 22px;
+  background: rgba(20, 22, 31, 0.94);
+  border-bottom: 1px solid var(--ps-border);
+  backdrop-filter: blur(18px);
 }
 
-.lllm-studio-settings-heading {
-  grid-column: 1 / -1;
+.lllm-studio-settings-header > div,
+.lllm-studio-settings-card-header > div,
+.lllm-studio-setting-copy {
+  display: grid;
+  gap: 3px;
 }
 
-.lllm-studio-settings-heading span,
-.lllm-image-scale-control small {
+.lllm-studio-settings-header strong {
+  font-size: 16px;
+  line-height: 1.2;
+}
+
+.lllm-studio-settings-header > div > span,
+.lllm-studio-settings-card-header span,
+.lllm-studio-setting-copy small {
   color: var(--ps-muted);
-  font-size: 10px;
+  font-size: 11px;
+  font-weight: 500;
 }
 
-.lllm-studio-settings-heading strong {
+.lllm-studio-settings-context {
+  flex: 0 0 auto;
+  padding: 5px 9px;
+  color: var(--ps-accent-strong);
+  background: rgba(141, 115, 255, 0.1);
+  border: 1px solid rgba(141, 115, 255, 0.2);
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.lllm-studio-settings-layout {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-content: start;
+  gap: 16px;
+  width: min(1120px, 100%);
+  margin: 0 auto;
+  padding: 22px;
+}
+
+.lllm-studio-settings-card {
+  min-width: 0;
+  overflow: hidden;
+  background: rgba(16, 18, 26, 0.72);
+  border: 1px solid var(--ps-border);
+  border-radius: 12px;
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.14);
+}
+
+.lllm-studio-settings-card-header {
+  padding: 15px 17px 13px;
+  background: rgba(255, 255, 255, 0.018);
+  border-bottom: 1px solid var(--ps-border);
+}
+
+.lllm-studio-settings-card-header strong {
   font-size: 13px;
 }
 
-.lllm-image-scale-control {
+.lllm-studio-settings-list {
   display: grid;
-  gap: 8px;
 }
 
-.lllm-studio-checkbox {
+.lllm-studio-setting {
   display: flex;
   align-items: center;
+  justify-content: space-between;
   gap: 8px;
-  color: var(--ps-muted);
-  font-size: 11px;
-  font-weight: 700;
+  min-height: 78px;
+  padding: 14px 17px;
+}
+
+.lllm-studio-setting + .lllm-studio-setting {
+  border-top: 1px solid var(--ps-border);
+}
+
+.lllm-studio-setting-copy {
+  min-width: 0;
+}
+
+.lllm-studio-setting-copy strong {
+  font-size: 12px;
+}
+
+.lllm-image-scale-field {
+  display: grid;
+  grid-template-columns: minmax(120px, 190px) 38px;
+  align-items: center;
+  gap: 10px;
+  flex: 0 0 min(48%, 238px);
+}
+
+.lllm-image-scale-field output {
+  grid-column: 2;
+  grid-row: 1;
+  text-align: right;
+}
+
+.lllm-image-scale-field input {
+  grid-column: 1;
+  grid-row: 1;
+}
+
+.lllm-studio-setting-toggle {
   cursor: pointer;
 }
 
-#lllm-prompt-studio .lllm-studio-checkbox input {
+#lllm-prompt-studio .lllm-studio-setting-toggle input {
+  position: relative;
   flex: 0 0 auto;
-  width: 16px;
-  height: 16px;
-  min-height: 16px;
+  width: 38px;
+  height: 22px;
+  min-height: 22px;
   padding: 0;
-  accent-color: var(--ps-accent);
+  appearance: none;
+  background: rgba(255, 255, 255, 0.12);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 999px;
+  box-shadow: none;
+  cursor: pointer;
+}
+
+#lllm-prompt-studio .lllm-studio-setting-toggle input::after {
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 14px;
+  height: 14px;
+  background: #c9ccd6;
+  border-radius: 50%;
+  content: "";
+  transition: transform 140ms ease, background 140ms ease;
+}
+
+#lllm-prompt-studio .lllm-studio-setting-toggle input:checked {
+  background: var(--ps-accent);
+  border-color: var(--ps-accent);
+}
+
+#lllm-prompt-studio .lllm-studio-setting-toggle input:checked::after {
+  background: #fff;
+  transform: translateX(16px);
 }
 
 .lllm-image-scale-control output {
@@ -314,10 +429,23 @@ body.lllm-popout-body {
   gap: 7px;
 }
 
-.lllm-attach-row select {
+.lllm-workflow-template-status {
   min-width: 0;
   flex: 1;
+  padding: 7px 9px;
+  overflow: hidden;
+  color: var(--ps-muted);
+  background: rgba(255, 255, 255, 0.035);
+  border: 1px solid var(--ps-border);
+  border-radius: 8px;
+  font-size: 11px;
+  line-height: 1.25;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
+
+.lllm-workflow-template-status[data-kind="ready"] { color: var(--ps-success); }
+.lllm-workflow-template-status[data-kind="warning"] { color: var(--ps-warning); }
 
 .lllm-attach-row button {
   flex: 0 0 36px;
@@ -626,6 +754,7 @@ body.lllm-popout-body {
 
 .lllm-current-details,
 .lllm-settings,
+.lllm-resolution-details,
 .lllm-secondary-details {
   min-width: 0;
   overflow: hidden;
@@ -636,6 +765,7 @@ body.lllm-popout-body {
 
 .lllm-current-details summary,
 .lllm-settings summary,
+.lllm-resolution-details summary,
 .lllm-secondary-details summary {
   display: flex;
   align-items: baseline;
@@ -648,18 +778,21 @@ body.lllm-popout-body {
 
 .lllm-current-details summary::-webkit-details-marker,
 .lllm-settings summary::-webkit-details-marker,
+.lllm-resolution-details summary::-webkit-details-marker,
 .lllm-secondary-details summary::-webkit-details-marker {
   display: none;
 }
 
 .lllm-current-details summary span,
 .lllm-settings summary span,
+.lllm-resolution-details summary span,
 .lllm-secondary-details summary span {
   font-weight: 700;
 }
 
 .lllm-current-details summary small,
 .lllm-settings summary small,
+.lllm-resolution-details summary small,
 .lllm-secondary-details summary small,
 .lllm-compose-heading span {
   color: var(--ps-muted);
@@ -723,7 +856,8 @@ body.lllm-popout-body {
   min-height: 120px;
 }
 
-.lllm-settings-grid {
+.lllm-settings-grid,
+.lllm-resolution-grid {
   display: grid;
   grid-template-columns: 1fr;
   gap: 6px;
@@ -735,7 +869,8 @@ body.lllm-popout-body {
   scrollbar-gutter: stable;
 }
 
-.lllm-settings-grid label {
+.lllm-settings-grid label,
+.lllm-resolution-grid label {
   min-width: 0;
   margin-bottom: 0;
   font-size: 9px;
@@ -743,21 +878,27 @@ body.lllm-popout-body {
 
 .lllm-settings-grid label textarea,
 .lllm-settings-grid label input,
-.lllm-settings-grid label select {
+.lllm-settings-grid label select,
+.lllm-resolution-grid label input,
+.lllm-resolution-grid label select {
   margin-top: 0;
 }
 
 #lllm-prompt-studio .lllm-settings-grid label input,
-#lllm-prompt-studio .lllm-settings-grid label select {
+#lllm-prompt-studio .lllm-settings-grid label select,
+#lllm-prompt-studio .lllm-resolution-grid label input,
+#lllm-prompt-studio .lllm-resolution-grid label select {
   min-height: 32px;
 }
 
 #lllm-prompt-studio .lllm-settings-grid label input,
+#lllm-prompt-studio .lllm-resolution-grid label input,
 #lllm-prompt-studio .lllm-settings-grid label textarea {
   padding: 7px 9px;
 }
 
-#lllm-prompt-studio .lllm-settings-grid label select {
+#lllm-prompt-studio .lllm-settings-grid label select,
+#lllm-prompt-studio .lllm-resolution-grid label select {
   min-height: 32px;
   padding: 0 30px 0 9px;
 }
@@ -956,7 +1097,8 @@ body.lllm-popout-body {
 .lllm-history,
 .lllm-chat-list,
 .lllm-control-deck,
-.lllm-settings-grid {
+.lllm-settings-grid,
+.lllm-resolution-grid {
   scrollbar-color: rgba(150, 134, 218, 0.45) transparent;
   scrollbar-width: thin;
 }
@@ -1130,6 +1272,17 @@ body.lllm-popout-body #lllm-prompt-studio.lllm-chats-open .lllm-chat-sidebar {
   gap: 8px;
 }
 
+.lllm-studio-settings-card > .lllm-workflow-routing {
+  gap: 14px;
+  padding: 15px 17px 17px;
+}
+
+.lllm-workflow-routing-fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
 .lllm-workflow-routing label,
 .lllm-workflow-manager-grid label,
 .lllm-source-control {
@@ -1140,15 +1293,30 @@ body.lllm-popout-body #lllm-prompt-studio.lllm-chats-open .lllm-chat-sidebar {
   font-weight: 700;
 }
 
-.lllm-studio-settings-section {
-  grid-column: 1 / -1;
-  margin-top: 2px;
-  padding-top: 12px;
-  border-top: 1px solid var(--ps-border);
+.lllm-workflow-routing > small {
+  color: var(--ps-muted);
+  font-size: 10px;
+  line-height: 1.45;
 }
 
-.lllm-studio-settings > .lllm-workflow-routing {
-  align-content: start;
+.lllm-studio-settings-note {
+  display: grid;
+  gap: 7px;
+  padding: 11px 12px;
+  color: var(--ps-muted);
+  background: rgba(141, 115, 255, 0.055);
+  border: 1px solid rgba(141, 115, 255, 0.13);
+  border-radius: 9px;
+  font-size: 10px;
+  line-height: 1.5;
+}
+
+.lllm-studio-settings-note p {
+  margin: 0;
+}
+
+.lllm-studio-settings-note strong {
+  color: var(--ps-text);
 }
 
 .lllm-studio-settings > .lllm-workflow-manager {
@@ -1271,8 +1439,17 @@ body.lllm-popout-body #lllm-prompt-studio.lllm-chats-open .lllm-chat-sidebar {
     right: 10px;
     left: 10px;
     bottom: 10px;
-    grid-template-columns: minmax(0, 1fr);
     max-height: none;
+  }
+
+  .lllm-studio-settings-header {
+    min-height: 68px;
+    padding: 13px 15px;
+  }
+
+  .lllm-studio-settings-layout {
+    grid-template-columns: minmax(0, 1fr);
+    padding: 14px;
   }
 
   .lllm-studio-settings .lllm-workflow-manager-grid {
@@ -1333,6 +1510,30 @@ body.lllm-popout-body #lllm-prompt-studio.lllm-chats-open .lllm-chat-sidebar {
 
   .lllm-inspector-button {
     display: inline-flex;
+  }
+}
+
+@media (max-width: 520px) {
+  .lllm-studio-settings-context {
+    display: none;
+  }
+
+  .lllm-studio-setting {
+    align-items: stretch;
+  }
+
+  .lllm-image-scale-control {
+    flex-direction: column;
+  }
+
+  .lllm-image-scale-field {
+    grid-template-columns: minmax(0, 1fr) 38px;
+    flex-basis: auto;
+    width: 100%;
+  }
+
+  .lllm-workflow-routing-fields {
+    grid-template-columns: minmax(0, 1fr);
   }
 }
 
