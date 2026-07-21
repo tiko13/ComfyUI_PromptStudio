@@ -67,7 +67,7 @@ def _empty_chat_store():
 
 
 def _empty_workflow_store():
-    return {"version": 2, "revision": 0, "templates": []}
+    return {"version": 3, "revision": 0, "templates": []}
 
 
 def _revision(value):
@@ -155,7 +155,9 @@ def _read_workflow_store():
     if isinstance(data.get("profiles"), list) and "templates" not in data:
         # Version 1 stored manually captured profiles. They are intentionally not
         # migrated because ComfyUI's live [PS] workflows are now the source of truth.
-        return {"version": 2, "revision": _revision(data.get("revision")), "templates": []}
+        return {"version": 3, "revision": _revision(data.get("revision")), "templates": []}
+    if data.get("version") != 3:
+        return {"version": 3, "revision": _revision(data.get("revision")), "templates": []}
     if not isinstance(data.get("templates"), list):
         raise RuntimeError("Prompt Studio workflow cache must contain a templates list")
     try:
@@ -181,16 +183,21 @@ def _validate_workflow_templates(templates):
         if not _text(template.get("name")).strip():
             raise ValueError(f"Workflow cache entry {index + 1} must have a name")
         kind = template.get("kind")
-        if kind not in {"create", "edit"}:
-            raise ValueError(f"Workflow cache entry {index + 1} kind must be create or edit")
+        if kind not in {"create", "edit", "upscale"}:
+            raise ValueError(f"Workflow cache entry {index + 1} kind must be create, edit, or upscale")
         snapshot = template.get("snapshot")
         output = snapshot.get("output") if isinstance(snapshot, dict) else None
         prompt_node_id = _text(template.get("promptNodeId")).strip()
-        if not isinstance(output, dict) or not prompt_node_id or prompt_node_id not in output:
+        if not isinstance(output, dict):
+            raise ValueError(f"Workflow cache entry {index + 1} has no executable snapshot")
+        if prompt_node_id:
+            if prompt_node_id not in output:
+                raise ValueError(f"Workflow cache entry {index + 1} has no executable prompt node")
+            prompt_node = output[prompt_node_id]
+            if not isinstance(prompt_node, dict) or prompt_node.get("class_type") not in {"KCPP_PromptSlot", "KCPP_PromptAmplify"}:
+                raise ValueError(f"Workflow cache entry {index + 1} prompt node has an incompatible class")
+        elif kind in {"create", "edit"}:
             raise ValueError(f"Workflow cache entry {index + 1} has no executable prompt node")
-        prompt_node = output[prompt_node_id]
-        if not isinstance(prompt_node, dict) or prompt_node.get("class_type") not in {"KCPP_PromptSlot", "KCPP_PromptAmplify"}:
-            raise ValueError(f"Workflow cache entry {index + 1} prompt node has an incompatible class")
         if kind == "edit":
             image_node_id = _text(template.get("imageNodeId")).strip()
             if not image_node_id or image_node_id not in output:
@@ -198,6 +205,13 @@ def _validate_workflow_templates(templates):
             image_node = output[image_node_id]
             if not isinstance(image_node, dict) or image_node.get("class_type") != "KCPP_ChatImageInput":
                 raise ValueError(f"Workflow cache entry {index + 1} image source has an incompatible class")
+        if kind == "upscale":
+            upscale_node_id = _text(template.get("upscaleNodeId")).strip()
+            if not upscale_node_id or upscale_node_id not in output:
+                raise ValueError(f"Workflow cache entry {index + 1} has no executable upscale node")
+            upscale_node = output[upscale_node_id]
+            if not isinstance(upscale_node, dict) or upscale_node.get("class_type") != "KCPP_PromptStudioUpscale":
+                raise ValueError(f"Workflow cache entry {index + 1} upscale node has an incompatible class")
         result_node_ids = template.get("resultNodeIds", [])
         if (
             not isinstance(result_node_ids, list)
@@ -216,7 +230,7 @@ def _write_workflow_store(data, current_revision=None):
     _validate_workflow_templates(data["templates"])
     if current_revision is None:
         current_revision = _revision(data.get("revision"))
-    normalized = {"version": 2, "revision": current_revision + 1, "templates": data["templates"]}
+    normalized = {"version": 3, "revision": current_revision + 1, "templates": data["templates"]}
     return _atomic_write_store(
         WORKFLOW_STORE_PATH,
         normalized,

@@ -5,6 +5,7 @@ const EXTENSION_NAME = "ComfyUI_PromptStudio.PromptStudio";
 const SLOT_TYPE = "KCPP_PromptSlot";
 const AMPLIFY_TYPE = "KCPP_PromptAmplify";
 const IMAGE_SOURCE_TYPE = "KCPP_ChatImageInput";
+const UPSCALE_TYPE = "KCPP_PromptStudioUpscale";
 const STORAGE_KEY = "promptstudio.promptStudio.settings.v1";
 const STANDALONE_CHANNEL = "promptstudio.promptStudio.standalone.v1";
 const WORKFLOW_SYNC_CHANNEL = "promptstudio.promptStudio.workflows.v1";
@@ -91,6 +92,7 @@ function getSettings() {
     temperature: 0.7,
     secondary_instructions: "",
     use_llm_amplification: true,
+    use_prompt_upscaling: true,
     randomize_seed: true,
     auto_generate: true,
     auto_advance_source: true,
@@ -126,6 +128,7 @@ function saveSettings() {
       temperature: Number(value("promptstudio-temperature") || 0.7),
       secondary_instructions: value("promptstudio-secondary-instructions"),
       use_llm_amplification: checked("promptstudio-use-llm-amplification"),
+      use_prompt_upscaling: checked("promptstudio-use-prompt-upscaling"),
       randomize_seed: checked("promptstudio-randomize-seed"),
       auto_generate: checked("promptstudio-auto-generate"),
       auto_advance_source: checked("promptstudio-auto-advance-source"),
@@ -202,7 +205,7 @@ function normalizeChat(chat) {
         controlsFingerprint: String(message?.controlsFingerprint || ""),
         llmAmplified: Boolean(message?.llmAmplified),
         executionPrompt: String(message?.executionPrompt || message?.canonicalPrompt || ""),
-        generationAction: message?.generationAction === "edit" ? "edit" : "create",
+        generationAction: ["edit", "upscale"].includes(message?.generationAction) ? message.generationAction : "create",
         workflowProfileId: String(message?.workflowProfileId || ""),
         workflowName: String(message?.workflowName || ""),
         sourceImage: normalizeImageReference(message?.sourceImage),
@@ -226,6 +229,7 @@ function normalizeChat(chat) {
     controlsFingerprint: String(chat?.controlsFingerprint || ""),
     createWorkflowId: String(chat?.createWorkflowId || ""),
     editWorkflowId: String(chat?.editWorkflowId || ""),
+    upscaleWorkflowId: String(chat?.upscaleWorkflowId || ""),
     editPromptMode: ["edit_instruction", "full_prompt"].includes(chat?.editPromptMode) ? chat.editPromptMode : "",
     selectedSource: normalizeImageReference(chat?.selectedSource),
     lastGeneration: normalizeLastGeneration(chat?.lastGeneration),
@@ -307,7 +311,7 @@ function imageDimensionsFromView(reference) {
 function normalizeLastGeneration(value) {
   if (!value || typeof value !== "object") return null;
   return {
-    action: value.action === "edit" ? "edit" : "create",
+    action: ["edit", "upscale"].includes(value.action) ? value.action : "create",
     canonicalPrompt: String(value.canonicalPrompt || ""),
     executionPrompt: String(value.executionPrompt || ""),
     workflowProfileId: String(value.workflowProfileId || ""),
@@ -389,6 +393,7 @@ function syncActiveChat() {
   chat.initialized = Boolean(chat.initialized);
   chat.createWorkflowId = state.panel?.querySelector("#promptstudio-create-workflow")?.value || "";
   chat.editWorkflowId = state.panel?.querySelector("#promptstudio-edit-workflow")?.value || "";
+  chat.upscaleWorkflowId = state.panel?.querySelector("#promptstudio-upscale-workflow")?.value || "";
   chat.editPromptMode = selectedEditPromptMode();
   chat.updatedAt = Date.now();
   saveChats();
@@ -402,10 +407,11 @@ function normalizeWorkflowProfile(profile) {
     id: path,
     path,
     name: String(profile?.name || workflowNameFromPath(path) || "Workflow").trim() || "Workflow",
-    kind: profile?.kind === "edit" ? "edit" : "create",
+    kind: ["edit", "upscale"].includes(profile?.kind) ? profile.kind : "create",
     promptMode: "full_prompt",
     promptNodeId: String(profile?.promptNodeId || ""),
     imageNodeId: String(profile?.imageNodeId || ""),
+    upscaleNodeId: String(profile?.upscaleNodeId || ""),
     resultNodeIds: Array.isArray(profile?.resultNodeIds) ? profile.resultNodeIds.map(String) : [],
     resultFields: ["images", "gifs"],
     snapshot,
@@ -534,14 +540,21 @@ async function buildWorkflowTemplate(file, workflowData, cached) {
     throw new Error(`ComfyUI could not load ${configureErrors.length} workflow node${configureErrors.length === 1 ? "" : "s"}.`);
   }
   const snapshot = structuredClone(await app.graphToPrompt(graph));
-  const promptNode = firstExecutableNode(graph, snapshot, [SLOT_TYPE, AMPLIFY_TYPE]);
-  if (!promptNode) throw new Error("Add an executable KoboldCpp Prompt Slot or Prompt Amplify node.");
-
+  const graphUpscaleNodes = (graph._nodes || []).filter((node) => nodeClassName(node) === UPSCALE_TYPE);
+  const upscaleWorkflow = graphUpscaleNodes.length > 0 || cached?.kind === "upscale";
+  const upscaleNode = firstExecutableNode(graph, snapshot, [UPSCALE_TYPE]);
+  if (upscaleWorkflow && !upscaleNode) {
+    throw new Error("Upscaling workflows need an executable Prompt Studio Upscale node.");
+  }
   const graphImageSources = (graph._nodes || []).filter((node) => nodeClassName(node) === IMAGE_SOURCE_TYPE);
-  const editingWorkflow = graphImageSources.length > 0 || cached?.kind === "edit";
+  const editingWorkflow = !upscaleWorkflow && (graphImageSources.length > 0 || cached?.kind === "edit");
   const imageNode = firstExecutableNode(graph, snapshot, [IMAGE_SOURCE_TYPE]);
   if (editingWorkflow && !imageNode) {
-    throw new Error("Editing workflows need an executable Prompt Studio Image Source node.");
+    throw new Error("Image workflows need an executable Prompt Studio Image Source node.");
+  }
+  const promptNode = firstExecutableNode(graph, snapshot, [SLOT_TYPE, AMPLIFY_TYPE]);
+  if (!upscaleWorkflow && !promptNode) {
+    throw new Error(`${editingWorkflow ? "Editing" : "Creation"} workflows need an executable KoboldCpp Prompt Slot or Prompt Amplify node.`);
   }
 
   const output = snapshot?.output || {};
@@ -556,9 +569,10 @@ async function buildWorkflowTemplate(file, workflowData, cached) {
     id: file.path,
     path: file.path,
     name: workflowNameFromPath(file.path),
-    kind: editingWorkflow ? "edit" : "create",
-    promptNodeId: String(promptNode.id),
+    kind: upscaleWorkflow ? "upscale" : editingWorkflow ? "edit" : "create",
+    promptNodeId: upscaleWorkflow ? "" : String(promptNode.id),
     imageNodeId: editingWorkflow ? String(imageNode.id) : "",
+    upscaleNodeId: upscaleWorkflow ? String(upscaleNode.id) : "",
     resultNodeIds: [String(imageOutputs[0].id)],
     snapshot,
     updatedAt: Date.now(),
@@ -587,7 +601,7 @@ async function saveWorkflowProfiles() {
       const response = await api.fetchApi("/promptstudio/prompt-studio/workflows", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ version: 2, revision: state.workflowRevision, templates: snapshot }),
+        body: JSON.stringify({ version: 3, revision: state.workflowRevision, templates: snapshot }),
       });
       const data = await response.json().catch(() => ({}));
       if (!response.ok) {
@@ -856,6 +870,7 @@ function createChat() {
     controlsFingerprint: "",
     createWorkflowId: state.panel?.querySelector("#promptstudio-create-workflow")?.value || "",
     editWorkflowId: state.panel?.querySelector("#promptstudio-edit-workflow")?.value || "",
+    upscaleWorkflowId: state.panel?.querySelector("#promptstudio-upscale-workflow")?.value || "",
     editPromptMode: selectedEditPromptMode(),
     selectedSource: null,
     lastGeneration: null,
@@ -963,7 +978,11 @@ function workflowProfileById(profileId) {
 }
 
 function selectedWorkflowProfileId(action = selectedAction()) {
-  const selectId = action === "edit" ? "#promptstudio-edit-workflow" : "#promptstudio-create-workflow";
+  const selectId = action === "upscale"
+    ? "#promptstudio-upscale-workflow"
+    : action === "edit"
+      ? "#promptstudio-edit-workflow"
+      : "#promptstudio-create-workflow";
   return workflowProfileById(state.panel?.querySelector(selectId)?.value)?.id || "";
 }
 
@@ -975,19 +994,28 @@ function announceWorkflowSelection(action, { persist = true } = {}) {
   if (persist) syncActiveChat();
   const profile = selectedWorkflowProfile(action);
   refreshSecondaryInstructionsControl();
+  const role = action === "upscale" ? "upscaling" : action === "edit" ? "editing" : "creation";
+  const verb = action === "upscale" ? "Upscale" : action === "edit" ? "Edit" : "Create";
   if (!profile) {
-    setStatus(`No compatible [PS] ${action === "edit" ? "editing" : "creation"} workflow is available.`, "warning");
+    setStatus(`No compatible [PS] ${role} workflow is available.`, "warning");
   } else if (profile.stale) {
     setStatus(`“${profile.name}” is invalid in ComfyUI. Prompt Studio will use its last working cache.`, "warning");
   } else {
-    setStatus(`${action === "edit" ? "Edit" : "Create"} will use “${profile.name}” from ComfyUI.`, "ready");
+    setStatus(`${verb} will use “${profile.name}” from ComfyUI.`, "ready");
   }
 }
 
 function fillWorkflowSelect(select, kind, remembered) {
   if (!select) return;
   select.replaceChildren();
-  for (const profile of state.workflowProfiles.filter((item) => item.kind === kind)) {
+  const compatible = state.workflowProfiles.filter((item) => (
+    kind === "create"
+      ? item.kind === "create" && Boolean(item.promptNodeId)
+      : kind === "edit"
+        ? item.kind === "edit" && Boolean(item.imageNodeId) && Boolean(item.promptNodeId)
+        : item.kind === "upscale" && Boolean(item.upscaleNodeId)
+  ));
+  for (const profile of compatible) {
     const option = document.createElement("option");
     option.value = profile.id;
     option.textContent = `${profile.name}${profile.stale ? " · cached" : ""}`;
@@ -996,7 +1024,7 @@ function fillWorkflowSelect(select, kind, remembered) {
   if (!select.options.length) {
     const unavailable = document.createElement("option");
     unavailable.value = "";
-    unavailable.textContent = `No compatible ${kind === "edit" ? "editing" : "creation"} workflows`;
+    unavailable.textContent = `No compatible ${kind === "upscale" ? "upscaling" : kind === "edit" ? "editing" : "creation"} workflows`;
     select.appendChild(unavailable);
     select.disabled = true;
     return;
@@ -1010,6 +1038,7 @@ function refreshWorkflowControls() {
   const chat = activeChat();
   fillWorkflowSelect(state.panel.querySelector("#promptstudio-create-workflow"), "create", chat?.createWorkflowId || "");
   fillWorkflowSelect(state.panel.querySelector("#promptstudio-edit-workflow"), "edit", chat?.editWorkflowId || "");
+  fillWorkflowSelect(state.panel.querySelector("#promptstudio-upscale-workflow"), "upscale", chat?.upscaleWorkflowId || "");
   const editWorkflow = workflowProfileById(chat?.editWorkflowId);
   setEditPromptMode(chat?.editPromptMode || editWorkflow?.promptMode || "full_prompt");
   refreshSecondaryInstructionsControl();
@@ -1022,10 +1051,11 @@ function renderWorkflowStatus() {
   if (!status) return;
   const cachedCount = state.workflowProfiles.filter((profile) => profile.stale).length;
   const createCount = state.workflowProfiles.filter((profile) => profile.kind === "create").length;
-  const editCount = state.workflowProfiles.filter((profile) => profile.kind === "edit").length;
+  const editCount = state.workflowProfiles.filter((profile) => profile.kind === "edit" && profile.promptNodeId).length;
+  const upscaleCount = state.workflowProfiles.filter((profile) => profile.kind === "upscale" && profile.upscaleNodeId).length;
   status.textContent = state.workflowBusy
     ? "Checking ComfyUI workflows…"
-    : `${createCount} creation · ${editCount} editing${cachedCount ? ` · ${cachedCount} cached` : ""}${state.workflowIssues.length ? ` · ${state.workflowIssues.length} rejected update${state.workflowIssues.length === 1 ? "" : "s"}` : ""}`;
+    : `${createCount} creation · ${editCount} editing · ${upscaleCount} upscaling${cachedCount ? ` · ${cachedCount} cached` : ""}${state.workflowIssues.length ? ` · ${state.workflowIssues.length} rejected update${state.workflowIssues.length === 1 ? "" : "s"}` : ""}`;
   status.dataset.kind = state.workflowIssues.length ? "warning" : "ready";
   status.title = state.workflowIssues.join("\n");
 }
@@ -1077,6 +1107,29 @@ function openImageLightbox(url, alt, trigger) {
   state.lightboxTrigger = trigger;
   lightbox.hidden = false;
   lightbox.focus({ preventScroll: true });
+}
+
+function closeUpscaleDialog() {
+  const dialog = state.panel?.querySelector("#promptstudio-upscale-dialog");
+  if (!dialog || dialog.hidden) return;
+  dialog.hidden = true;
+  dialog._upscaleRequest = null;
+}
+
+function requestImageUpscale(reference, generationData = null) {
+  if (state.busy) return setStatus("Wait for the current operation to finish.", "warning");
+  const source = normalizeImageReference(reference);
+  if (!source) return;
+  const profile = selectedWorkflowProfile("upscale");
+  if (!profile) return setStatus("Select a compatible [PS] upscaling workflow first.", "warning");
+  const dialog = state.panel?.querySelector("#promptstudio-upscale-dialog");
+  const factor = dialog?.querySelector("#promptstudio-upscale-factor");
+  if (!dialog || !factor) return;
+  dialog._upscaleRequest = { source, generationData, workflowProfileId: profile.id };
+  factor.value = "2";
+  dialog.hidden = false;
+  factor.focus({ preventScroll: true });
+  factor.select();
 }
 
 function imageReferenceKey(reference) {
@@ -1188,6 +1241,8 @@ function renderImageGallery(message, images, generationData = null) {
     preview.setAttribute("aria-label", preview.title);
     preview.addEventListener("click", () => openImageLightbox(url, image.alt, preview));
     preview.appendChild(image);
+    const actions = document.createElement("div");
+    actions.className = "promptstudio-image-actions";
     const useSource = document.createElement("button");
     useSource.type = "button";
     useSource.className = "promptstudio-use-source";
@@ -1195,7 +1250,17 @@ function renderImageGallery(message, images, generationData = null) {
     useSource.disabled = state.busy;
     useSource.textContent = card.dataset.source === "true" ? "Editing source" : "Edit this image";
     useSource.addEventListener("click", () => selectImageSource(reference, generationData));
-    card.append(preview, useSource);
+    const upscale = document.createElement("button");
+    upscale.type = "button";
+    upscale.className = "promptstudio-upscale-image";
+    upscale.dataset.disableBusy = "";
+    upscale.disabled = state.busy;
+    upscale.title = "Upscale this image";
+    upscale.setAttribute("aria-label", upscale.title);
+    upscale.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 4H4v5M15 4h5v5M9 20H4v-5M15 20h5v-5M4 9l6-6M20 9l-6-6M4 15l6 6M20 15l-6 6" /></svg>';
+    upscale.addEventListener("click", () => requestImageUpscale(reference, generationData));
+    actions.append(useSource, upscale);
+    card.append(preview, actions);
     gallery.appendChild(card);
   }
   message.appendChild(gallery);
@@ -1265,9 +1330,11 @@ function renderMessage(data, { scroll = true } = {}) {
   if (data.canonicalPrompt && data.workflowName) {
     const provenance = document.createElement("div");
     provenance.className = "promptstudio-generation-provenance";
-    provenance.textContent = data.generationAction === "edit"
-      ? `Edited source · ${data.workflowName}`
-      : `Created new · ${data.workflowName}`;
+    provenance.textContent = data.generationAction === "upscale"
+      ? `Upscaled source · ${data.workflowName}`
+      : data.generationAction === "edit"
+        ? `Edited source · ${data.workflowName}`
+        : `Created new · ${data.workflowName}`;
     message.appendChild(provenance);
   }
 
@@ -1296,7 +1363,7 @@ function appendMessage(role, text, options = {}) {
     controlsFingerprint: String(options.controlsFingerprint || ""),
     llmAmplified: Boolean(options.llmAmplified),
     executionPrompt: String(options.executionPrompt || options.canonicalPrompt || ""),
-    generationAction: options.generationAction === "edit" ? "edit" : "create",
+    generationAction: ["edit", "upscale"].includes(options.generationAction) ? options.generationAction : "create",
     workflowProfileId: String(options.workflowProfileId || ""),
     workflowName: String(options.workflowName || ""),
     sourceImage: normalizeImageReference(options.sourceImage),
@@ -1555,8 +1622,16 @@ async function workflowQueueContext(action, profileId = null) {
   const requestedId = profileId == null ? selectedWorkflowProfileId(action) : String(profileId || "");
   await refreshWorkflowTemplates({ announce: false });
   const selectedProfile = workflowProfileById(requestedId);
-  if (!selectedProfile || selectedProfile.kind !== action) {
-    throw new Error(`The selected [PS] ${action === "edit" ? "editing" : "creation"} workflow is no longer available.`);
+  const compatible = selectedProfile && (
+    action === "create"
+      ? selectedProfile.kind === "create" && Boolean(selectedProfile.promptNodeId)
+      : action === "edit"
+        ? selectedProfile.kind === "edit" && Boolean(selectedProfile.imageNodeId) && Boolean(selectedProfile.promptNodeId)
+        : selectedProfile.kind === "upscale" && Boolean(selectedProfile.upscaleNodeId)
+  );
+  if (!compatible) {
+    const role = action === "upscale" ? "upscaling" : action === "edit" ? "editing" : "creation";
+    throw new Error(`The selected [PS] ${role} workflow is no longer available.`);
   }
   if (!selectedProfile.snapshot?.output) throw new Error(`Workflow “${selectedProfile.name}” has no executable cache.`);
   return {
@@ -1564,6 +1639,7 @@ async function workflowQueueContext(action, profileId = null) {
     snapshot: structuredClone(selectedProfile.snapshot),
     promptNodeId: selectedProfile.promptNodeId,
     imageNodeId: selectedProfile.imageNodeId,
+    upscaleNodeId: selectedProfile.upscaleNodeId,
     resultNodeIds: selectedProfile.resultNodeIds,
     resultFields: selectedProfile.resultFields,
     workflowName: selectedProfile.name,
@@ -1576,42 +1652,46 @@ async function queueGeneration({
   preserveSeed = false,
   workflowProfileId = null,
   sourceImage = null,
+  upscaleFactor = null,
 } = {}) {
   const operationToken = state.operationToken;
-  let source = action === "edit" ? editingSource(sourceImage) : null;
-  if (action === "edit" && !source) throw new Error("There is no image in this conversation to edit.");
+  let source = action === "create" ? null : editingSource(sourceImage);
+  if (action !== "create" && !source) throw new Error(`There is no image in this conversation to ${action}.`);
+  const context = await workflowQueueContext(action, workflowProfileId);
+  if (operationToken !== state.operationToken) return false;
   if (action === "edit") {
     try {
       source = await imageReferenceWithDimensions(source);
     } catch (error) {
-      throw new Error(`The editing source size could not be preserved: ${error.message || String(error)}`);
+      throw new Error(`Prompt Studio could not preserve the editing source size: ${error.message || String(error)}`);
     }
   }
-  const context = await workflowQueueContext(action, workflowProfileId);
   if (operationToken !== state.operationToken) return false;
   const useNewSeed = !preserveSeed
     && generationMatchesLatestQueuedPrompt()
     && state.panel.querySelector("#promptstudio-randomize-seed")?.checked;
   if (useNewSeed) randomizeSnapshotSeeds(context.snapshot);
 
-  const apiNode = context.snapshot.output?.[String(context.promptNodeId)];
-  if (!apiNode || ![SLOT_TYPE, AMPLIFY_TYPE].includes(apiNode.class_type)) {
-    throw new Error("The configured prompt node was not included in the executable workflow.");
-  }
   const secondaryInstructions = state.panel.querySelector("#promptstudio-secondary-instructions")?.value || "";
-  const resolution = {
-    ...resolutionSettings(),
-    resolution_width: action === "edit" ? source.width : 0,
-    resolution_height: action === "edit" ? source.height : 0,
-  };
-  if (apiNode.class_type === AMPLIFY_TYPE) {
-    const slotName = apiNode.inputs?.slot_name || context.workflowName;
-    apiNode.class_type = SLOT_TYPE;
-    apiNode.inputs = { prompt: executionPrompt, slot_name: slotName, secondary_instructions: secondaryInstructions, ...resolution };
-  } else {
-    apiNode.inputs.prompt = executionPrompt;
-    apiNode.inputs.secondary_instructions = secondaryInstructions;
-    Object.assign(apiNode.inputs, resolution);
+  if (action !== "upscale") {
+    const apiNode = context.snapshot.output?.[String(context.promptNodeId)];
+    if (!apiNode || ![SLOT_TYPE, AMPLIFY_TYPE].includes(apiNode.class_type)) {
+      throw new Error("The configured prompt node was not included in the executable workflow.");
+    }
+    const resolution = {
+      ...resolutionSettings(),
+      resolution_width: action === "edit" ? source.width : 0,
+      resolution_height: action === "edit" ? source.height : 0,
+    };
+    if (apiNode.class_type === AMPLIFY_TYPE) {
+      const slotName = apiNode.inputs?.slot_name || context.workflowName;
+      apiNode.class_type = SLOT_TYPE;
+      apiNode.inputs = { prompt: executionPrompt, slot_name: slotName, secondary_instructions: secondaryInstructions, ...resolution };
+    } else {
+      apiNode.inputs.prompt = executionPrompt;
+      apiNode.inputs.secondary_instructions = secondaryInstructions;
+      Object.assign(apiNode.inputs, resolution);
+    }
   }
 
   if (action === "edit") {
@@ -1620,6 +1700,19 @@ async function queueGeneration({
       throw new Error("The configured Prompt Studio Image Source node was not included in the editing workflow.");
     }
     imageNode.inputs.image_ref = JSON.stringify(storedImageReference(source));
+  } else if (action === "upscale") {
+    const factor = Number(upscaleFactor);
+    if (!Number.isFinite(factor) || factor < 1 || factor > 16) {
+      throw new Error("Upscale factor must be between 1 and 16.");
+    }
+    const upscaleNode = context.snapshot.output?.[String(context.upscaleNodeId)];
+    if (!upscaleNode || upscaleNode.class_type !== UPSCALE_TYPE) {
+      throw new Error("The configured Prompt Studio Upscale node was not included in the upscaling workflow.");
+    }
+    upscaleNode.inputs.image_ref = JSON.stringify(storedImageReference(source));
+    upscaleNode.inputs.upscale_factor = factor;
+    upscaleNode.inputs.prompt = executionPrompt;
+    upscaleNode.inputs.secondary_instructions = secondaryInstructions;
   }
 
   if (operationToken !== state.operationToken) return false;
@@ -1675,6 +1768,29 @@ async function queueGeneration({
     setBusy(false);
   });
   return true;
+}
+
+async function queueUpscale(source, generationData = null, factor = null, workflowProfileId = null) {
+  if (state.busy) return;
+  const usePrompt = state.panel?.querySelector("#promptstudio-use-prompt-upscaling")?.checked !== false;
+  const executionPrompt = usePrompt
+    ? String(generationData?.canonicalPrompt || state.currentPrompt || "")
+    : "";
+  state.operationToken += 1;
+  setBusy(true);
+  setStatus("ComfyUI is upscaling…", "working");
+  try {
+    await queueGeneration({
+      action: "upscale",
+      executionPrompt,
+      workflowProfileId,
+      sourceImage: source,
+      upscaleFactor: factor,
+    });
+  } catch (error) {
+    setStatus(error.message || String(error), "error");
+    setBusy(false);
+  }
 }
 
 async function generateDirectPrompt(action = selectedAction()) {
@@ -2016,9 +2132,14 @@ function buildPanel() {
             <div class="promptstudio-workflow-routing-fields">
               <label><span>Create template</span><select id="promptstudio-create-workflow"></select></label>
               <label><span>Edit template</span><select id="promptstudio-edit-workflow"></select></label>
+              <label><span>Upscale template</span><select id="promptstudio-upscale-workflow"></select></label>
             </div>
+            <label class="promptstudio-studio-setting promptstudio-studio-setting-toggle">
+              <span class="promptstudio-studio-setting-copy"><strong>Use prompt when upscaling</strong><small>Inject the image's prompt into the Prompt Studio Upscale node.</small></span>
+              <input id="promptstudio-use-prompt-upscaling" type="checkbox" role="switch" ${settings.use_prompt_upscaling ? "checked" : ""} />
+            </label>
             <div class="promptstudio-studio-settings-note">
-              <p>Name saved ComfyUI workflows with a <strong>[PS]</strong> prefix. Each needs a Prompt Slot or Prompt Amplify node and exactly one image output; editing workflows also need Prompt Studio Image Source.</p>
+              <p>Name saved ComfyUI workflows with a <strong>[PS]</strong> prefix. Each needs exactly one image output. Create and Edit need a Prompt Slot or Prompt Amplify node; Edit also needs Prompt Studio Image Source. Upscale requires Prompt Studio Upscale.</p>
               <p>Saved workflows refresh here immediately and are checked before generation. Invalid updates keep the last working copy marked <strong>cached</strong>.</p>
             </div>
           </div>
@@ -2031,6 +2152,17 @@ function buildPanel() {
         <a id="promptstudio-lightbox-open" href="#" target="_blank" rel="noopener" title="Open image in new tab" aria-label="Open image in new tab">↗</a>
         <button id="promptstudio-lightbox-close" type="button" title="Close image preview" aria-label="Close image preview">×</button>
       </div>
+    </div>
+    <div id="promptstudio-upscale-dialog" class="promptstudio-upscale-dialog" role="dialog" aria-modal="true" aria-labelledby="promptstudio-upscale-title" hidden>
+      <form id="promptstudio-upscale-form" class="promptstudio-upscale-card">
+        <strong id="promptstudio-upscale-title">Upscale image</strong>
+        <label for="promptstudio-upscale-factor">Upscale factor</label>
+        <input id="promptstudio-upscale-factor" type="number" min="1" max="16" step="0.1" value="2" required />
+        <div class="promptstudio-upscale-dialog-actions">
+          <button id="promptstudio-upscale-cancel" type="button">Cancel</button>
+          <button class="promptstudio-primary" type="submit">Upscale</button>
+        </div>
+      </form>
     </div>`;
   document.body.appendChild(panel);
   state.panel = panel;
@@ -2074,6 +2206,22 @@ function buildPanel() {
     if (event.key === "Escape") closeImageLightbox();
   });
   panel.querySelector("#promptstudio-lightbox-close").addEventListener("click", closeImageLightbox);
+  panel.querySelector("#promptstudio-upscale-dialog").addEventListener("click", (event) => {
+    if (event.target === event.currentTarget) closeUpscaleDialog();
+  });
+  panel.querySelector("#promptstudio-upscale-dialog").addEventListener("keydown", (event) => {
+    if (event.key === "Escape") closeUpscaleDialog();
+  });
+  panel.querySelector("#promptstudio-upscale-cancel").addEventListener("click", closeUpscaleDialog);
+  panel.querySelector("#promptstudio-upscale-form").addEventListener("submit", (event) => {
+    event.preventDefault();
+    const dialog = panel.querySelector("#promptstudio-upscale-dialog");
+    const request = dialog._upscaleRequest;
+    const factor = panel.querySelector("#promptstudio-upscale-factor").valueAsNumber;
+    if (!request || !Number.isFinite(factor) || factor < 1 || factor > 16) return;
+    closeUpscaleDialog();
+    queueUpscale(request.source, request.generationData, factor, request.workflowProfileId);
+  });
   panel.querySelector("#promptstudio-new-chat").addEventListener("click", createChat);
   panel.querySelector("#promptstudio-popout").addEventListener("click", () => togglePopout({ returnToEmbedded: true }));
   panel.querySelector("#promptstudio-close").addEventListener("click", () => togglePanel(false));
@@ -2084,6 +2232,9 @@ function buildPanel() {
   panel.querySelector("#promptstudio-edit-workflow").addEventListener("change", () => {
     announceWorkflowSelection("edit");
     setEditPromptMode(selectedEditPromptMode(), { persist: true });
+  });
+  panel.querySelector("#promptstudio-upscale-workflow").addEventListener("change", () => {
+    announceWorkflowSelection("upscale");
   });
   panel.querySelectorAll('input[name="promptstudio-generation-action"]').forEach((control) => {
     control.addEventListener("change", () => {
@@ -2124,6 +2275,7 @@ function buildPanel() {
   panel.querySelector("#promptstudio-image-scale").addEventListener("input", (event) => applyImageScale(event.target.value));
   panel.querySelector("#promptstudio-image-scale").addEventListener("change", saveSettings);
   panel.querySelector("#promptstudio-auto-advance-source").addEventListener("change", saveSettings);
+  panel.querySelector("#promptstudio-use-prompt-upscaling").addEventListener("change", saveSettings);
 }
 
 function buildLauncher() {
