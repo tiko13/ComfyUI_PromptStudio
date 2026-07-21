@@ -91,7 +91,7 @@ body.promptstudio-popout-body {
 
 .promptstudio-inspector {
   display: grid;
-  grid-template-rows: auto auto auto minmax(0, 1fr);
+  grid-template-rows: auto auto minmax(0, 1fr);
   min-width: 0;
   min-height: 0;
   overflow: hidden;
@@ -149,7 +149,6 @@ body.promptstudio-popout-body {
 
 .promptstudio-header-actions,
 .promptstudio-actions,
-.promptstudio-attach-row,
 .promptstudio-compose-footer,
 .promptstudio-toggles {
   display: flex;
@@ -298,6 +297,20 @@ body.promptstudio-popout-body {
   font-size: 13px;
 }
 
+.promptstudio-workflow-settings-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+#promptstudio-prompt-studio .promptstudio-workflow-settings-header button {
+  flex: 0 0 34px;
+  width: 34px;
+  padding: 0;
+  font-size: 17px;
+}
+
 .promptstudio-studio-settings-list {
   display: grid;
 }
@@ -401,20 +414,6 @@ body.promptstudio-popout-body {
   cursor: pointer;
 }
 
-.promptstudio-toolbar {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr);
-  gap: 7px;
-  padding: 9px 12px;
-  background: var(--ps-panel-soft);
-  border-bottom: 1px solid var(--ps-border);
-}
-
-.promptstudio-slot-control {
-  min-width: 0;
-}
-
-.promptstudio-slot-control > span,
 .promptstudio-settings-grid label {
   display: block;
   margin-bottom: 4px;
@@ -425,19 +424,10 @@ body.promptstudio-popout-body {
   text-transform: uppercase;
 }
 
-.promptstudio-attach-row {
-  gap: 7px;
-}
-
 .promptstudio-workflow-template-status {
   min-width: 0;
-  flex: 1;
-  padding: 7px 9px;
   overflow: hidden;
   color: var(--ps-muted);
-  background: rgba(255, 255, 255, 0.035);
-  border: 1px solid var(--ps-border);
-  border-radius: 8px;
   font-size: 11px;
   line-height: 1.25;
   text-overflow: ellipsis;
@@ -447,22 +437,19 @@ body.promptstudio-popout-body {
 .promptstudio-workflow-template-status[data-kind="ready"] { color: var(--ps-success); }
 .promptstudio-workflow-template-status[data-kind="warning"] { color: var(--ps-warning); }
 
-.promptstudio-attach-row button {
-  flex: 0 0 36px;
-  width: 36px;
-  padding: 0 !important;
-  font-size: 17px !important;
-}
-
 .promptstudio-status {
-  max-width: none;
-  padding: 6px 8px;
+  min-width: 0;
+  max-width: 100%;
+  padding: 2px 7px;
+  overflow: hidden;
   color: var(--ps-muted);
   background: rgba(255, 255, 255, 0.035);
   border: 1px solid var(--ps-border);
-  border-radius: 10px;
-  font-size: 11px;
+  border-radius: 999px;
+  font-size: 10px;
   text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .promptstudio-status[data-kind="ready"] { color: var(--ps-success); }
@@ -902,7 +889,6 @@ body.promptstudio-popout-body {
 .promptstudio-settings-grid,
 .promptstudio-resolution-grid {
   display: grid;
-  grid-template-columns: 1fr;
   gap: 6px;
   min-height: 0;
   max-height: min(52vh, 500px);
@@ -910,6 +896,18 @@ body.promptstudio-popout-body {
   padding: 0 8px 8px;
   overscroll-behavior: contain;
   scrollbar-gutter: stable;
+}
+
+.promptstudio-settings-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.promptstudio-settings-grid .promptstudio-control-wide {
+  grid-column: 1 / -1;
+}
+
+.promptstudio-resolution-grid {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
 .promptstudio-settings-grid label,
@@ -959,11 +957,15 @@ body.promptstudio-popout-body {
 }
 
 .promptstudio-compose-heading {
-  display: flex;
-  justify-content: space-between;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
   align-items: baseline;
   gap: 10px;
   margin-bottom: 7px;
+}
+
+.promptstudio-compose-heading .promptstudio-status {
+  justify-self: start;
 }
 
 #promptstudio-revision {
@@ -1304,6 +1306,11 @@ body.promptstudio-popout-body #promptstudio-prompt-studio.promptstudio-chats-ope
   background: var(--ps-accent);
 }
 
+.promptstudio-generation-action input:disabled + span {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
 .promptstudio-generation-action input:focus-visible + span {
   outline: 2px solid var(--ps-accent-strong);
   outline-offset: 2px;
@@ -1630,6 +1637,15 @@ body.promptstudio-popout-body #promptstudio-prompt-studio.promptstudio-chats-ope
 
   .promptstudio-compose {
     padding: 11px;
+  }
+
+  .promptstudio-compose-heading {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .promptstudio-compose-heading .promptstudio-status {
+    grid-column: 1 / -1;
+    grid-row: 2;
   }
 
   .promptstudio-compose-footer {
