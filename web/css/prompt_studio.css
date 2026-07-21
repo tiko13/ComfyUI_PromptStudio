@@ -701,6 +701,45 @@ body.promptstudio-popout-body {
   display: none;
 }
 
+.promptstudio-upscale-dialog {
+  position: absolute;
+  inset: 0;
+  z-index: 45;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(5, 6, 10, 0.72);
+  backdrop-filter: blur(8px);
+}
+
+.promptstudio-upscale-dialog[hidden] {
+  display: none;
+}
+
+.promptstudio-upscale-card {
+  display: grid;
+  width: min(320px, 100%);
+  gap: 10px;
+  padding: 18px;
+  color: var(--ps-text);
+  background: #12141d;
+  border: 1px solid var(--ps-border);
+  border-radius: 14px;
+  box-shadow: 0 20px 70px rgba(0, 0, 0, 0.55);
+}
+
+.promptstudio-upscale-card > label {
+  color: var(--ps-muted);
+  font-size: 11px;
+}
+
+.promptstudio-upscale-dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 7px;
+  margin-top: 3px;
+}
+
 .promptstudio-lightbox > img {
   display: block;
   width: auto;
@@ -1419,10 +1458,34 @@ body.promptstudio-popout-body #promptstudio-prompt-studio.promptstudio-chats-ope
   gap: 5px;
 }
 
+.promptstudio-image-actions {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 32px;
+  gap: 5px;
+}
+
 #promptstudio-prompt-studio .promptstudio-use-source {
   width: 100%;
   padding: 6px 8px;
   font-size: 11px;
+}
+
+#promptstudio-prompt-studio .promptstudio-upscale-image {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  min-height: 28px;
+  padding: 6px;
+}
+
+.promptstudio-upscale-image svg {
+  width: 15px;
+  height: 15px;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.8;
 }
 
 .promptstudio-image-card[data-source="true"] .promptstudio-use-source {

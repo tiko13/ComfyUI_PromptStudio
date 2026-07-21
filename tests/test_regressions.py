@@ -303,6 +303,25 @@ class RegressionTests(unittest.TestCase):
         reference = json.dumps({"filename": path.name, "subfolder": "", "type": "output"})
         self.assertEqual(self.nodes._chat_image_dimensions(reference), (1237, 811))
 
+    def test_prompt_studio_upscale_node_loads_image_and_calculates_target_size(self):
+        path = Path(self.temp.name) / "upscale.png"
+        Image.new("RGB", (640, 360), color="navy").save(path)
+        reference = json.dumps({"filename": path.name, "subfolder": "", "type": "output"})
+        result = self.nodes.KCPP_PromptStudioUpscale().prepare_upscale(
+            reference,
+            upscale_factor=2.5,
+            prompt="A navy frame",
+            secondary_instructions="Preserve texture",
+        )
+        image, width, height, factor, prompt, secondary = result
+        self.assertEqual(image.array.shape, (1, 360, 640, 3))
+        self.assertEqual((width, height, factor), (1600, 900, 2.5))
+        self.assertEqual((prompt, secondary), ("A navy frame", "Preserve texture"))
+        self.assertEqual(
+            self.nodes.KCPP_PromptStudioUpscale.RETURN_NAMES,
+            ("image", "width", "height", "upscale_factor", "prompt", "secondary_instructions"),
+        )
+
     def test_palette_transparency_produces_a_mask(self):
         path = Path(self.temp.name) / "palette.png"
         image = Image.new("P", (2, 2), color=0)
@@ -367,6 +386,24 @@ class RegressionTests(unittest.TestCase):
             }
             with self.assertRaisesRegex(ValueError, "image source"):
                 self.routes._write_workflow_store({"revision": 1, "templates": [missing_image_source]}, 1)
+            upscale = {
+                **template,
+                "path": "[PS] Upscale.json",
+                "id": "[PS] Upscale.json",
+                "name": "[PS] Upscale",
+                "kind": "upscale",
+                "promptNodeId": "",
+                "imageNodeId": "",
+                "upscaleNodeId": "1",
+                "snapshot": {"output": {
+                    "1": {"class_type": "KCPP_PromptStudioUpscale", "inputs": {}},
+                    "2": {"class_type": "SaveImage", "inputs": {}},
+                }},
+            }
+            self.routes._validate_workflow_templates([upscale])
+            missing_upscale_node = {**upscale, "upscaleNodeId": ""}
+            with self.assertRaisesRegex(ValueError, "upscale node"):
+                self.routes._validate_workflow_templates([missing_upscale_node])
             multiple_outputs = {**template, "resultNodeIds": ["1", "2"]}
             with self.assertRaisesRegex(ValueError, "exactly one image output"):
                 self.routes._write_workflow_store({"revision": 1, "templates": [multiple_outputs]}, 1)
@@ -379,7 +416,7 @@ class RegressionTests(unittest.TestCase):
         workflow_path.write_text(json.dumps({"version": 1, "revision": 7, "profiles": [{}]}), encoding="utf-8")
         with mock.patch.object(self.routes, "WORKFLOW_STORE_PATH", str(workflow_path)):
             loaded = self.routes._read_workflow_store()
-        self.assertEqual(loaded, {"version": 2, "revision": 7, "templates": []})
+        self.assertEqual(loaded, {"version": 3, "revision": 7, "templates": []})
 
 
 if __name__ == "__main__":

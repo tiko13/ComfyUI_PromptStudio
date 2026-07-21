@@ -1988,6 +1988,85 @@ class KCPP_ChatImageInput:
         return True
 
 
+class KCPP_PromptStudioUpscale:
+    """Prompt Studio attachment point for image upscaling workflows."""
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "image_ref": (
+                    "STRING",
+                    {
+                        "default": "",
+                        "multiline": False,
+                        "tooltip": "Injected by Prompt Studio. References the image selected for upscaling.",
+                    },
+                ),
+                "upscale_factor": (
+                    "FLOAT",
+                    {
+                        "default": 2.0,
+                        "min": 1.0,
+                        "max": 16.0,
+                        "step": 0.1,
+                        "tooltip": "Injected by Prompt Studio and used to calculate the target width and height.",
+                    },
+                ),
+            },
+            "optional": {
+                "prompt": (
+                    "STRING",
+                    {
+                        "default": "",
+                        "multiline": True,
+                        "tooltip": "The source image prompt when Use prompt when upscaling is enabled.",
+                    },
+                ),
+                "secondary_instructions": (
+                    "STRING",
+                    {
+                        "default": "",
+                        "multiline": True,
+                        "tooltip": "Optional text passed unchanged to the secondary instructions output.",
+                    },
+                ),
+            },
+        }
+
+    RETURN_TYPES = ("IMAGE", "INT", "INT", "FLOAT", "STRING", "STRING")
+    RETURN_NAMES = ("image", "width", "height", "upscale_factor", "prompt", "secondary_instructions")
+    FUNCTION = "prepare_upscale"
+    CATEGORY = "KoboldCpp"
+
+    def prepare_upscale(self, image_ref, upscale_factor=2.0, prompt="", secondary_instructions=""):
+        factor = float(upscale_factor)
+        if not math.isfinite(factor) or factor < 1.0 or factor > 16.0:
+            raise ValueError("Upscale factor must be between 1 and 16")
+        image, _ = KCPP_ChatImageInput().load_image(image_ref)
+        source_width, source_height = _chat_image_dimensions(image_ref)
+        width = max(1, round(source_width * factor))
+        height = max(1, round(source_height * factor))
+        return (image, width, height, factor, prompt, secondary_instructions)
+
+    @classmethod
+    def IS_CHANGED(cls, image_ref, upscale_factor=2.0, prompt="", secondary_instructions=""):
+        return KCPP_ChatImageInput.IS_CHANGED(image_ref)
+
+    @classmethod
+    def VALIDATE_INPUTS(cls, image_ref, upscale_factor=2.0, prompt="", secondary_instructions=""):
+        image_validation = KCPP_ChatImageInput.VALIDATE_INPUTS(image_ref)
+        if image_validation is not True:
+            return image_validation
+        try:
+            factor = float(upscale_factor)
+        except (TypeError, ValueError):
+            return "Upscale factor must be a number"
+        if not math.isfinite(factor) or factor < 1.0 or factor > 16.0:
+            return "Upscale factor must be between 1 and 16"
+        return True
+
+
 class KCPP_Apply:
     @classmethod
     def INPUT_TYPES(cls):
@@ -2329,6 +2408,7 @@ NODE_CLASS_MAPPINGS = {
     "KCPP_PromptAmplify": KCPP_PromptAmplify,
     "KCPP_PromptSlot": KCPP_PromptSlot,
     "KCPP_ChatImageInput": KCPP_ChatImageInput,
+    "KCPP_PromptStudioUpscale": KCPP_PromptStudioUpscale,
     "KCPP_Apply": KCPP_Apply,
     "KCPP_Ideogram4": KCPP_Ideogram4,
 }
@@ -2337,6 +2417,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "KCPP_PromptAmplify": "KoboldCpp Prompt Amplify",
     "KCPP_PromptSlot": "KoboldCpp Prompt Slot",
     "KCPP_ChatImageInput": "Prompt Studio Image Source",
+    "KCPP_PromptStudioUpscale": "Prompt Studio Upscale",
     "KCPP_Apply": "KoboldCpp Apply",
     "KCPP_Ideogram4": "Ideogram4-KoboldCPP",
 }
