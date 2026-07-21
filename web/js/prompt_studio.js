@@ -9,6 +9,7 @@ const UPSCALE_TYPE = "KCPP_PromptStudioUpscale";
 const STORAGE_KEY = "promptstudio.promptStudio.settings.v1";
 const STANDALONE_CHANNEL = "promptstudio.promptStudio.standalone.v1";
 const WORKFLOW_SYNC_CHANNEL = "promptstudio.promptStudio.workflows.v1";
+const CHAT_SYNC_CHANNEL = "promptstudio.promptStudio.chats.v1";
 const WORKFLOW_OBSERVER_KEY = Symbol.for("ComfyUI_PromptStudio.PromptStudio.WorkflowObserver");
 const RESOLUTION_ASPECT_RATIOS = [
   "1:1 (Square)",
@@ -42,6 +43,7 @@ const state = {
   returnToEmbedded: false,
   standaloneChannel: null,
   workflowSyncChannel: null,
+  chatSyncChannel: null,
   config: null,
   currentPrompt: "",
   versions: [],
@@ -56,6 +58,10 @@ const state = {
   chatRevision: 0,
   chatStoreLoaded: false,
   chatPersistenceBlocked: false,
+  chatSaveInFlight: false,
+  chatMutationVersion: 0,
+  chatSyncInFlight: false,
+  chatSyncTimer: null,
   workflowProfiles: [],
   workflowIssues: [],
   workflowRevision: 0,
@@ -146,7 +152,7 @@ function saveSettings() {
 function applyImageScale(value) {
   if (!state.panel) return;
   const numeric = Number(value);
-  const scale = Number.isFinite(numeric) ? Math.max(30, Math.min(100, Math.round(numeric / 5) * 5)) : 100;
+  const scale = Number.isFinite(numeric) ? Math.max(10, Math.min(100, Math.round(numeric / 5) * 5)) : 100;
   const input = state.panel.querySelector("#promptstudio-image-scale");
   const output = state.panel.querySelector("#promptstudio-image-scale-value");
   if (input) input.value = String(scale);
@@ -172,6 +178,29 @@ function toggleStudioSettings(force) {
   const show = force ?? popover.hidden;
   popover.hidden = !show;
   button.setAttribute("aria-expanded", show ? "true" : "false");
+}
+
+function setPanelDrawer(drawer, force) {
+  if (!state.panel) return;
+  const drawerClass = `promptstudio-${drawer}-open`;
+  const otherDrawer = drawer === "chats" ? "inspector" : "chats";
+  const show = force ?? !state.panel.classList.contains(drawerClass);
+  state.panel.classList.toggle(drawerClass, show);
+  state.panel.classList.remove(`promptstudio-${otherDrawer}-open`);
+  state.panel.querySelectorAll(`[data-promptstudio-drawer="${drawer}"]`).forEach((button) => {
+    button.setAttribute("aria-expanded", show ? "true" : "false");
+  });
+  state.panel.querySelectorAll(`[data-promptstudio-drawer="${otherDrawer}"]`).forEach((button) => {
+    button.setAttribute("aria-expanded", "false");
+  });
+}
+
+function closePanelDrawers() {
+  if (!state.panel) return;
+  state.panel.classList.remove("promptstudio-chats-open", "promptstudio-inspector-open");
+  state.panel.querySelectorAll("[data-promptstudio-drawer]").forEach((button) => {
+    button.setAttribute("aria-expanded", "false");
+  });
 }
 
 function makeId() {
@@ -207,7 +236,10 @@ function normalizeChat(chat) {
         sourceImage: normalizeImageReference(message?.sourceImage),
         resultNodeIds: Array.isArray(message?.resultNodeIds) ? message.resultNodeIds.map(String) : [],
         resultFields: Array.isArray(message?.resultFields) && message.resultFields.length ? message.resultFields.map(String) : ["images", "gifs"],
+        promptId: String(message?.promptId || ""),
+        generationState: ["queued", "complete", "error"].includes(message?.generationState) ? message.generationState : "",
         createdAt: normalizedAt(message?.createdAt, updatedAt),
+        updatedAt: normalizedAt(message?.updatedAt, normalizedAt(message?.createdAt, updatedAt)),
       }))
     : [];
   const storedCurrentPrompt = String(chat?.currentPrompt || "");
@@ -340,32 +372,164 @@ function normalizePendingGeneration(value) {
   };
 }
 
+function mergeChatMessages(remoteMessages, localMessages) {
+  const merged = new Map();
+  for (const message of [...remoteMessages, ...localMessages]) {
+    const current = merged.get(message.id);
+    if (!current) {
+      merged.set(message.id, message);
+      continue;
+    }
+    const newer = Number(message.updatedAt || message.createdAt) >= Number(current.updatedAt || current.createdAt)
+      ? message
+      : current;
+    const older = newer === message ? current : message;
+    const images = new Map();
+    for (const image of [...(older.images || []), ...(newer.images || [])]) {
+      const key = imageReferenceKey(image);
+      if (key) images.set(key, image);
+    }
+    merged.set(message.id, { ...older, ...newer, images: [...images.values()] });
+  }
+  return [...merged.values()].sort((left, right) => left.createdAt - right.createdAt || left.id.localeCompare(right.id));
+}
+
+function mergeChatStores(remoteStore, localStore) {
+  const remoteChats = Array.isArray(remoteStore?.chats) ? remoteStore.chats.map(normalizeChat) : [];
+  const localChats = Array.isArray(localStore?.chats) ? localStore.chats.map(normalizeChat) : [];
+  const merged = new Map(remoteChats.map((chat) => [chat.id, chat]));
+  for (const localChat of localChats) {
+    const remoteChat = merged.get(localChat.id);
+    if (!remoteChat) {
+      merged.set(localChat.id, localChat);
+      continue;
+    }
+    const newer = localChat.updatedAt >= remoteChat.updatedAt ? localChat : remoteChat;
+    const older = newer === localChat ? remoteChat : localChat;
+    merged.set(localChat.id, {
+      ...older,
+      ...newer,
+      createdAt: Math.min(localChat.createdAt, remoteChat.createdAt),
+      updatedAt: Math.max(localChat.updatedAt, remoteChat.updatedAt),
+      messages: mergeChatMessages(remoteChat.messages, localChat.messages),
+    });
+  }
+  return {
+    activeChatId: localStore?.activeChatId || remoteStore?.activeChatId || null,
+    chats: [...merged.values()],
+  };
+}
+
+function applyChatStoreSnapshot(stored, { preserveActive = true } = {}) {
+  const previousActiveId = preserveActive ? state.activeChatId : null;
+  const storedChats = Array.isArray(stored?.chats) ? stored.chats : [];
+  state.chats = storedChats.map(normalizeChat);
+  state.chatRevision = Number(stored?.revision || state.chatRevision);
+  state.chatStoreLoaded = true;
+  state.chatPersistenceBlocked = false;
+  state.activeChatId = state.chats.some((chat) => chat.id === previousActiveId)
+    ? previousActiveId
+    : state.chats.some((chat) => chat.id === stored?.activeChatId)
+      ? stored.activeChatId
+      : state.chats[0]?.id || null;
+  const chat = activeChat();
+  if (chat) {
+    restoreChatState(chat);
+    refreshWorkflowControls();
+    refreshSecondaryInstructionsControl();
+  }
+  renderChatHistory();
+  renderChatList();
+  resumeSyncedGeneration();
+}
+
+async function writeChatStore(snapshot, revision) {
+  return api.fetchApi("/promptstudio/prompt-studio/chats", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ ...snapshot, revision }),
+  });
+}
+
+async function persistChats() {
+  if (state.chatPersistenceBlocked || !state.chatStoreLoaded) return;
+  state.chatSaveInFlight = true;
+  try {
+    let snapshot = structuredClone({ activeChatId: state.activeChatId, chats: state.chats });
+    let response = await writeChatStore(snapshot, state.chatRevision);
+    let data = await response.json().catch(() => ({}));
+    if (response.status === 409) {
+      const latestResponse = await api.fetchApi("/promptstudio/prompt-studio/chats");
+      const latest = await latestResponse.json().catch(() => ({}));
+      if (!latestResponse.ok) throw new Error(latest.error || `Chat synchronization failed (${latestResponse.status}).`);
+      snapshot = mergeChatStores(latest, {
+        activeChatId: state.activeChatId,
+        chats: structuredClone(state.chats),
+      });
+      const mergedMutationVersion = state.chatMutationVersion;
+      response = await writeChatStore(snapshot, Number(latest.revision || 0));
+      data = await response.json().catch(() => ({}));
+      if (response.ok && state.chatMutationVersion === mergedMutationVersion) {
+        applyChatStoreSnapshot({ ...snapshot, revision: data.revision }, { preserveActive: true });
+      }
+    }
+    if (!response.ok) throw new Error(data.error || `Chat save failed (${response.status}).`);
+    state.chatRevision = Number(data.revision || state.chatRevision);
+    state.chatSyncChannel?.postMessage({ type: "chat-store-updated", revision: state.chatRevision });
+  } finally {
+    state.chatSaveInFlight = false;
+  }
+}
+
 function saveChats({ immediate = false } = {}) {
   if (state.chatPersistenceBlocked || !state.chatStoreLoaded) return;
+  state.chatMutationVersion += 1;
   if (state.chatSaveTimer) clearTimeout(state.chatSaveTimer);
   const persist = () => {
     state.chatSaveTimer = null;
-    const snapshot = structuredClone({ activeChatId: state.activeChatId, chats: state.chats });
     state.chatSaveChain = state.chatSaveChain
       .catch(() => {})
-      .then(async () => {
-        if (state.chatPersistenceBlocked) return;
-        const response = await api.fetchApi("/promptstudio/prompt-studio/chats", {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ ...snapshot, revision: state.chatRevision }),
-        });
-        const data = await response.json().catch(() => ({}));
-        if (!response.ok) {
-          if (response.status === 409) state.chatPersistenceBlocked = true;
-          throw new Error(data.error || `Chat save failed (${response.status}).`);
-        }
-        state.chatRevision = Number(data.revision || state.chatRevision);
-      })
+      .then(persistChats)
       .catch((error) => setStatus(error.message || "Chat history could not be saved.", "warning"));
   };
   if (immediate) persist();
   else state.chatSaveTimer = setTimeout(persist, 150);
+}
+
+async function refreshChatsFromServer({ force = false } = {}) {
+  if (!state.chatStoreLoaded || state.chatPersistenceBlocked || state.chatSyncInFlight) return;
+  if (!force && (state.chatSaveTimer || state.chatSaveInFlight || state.busy)) return;
+  state.chatSyncInFlight = true;
+  try {
+    const response = await api.fetchApi(`/promptstudio/prompt-studio/chats?revision=${encodeURIComponent(state.chatRevision)}`);
+    if (response.status === 204) return;
+    const stored = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(stored.error || `Chat synchronization failed (${response.status}).`);
+    if (Number(stored.revision || 0) <= state.chatRevision) return;
+    applyChatStoreSnapshot(stored, { preserveActive: true });
+  } catch (error) {
+    if (force) setStatus(error.message || "Chat history could not be synchronized.", "warning");
+  } finally {
+    state.chatSyncInFlight = false;
+  }
+}
+
+function setupChatSync() {
+  if (!state.chatSyncTimer) {
+    state.chatSyncTimer = window.setInterval(() => refreshChatsFromServer(), 1250);
+    window.addEventListener("focus", () => refreshChatsFromServer());
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState === "visible") refreshChatsFromServer();
+    });
+  }
+  if (typeof BroadcastChannel !== "function" || state.chatSyncChannel) return;
+  const channel = new BroadcastChannel(CHAT_SYNC_CHANNEL);
+  channel.addEventListener("message", (event) => {
+    if (event.data?.type !== "chat-store-updated") return;
+    if (Number(event.data.revision || 0) <= state.chatRevision) return;
+    refreshChatsFromServer();
+  });
+  state.chatSyncChannel = channel;
 }
 
 async function loadChats() {
@@ -756,7 +920,7 @@ function chatTitle(timestamp) {
 function chatActivityAt(chat) {
   if (!chat.messages.length) return chat.createdAt;
   return chat.messages.reduce(
-    (newest, message) => Math.max(newest, message.createdAt),
+    (newest, message) => Math.max(newest, message.updatedAt || message.createdAt),
     Number.NEGATIVE_INFINITY,
   );
 }
@@ -970,8 +1134,9 @@ function activateChat(chatId) {
   }
   const undo = state.panel?.querySelector("#promptstudio-undo");
   if (undo) undo.disabled = state.versionIndex <= 0 || state.busy;
-  state.panel?.classList.remove("promptstudio-chats-open");
+  setPanelDrawer("chats", false);
   saveChats();
+  resumeSyncedGeneration();
 }
 
 function nodeClassName(node) {
@@ -1390,6 +1555,7 @@ function renderMessage(data, { scroll = true } = {}) {
 }
 
 function appendMessage(role, text, options = {}) {
+  const now = Date.now();
   const data = {
     id: makeId(),
     role,
@@ -1406,7 +1572,10 @@ function appendMessage(role, text, options = {}) {
     sourceImage: normalizeImageReference(options.sourceImage),
     resultNodeIds: Array.isArray(options.resultNodeIds) ? options.resultNodeIds.map(String) : [],
     resultFields: Array.isArray(options.resultFields) && options.resultFields.length ? options.resultFields.map(String) : ["images", "gifs"],
-    createdAt: Date.now(),
+    promptId: String(options.promptId || ""),
+    generationState: ["queued", "complete", "error"].includes(options.generationState) ? options.generationState : "",
+    createdAt: now,
+    updatedAt: now,
   };
   const chat = activeChat();
   if (chat) {
@@ -1432,6 +1601,7 @@ async function appendImages(message, images) {
   renderImageGallery(message, enrichedImages, stored);
   if (stored) {
     stored.images = enrichedImages;
+    stored.updatedAt = Date.now();
     if (enrichedImages[0] && state.panel?.querySelector("#promptstudio-auto-advance-source")?.checked) {
       chat.selectedSource = normalizeImageReference(enrichedImages[0]);
     } else if (!chat.selectedSource && enrichedImages[0]) {
@@ -1607,9 +1777,44 @@ function updateMessageText(message, text) {
   const stored = chat?.messages.find((item) => item.id === message.dataset.messageId);
   if (!stored) return;
   stored.text = value;
-  chat.updatedAt = Date.now();
+  stored.updatedAt = Date.now();
+  chat.updatedAt = stored.updatedAt;
   saveChats();
   renderChatList();
+  if (!message.isConnected) renderChatHistory();
+}
+
+function setMessageGenerationState(message, generationState) {
+  const chat = activeChat();
+  const stored = chat?.messages.find((item) => item.id === message?.dataset.messageId);
+  if (!stored) return;
+  stored.generationState = generationState;
+  stored.updatedAt = Date.now();
+  chat.updatedAt = stored.updatedAt;
+  saveChats();
+  renderChatList();
+  if (!message?.isConnected) renderChatHistory();
+}
+
+function resumeSyncedGeneration() {
+  if (state.busy || state.generating || !state.panel) return;
+  const pending = [...(activeChat()?.messages || [])]
+    .reverse()
+    .find((message) => message.generationState === "queued" && message.promptId);
+  if (!pending) return;
+  const targetMessage = [...state.panel.querySelectorAll(".promptstudio-message")]
+    .find((message) => message.dataset.messageId === pending.id);
+  if (!targetMessage) return;
+  state.generating = true;
+  setBusy(true);
+  setStatus(`Following synced generation ${pending.promptId.slice(0, 8)}…`, "working");
+  const token = ++state.pollToken;
+  waitForResult(pending.promptId, targetMessage, token, pending.resultNodeIds, pending.resultFields).catch((error) => {
+    if (token !== state.pollToken) return;
+    setStatus(error.message || String(error), "error");
+    state.generating = false;
+    setBusy(false);
+  });
 }
 
 async function waitForResult(promptId, targetMessage, token, resultNodeIds = [], resultFields = ["images", "gifs"]) {
@@ -1629,11 +1834,15 @@ async function waitForResult(promptId, targetMessage, token, resultNodeIds = [],
           await appendImages(targetMessage, images);
           if (failureMessage) {
             updateMessageText(targetMessage, failureMessage);
+            setMessageGenerationState(targetMessage, "error");
             setStatus(failureMessage, "error");
           } else if (images.length) {
             updateMessageText(targetMessage, "");
+            setMessageGenerationState(targetMessage, "complete");
             setStatus(`Generated ${images.length} image${images.length === 1 ? "" : "s"}.`, "ready");
           } else {
+            updateMessageText(targetMessage, "Generation completed without an image output.");
+            setMessageGenerationState(targetMessage, "complete");
             setStatus("Generation completed without an image output.", "warning");
           }
           setBusy(false);
@@ -1793,6 +2002,8 @@ async function queueGeneration({
     sourceImage: source,
     resultNodeIds: context.resultNodeIds,
     resultFields: context.resultFields,
+    promptId,
+    generationState: "queued",
     controlsFingerprint: chat?.controlsFingerprint || "",
     llmAmplified: useLlmAmplification(),
   });
@@ -2042,12 +2253,23 @@ function buildPanel() {
   panel.innerHTML = `
     <aside class="promptstudio-chat-sidebar">
       <div class="promptstudio-chat-sidebar-header">
-        <div><span>Prompt Studio</span><strong>Sessions</strong></div>
+        <div class="promptstudio-chat-sidebar-title">
+          <div><span>Prompt Studio</span><strong>Sessions</strong></div>
+          <button id="promptstudio-close-chats" class="promptstudio-mobile-drawer-close" type="button">Done</button>
+        </div>
         <button id="promptstudio-new-chat" type="button">New chat</button>
       </div>
       <div id="promptstudio-chat-list" class="promptstudio-chat-list"></div>
     </aside>
     <main class="promptstudio-main">
+      <header class="promptstudio-mobile-header">
+        <strong>Prompt Studio</strong>
+        <div class="promptstudio-mobile-header-actions">
+          <button id="promptstudio-mobile-toggle-chats" type="button" data-promptstudio-drawer="chats" aria-expanded="false">Chats</button>
+          <button id="promptstudio-mobile-toggle-inspector" type="button" data-promptstudio-drawer="inspector" aria-expanded="false">Controls</button>
+          <button id="promptstudio-mobile-close" type="button" title="Close Prompt Studio" aria-label="Close Prompt Studio">×</button>
+        </div>
+      </header>
       <div id="promptstudio-history" class="promptstudio-history"></div>
       <div class="promptstudio-compose">
         <div class="promptstudio-compose-heading">
@@ -2086,9 +2308,10 @@ function buildPanel() {
           <div><strong>Prompt Studio</strong><span>Iterative local generation</span></div>
         </div>
         <div class="promptstudio-header-actions">
-          <button id="promptstudio-toggle-chats" class="promptstudio-chats-button" type="button" title="Show chats" aria-label="Show chats">Sessions</button>
+          <button id="promptstudio-toggle-chats" class="promptstudio-chats-button" type="button" title="Show chats" aria-label="Show chats" data-promptstudio-drawer="chats" aria-expanded="false">Sessions</button>
           <button id="promptstudio-popout" type="button" title="Open Prompt Studio in its own tab" aria-label="Open Prompt Studio in its own tab">↗</button>
           <button id="promptstudio-toggle-studio-settings" type="button" title="Prompt Studio settings" aria-label="Prompt Studio settings" aria-expanded="false">⚙</button>
+          <button id="promptstudio-close-inspector" class="promptstudio-mobile-drawer-close" type="button">Done</button>
           <button id="promptstudio-close" type="button" title="Close Prompt Studio" aria-label="Close Prompt Studio">×</button>
         </div>
       </header>
@@ -2132,6 +2355,7 @@ function buildPanel() {
         </details>
       </section>
     </aside>
+    <button class="promptstudio-mobile-scrim" type="button" aria-label="Close open drawer"></button>
     <div id="promptstudio-studio-settings" class="promptstudio-studio-settings" hidden>
       <header class="promptstudio-studio-settings-header">
         <div><strong>Settings</strong><span>Configure how Prompt Studio looks and connects to ComfyUI.</span></div>
@@ -2147,7 +2371,7 @@ function buildPanel() {
               <span class="promptstudio-studio-setting-copy"><strong>Image scale</strong><small>Scale generated images in chat. Full-size preview is unchanged.</small></span>
               <span class="promptstudio-image-scale-field">
                 <output id="promptstudio-image-scale-value" for="promptstudio-image-scale">100%</output>
-                <input id="promptstudio-image-scale" type="range" min="30" max="100" step="5" value="${settings.image_scale}" />
+                <input id="promptstudio-image-scale" type="range" min="10" max="100" step="5" value="${settings.image_scale}" />
               </span>
             </label>
             <label class="promptstudio-studio-setting promptstudio-studio-setting-toggle">
@@ -2216,14 +2440,13 @@ function buildPanel() {
   panel.querySelector("#promptstudio-resolution-multiple").value = String(Math.max(8, Math.min(128, Math.round((Number(settings.resolution_multiple) || 8) / 4) * 4)));
   applyImageScale(settings.image_scale);
   updateAmplificationMode({ announce: false, persist: false });
-  panel.querySelector("#promptstudio-toggle-chats").addEventListener("click", () => {
-    panel.classList.remove("promptstudio-inspector-open");
-    panel.classList.toggle("promptstudio-chats-open");
-  });
-  panel.querySelector("#promptstudio-toggle-inspector").addEventListener("click", () => {
-    panel.classList.remove("promptstudio-chats-open");
-    panel.classList.toggle("promptstudio-inspector-open");
-  });
+  panel.querySelector("#promptstudio-toggle-chats").addEventListener("click", () => setPanelDrawer("chats"));
+  panel.querySelector("#promptstudio-mobile-toggle-chats").addEventListener("click", () => setPanelDrawer("chats"));
+  panel.querySelector("#promptstudio-toggle-inspector").addEventListener("click", () => setPanelDrawer("inspector"));
+  panel.querySelector("#promptstudio-mobile-toggle-inspector").addEventListener("click", () => setPanelDrawer("inspector"));
+  panel.querySelector("#promptstudio-close-chats").addEventListener("click", closePanelDrawers);
+  panel.querySelector("#promptstudio-close-inspector").addEventListener("click", closePanelDrawers);
+  panel.querySelector(".promptstudio-mobile-scrim").addEventListener("click", closePanelDrawers);
   panel.querySelector("#promptstudio-toggle-studio-settings").addEventListener("click", () => toggleStudioSettings());
   panel.addEventListener("click", (event) => {
     const popover = panel.querySelector("#promptstudio-studio-settings");
@@ -2231,9 +2454,13 @@ function buildPanel() {
     toggleStudioSettings(false);
   });
   panel.addEventListener("keydown", (event) => {
-    if (event.key !== "Escape" || panel.querySelector("#promptstudio-studio-settings").hidden) return;
-    toggleStudioSettings(false);
-    panel.querySelector("#promptstudio-toggle-studio-settings").focus();
+    if (event.key !== "Escape") return;
+    if (!panel.querySelector("#promptstudio-studio-settings").hidden) {
+      toggleStudioSettings(false);
+      panel.querySelector("#promptstudio-toggle-studio-settings").focus();
+      return;
+    }
+    closePanelDrawers();
   });
   panel.querySelector("#promptstudio-lightbox").addEventListener("click", (event) => {
     if (event.target === event.currentTarget) closeImageLightbox();
@@ -2261,6 +2488,7 @@ function buildPanel() {
   panel.querySelector("#promptstudio-new-chat").addEventListener("click", createChat);
   panel.querySelector("#promptstudio-popout").addEventListener("click", () => togglePopout({ returnToEmbedded: true }));
   panel.querySelector("#promptstudio-close").addEventListener("click", () => togglePanel(false));
+  panel.querySelector("#promptstudio-mobile-close").addEventListener("click", () => togglePanel(false));
   panel.querySelector("#promptstudio-refresh-workflows").addEventListener("click", () => refreshWorkflowTemplates());
   panel.querySelector("#promptstudio-create-workflow").addEventListener("change", () => {
     announceWorkflowSelection("create");
@@ -2450,6 +2678,7 @@ async function togglePanel(force) {
   if (!show) {
     commitPromptEditorVersion();
     closeImageLightbox();
+    closePanelDrawers();
   }
   if (!show && state.popup && !state.popup.closed) {
     saveSettings();
@@ -2475,6 +2704,8 @@ app.registerExtension({
     setupWorkflowSync();
     installWorkflowSaveObserver();
     await loadChats();
+    setupChatSync();
+    resumeSyncedGeneration();
     try {
       await loadWorkflowProfiles();
     } catch (error) {
