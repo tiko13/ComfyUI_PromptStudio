@@ -1,6 +1,6 @@
 [project]
 name = "ComfyUI_PromptStudio"
-version = "1.0.1"
+version = "1.0.2"
 description = "A local, ChatGPT-like extension for iterative image creation and editing in ComfyUI with help from a local LLM"
 license = { text = "MIT License" }
 requires-python = ">=3.9"
