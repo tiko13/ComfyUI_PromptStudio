@@ -1,5 +1,7 @@
 # ComfyUI_PromptStudio
 
+![ComfyUI Prompt Studio](docs/images/example1.png)
+
 Chat-first image generation for ComfyUI, powered by a local KoboldCpp model.
 
 ComfyUI_PromptStudio adds **Prompt Studio**, an interactive workspace where you can describe an image, generate it with a selected `[PS]` workflow saved in ComfyUI, and refine it conversationally:
