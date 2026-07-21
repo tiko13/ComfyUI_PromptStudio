@@ -1,3 +1,5 @@
+import asyncio
+import base64
 import importlib.util
 import json
 import math
@@ -41,8 +43,26 @@ def install_runtime_stubs(storage_root):
     folder_paths.get_temp_directory = lambda: storage_root
     sys.modules["folder_paths"] = folder_paths
 
+    class FakeResponse:
+        def __init__(self, text=None, content_type=None, status=200, headers=None):
+            self.text = text
+            self.content_type = content_type
+            self.status = status
+            self.headers = dict(headers or {})
+            self.cookies = {}
+
+        def set_cookie(self, name, value, **kwargs):
+            self.cookies[name] = {"value": value, **kwargs}
+
+        def del_cookie(self, name, **kwargs):
+            self.cookies[name] = {"value": "", "deleted": True, **kwargs}
+
     aiohttp = types.ModuleType("aiohttp")
-    aiohttp.web = types.SimpleNamespace(json_response=lambda value, status=200: (value, status))
+    aiohttp.web = types.SimpleNamespace(
+        Response=FakeResponse,
+        json_response=lambda value, status=200: (value, status),
+        middleware=lambda function: function,
+    )
     sys.modules["aiohttp"] = aiohttp
 
     class Routes:
@@ -55,7 +75,9 @@ def install_runtime_stubs(storage_root):
         post = _decorator
 
     server = types.ModuleType("server")
-    server.PromptServer = types.SimpleNamespace(instance=types.SimpleNamespace(routes=Routes()))
+    server.PromptServer = types.SimpleNamespace(
+        instance=types.SimpleNamespace(routes=Routes(), app=types.SimpleNamespace(middlewares=[]))
+    )
     sys.modules["server"] = server
 
 
@@ -90,6 +112,138 @@ class RegressionTests(unittest.TestCase):
         self.assertTrue(math.isnan(self.nodes.KCPP_Apply.IS_CHANGED(sampler_seed=-1)))
         self.assertTrue(math.isnan(self.nodes.KCPP_Ideogram4.IS_CHANGED(sampler_seed=-1)))
         self.assertEqual(self.nodes.KCPP_Apply.IS_CHANGED(sampler_seed=42), 42)
+
+    def test_lan_access_address_scope_is_private_only(self):
+        for address in ("192.168.1.25", "10.2.3.4", "172.16.0.8", "169.254.10.20", "fd12::42", "fe80::1"):
+            with self.subTest(address=address):
+                self.assertTrue(self.routes._is_lan_client(address))
+        for address in ("8.8.8.8", "1.1.1.1", "2001:4860:4860::8888", "100.64.1.2", None, "invalid"):
+            with self.subTest(address=address):
+                self.assertFalse(self.routes._is_lan_client(address))
+        self.assertTrue(self.routes._is_loopback_client("127.0.0.1"))
+        self.assertTrue(self.routes._is_loopback_client("::1"))
+        self.assertTrue(self.routes._is_loopback_client("::ffff:127.0.0.1"))
+        self.assertFalse(self.routes._is_lan_client("127.0.0.1"))
+
+    def test_lan_session_tokens_are_signed_and_expire(self):
+        token = self.routes._session_token(now=1000)
+        self.assertTrue(self.routes._valid_session_token(token, now=1001))
+        self.assertFalse(self.routes._valid_session_token(token, now=1000 + self.routes.LAN_SESSION_SECONDS + 1))
+        self.assertFalse(self.routes._valid_session_token(token + "changed", now=1001))
+        self.assertFalse(self.routes._valid_session_token(None, now=1001))
+
+    def test_lan_password_supports_base64_environment_transport(self):
+        password = "correct horse battery staple & 100% ��"
+        encoded = base64.b64encode(password.encode("utf-8")).decode("ascii")
+        with mock.patch.dict(
+            os.environ,
+            {self.routes.LAN_PASSWORD_BASE64_ENV: encoded},
+            clear=True,
+        ):
+            self.assertEqual(self.routes._password_from_environment(), password)
+        with mock.patch.dict(
+            os.environ,
+            {
+                self.routes.LAN_PASSWORD_ENV: "plain password wins",
+                self.routes.LAN_PASSWORD_BASE64_ENV: encoded,
+            },
+            clear=True,
+        ):
+            self.assertEqual(self.routes._password_from_environment(), "plain password wins")
+
+    def test_lan_login_redirects_remain_same_origin(self):
+        default = "/extensions/ComfyUI_PromptStudio/prompt_studio.html"
+        self.assertEqual(self.routes._safe_next_path("/extensions/example.html?mode=studio#ignored"), "/extensions/example.html?mode=studio")
+        self.assertEqual(self.routes._safe_next_path("https://example.com/steal"), default)
+        self.assertEqual(self.routes._safe_next_path("//example.com/steal"), default)
+        self.assertEqual(self.routes._safe_next_path("/%2f/example.com/steal"), default)
+        self.assertEqual(self.routes._safe_next_path("/\\example.com/steal"), default)
+        self.assertEqual(self.routes._safe_next_path("not-a-path"), default)
+
+    def test_lan_gate_allows_cross_site_navigation_but_not_cross_origin_actions(self):
+        request = types.SimpleNamespace(
+            method="GET",
+            scheme="http",
+            host="192.168.1.10:8188",
+            headers={"Sec-Fetch-Site": "cross-site", "Sec-Fetch-Mode": "navigate"},
+        )
+        self.assertTrue(self.routes._same_origin_request(request))
+
+        request.method = "POST"
+        request.headers["Origin"] = "http://malicious.example"
+        self.assertFalse(self.routes._same_origin_request(request))
+
+        request.method = "GET"
+        request.headers["Sec-Fetch-Mode"] = "websocket"
+        self.assertFalse(self.routes._same_origin_request(request))
+
+    def test_lan_login_failures_are_throttled_per_client(self):
+        remote = "192.168.1.50"
+        self.routes.LAN_LOGIN_FAILURES.clear()
+        for index in range(self.routes.LAN_LOGIN_FAILURE_LIMIT):
+            self.assertTrue(self.routes._login_attempt_allowed(remote, now=index))
+            self.routes._record_login_failure(remote, now=index)
+        self.assertFalse(self.routes._login_attempt_allowed(remote, now=10))
+        self.assertTrue(
+            self.routes._login_attempt_allowed(
+                remote,
+                now=self.routes.LAN_LOGIN_FAILURE_WINDOW + self.routes.LAN_LOGIN_FAILURE_LIMIT,
+            )
+        )
+
+    def test_lan_middleware_denies_public_and_authenticates_private_clients(self):
+        class Request:
+            def __init__(self, remote, path="/", method="GET", headers=None, cookies=None, form=None):
+                self.remote = remote
+                self.path = path
+                self.method = method
+                self.headers = headers or {}
+                self.cookies = cookies or {}
+                self.query = {}
+                self.rel_url = path
+                self.host = "192.168.1.10:8188"
+                self.scheme = "http"
+                self.secure = False
+                self.content_length = None
+                self.form = form or {}
+
+            async def post(self):
+                return self.form
+
+        async def handler(_request):
+            return "allowed"
+
+        public = asyncio.run(self.routes._lan_access_middleware(Request("8.8.8.8"), handler))
+        self.assertEqual(public.status, 403)
+
+        private = Request("192.168.1.50", headers={"Accept": "text/html"})
+        unauthenticated = asyncio.run(self.routes._lan_access_middleware(private, handler))
+        self.assertEqual(unauthenticated.status, 303)
+        self.assertTrue(unauthenticated.headers["Location"].startswith(self.routes.LAN_LOGIN_PATH))
+
+        login = Request(
+            "192.168.1.50",
+            path=self.routes.LAN_LOGIN_PATH,
+            method="POST",
+            headers={"Origin": "http://different-lan-name:8188", "Sec-Fetch-Site": "cross-site"},
+            form={"password": "correct horse battery staple", "next": "/extensions/studio.html"},
+        )
+        with mock.patch.object(self.routes, "LAN_PASSWORD", "correct horse battery staple"):
+            signed_in = asyncio.run(self.routes._lan_access_middleware(login, handler))
+        self.assertEqual(signed_in.status, 303)
+        self.assertEqual(signed_in.headers["Location"], "/extensions/studio.html")
+        cookie = signed_in.cookies[self.routes.LAN_SESSION_COOKIE]
+        self.assertTrue(cookie["httponly"])
+        self.assertEqual(cookie["samesite"], "Strict")
+
+        private.cookies[self.routes.LAN_SESSION_COOKIE] = cookie["value"]
+        authenticated = asyncio.run(self.routes._lan_access_middleware(private, handler))
+        self.assertEqual(authenticated, "allowed")
+
+        login.form["password"] = "incorrect-��-password"
+        with mock.patch.object(self.routes, "LAN_PASSWORD", "correct horse battery staple"):
+            rejected = asyncio.run(self.routes._lan_access_middleware(login, handler))
+        self.assertEqual(rejected.status, 401)
 
     def test_prompt_nodes_match_comfyui_resolution_selector(self):
         self.assertEqual(self.nodes._calculate_resolution("1:1 (Square)", 1.0, 8), (1024, 1024))

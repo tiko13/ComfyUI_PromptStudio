@@ -1,8 +1,17 @@
 import asyncio
+import base64
+import hashlib
+import hmac
+import html
+import ipaddress
 import json
+import logging
 import math
 import os
+import secrets
 import shutil
+import time
+import urllib.parse
 
 from aiohttp import web
 from server import PromptServer
@@ -39,9 +48,282 @@ MAX_WORKFLOW_STORE_BYTES = 100 * 1024 * 1024
 MAX_REVISE_REQUEST_BYTES = 1024 * 1024
 MAX_IMAGE_REFERENCE_BYTES = 16 * 1024
 
+LAN_PASSWORD_ENV = "PROMPT_STUDIO_LAN_PASSWORD"
+LAN_PASSWORD_BASE64_ENV = "PROMPT_STUDIO_LAN_PASSWORD_B64"
+LAN_PASSWORD_MIN_LENGTH = 12
+LAN_SESSION_COOKIE = "promptstudio_lan_session"
+LAN_SESSION_SECONDS = 12 * 60 * 60
+LAN_LOGIN_PATH = "/promptstudio/lan/login"
+LAN_LOGOUT_PATH = "/promptstudio/lan/logout"
+LAN_LOGIN_MAX_BYTES = 4096
+LAN_LOGIN_FAILURE_LIMIT = 5
+LAN_LOGIN_FAILURE_WINDOW = 5 * 60
+LAN_SESSION_SECRET = secrets.token_bytes(32)
+LAN_LOGIN_FAILURES = {}
+
+_LAN_IPV4_NETWORKS = tuple(
+    ipaddress.ip_network(value)
+    for value in ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "169.254.0.0/16")
+)
+_LAN_IPV6_NETWORKS = tuple(ipaddress.ip_network(value) for value in ("fc00::/7", "fe80::/10"))
+
+
+def _password_from_environment():
+    password = os.environ.get(LAN_PASSWORD_ENV)
+    if password is not None:
+        return password
+    encoded = os.environ.get(LAN_PASSWORD_BASE64_ENV, "")
+    if not encoded:
+        return ""
+    try:
+        return base64.b64decode(encoded, validate=True).decode("utf-8")
+    except (UnicodeDecodeError, ValueError) as exc:
+        raise RuntimeError(f"{LAN_PASSWORD_BASE64_ENV} is not valid Base64-encoded UTF-8") from exc
+
+
+LAN_PASSWORD = _password_from_environment()
+
 
 class StoreConflictError(RuntimeError):
     pass
+
+
+def _client_ip(value):
+    if not value:
+        return None
+    try:
+        address = ipaddress.ip_address(value.split("%", 1)[0])
+    except ValueError:
+        return None
+    if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped:
+        return address.ipv4_mapped
+    return address
+
+
+def _is_loopback_client(value):
+    address = _client_ip(value)
+    return bool(address and address.is_loopback)
+
+
+def _is_lan_client(value):
+    address = _client_ip(value)
+    if not address:
+        return False
+    networks = _LAN_IPV4_NETWORKS if isinstance(address, ipaddress.IPv4Address) else _LAN_IPV6_NETWORKS
+    return any(address in network for network in networks)
+
+
+def _session_token(now=None):
+    expires = int(time.time() if now is None else now) + LAN_SESSION_SECONDS
+    payload = f"{expires}.{secrets.token_urlsafe(18)}"
+    signature = hmac.new(LAN_SESSION_SECRET, payload.encode("ascii"), hashlib.sha256).digest()
+    encoded_signature = base64.urlsafe_b64encode(signature).rstrip(b"=").decode("ascii")
+    return f"{payload}.{encoded_signature}"
+
+
+def _valid_session_token(token, now=None):
+    try:
+        expires_text, nonce, supplied_signature = token.split(".", 2)
+        expires = int(expires_text)
+        if not nonce or expires < int(time.time() if now is None else now):
+            return False
+        payload = f"{expires_text}.{nonce}"
+        signature = hmac.new(LAN_SESSION_SECRET, payload.encode("ascii"), hashlib.sha256).digest()
+        expected_signature = base64.urlsafe_b64encode(signature).rstrip(b"=").decode("ascii")
+        return hmac.compare_digest(supplied_signature, expected_signature)
+    except (AttributeError, TypeError, ValueError):
+        return False
+
+
+def _safe_next_path(value):
+    value = str(value or "")
+    parsed = urllib.parse.urlsplit(value)
+    decoded_path = urllib.parse.unquote(parsed.path)
+    if (
+        parsed.scheme
+        or parsed.netloc
+        or not parsed.path.startswith("/")
+        or decoded_path.startswith("//")
+        or "\\" in decoded_path
+        or "\r" in decoded_path
+        or "\n" in decoded_path
+    ):
+        return "/extensions/ComfyUI_PromptStudio/prompt_studio.html"
+    return urllib.parse.urlunsplit(("", "", parsed.path, parsed.query, ""))
+
+
+def _same_origin_request(request):
+    if request.headers.get("Sec-Fetch-Site", "").lower() == "cross-site":
+        return bool(
+            request.method in {"GET", "HEAD"}
+            and request.headers.get("Sec-Fetch-Mode", "").lower() == "navigate"
+        )
+    origin = request.headers.get("Origin")
+    if not origin:
+        return True
+    try:
+        origin_parts = urllib.parse.urlsplit(origin)
+        return bool(
+            origin_parts.scheme in {"http", "https"}
+            and origin_parts.scheme == request.scheme
+            and origin_parts.netloc
+            and origin_parts.netloc.lower() == request.host.lower()
+        )
+    except (AttributeError, ValueError):
+        return False
+
+
+def _login_attempt_allowed(remote, now=None):
+    current = time.monotonic() if now is None else now
+    failures = [
+        failure
+        for failure in LAN_LOGIN_FAILURES.get(remote, [])
+        if current - failure < LAN_LOGIN_FAILURE_WINDOW
+    ]
+    LAN_LOGIN_FAILURES[remote] = failures
+    return len(failures) < LAN_LOGIN_FAILURE_LIMIT
+
+
+def _record_login_failure(remote, now=None):
+    current = time.monotonic() if now is None else now
+    LAN_LOGIN_FAILURES.setdefault(remote, []).append(current)
+
+
+def _login_page(next_path, message="", status=200):
+    safe_next = _safe_next_path(next_path)
+    message_markup = f'<p class="error" role="alert">{html.escape(message)}</p>' if message else ""
+    content = f"""<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Prompt Studio LAN sign in</title>
+  <style>
+    :root {{ color-scheme: dark; font-family: Inter, system-ui, sans-serif; }}
+    body {{ min-height: 100vh; margin: 0; display: grid; place-items: center; background: #11151c; color: #edf2f7; }}
+    main {{ width: min(88vw, 360px); padding: 28px; border: 1px solid #344154; border-radius: 14px; background: #1a202b; box-shadow: 0 18px 55px #0008; }}
+    h1 {{ margin: 0 0 8px; font-size: 1.35rem; }}
+    p {{ margin: 0 0 20px; color: #aeb9c9; line-height: 1.45; }}
+    .error {{ padding: 10px; border-radius: 8px; color: #ffd7d7; background: #672b35; }}
+    label {{ display: grid; gap: 7px; font-size: .82rem; color: #bdc8d8; }}
+    input, button {{ box-sizing: border-box; width: 100%; min-height: 42px; border-radius: 8px; font: inherit; }}
+    input {{ padding: 9px 11px; border: 1px solid #47566d; background: #10151d; color: inherit; }}
+    button {{ margin-top: 14px; border: 0; background: #6d5dfc; color: white; font-weight: 700; cursor: pointer; }}
+    small {{ display: block; margin-top: 16px; color: #7f8b9c; }}
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Prompt Studio</h1>
+    <p>This ComfyUI server accepts authenticated devices on the local network only.</p>
+    {message_markup}
+    <form method="post" action="{LAN_LOGIN_PATH}">
+      <input type="hidden" name="next" value="{html.escape(safe_next, quote=True)}">
+      <label>Password <input name="password" type="password" autocomplete="current-password" autofocus required></label>
+      <button type="submit">Sign in</button>
+    </form>
+    <small>Sessions expire after 12 hours or when ComfyUI restarts.</small>
+  </main>
+</body>
+</html>"""
+    response = web.Response(text=content, content_type="text/html", status=status)
+    response.headers.update(
+        {
+            "Cache-Control": "no-store",
+            "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
+            "Referrer-Policy": "no-referrer",
+            "X-Content-Type-Options": "nosniff",
+        }
+    )
+    return response
+
+
+def _auth_error(request):
+    accepts_html = "text/html" in request.headers.get("Accept", "")
+    if request.method in {"GET", "HEAD"} and accepts_html:
+        target = urllib.parse.quote(_safe_next_path(str(request.rel_url)), safe="")
+        return web.Response(status=303, headers={"Location": f"{LAN_LOGIN_PATH}?next={target}"})
+    return web.json_response({"error": "Prompt Studio LAN authentication required"}, status=401)
+
+
+async def _lan_access_middleware(request, handler):
+    remote = request.remote
+    if _is_loopback_client(remote):
+        return await handler(request)
+    if not _is_lan_client(remote):
+        return web.Response(text="Prompt Studio LAN access is limited to private network addresses.", status=403)
+    if request.path != LAN_LOGIN_PATH and not _same_origin_request(request):
+        return web.Response(text="Cross-origin LAN requests are not allowed.", status=403)
+
+    next_path = _safe_next_path(request.query.get("next"))
+    if request.path == LAN_LOGIN_PATH:
+        if request.method == "GET":
+            if len(LAN_PASSWORD) < LAN_PASSWORD_MIN_LENGTH:
+                return _login_page(next_path, f"{LAN_PASSWORD_ENV} must contain at least {LAN_PASSWORD_MIN_LENGTH} characters.", 503)
+            return _login_page(next_path)
+        if request.method == "POST":
+            if request.content_length is not None and request.content_length > LAN_LOGIN_MAX_BYTES:
+                return _login_page(next_path, "The sign-in request is too large.", 413)
+            if not _login_attempt_allowed(remote):
+                response = _login_page(next_path, "Too many failed attempts. Try again in a few minutes.", 429)
+                response.headers["Retry-After"] = str(LAN_LOGIN_FAILURE_WINDOW)
+                return response
+            try:
+                data = await request.post()
+            except Exception:
+                return _login_page(next_path, "The sign-in request is invalid.", 400)
+            next_path = _safe_next_path(data.get("next"))
+            supplied_password = str(data.get("password", ""))
+            password_matches = hmac.compare_digest(
+                supplied_password.encode("utf-8"),
+                LAN_PASSWORD.encode("utf-8"),
+            )
+            if len(LAN_PASSWORD) >= LAN_PASSWORD_MIN_LENGTH and password_matches:
+                LAN_LOGIN_FAILURES.pop(remote, None)
+                response = web.Response(status=303, headers={"Location": next_path, "Cache-Control": "no-store"})
+                response.set_cookie(
+                    LAN_SESSION_COOKIE,
+                    _session_token(),
+                    max_age=LAN_SESSION_SECONDS,
+                    httponly=True,
+                    samesite="Strict",
+                    secure=bool(getattr(request, "secure", False)),
+                    path="/",
+                )
+                return response
+            _record_login_failure(remote)
+            return _login_page(next_path, "Incorrect password.", 401)
+        return web.Response(status=405, headers={"Allow": "GET, POST"})
+
+    if request.path == LAN_LOGOUT_PATH and request.method == "POST":
+        response = web.Response(status=303, headers={"Location": LAN_LOGIN_PATH, "Cache-Control": "no-store"})
+        response.del_cookie(LAN_SESSION_COOKIE, path="/")
+        return response
+
+    if not _valid_session_token(request.cookies.get(LAN_SESSION_COOKIE)):
+        return _auth_error(request)
+    return await handler(request)
+
+
+def _install_lan_access_middleware():
+    if not LAN_PASSWORD:
+        return False
+    application = getattr(PromptServer.instance, "app", None)
+    if application is None:
+        raise RuntimeError("Prompt Studio cannot enable LAN access because the ComfyUI application is unavailable")
+    if getattr(application, "_promptstudio_lan_middleware_installed", False):
+        return True
+    application.middlewares.insert(0, web.middleware(_lan_access_middleware))
+    application._promptstudio_lan_middleware_installed = True
+    if len(LAN_PASSWORD) < LAN_PASSWORD_MIN_LENGTH:
+        logging.error(
+            "Prompt Studio LAN access is locked: %s must contain at least %d characters",
+            LAN_PASSWORD_ENV,
+            LAN_PASSWORD_MIN_LENGTH,
+        )
+    else:
+        logging.info("Prompt Studio LAN password gate enabled for private network clients")
+    return True
 
 
 def _text(value, default=""):
@@ -459,3 +741,6 @@ async def prompt_studio_revise(request):
         return web.json_response({"error": str(exc)}, status=400)
     except Exception as exc:
         return web.json_response({"error": str(exc)}, status=502)
+
+
+_install_lan_access_middleware()

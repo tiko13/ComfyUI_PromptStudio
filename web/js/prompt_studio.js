@@ -190,10 +190,6 @@ function normalizeChat(chat) {
   const now = Date.now();
   const createdAt = normalizedAt(chat?.createdAt, normalizedAt(chat?.updatedAt, now));
   const updatedAt = normalizedAt(chat?.updatedAt, createdAt);
-  const currentPrompt = String(chat?.currentPrompt || "");
-  const versions = Array.isArray(chat?.versions) && chat.versions.length
-    ? chat.versions.map((value) => String(value))
-    : [currentPrompt];
   const messages = Array.isArray(chat?.messages)
     ? chat.messages.map((message) => ({
         id: String(message?.id || makeId()),
@@ -214,7 +210,22 @@ function normalizeChat(chat) {
         createdAt: normalizedAt(message?.createdAt, updatedAt),
       }))
     : [];
-  const requestedIndex = Number(chat?.versionIndex ?? versions.length - 1);
+  const storedCurrentPrompt = String(chat?.currentPrompt || "");
+  const storedVersions = Array.isArray(chat?.versions) && chat.versions.length
+    ? chat.versions.map((value) => String(value))
+    : [storedCurrentPrompt];
+  const latestGeneratedPrompt = [...messages]
+    .reverse()
+    .find((message) => message.canonicalPrompt.trim())
+    ?.canonicalPrompt || "";
+  const recoverGeneratedPrompt = !storedCurrentPrompt.trim()
+    && !storedVersions.some((prompt) => prompt.trim())
+    && Boolean(latestGeneratedPrompt.trim());
+  const currentPrompt = recoverGeneratedPrompt ? latestGeneratedPrompt : storedCurrentPrompt;
+  const versions = recoverGeneratedPrompt
+    ? [currentPrompt]
+    : storedVersions;
+  const requestedIndex = Number(recoverGeneratedPrompt ? versions.length - 1 : chat?.versionIndex ?? versions.length - 1);
   const versionIndex = Number.isFinite(requestedIndex)
     ? Math.max(0, Math.min(requestedIndex, versions.length - 1))
     : versions.length - 1;
@@ -222,7 +233,7 @@ function normalizeChat(chat) {
     id: String(chat?.id || makeId()),
     createdAt,
     updatedAt,
-    initialized: chat?.initialized == null ? Boolean(currentPrompt) : Boolean(chat.initialized),
+    initialized: recoverGeneratedPrompt || (chat?.initialized == null ? Boolean(currentPrompt) : Boolean(chat.initialized)),
     currentPrompt,
     versions,
     versionIndex,
@@ -358,11 +369,17 @@ function saveChats({ immediate = false } = {}) {
 }
 
 async function loadChats() {
+  let recoveredCanonicalPrompt = false;
   try {
     const response = await api.fetchApi("/promptstudio/prompt-studio/chats");
     const stored = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(stored.error || `Chat load failed (${response.status}).`);
-    state.chats = Array.isArray(stored.chats) ? stored.chats.map(normalizeChat) : [];
+    const storedChats = Array.isArray(stored.chats) ? stored.chats : [];
+    state.chats = storedChats.map(normalizeChat);
+    recoveredCanonicalPrompt = state.chats.some((chat, index) => (
+      !String(storedChats[index]?.currentPrompt || "").trim()
+      && Boolean(chat.currentPrompt.trim())
+    ));
     state.chatRevision = Number(stored.revision || 0);
     state.chatStoreLoaded = true;
     state.chatPersistenceBlocked = false;
@@ -382,6 +399,20 @@ async function loadChats() {
     state.activeChatId = chat.id;
     if (state.chatStoreLoaded) saveChats({ immediate: true });
   }
+  const chat = activeChat();
+  if (chat) {
+    restoreChatState(chat);
+    renderChatHistory();
+    renderChatList();
+  }
+  if (recoveredCanonicalPrompt) saveChats({ immediate: true });
+}
+
+function restoreChatState(chat) {
+  state.currentPrompt = chat.currentPrompt;
+  state.versions = [...chat.versions];
+  state.versionIndex = chat.versionIndex;
+  updatePromptEditor(chat.currentPrompt);
 }
 
 function syncActiveChat() {
@@ -798,6 +829,14 @@ function renderChatHistory() {
 
 function updateComposeMode() {
   if (!state.panel) return;
+  const createAction = state.panel.querySelector('input[name="promptstudio-generation-action"][value="create"]');
+  const editAction = state.panel.querySelector('input[name="promptstudio-generation-action"][value="edit"]');
+  const canEdit = Boolean(editingSource());
+  if (editAction) {
+    editAction.disabled = state.busy || !canEdit;
+    editAction.closest("label").title = canEdit ? "" : "There is no image in this conversation to edit.";
+    if (!canEdit && editAction.checked && createAction) createAction.checked = true;
+  }
   const amplificationEnabled = useLlmAmplification();
   const creating = !activeChat()?.initialized;
   const heading = state.panel.querySelector("#promptstudio-compose-title");
@@ -913,13 +952,10 @@ function activateChat(chatId) {
   const chat = state.chats.find((item) => item.id === chatId);
   if (!chat) return;
   state.activeChatId = chat.id;
-  state.currentPrompt = chat.currentPrompt;
-  state.versions = [...chat.versions];
-  state.versionIndex = chat.versionIndex;
+  restoreChatState(chat);
   refreshWorkflowControls();
   renderChatHistory();
   renderChatList();
-  updatePromptEditor(chat.currentPrompt);
   refreshSecondaryInstructionsControl();
   if (!selectedWorkflowProfile(selectedAction())) {
     setStatus("No compatible [PS] workflow is selected for this action.", "warning");
@@ -1064,6 +1100,7 @@ function setStatus(text, kind = "") {
   const el = state.panel?.querySelector("#promptstudio-status");
   if (!el) return;
   el.textContent = text;
+  el.title = text;
   el.dataset.kind = kind;
 }
 
@@ -1405,6 +1442,7 @@ async function appendImages(message, images) {
     saveChats();
     renderChatList();
   }
+  updateComposeMode();
   const history = state.panel?.querySelector("#promptstudio-history");
   if (history) history.scrollTop = history.scrollHeight;
 }
@@ -2012,7 +2050,11 @@ function buildPanel() {
     <main class="promptstudio-main">
       <div id="promptstudio-history" class="promptstudio-history"></div>
       <div class="promptstudio-compose">
-        <div class="promptstudio-compose-heading"><strong id="promptstudio-compose-title">Describe the next change</strong><span id="promptstudio-compose-hint">Leave empty to reroll</span></div>
+        <div class="promptstudio-compose-heading">
+          <strong id="promptstudio-compose-title">Describe the next change</strong>
+          <span id="promptstudio-status" class="promptstudio-status" role="status" aria-live="polite">Loading…</span>
+          <span id="promptstudio-compose-hint">Leave empty to reroll</span>
+        </div>
         <textarea id="promptstudio-revision" rows="3" placeholder="Make the background more varied…"></textarea>
         <div class="promptstudio-compose-footer">
           <div class="promptstudio-toggles">
@@ -2050,16 +2092,6 @@ function buildPanel() {
           <button id="promptstudio-close" type="button" title="Close Prompt Studio" aria-label="Close Prompt Studio">×</button>
         </div>
       </header>
-      <section class="promptstudio-toolbar">
-        <label class="promptstudio-slot-control">
-          <span>ComfyUI workflow templates</span>
-          <div class="promptstudio-attach-row">
-            <div id="promptstudio-workflow-template-status" class="promptstudio-workflow-template-status">Checking [PS] workflows…</div>
-            <button id="promptstudio-refresh-workflows" type="button" title="Refresh [PS] workflows">↻</button>
-          </div>
-        </label>
-        <div id="promptstudio-status" class="promptstudio-status">Loading…</div>
-      </section>
       <section class="promptstudio-mode-control">
         <label>
           <input id="promptstudio-use-llm-amplification" type="checkbox" ${settings.use_llm_amplification ? "checked" : ""} />
@@ -2074,14 +2106,14 @@ function buildPanel() {
         <details class="promptstudio-settings" open>
           <summary><span>Generation controls</span><small>Model, style and LLM settings</small></summary>
           <div class="promptstudio-settings-grid">
-            <label>Model profile<select id="promptstudio-profile"></select></label>
+            <label class="promptstudio-control-wide">Model profile<select id="promptstudio-profile"></select></label>
             <label>Style<select id="promptstudio-style"></select></label>
             <label>Framing<select id="promptstudio-framing"></select></label>
             <label>Embellishment<select id="promptstudio-embellishment"></select></label>
             <label title="Controls KoboldCpp reasoning effort. High receives up to 4,096 private-reasoning tokens while preserving the final-answer allowance.">Thinking<select id="promptstudio-thinking"></select></label>
-            <label>KoboldCpp URL<input id="promptstudio-kobold-url" /></label>
-            <label>Style modifier<textarea id="promptstudio-style-modifier" rows="2"></textarea></label>
-            <label>Framing modifier<textarea id="promptstudio-framing-modifier" rows="2"></textarea></label>
+            <label class="promptstudio-control-wide">KoboldCpp URL<input id="promptstudio-kobold-url" /></label>
+            <label class="promptstudio-control-wide">Style modifier<textarea id="promptstudio-style-modifier" rows="2"></textarea></label>
+            <label class="promptstudio-control-wide">Framing modifier<textarea id="promptstudio-framing-modifier" rows="2"></textarea></label>
             <label title="Final-answer allowance. KoboldCpp receives an additional native-reasoning budget; 0 uses the selected profile default.">Final-answer tokens<input id="promptstudio-max-tokens" type="number" min="0" max="8192" /></label>
             <label>Temperature<input id="promptstudio-temperature" type="number" min="0" max="5" step="0.05" /></label>
           </div>
@@ -2125,8 +2157,12 @@ function buildPanel() {
           </div>
         </section>
         <section class="promptstudio-studio-settings-card" aria-labelledby="promptstudio-workflow-settings-title">
-          <header class="promptstudio-studio-settings-card-header">
-            <div><strong id="promptstudio-workflow-settings-title">ComfyUI workflows</strong><span>Live templates prefixed with [PS]</span></div>
+          <header class="promptstudio-studio-settings-card-header promptstudio-workflow-settings-header">
+            <div>
+              <strong id="promptstudio-workflow-settings-title">ComfyUI workflow templates</strong>
+              <span id="promptstudio-workflow-template-status" class="promptstudio-workflow-template-status">Checking [PS] workflows…</span>
+            </div>
+            <button id="promptstudio-refresh-workflows" type="button" title="Refresh [PS] workflows" aria-label="Refresh [PS] workflows">↻</button>
           </header>
           <div class="promptstudio-workflow-routing">
             <div class="promptstudio-workflow-routing-fields">

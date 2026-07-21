@@ -67,6 +67,32 @@ The standalone page is available at:
 
 On direct navigation or refresh, it reconnects to an open ComfyUI tab when possible and otherwise starts a hidden same-origin workflow host.
 
+### Password-protected LAN access
+
+Prompt Studio can be opened from another device on the same private network. Because the standalone interface uses ComfyUI's workflow, queue, history, image, and WebSocket APIs, LAN mode protects the complete remotely reachable ComfyUI server rather than only the Prompt Studio HTML page. Requests from the machine running ComfyUI continue to work without a password.
+
+Set a password of at least 12 characters before starting ComfyUI, then listen on all local interfaces:
+
+```powershell
+$env:PROMPT_STUDIO_LAN_PASSWORD = "replace-with-a-long-unique-password"
+C:\EasyDiffusion\ComfyUI\venv\Scripts\python.exe C:\EasyDiffusion\ComfyUI\main.py --listen 0.0.0.0 --port 8188
+```
+
+Open Prompt Studio from a LAN device by replacing the example address with the ComfyUI machine's private IPv4 or IPv6 address:
+
+```text
+http://192.168.1.25:8188/extensions/ComfyUI_PromptStudio/prompt_studio.html
+```
+
+Private IPv4 ranges (`10/8`, `172.16/12`, and `192.168/16`), IPv4 link-local addresses, and IPv6 unique-local/link-local addresses are accepted. Public, carrier-grade NAT, invalid, and missing client addresses are rejected. Authentication uses an HTTP-only, same-site signed cookie that expires after 12 hours or whenever ComfyUI restarts. Five failed sign-in attempts from one address trigger a five-minute throttle.
+
+Keep this deployment LAN-only:
+
+- Use the operating system firewall's private-network profile to allow TCP port `8188`; do not create a public-network rule.
+- Do not forward port `8188` on the router, expose it through a tunnel, or put it behind a public reverse proxy. A reverse proxy on the LAN appears to the server as a private client and defeats source-address enforcement.
+- Prefer a trusted home network. The password is submitted over ordinary HTTP, so it is not encrypted on the wire; use a local TLS reverse proxy only if you understand and preserve the LAN boundary.
+- Remove `PROMPT_STUDIO_LAN_PASSWORD` and return ComfyUI to its default loopback listen address to disable LAN mode.
+
 ## Choosing a workflow prompt node
 
 Prompt Studio can use either of these nodes in a saved `[PS]` workflow:
