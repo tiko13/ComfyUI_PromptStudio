@@ -678,6 +678,9 @@ async def prompt_studio_get_chats(request):
     try:
         async with CHAT_STORE_LOCK:
             data = await asyncio.to_thread(_read_chat_store)
+        requested_revision = request.query.get("revision")
+        if requested_revision is not None and _revision(requested_revision) == data["revision"]:
+            return web.Response(status=204, headers={"X-PromptStudio-Revision": str(data["revision"])})
         return web.json_response(data)
     except Exception as exc:
         return web.json_response({"error": str(exc)}, status=500)

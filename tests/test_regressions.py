@@ -497,6 +497,22 @@ class RegressionTests(unittest.TestCase):
             backup = json.loads(Path(chat_path + ".bak").read_text(encoding="utf-8"))
             self.assertEqual(backup["revision"], 1)
 
+    def test_chat_get_skips_unchanged_store_payload(self):
+        chat_path = str(Path(self.temp.name) / "chats.json")
+        with mock.patch.object(self.routes, "CHAT_STORE_PATH", chat_path):
+            self.routes._write_chat_store({"activeChatId": None, "chats": []}, current_revision=6)
+            unchanged = asyncio.run(
+                self.routes.prompt_studio_get_chats(types.SimpleNamespace(query={"revision": "7"}))
+            )
+            self.assertEqual(unchanged.status, 204)
+            self.assertEqual(unchanged.headers["X-PromptStudio-Revision"], "7")
+
+            changed, status = asyncio.run(
+                self.routes.prompt_studio_get_chats(types.SimpleNamespace(query={"revision": "6"}))
+            )
+            self.assertEqual(status, 200)
+            self.assertEqual(changed["revision"], 7)
+
     def test_workflow_store_validates_snapshots_and_detects_conflicts(self):
         workflow_path = str(Path(self.temp.name) / "workflows.json")
         template = {
