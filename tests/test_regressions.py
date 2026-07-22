@@ -57,9 +57,15 @@ def install_runtime_stubs(storage_root):
         def del_cookie(self, name, **kwargs):
             self.cookies[name] = {"value": "", "deleted": True, **kwargs}
 
+    class FakeFileResponse(FakeResponse):
+        def __init__(self, path):
+            super().__init__()
+            self.path = path
+
     aiohttp = types.ModuleType("aiohttp")
     aiohttp.web = types.SimpleNamespace(
         Response=FakeResponse,
+        FileResponse=FakeFileResponse,
         json_response=lambda value, status=200: (value, status),
         middleware=lambda function: function,
     )
@@ -159,6 +165,15 @@ class RegressionTests(unittest.TestCase):
         self.assertEqual(self.routes._safe_next_path("/%2f/example.com/steal"), default)
         self.assertEqual(self.routes._safe_next_path("/\\example.com/steal"), default)
         self.assertEqual(self.routes._safe_next_path("not-a-path"), default)
+
+    def test_standalone_short_alias_keeps_the_short_url(self):
+        response = asyncio.run(self.routes.prompt_studio_alias(types.SimpleNamespace()))
+        self.assertEqual(Path(response.path), REPO_ROOT / "web" / "prompt_studio.html")
+
+        request = types.SimpleNamespace(query_string="session=example")
+        redirect = asyncio.run(self.routes.prompt_studio_alias_redirect(request))
+        self.assertEqual(redirect.status, 308)
+        self.assertEqual(redirect.headers["Location"], "/PromptStudio?session=example")
 
     def test_lan_gate_allows_cross_site_navigation_but_not_cross_origin_actions(self):
         request = types.SimpleNamespace(
@@ -312,6 +327,80 @@ class RegressionTests(unittest.TestCase):
         self.assertEqual(self.nodes._strip_response('Final prompt: "STOP."'), '"STOP."')
         self.assertEqual(self.nodes._strip_apply_response('  "exact output"  '), '"exact output"')
 
+    def test_main_prompt_revision_keeps_auto_only_removals_out_of_positive_prompt(self):
+        request = self.nodes._build_main_revision_prompt(
+            "A woman in a red dress",
+            "A woman in a red silk dress wearing a pearl necklace",
+            "Remove the necklace",
+            "Disabled",
+        )
+        self.assertIn("leave the main prompt unchanged", request)
+        self.assertIn("Never translate a removal into negative wording", request)
+        self.assertIn("Current rendered final prompt (reference only)", request)
+        self.assertIn("Remove the necklace", request)
+
+    def test_prompt_studio_main_revision_and_clean_render_are_separate_modes(self):
+        base_payload = {
+            "kobold_url": "http://localhost:5001",
+            "model_profile": "General Natural Language",
+            "style_preset": "None",
+            "framing_preset": "None",
+            "thinking_mode": "Disabled",
+            "embellishment_level": "None",
+            "revision": "Change the dress to green",
+        }
+        with mock.patch.object(self.routes, "_generate_kcpp", return_value="Final prompt: A woman in a green dress") as generate:
+            main = self.routes._revise({
+                **base_payload,
+                "mode": "revise_main",
+                "current_prompt": "A woman in a red dress",
+                "current_final_prompt": "A detailed woman in a red silk dress",
+            })
+        self.assertEqual(main, "A woman in a green dress")
+        self.assertIn("model-neutral main prompt", generate.call_args.args[0])
+
+        with (
+            mock.patch.object(self.routes, "_build_instruction_prompt", return_value="render request") as build_render,
+            mock.patch.object(self.routes, "_generate_kcpp", return_value="Final prompt: A woman in a green dress"),
+        ):
+            rendered = self.routes._revise({
+                **base_payload,
+                "mode": "render",
+                "current_prompt": "",
+                "revision": "A woman in a green dress",
+            })
+        self.assertEqual(rendered, "A woman in a green dress")
+        self.assertEqual(build_render.call_args.args[-2:], ("A woman in a green dress", ""))
+
+    def test_prompt_studio_can_route_revisions_through_ollama(self):
+        payload = {
+            "llm_provider": "ollama",
+            "ollama_url": "http://localhost:11434",
+            "ollama_model": "qwen3:8b",
+            "model_profile": "General Natural Language",
+            "style_preset": "None",
+            "framing_preset": "None",
+            "thinking_mode": "Disabled",
+            "embellishment_level": "None",
+            "revision": "A quiet forest",
+            "mode": "render",
+        }
+        with (
+            mock.patch.object(self.routes, "_generate_ollama", return_value="Final prompt: A quiet forest") as ollama,
+            mock.patch.object(self.routes, "_generate_kcpp") as kobold,
+        ):
+            rendered = self.routes._revise(payload)
+
+        self.assertEqual(rendered, "A quiet forest")
+        self.assertEqual(ollama.call_args.args[1:3], ("http://localhost:11434", "qwen3:8b"))
+        kobold.assert_not_called()
+
+    def test_none_embellishment_adds_no_visible_details(self):
+        natural = self.nodes._embellishment_instruction("None", {"style": "natural_language"})
+        tags = self.nodes._embellishment_instruction("None", {"style": "comma_tags"})
+        self.assertIn("Add no new visible details", natural)
+        self.assertIn("Add no new visible details", tags)
+
     def test_chat_budget_adds_reasoning_space_to_the_final_answer_allowance(self):
         self.assertEqual(self.nodes._chat_generation_budget(300, "Disabled"), (300, None))
         self.assertEqual(self.nodes._chat_generation_budget(300, "Minimal"), (334, None))
@@ -399,6 +488,44 @@ class RegressionTests(unittest.TestCase):
         self.assertEqual(payload["reasoning_effort"], "medium")
         self.assertTrue(payload["chat_template_kwargs"]["enable_thinking"])
 
+    def test_ollama_generation_uses_native_chat_options_and_separate_thinking(self):
+        response = {
+            "message": {"role": "assistant", "content": "A finished image prompt.", "thinking": "private"},
+            "done": True,
+            "done_reason": "stop",
+        }
+        with mock.patch.object(self.nodes, "_post_json", return_value=response) as post:
+            result = self.nodes._generate_ollama(
+                "Rewrite this prompt",
+                "http://localhost:11434",
+                "qwen3:8b",
+                0,
+                300,
+                0.25,
+                0.8,
+                40,
+                0.0,
+                1.05,
+                360,
+                -1,
+                "Medium",
+                "",
+                120,
+            )
+
+        self.assertEqual(result, "A finished image prompt.")
+        request_url, payload, timeout = post.call_args.args
+        self.assertTrue(request_url.endswith("/api/chat"))
+        self.assertEqual(timeout, 120)
+        self.assertEqual(payload["model"], "qwen3:8b")
+        self.assertEqual(payload["think"], "medium")
+        self.assertFalse(payload["stream"])
+        self.assertEqual(payload["options"]["num_predict"], 750)
+        self.assertEqual(payload["options"]["repeat_penalty"], 1.05)
+        self.assertEqual(payload["options"]["repeat_last_n"], 360)
+        self.assertNotIn("seed", payload["options"])
+        self.assertEqual(post.call_args.kwargs["service_name"], "Ollama")
+
     def test_raw_generation_keeps_one_total_continuation_limit(self):
         response = {"results": [{"text": "raw continuation", "finish_reason": "stop"}]}
         with (
@@ -445,6 +572,25 @@ class RegressionTests(unittest.TestCase):
                 self.nodes._clean_base_url("http://localhost:99999")
         with mock.patch.dict(os.environ, {"PROMPT_STUDIO_KOBOLD_ALLOWED_HOSTS": "example.com"}, clear=True):
             self.assertEqual(self.nodes._clean_base_url("https://example.com"), "https://example.com")
+
+    def test_ollama_url_is_local_by_default_and_remote_is_explicit(self):
+        with mock.patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(self.nodes._clean_ollama_base_url("localhost:11434"), "http://localhost:11434")
+            self.assertEqual(
+                self.nodes._ollama_api_url("http://localhost:11434/api", "chat"),
+                "http://localhost:11434/api/chat",
+            )
+            with self.assertRaisesRegex(ValueError, "PROMPT_STUDIO_OLLAMA_ALLOWED_HOSTS"):
+                self.nodes._clean_ollama_base_url("https://ollama.example.com")
+        with mock.patch.dict(
+            os.environ,
+            {"PROMPT_STUDIO_OLLAMA_ALLOWED_HOSTS": "ollama.example.com"},
+            clear=True,
+        ):
+            self.assertEqual(
+                self.nodes._clean_ollama_base_url("https://ollama.example.com"),
+                "https://ollama.example.com",
+            )
 
     def test_image_reference_rejects_directory_escape(self):
         reference = json.dumps({"filename": "image.png", "subfolder": "..", "type": "output"})

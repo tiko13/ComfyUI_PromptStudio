@@ -2,7 +2,7 @@
 
 ![ComfyUI Prompt Studio](docs/images/example1.png)
 
-Chat-first image generation for ComfyUI, powered by a local KoboldCpp model.
+Chat-first image generation for ComfyUI, powered by a local KoboldCpp or Ollama model.
 
 ComfyUI_PromptStudio adds **Prompt Studio**, an interactive workspace where you can describe an image, generate it with a selected `[PS]` workflow saved in ComfyUI, and refine it conversationally:
 
@@ -16,7 +16,7 @@ Create & Generate
 Revise & Generate
 ```
 
-The extension keeps a complete canonical prompt behind the conversation. Each message changes that prompt, writes it into the selected workflow node, and can immediately queue a new image. KoboldCpp runs locally and is called by the ComfyUI backend, not by the browser.
+The extension keeps a model-neutral **main prompt** alongside the detailed **final prompt** sent to the selected workflow. Ordinary revision messages precision-edit both representations, while prompt-shaping control changes rebuild the final prompt from the stable main prompt. The selected local LLM service is called by the ComfyUI backend, not by the browser.
 
 ## Quick start: generate images through chat
 
@@ -31,37 +31,45 @@ The extension keeps a complete canonical prompt behind the conversation. Each me
 7. Select the saved workflow under **ComfyUI workflows** in Prompt Studio settings, then describe the image you want.
 8. Click **Create & Generate**. After the first result, ask for changes such as `use a wider composition`, `replace the coat with a red rain jacket`, or `make the lighting softer`.
 
-Prompt Studio uses `http://localhost:5001` as the default KoboldCpp endpoint. Change **KoboldCpp URL** in the generation controls if your server uses another local address. For safety, the backend accepts loopback hosts only by default; see [Remote KoboldCpp hosts](#remote-koboldcpp-hosts) before connecting to another machine.
+Prompt Studio uses KoboldCpp at `http://localhost:5001` by default. Open Prompt Studio settings to select **KoboldCpp** or **Ollama** as the LLM provider. Ollama defaults to `http://localhost:11434`; select one of the locally installed models discovered from `/api/tags`. For safety, both providers accept loopback hosts only by default.
 
 Prompt rewriting uses KoboldCpp's OpenAI-compatible Chat Completions endpoint and the model's native GGUF chat template. Enable **Use Jinja** in KoboldCpp and restart its server after changing that setting. The backend checks this capability and stops with a clear error instead of silently using generic chat formatting. KoboldCpp 1.117.1 or newer is recommended and is the version used for integration testing.
 
-> Want to use the chat UI without an LLM? Turn off **Use LLM amplification**. The composer becomes a direct canonical-prompt editor and **Generate** sends that text straight to ComfyUI.
+With Ollama selected, Prompt Studio uses Ollama's native, non-streaming `/api/chat` endpoint. Sampling controls are translated to Ollama options, and the Thinking control uses Ollama's separate `think` response channel. **Minimal** and **Low** both request Ollama's `low` thinking level. The ComfyUI canvas nodes remain named KoboldCpp Prompt Slot/Amplify for workflow compatibility; in interactive Prompt Studio, they act as prompt handoff nodes and the provider selected in settings performs the rewrite.
+
+> Want to use the chat UI without an LLM? Turn off **Use LLM amplification**. The composer becomes a direct-prompt editor, the main and final prompts stay identical, and **Generate** sends that text straight to ComfyUI.
 
 ## The interactive workflow
 
 ### Create, revise, and inspect
 
-The first message in a new chat creates a complete prompt. Later messages are treated as revisions to that prompt rather than as a transcript for the model. Prompt Studio sends KoboldCpp only the current canonical prompt, the requested change, and the active generation controls.
+The first message becomes the main prompt and is rendered into a complete final prompt. Later messages are treated as revisions rather than as a transcript for the model. Prompt Studio precision-revises the model-neutral main prompt and the existing detailed final prompt separately, preserving unrelated established detail.
 
-Revisions use the smallest edit scope implied by the request. References that conflict with the requested change are replaced, while unrelated clauses and tags are preserved where possible. Style and framing constrain the edit; embellishment controls detail within the edited scope.
+Revisions use the smallest edit scope implied by the request. References that conflict with the requested change are replaced, while unrelated clauses and tags are preserved where possible. Removing an automatic detail that is absent from the main prompt changes only the final prompt; Prompt Studio does not add negative wording to the main prompt.
 
-The **Canonical prompt** panel shows the current complete target prompt. You can edit it manually, restore an earlier version with **Undo**, or inspect and restore the prompt recorded with any generated-image message. In an editing workflow's **Text only** mode, the workflow intentionally receives the latest edit instruction instead of the complete target prompt.
+The inspector displays the stable **Main prompt** and editable **Final prompt**. Manual final-prompt edits are used for generation and preserved by later precision revisions. **Undo** restores the main and final prompt together, and every generated-image message records both. In an editing workflow's **Text only** mode, the workflow intentionally receives the latest edit instruction instead of the complete final prompt.
 
 ### Generate and reroll
 
-With **Generate after revision** enabled, creating or revising a prompt immediately queues an API-format snapshot of the selected saved `[PS]` workflow. Turn it off to create or revise the canonical prompt without queueing an image; **Generate** can queue it later. Generated images appear in the chat, can be opened at full size, and can be scaled down in the conversation with the interface **Image scale** setting.
+With **Generate after revision** enabled, creating or revising a prompt immediately queues an API-format snapshot of the selected saved `[PS]` workflow. Turn it off to update the main and final prompts without queueing an image; **Generate** can queue the final prompt later. Generated images appear in the chat, can be opened at full size, and can be scaled down in the conversation with the interface **Image scale** setting.
 
 Prompt changes keep the current ComfyUI seed, making before-and-after comparisons easier. **New seed on reroll** randomizes widgets named `seed` or `noise_seed` only when **Reroll**, or an unchanged **Generate**, queues the same prompt and controls again. Turn it off to keep the current seed on rerolls too.
 
-If you change the model profile, style, framing, modifiers, or embellishment level, **Reroll** or an empty **Revise & Generate** first asks KoboldCpp to apply those controls to the canonical prompt. A direct ComfyUI reroll is used when the controls already match.
+If you change the model profile, style, framing, modifiers, or embellishment level, **Reroll** or an empty **Revise & Generate** rebuilds the final prompt from the main prompt. This clean render prevents details from an older control setting from leaking into the new result. Endpoint, thinking, token, and temperature changes do not mark the final prompt stale. A direct ComfyUI reroll is used when the prompt-shaping controls already match.
 
 ### Sessions and persistence
 
-The **Sessions** sidebar creates, switches, and deletes independent prompt conversations. Each session remembers its canonical prompt, prompt versions, messages, selected creation and editing workflows, and the generation controls last applied by KoboldCpp.
+The **Sessions** sidebar creates, switches, and deletes independent prompt conversations. Each session remembers its main and final prompts, paired prompt versions, messages, selected creation and editing workflows, and the prompt-shaping controls last applied by the selected LLM provider.
 
 Chats are stored in `prompt_studio_chats.json` beside the extension's Python files. The file is excluded from Git and is shared by browsers connected to the same ComfyUI installation. Saves use revision checks so an older browser cannot silently overwrite a newer save. A conflicting client stops saving and asks for a reload. Before replacing a store, the backend keeps the previous valid copy as a `.bak` file.
 
-The standalone page is available at:
+The standalone page is available at the short URL:
+
+```text
+/PromptStudio
+```
+
+The original extension URL remains available for compatibility:
 
 ```text
 /extensions/ComfyUI_PromptStudio/prompt_studio.html
@@ -83,7 +91,7 @@ C:\EasyDiffusion\ComfyUI\venv\Scripts\python.exe C:\EasyDiffusion\ComfyUI\main.p
 Open Prompt Studio from a LAN device by replacing the example address with the ComfyUI machine's private IPv4 or IPv6 address:
 
 ```text
-http://192.168.1.25:8188/extensions/ComfyUI_PromptStudio/prompt_studio.html
+http://192.168.1.25:8188/PromptStudio
 ```
 
 Private IPv4 ranges (`10/8`, `172.16/12`, and `192.168/16`), IPv4 link-local addresses, and IPv6 unique-local/link-local addresses are accepted. Public, carrier-grade NAT, invalid, and missing client addresses are rejected. Authentication uses an HTTP-only, same-site signed cookie that expires after 12 hours or whenever ComfyUI restarts. Five failed sign-in attempts from one address trigger a five-minute throttle.
@@ -101,7 +109,7 @@ Prompt Studio can use either of these nodes in a saved `[PS]` workflow:
 
 | Node | Interactive Prompt Studio generation | Normal ComfyUI queue |
 | --- | --- | --- |
-| **KoboldCpp Prompt Slot** | Passes the canonical prompt into the workflow | Passes its `prompt` input through unchanged |
+| **KoboldCpp Prompt Slot** | Passes the final prompt into the workflow | Passes its `prompt` input through unchanged |
 | **KoboldCpp Prompt Amplify** | Temporarily behaves like Prompt Slot in the queued Studio snapshot | Rewrites its `text` input through KoboldCpp before passing it on |
 
 Using Prompt Amplify as the prompt input does not cause double amplification. Prompt Studio converts it to a Prompt Slot only in the temporary workflow snapshot it submits. The saved workflow and ordinary ComfyUI runs retain the node's normal amplification behavior.
@@ -137,7 +145,7 @@ Prompt Studio records each result's actual pixel dimensions. Editing an image in
 
 To prepare an upscaling workflow, add **Prompt Studio Upscale**, connect its `image` output to the upscaling pipeline, and use its `width`, `height`, or `upscale_factor` outputs wherever the model requires target sizing. Its `prompt` and `secondary_instructions` outputs can be connected to conditioning nodes when needed. Keep exactly one final image output active and save the workflow with a `[PS]` prefix.
 
-Every generated image has a compact **Upscale** action beside **Edit this image**. Prompt Studio asks for an upscale factor (default `2`) and injects the selected image reference, factor, optional canonical prompt, and secondary instructions into the dedicated node. The node loads the image and outputs target width and height calculated from the source dimensions. **Use prompt when upscaling** controls whether the canonical prompt output is populated.
+Every generated image has a compact **Upscale** action beside **Edit this image**. Prompt Studio asks for an upscale factor (default `2`) and injects the selected image reference, factor, optional final prompt, and secondary instructions into the dedicated node. The node loads the image and outputs target width and height calculated from the source dimensions. **Use prompt when upscaling** controls whether the final prompt output is populated.
 
 When **Edit** is selected, a second switch controls the workflow prompt payload. **Text only** sends the current revision text as the editing instruction, while **Full prompt** sends the complete revised target prompt. The switch is remembered per chat.
 
@@ -166,7 +174,7 @@ Its prompt controls are:
 - `style_modifier`: supplies freeform style guidance for this run. When present, it becomes the target style and replaces conflicting medium, rendering, camera, or quality language.
 - `framing_preset`: selects composition, viewpoint, shot type, angle, and placement guidance from `framing_templates.json`.
 - `framing_modifier`: supplies freeform framing guidance for this run and takes precedence over the preset when non-empty.
-- `embellishment_level`: controls expansion after style conversion. **Minimal** stays short; **Clean** lightly polishes; **Detailed** adds useful visible detail; **Rich** produces a denser description; **Maximum** and **Ultra Maximum** allow progressively more expansion. Tag-based profiles increase tag density instead of prose length.
+- `embellishment_level`: controls expansion after style conversion. **None** adds no new visible detail; **Minimal** stays short; **Clean** lightly polishes; **Detailed** adds useful visible detail; **Rich** produces a denser description; **Maximum** and **Ultra Maximum** allow progressively more expansion. Tag-based profiles increase tag density instead of prose length.
 - `additional_instructions`: adds one-run task guidance without changing the profile files.
 - `thinking_mode`: selects KoboldCpp native reasoning effort from **Disabled** through **High**. Native thinking is kept in Chat Completions' separate `reasoning_content` field; only the final `content` is used as the image prompt.
 - `secondary_instructions`: passes through unchanged to the second output and is not part of the LLM request.
@@ -211,6 +219,16 @@ It preserves bounding boxes, element types, literal text elements, unknown keys,
 **KoboldCpp Apply** sends its `text` input directly to KoboldCpp as the complete prompt/context and returns the generated text. It does not add image-prompt profiles, style guidance, framing guidance, embellishment rules, or amplification instructions.
 
 Use it when you want a raw local-LLM call inside a workflow rather than an image-prompt rewrite. This node intentionally remains on KoboldCpp's native `/api/v1/generate` endpoint so its `text` input continues to mean the complete raw prompt/context. Its token setting is therefore a total raw-generation limit, not the final-answer allowance used by the Chat Completions-based rewriting nodes. Native reasoning separation is most reliable in Prompt Amplify, Ideogram4-KoboldCPP, and Prompt Studio.
+
+### Remote Ollama hosts
+
+Ollama URLs use the same loopback-only protection as KoboldCpp. To permit a known remote Ollama server, set `PROMPT_STUDIO_OLLAMA_ALLOWED_HOSTS` before starting ComfyUI. It accepts a comma-separated list of exact hostnames or IP addresses:
+
+```powershell
+$env:PROMPT_STUDIO_OLLAMA_ALLOWED_HOSTS = "192.168.1.30,ollama.example.internal"
+```
+
+Do not include URL schemes or ports in the allowlist. `*` permits every host and should be used only in a trusted environment. Prompt Studio currently targets the local Ollama API and does not send Ollama cloud credentials.
 
 ### Remote KoboldCpp hosts
 
@@ -276,7 +294,9 @@ Prompt Studio revisions are served by ComfyUI at:
 POST /promptstudio/prompt-studio/revise
 ```
 
-KoboldCpp requests remain on the Python side, so the browser does not need direct access to the local model server.
+The browser uses `revise_main` to precision-edit model-neutral intent, `revise` to precision-edit the existing final prompt, and `render` to build a fresh final prompt after prompt-shaping controls change. Ordinary revisions run the two precision edits independently; a control change renders only from the updated main prompt.
+
+KoboldCpp and Ollama requests remain on the Python side, so the browser does not need direct access to the local model server.
 
 ## Updating and troubleshooting
 
@@ -284,7 +304,7 @@ KoboldCpp requests remain on the Python side, so the browser does not need direc
 - Refresh the browser after frontend-only changes.
 - If Prompt Studio does not list a workflow, make sure its saved ComfyUI filename starts with `[PS]` and that it meets all four validation rules above.
 - If a workflow is marked **cached**, hover the workflow status for the validation error, correct the saved workflow in ComfyUI, and refresh it.
-- If prompt creation fails, confirm that KoboldCpp is running and that its URL is correct. The default is `http://localhost:5001`.
+- If prompt creation fails, confirm that the selected LLM provider is running, its endpoint is correct, and an Ollama model is selected when using Ollama. The defaults are `http://localhost:5001` for KoboldCpp and `http://localhost:11434` for Ollama.
 - If prompt creation succeeds but no image appears, queue the workflow normally in ComfyUI and fix any disconnected or invalid generation nodes first.
 - If Prompt Studio reports a save conflict, reload it to obtain the newest chat or workflow-cache revision before making further changes.
 

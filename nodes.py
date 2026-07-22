@@ -7,6 +7,7 @@ import re
 import urllib.error
 import urllib.parse
 import urllib.request
+from datetime import date
 
 import numpy as np
 import torch
@@ -139,6 +140,13 @@ def _resolve_prompt_resolution(
 
 def _allowed_kobold_hosts():
     configured = os.environ.get("PROMPT_STUDIO_KOBOLD_ALLOWED_HOSTS", "").strip()
+    if not configured:
+        return {"localhost", "127.0.0.1", "::1"}
+    return {item.strip().casefold() for item in configured.split(",") if item.strip()}
+
+
+def _allowed_ollama_hosts():
+    configured = os.environ.get("PROMPT_STUDIO_OLLAMA_ALLOWED_HOSTS", "").strip()
     if not configured:
         return {"localhost", "127.0.0.1", "::1"}
     return {item.strip().casefold() for item in configured.split(",") if item.strip()}
@@ -329,29 +337,28 @@ def _framing_template_names():
     return [template["name"] for template in _load_framing_templates()]
 
 
-def _clean_base_url(url):
-    cleaned = (url or "http://localhost:5001").strip()
+def _clean_service_base_url(url, default_url, service_name, allowed_hosts, allowed_hosts_env):
+    cleaned = (url or default_url).strip()
     if not cleaned:
-        cleaned = "http://localhost:5001"
+        cleaned = default_url
     if "://" not in cleaned:
         cleaned = "http://" + cleaned
     cleaned = cleaned.rstrip("/")
     parsed = urllib.parse.urlsplit(cleaned)
     if parsed.scheme not in {"http", "https"}:
-        raise ValueError("KoboldCpp URL must use http or https")
+        raise ValueError(f"{service_name} URL must use http or https")
     if not parsed.hostname:
-        raise ValueError("KoboldCpp URL must include a hostname")
+        raise ValueError(f"{service_name} URL must include a hostname")
     if parsed.username is not None or parsed.password is not None:
-        raise ValueError("KoboldCpp URL must not contain credentials")
+        raise ValueError(f"{service_name} URL must not contain credentials")
     try:
         parsed.port
     except ValueError as exc:
-        raise ValueError("KoboldCpp URL contains an invalid port") from exc
+        raise ValueError(f"{service_name} URL contains an invalid port") from exc
     if parsed.query or parsed.fragment:
-        raise ValueError("KoboldCpp URL must not contain a query string or fragment")
+        raise ValueError(f"{service_name} URL must not contain a query string or fragment")
 
     hostname = parsed.hostname.casefold()
-    allowed_hosts = _allowed_kobold_hosts()
     if "*" not in allowed_hosts and hostname not in allowed_hosts:
         try:
             is_loopback = ipaddress.ip_address(hostname).is_loopback
@@ -359,13 +366,41 @@ def _clean_base_url(url):
             is_loopback = False
         if not is_loopback:
             raise ValueError(
-                f"KoboldCpp host '{parsed.hostname}' is not allowed. "
-                "Add it to PROMPT_STUDIO_KOBOLD_ALLOWED_HOSTS or use '*' to allow remote hosts."
+                f"{service_name} host '{parsed.hostname}' is not allowed. "
+                f"Add it to {allowed_hosts_env} or use '*' to allow remote hosts."
             )
     return cleaned
 
 
-def _post_json(url, payload, timeout):
+def _clean_base_url(url):
+    return _clean_service_base_url(
+        url,
+        "http://localhost:5001",
+        "KoboldCpp",
+        _allowed_kobold_hosts(),
+        "PROMPT_STUDIO_KOBOLD_ALLOWED_HOSTS",
+    )
+
+
+def _clean_ollama_base_url(url):
+    return _clean_service_base_url(
+        url,
+        "http://localhost:11434",
+        "Ollama",
+        _allowed_ollama_hosts(),
+        "PROMPT_STUDIO_OLLAMA_ALLOWED_HOSTS",
+    )
+
+
+def _ollama_api_url(base_url, endpoint):
+    base = base_url.rstrip("/")
+    endpoint = str(endpoint or "").strip("/")
+    if urllib.parse.urlsplit(base).path.rstrip("/").endswith("/api"):
+        return f"{base}/{endpoint}"
+    return f"{base}/api/{endpoint}"
+
+
+def _post_json(url, payload, timeout, service_name="KoboldCpp"):
     data = json.dumps(payload).encode("utf-8")
     request = urllib.request.Request(
         url,
@@ -378,14 +413,44 @@ def _post_json(url, payload, timeout):
             body = response.read().decode("utf-8")
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="replace")
-        raise RuntimeError(f"KoboldCpp request failed with HTTP {exc.code}: {detail}") from exc
+        raise RuntimeError(f"{service_name} request failed with HTTP {exc.code}: {detail}") from exc
     except urllib.error.URLError as exc:
-        raise RuntimeError(f"Could not reach KoboldCpp at {url}: {exc.reason}") from exc
+        raise RuntimeError(f"Could not reach {service_name} at {url}: {exc.reason}") from exc
 
     try:
         return json.loads(body)
     except json.JSONDecodeError as exc:
-        raise RuntimeError(f"KoboldCpp returned invalid JSON: {body[:500]}") from exc
+        raise RuntimeError(f"{service_name} returned invalid JSON: {body[:500]}") from exc
+
+
+def _list_ollama_models(ollama_url, request_timeout=10):
+    base_url = _clean_ollama_base_url(ollama_url)
+    url = _ollama_api_url(base_url, "tags")
+    request = urllib.request.Request(url, headers={"Accept": "application/json"}, method="GET")
+    try:
+        with urllib.request.urlopen(request, timeout=int(request_timeout)) as response:
+            body = response.read().decode("utf-8")
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"Ollama request failed with HTTP {exc.code}: {detail}") from exc
+    except urllib.error.URLError as exc:
+        raise RuntimeError(f"Could not reach Ollama at {url}: {exc.reason}") from exc
+
+    try:
+        data = json.loads(body)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"Ollama returned invalid JSON: {body[:500]}") from exc
+    if not isinstance(data, dict) or not isinstance(data.get("models"), list):
+        raise RuntimeError(f"Unexpected Ollama model-list response: {data}")
+
+    models = []
+    for item in data["models"]:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("model") or item.get("name") or "").strip()
+        if name and name not in models:
+            models.append(name)
+    return models
 
 
 def _get_json(url, timeout):
@@ -709,6 +774,97 @@ def _generate_kcpp(
     return content
 
 
+def _ollama_thinking_value(thinking_mode):
+    effort = _reasoning_effort(thinking_mode)
+    if effort == "none":
+        return False
+    if effort in {"minimal", "low"}:
+        return "low"
+    return effort
+
+
+def _generate_ollama(
+    prompt,
+    ollama_url,
+    ollama_model,
+    max_response_tokens,
+    default_max_response_tokens,
+    temperature,
+    top_p,
+    top_k,
+    min_p,
+    rep_pen,
+    rep_pen_range,
+    sampler_seed,
+    thinking_mode,
+    stop_sequence,
+    request_timeout,
+    include_default_continuation_stops=False,
+):
+    base_url = _clean_ollama_base_url(ollama_url)
+    model = str(ollama_model or "").strip()
+    if not model:
+        raise ValueError("Select an Ollama model in Prompt Studio settings")
+
+    stop_sequences = _split_stop_sequences(stop_sequence)
+    if include_default_continuation_stops and _reasoning_effort(thinking_mode) == "none":
+        stop_sequences = _with_default_continuation_stops(stop_sequences)
+    response_tokens = _requested_response_tokens(max_response_tokens, default_max_response_tokens)
+    max_length, _thinking_budget = _chat_generation_budget(response_tokens, thinking_mode)
+    options = {
+        "num_predict": max_length,
+        "temperature": float(temperature),
+        "top_p": float(top_p),
+        "top_k": int(top_k),
+        "min_p": float(min_p),
+        "repeat_penalty": float(rep_pen),
+        "repeat_last_n": int(rep_pen_range),
+        "stop": stop_sequences,
+    }
+    if int(sampler_seed) >= 0:
+        options["seed"] = int(sampler_seed)
+
+    payload = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": CHAT_SYSTEM_MESSAGE},
+            {"role": "user", "content": str(prompt or "")},
+        ],
+        "options": options,
+        "think": _ollama_thinking_value(thinking_mode),
+        "stream": False,
+    }
+    result = _post_json(
+        _ollama_api_url(base_url, "chat"),
+        payload,
+        int(request_timeout),
+        service_name="Ollama",
+    )
+    if not isinstance(result, dict):
+        raise RuntimeError(f"Unexpected Ollama response: {result}")
+    if result.get("error"):
+        raise RuntimeError(f"Ollama reported an error: {result['error']}")
+    try:
+        message = result["message"]
+        content = message.get("content") or ""
+    except (KeyError, TypeError) as exc:
+        raise RuntimeError(f"Unexpected Ollama response: {result}") from exc
+
+    if result.get("done_reason") == "length":
+        raise RuntimeError(
+            f"Ollama exhausted the {max_length}-token completion budget before finishing. "
+            "Increase max_response_tokens or the model context size."
+        )
+    if not str(content).strip():
+        if message.get("thinking"):
+            raise RuntimeError(
+                "Ollama returned reasoning but no final answer. Increase max_response_tokens "
+                "or the model context size."
+            )
+        raise RuntimeError(f"Ollama returned an empty chat completion: {result}")
+    return str(content)
+
+
 def _generate_kcpp_raw(
     prompt,
     kobold_url,
@@ -907,6 +1063,7 @@ def _embellishment_instruction(embellishment_level, profile):
 
     if tag_mode:
         instructions = {
+            "none": "Convert only the user's stated content into the required tag syntax. Add no new visible details or incidental tags; include only terms strictly required by the active style or framing controls.",
             "minimal": "Keep the tag output very short. Only convert the user's prompt into essential tags. Do not add new details.",
             "clean": "Use a concise tag set with clear subject, action, setting, and important visible details. Add little or no new content.",
             "detailed": "Use a fuller tag set with useful visible details such as subject attributes, pose/action, setting, materials, and composition. Aim for roughly 8 to 14 relevant tags.",
@@ -916,6 +1073,7 @@ def _embellishment_instruction(embellishment_level, profile):
         }
     else:
         instructions = {
+            "none": "Preserve only the user's stated content. Add no new visible details; change wording only when required by the target profile, active style, or active framing controls.",
             "minimal": "Keep the rewrite short. Only convert style or format. Do not add new details.",
             "clean": "Lightly improve clarity and wording. Add little or no new detail.",
             "detailed": "Add useful visible details, composition, materials, and environment where appropriate. Write a clearly expanded sentence or two. Keep all added language consistent with the selected style.",
@@ -931,6 +1089,7 @@ def _revision_embellishment_instruction(embellishment_level, profile):
     style = str(profile.get("style") or "").lower()
     target = "tags" if "tag" in style else "wording"
     instructions = {
+        "none": f"Change only the essential {target} required by the request. Add no extra detail and do not expand untouched content.",
         "minimal": f"Keep the edit minimal. Change only the essential {target} inside the requested edit scope and add no extra detail.",
         "clean": f"Make a clean coherent replacement inside the requested edit scope. Add little or no new {target}, and do not expand untouched content.",
         "detailed": f"Add useful visible {target} only to the requested object, attribute, or visual category. Do not add detail to protected parts of the prompt.",
@@ -1479,6 +1638,53 @@ def _build_revision_prompt(
     return "\n".join(prompt_parts)
 
 
+def _build_main_revision_prompt(current_main_prompt, current_final_prompt, revision, thinking_mode):
+    """Build a model-neutral edit request for Prompt Studio's stored user intent."""
+    prompt_parts = [
+        "You are editing the model-neutral main prompt behind an image-generation prompt.",
+        "Return the complete updated main prompt after applying the user's requested revision.",
+        "The main prompt stores only user-requested subject matter, actions, setting, attributes, and other durable intent.",
+        "It must not absorb decorative, stylistic, framing, camera, lighting, quality, or incidental details that exist only in the rendered final prompt.",
+        "Use the rendered final prompt only to resolve what the user is referring to; do not copy its automatic details into the main prompt.",
+        "Perform the smallest coherent edit that satisfies the request and preserve everything else as closely as possible.",
+        "Return one complete main prompt, never a patch or a list of changes.",
+        "",
+        "Main-prompt rules:",
+        "- Add or replace positive content when the user explicitly requests that content.",
+        "- A requested attribute replacement must remove the old conflicting value from the main prompt.",
+        "- If the user removes, deletes, reduces, or omits something that exists only in the rendered final prompt and not in the main prompt, leave the main prompt unchanged.",
+        "- Never translate a removal into negative wording such as 'without', 'no', 'not', 'exclude', or 'avoid'.",
+        "- Never add a removed auto-generated detail to the main prompt merely to record its removal.",
+        "- Do not add prompt weights, model-specific syntax, quality tags, or automatic embellishment.",
+        "- Do not mention the editing process or explain what changed.",
+        "- Do not include markdown.",
+        f"- Start the final answer with exactly '{FINAL_PROMPT_MARKER}' followed by the updated main prompt.",
+        f"- Do not put anything after the updated main prompt following '{FINAL_PROMPT_MARKER}'.",
+    ]
+    if _reasoning_effort(thinking_mode) != "none":
+        prompt_parts.extend(
+            [
+                "",
+                "Reasoning policy:",
+                _revision_thinking_instruction(thinking_mode),
+            ]
+        )
+    prompt_parts.extend(
+        [
+            "",
+            "Current main prompt:",
+            str(current_main_prompt or "").strip(),
+            "",
+            "Current rendered final prompt (reference only):",
+            str(current_final_prompt or "").strip(),
+            "",
+            "Requested revision:",
+            str(revision or "").strip(),
+        ]
+    )
+    return "\n".join(prompt_parts)
+
+
 def _build_fragment_rewrite_prompt(profile, style_template, style_modifier, framing_template, framing_modifier, embellishment_level, thinking_mode, text, additional_instructions):
     prompt_parts = [
         "You rewrite prompt fragments for an image generation model.",
@@ -1669,7 +1875,7 @@ class KCPP_PromptAmplify:
                     },
                 ),
                 "embellishment_level": (
-                    ["Minimal", "Clean", "Detailed", "Rich", "Maximum", "Ultra Maximum"],
+                    ["None", "Minimal", "Clean", "Detailed", "Rich", "Maximum", "Ultra Maximum"],
                     {
                         "default": "Clean",
                         "tooltip": "Controls how much the prompt is expanded or polished after style conversion.",
@@ -1910,6 +2116,106 @@ def _chat_image_dimensions(image_ref):
     with Image.open(path) as source:
         image = ImageOps.exif_transpose(source)
         return image.width, image.height
+
+
+class Save_as_webp_cond:
+    def __init__(self):
+        self.output_dir = folder_paths.get_output_directory()
+        self.type = "output"
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "images": ("IMAGE",),
+                "filename_prefix": ("STRING", {"default": "ComfyUI"}),
+                "mode": (["lossy", "lossless"],),
+                "compression": ("INT", {"default": 80, "min": 1, "max": 100, "step": 1}),
+                "save": (["yes", "no"],),
+            },
+            "hidden": {"prompt": "PROMPT", "extra_pnginfo": "EXTRA_PNGINFO"},
+        }
+
+    RETURN_TYPES = ("IMAGE",)
+    FUNCTION = "Save_as_webp_cond"
+    OUTPUT_NODE = True
+    CATEGORY = "image"
+
+    def Save_as_webp_cond(
+        self,
+        mode,
+        compression,
+        images,
+        save,
+        filename_prefix="ComfyUI",
+        prompt=None,
+        extra_pnginfo=None,
+    ):
+        def map_filename(filename):
+            prefix_len = len(os.path.basename(filename_prefix))
+            prefix = filename[:prefix_len + 1]
+            try:
+                digits = int(filename[prefix_len + 1:].split("_")[0])
+            except (TypeError, ValueError):
+                digits = 0
+            return digits, prefix
+
+        filename_prefix = filename_prefix.replace("%width%", str(images[0].shape[1]))
+        filename_prefix = filename_prefix.replace("%height%", str(images[0].shape[0]))
+        should_save = save == "yes"
+
+        subfolder = os.path.dirname(os.path.normpath(filename_prefix))
+        filename = os.path.basename(os.path.normpath(filename_prefix))
+        preview_subfolder = os.path.join(subfolder, str(date.today())) if should_save else ""
+        output_dir = self.output_dir if should_save else folder_paths.get_temp_directory()
+        output_type = self.type if should_save else "temp"
+        full_output_folder = os.path.join(output_dir, preview_subfolder)
+        os.makedirs(full_output_folder, exist_ok=True)
+
+        try:
+            counter = max(
+                filter(
+                    lambda item: item[1][:-1] == filename and item[1][-1] == "_",
+                    map(map_filename, os.listdir(full_output_folder)),
+                )
+            )[0] + 1
+        except ValueError:
+            counter = 1
+
+        results = []
+        lossless = mode == "lossless"
+        for image in images:
+            image_array = 255.0 * image.cpu().numpy()
+            pil_image = Image.fromarray(np.clip(image_array, 0, 255).astype(np.uint8))
+            image_exif = pil_image.getexif()
+
+            if prompt is not None:
+                image_exif[0x010F] = "Prompt:" + json.dumps(prompt)
+
+            workflow_metadata = ""
+            if extra_pnginfo is not None:
+                for key in extra_pnginfo:
+                    workflow_metadata += json.dumps(extra_pnginfo[key])
+            image_exif[0x010E] = "Workflow:" + workflow_metadata
+
+            output_filename = f"{filename}_{counter:05}_.webp"
+            pil_image.save(
+                os.path.join(full_output_folder, output_filename),
+                method=6,
+                exif=image_exif,
+                lossless=lossless,
+                quality=compression,
+            )
+            results.append(
+                {
+                    "filename": output_filename,
+                    "subfolder": preview_subfolder,
+                    "type": output_type,
+                }
+            )
+            counter += 1
+
+        return {"ui": {"images": results}, "result": (images,)}
 
 
 class KCPP_ChatImageInput:
@@ -2162,7 +2468,7 @@ class KCPP_Ideogram4:
                     },
                 ),
                 "embellishment_level": (
-                    ["Minimal", "Clean", "Detailed", "Rich", "Maximum", "Ultra Maximum"],
+                    ["None", "Minimal", "Clean", "Detailed", "Rich", "Maximum", "Ultra Maximum"],
                     {
                         "default": "Clean",
                         "tooltip": "Controls how much each extracted prompt fragment is expanded or polished.",
@@ -2405,6 +2711,7 @@ class KCPP_Ideogram4:
 
 
 NODE_CLASS_MAPPINGS = {
+    "Save_as_webp_cond": Save_as_webp_cond,
     "KCPP_PromptAmplify": KCPP_PromptAmplify,
     "KCPP_PromptSlot": KCPP_PromptSlot,
     "KCPP_ChatImageInput": KCPP_ChatImageInput,
@@ -2414,6 +2721,7 @@ NODE_CLASS_MAPPINGS = {
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
+    "Save_as_webp_cond": "Save as WebP Conditional",
     "KCPP_PromptAmplify": "KoboldCpp Prompt Amplify",
     "KCPP_PromptSlot": "KoboldCpp Prompt Slot",
     "KCPP_ChatImageInput": "Prompt Studio Image Source",
