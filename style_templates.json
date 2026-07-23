@@ -73,6 +73,110 @@
       "instruction": "Favor a darker moody look with controlled shadows, restrained highlights, atmospheric contrast, and a serious tone while keeping the subject readable."
     },
     {
+      "name": "Subtly Uncanny",
+      "instruction": "Make the image feel almost normal but quietly wrong. Preserve the requested subject and scene while introducing restrained unease through too-perfect stillness, subtly skewed perspective, slightly unnatural spacing, sickly subdued color, ambiguous shadow shapes, and ordinary details that seem fractionally out of place. Keep the horror understated: nothing openly attacks, and the source of discomfort should remain difficult to identify."
+    },
+    {
+      "name": "Creepy Quiet",
+      "instruction": "Create the breath-held silence of a place that should not be empty. Favor dim ambient light, deep inactive shadows, stale air, abandoned textures, negative space that feels watched, and a small readable subject surrounded by oppressive stillness. Suggest that something has just left or may be just beyond sight without adding a visible creature, extra person, or new action."
+    },
+    {
+      "name": "Liminal Dread",
+      "instruction": "Transform the visual treatment into liminal horror: eerily vacant transitional space, repeating architecture, buzzing artificial light, washed-out institutional colors, distant vanishing points, subtly impossible geometry, and the sensation of being stranded between familiar places. Keep the prompt's actual subject and setting recognizable; make emptiness, scale, repetition, and spatial wrongness carry the fear."
+    },
+    {
+      "name": "Haunted Photograph",
+      "instruction": "Make the result resemble an old photograph with a deeply haunted presence. Use faded monochrome or sepia, silvering at the edges, soft chemical stains, scratched emulsion, uneven exposure, slight motion smears, murky corners, and unsettlingly rigid stillness. Let faces, reflections, or shadows appear faintly wrong only when those elements already belong to the prompt; do not invent extra people."
+    },
+    {
+      "name": "Cursed VHS",
+      "instruction": "Render the scene like a cursed late-generation VHS tape recovered after an unexplained event. Emphasize crawling static, warped tracking lines, chromatic bleed, crushed black shadows, blown highlights, timecode-like recording grime, unstable freeze-frame distortion, and barely legible forms swallowed by analog noise. Preserve the requested scene, using signal corruption and ominous ambiguity as the horror."
+    },
+    {
+      "name": "Analog Horror Broadcast",
+      "instruction": "Use the visual language of an interrupted analog emergency broadcast: severe broadcast graphics, degraded videotape texture, monochrome instructional imagery, dirty scanlines, off-register text-like shapes, stark warning colors, frozen low-fidelity frames, and an impersonal official tone collapsing into menace. Do not add readable claims, logos, or unrelated entities; express the alarm through composition, degradation, and cold institutional presentation."
+    },
+    {
+      "name": "Found-Footage Horror",
+      "instruction": "Make the image feel like a terrifying frame from recovered handheld footage. Favor frantic imperfect framing, harsh on-camera light, deep surrounding darkness, motion blur, sensor noise, compression artifacts, tilted horizons, clipped highlights, and the raw immediacy of a camera operator reacting too late. Keep the prompt's subjects and action intact rather than inventing a separate incident."
+    },
+    {
+      "name": "Surveillance Horror",
+      "instruction": "Present the scene as disturbing security-camera footage: fixed high-angle viewpoint, wide distorted lens, cold monochrome or dirty low-saturation color, timestamp-like interface residue, coarse digital noise, blind corners, hard pools of light, and large areas of unreadable darkness. Create dread from helpless distance and an important detail nearly missed in the frame; do not add unrelated people or events."
+    },
+    {
+      "name": "Gothic Haunting",
+      "instruction": "Favor lush gothic supernatural horror with towering darkness, funereal elegance, decayed ornament, damp stone or aged surfaces appropriate to the scene, candlelike pools of weak light, drifting mist, elongated shadows, moon-pale highlights, and the mournful atmosphere of a centuries-old haunting. Preserve the core subject and setting while making beauty and dread inseparable."
+    },
+    {
+      "name": "Dark Fairy Tale",
+      "instruction": "Turn the presentation into a sinister old fairy tale: enchanted but hostile atmosphere, tangled organic silhouettes, ancient carved textures, jewel-dark colors, pale storybook light, delicate beauty edged with cruelty, and the sense that every charming detail conceals a trap. Keep the original subject and action; use symbolic shapes, material treatment, and ominous wonder instead of adding unrelated characters."
+    },
+    {
+      "name": "Folk Horror",
+      "instruction": "Use earthy, ritualistic folk-horror aesthetics: weathered rural textures, handmade objects already supported by the scene, tangled vegetation, bone-pale daylight or firelit dusk, primitive repeated patterns, muddy natural colors, communal unease, and an old landscape that seems to remember something terrible. Preserve the prompt's people and events, building dread through place, tradition, and patient inevitability."
+    },
+    {
+      "name": "Occult Horror",
+      "instruction": "Create elaborate occult horror through forbidden symmetry, severe ritual composition, soot-black shadow, ember-red or corpse-pale accents, arcane-looking geometric motifs without readable text, smoke-veiled light, ancient worn materials, and the oppressive sense that an unseen boundary has been crossed. Do not invent extra participants or a new ritual action; apply the menace to what the prompt already depicts."
+    },
+    {
+      "name": "Psychological Dread",
+      "instruction": "Make the scene feel mentally destabilizing rather than openly monstrous. Favor isolating composition, invasive negative space, repeated visual echoes, uncertain reflections, subtly inconsistent scale, compressed perspective, desaturated color, sour fluorescent or pallid window light, and details that invite mutually incompatible interpretations. Preserve literal prompt content while making the viewer doubt what is real."
+    },
+    {
+      "name": "Sleep-Paralysis Nightmare",
+      "instruction": "Give the image the suffocating logic of sleep paralysis: immobile viewpoint, oppressive darkness gathering around the edges, shallow breathless space, weak predawn light, heavy vignetting, stretched shadows, indistinct vertical forms, and the intimate certainty of a presence too close to escape. Keep additions abstract and shadow-like unless the prompt already specifies a creature or intruder."
+    },
+    {
+      "name": "Surreal Fever Nightmare",
+      "instruction": "Push the image into feverish nightmare surrealism. Use impossible spatial transitions, liquefying perspective, repeated or misplaced features, organic architecture, bruised crimson and bilious color accents, waxy textures, dreamlike scale shifts, and sharp islands of detail inside smeared unreality. Retain the prompt's core subject and intent even as its visual logic becomes deeply disturbing."
+    },
+    {
+      "name": "Claustrophobic Terror",
+      "instruction": "Make the composition physically suffocating. Crowd the subject with close foreground obstructions, crushing darkness, narrow slits of light, shallow depth, cramped framing, abrasive texture, damp air, and little or no visual escape route. Use tight perspective and implied off-frame pressure to create panic while preserving the requested location, subjects, and action."
+    },
+    {
+      "name": "Cosmic Horror",
+      "instruction": "Infuse the scene with cosmic horror: impossible scale, non-Euclidean depth, starless voids, ancient geometries too vast to understand, cold spectral light, infinitesimal human perspective where applicable, and reality seeming thin or damaged around the subject. Avoid naming established fictional deities or adding an unrelated monster; evoke incomprehensible presence through scale, space, and visual contradiction."
+    },
+    {
+      "name": "Abyssal Horror",
+      "instruction": "Use deep-abyss horror with near-total darkness, immense unseen depth, suspended particles, narrow beams lost in black water or black air, cold blue-green undertones, wet reflective textures, crushing pressure, and a silhouette only partly resolved at the limit of visibility. Adapt these qualities metaphorically when the prompt is not underwater, preserving its actual scene and subject."
+    },
+    {
+      "name": "Creature Feature Horror",
+      "instruction": "Favor a ferocious practical creature-feature aesthetic: tactile monster detail when a creature is already requested, wet or leathery surfaces, strained anatomy, harsh backlight, turbulent shadow, debris-filled atmosphere, dramatic scale, and a clear readable silhouette revealed only in fragments. If no creature exists in the prompt, make the existing subject or threat feel creature-feature intense without adding a new monster."
+    },
+    {
+      "name": "Body Horror",
+      "instruction": "Apply disturbing body-horror aesthetics to anatomy or organic forms already present in the prompt: uncanny asymmetry, waxy skin, stretched contours, impossible articulation, scar-like textures, invasive organic patterning, clinical highlights, and a revolting mixture of familiarity and biological wrongness. Do not introduce mutilation, wounds, or additional bodies unless the prompt supports them."
+    },
+    {
+      "name": "Visceral Gore Horror",
+      "instruction": "When the prompt already includes injury, gore, or violent aftermath, render it with unflinching visceral horror: wet crimson-black color, torn organic texture, sticky reflective surfaces, smeared evidence, stark directional light, dirty practical-effects realism, and nauseating close detail. Do not invent violence, wounds, victims, or perpetrators when they are absent; in nonviolent prompts, use only the grimy high-intensity splatter-film atmosphere."
+    },
+    {
+      "name": "Demonic Horror",
+      "instruction": "Create infernal supernatural terror with scorched darkness, furnace-red fissures or icy corpse-pale light, smoke-like shadow, subtly blasphemous-looking symmetry without real-world sacred symbols, warped silhouettes, heat-haze distortion, and a palpable sense of malicious intelligence. Preserve the prompt's actual cast and actions; do not add a demon unless a demonic entity is already requested."
+    },
+    {
+      "name": "Extreme Nightmare Fuel",
+      "instruction": "Make the result maximally disturbing and difficult to look at while preserving the prompt's core content. Combine hostile near-darkness, brutally selective illumination, uncanny scale, almost-recognizable forms, visual contradictions, diseased color, abrasive texture, deep shadow movement, too-close detail, and the sensation that the image itself has noticed the viewer. Favor existential and perceptual terror over adding arbitrary gore or extra creatures."
+    },
+    {
+      "name": "Jumpscare - Sudden Reveal",
+      "instruction": "Compose the image as the exact split second of a devastating jump scare. Use a violently abrupt close reveal of the prompt's existing threat or subject, explosive forward perspective, severe wide-angle distortion, hard frontal light, razor-sharp near detail against collapsing darkness, clipped motion at the frame edges, and almost no safe negative space. Do not invent a new attacker; turn the requested focal element into the sudden reveal."
+    },
+    {
+      "name": "Jumpscare - Flashlit Shock",
+      "instruction": "Create a flashlit jump-scare frame in which darkness is shattered for one terrible instant. Favor a near-black scene, brutal white on-camera flash, the prompt's frightening focal element much closer than expected, blown highlights, red-eye-like reflections where anatomically appropriate, frantic crooked framing, frozen motion, and background detail disappearing into black. Preserve the existing subjects and event."
+    },
+    {
+      "name": "Jumpscare - Found-Footage Lunge",
+      "instruction": "Make the result feel like the final corrupted frame before a found-footage camera is struck. Push the prompt's existing threat or subject toward the lens with lunging perspective, violent camera tilt, radial motion smear, rolling-shutter warp, digital breakup, harsh camera light, partial cropping, and a face or form too close to resolve comfortably. Do not add a separate creature or victim."
+    },
+    {
       "name": "Vibrant Color Pop",
       "instruction": "Favor bright, saturated colors, clear visual separation, energetic composition, and a lively polished result without changing the subject."
     },

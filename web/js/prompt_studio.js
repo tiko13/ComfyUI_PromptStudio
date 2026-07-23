@@ -6,10 +6,13 @@ const SLOT_TYPE = "KCPP_PromptSlot";
 const AMPLIFY_TYPE = "KCPP_PromptAmplify";
 const IMAGE_SOURCE_TYPE = "KCPP_ChatImageInput";
 const UPSCALE_TYPE = "KCPP_PromptStudioUpscale";
+const LORA_LOADER_TYPE = "KCPP_PromptStudioLoraLoader";
 const STORAGE_KEY = "promptstudio.promptStudio.settings.v1";
+const LORA_STORAGE_KEY = "promptstudio.promptStudio.loras.v1";
 const STANDALONE_CHANNEL = "promptstudio.promptStudio.standalone.v1";
 const WORKFLOW_SYNC_CHANNEL = "promptstudio.promptStudio.workflows.v1";
 const CHAT_SYNC_CHANNEL = "promptstudio.promptStudio.chats.v1";
+const MAX_DROPPED_IMAGE_BYTES = 20 * 1024 * 1024;
 const WORKFLOW_OBSERVER_KEY = Symbol.for("ComfyUI_PromptStudio.PromptStudio.WorkflowObserver");
 const RESOLUTION_ASPECT_RATIOS = [
   "1:1 (Square)",
@@ -29,6 +32,7 @@ const RENDER_CONTROL_IDS = [
   "promptstudio-framing-modifier",
   "promptstudio-embellishment",
 ];
+const TYPE_ANYWHERE_WINDOWS = new WeakSet();
 
 const state = {
   panel: null,
@@ -67,11 +71,15 @@ const state = {
   workflowBusy: false,
   workflowRefreshTimer: null,
   workflowRefreshBroadcast: false,
+  loraSelections: {},
+  loraCatalogs: new Map(),
+  loraRenderToken: 0,
   chatSaveTimer: null,
   chatSaveChain: Promise.resolve(),
   lightboxTrigger: null,
   generationRetry: null,
   generationFailureTrigger: null,
+  dragDepth: 0,
 };
 
 function loadCss() {
@@ -185,6 +193,84 @@ function toggleStudioSettings(force) {
   button.setAttribute("aria-expanded", show ? "true" : "false");
 }
 
+function loadLoraSelections() {
+  try {
+    const stored = JSON.parse(localStorage.getItem(LORA_STORAGE_KEY) || "{}");
+    return stored && typeof stored === "object" && !Array.isArray(stored) ? stored : {};
+  } catch (_) {
+    return {};
+  }
+}
+
+function saveLoraSelections() {
+  try {
+    localStorage.setItem(LORA_STORAGE_KEY, JSON.stringify(state.loraSelections));
+  } catch (error) {
+    setStatus(error.message || "LoRA selections could not be saved.", "warning");
+  }
+}
+
+function isEditableTarget(target) {
+  if (!target || target.nodeType !== 1) return false;
+  return Boolean(
+    target.closest?.("input, textarea, select, [role=\"textbox\"]")
+    || target.isContentEditable,
+  );
+}
+
+function openPromptStudioDialog() {
+  return state.panel?.querySelector('[role="dialog"][aria-modal="true"]:not([hidden])');
+}
+
+function insertTypedCharacter(input, character) {
+  const caret = input.value.length;
+  input.focus({ preventScroll: true });
+  input.setSelectionRange(caret, caret);
+  input.setRangeText(character, caret, caret, "end");
+  const view = input.ownerDocument.defaultView;
+  input.dispatchEvent(new view.InputEvent("input", {
+    bubbles: true,
+    data: character,
+    inputType: "insertText",
+  }));
+}
+
+function installTypeAnywhereFocus(ownerDocument) {
+  const view = ownerDocument?.defaultView;
+  if (!view || TYPE_ANYWHERE_WINDOWS.has(view)) return;
+  TYPE_ANYWHERE_WINDOWS.add(view);
+  view.addEventListener("keydown", (event) => {
+    if (
+      event.defaultPrevented
+      || !state.panel
+      || state.panel.hidden
+      || state.panel.ownerDocument !== ownerDocument
+      || openPromptStudioDialog()
+      || isEditableTarget(event.target)
+      || isEditableTarget(ownerDocument.activeElement)
+    ) return;
+
+    const input = state.panel.querySelector("#promptstudio-revision");
+    if (!input || input.disabled || input.readOnly) return;
+
+    if (event.isComposing || event.key === "Dead" || event.key === "Process") {
+      input.focus({ preventScroll: true });
+      return;
+    }
+
+    const altGraph = event.getModifierState?.("AltGraph");
+    if (
+      event.metaKey
+      || (!altGraph && (event.ctrlKey || event.altKey))
+      || [...event.key].length !== 1
+    ) return;
+
+    event.preventDefault();
+    event.stopPropagation();
+    insertTypedCharacter(input, event.key);
+  }, { capture: true });
+}
+
 function setPanelDrawer(drawer, force) {
   if (!state.panel) return;
   const drawerClass = `promptstudio-${drawer}-open`;
@@ -216,6 +302,16 @@ function activeChat() {
   return state.chats.find((chat) => chat.id === state.activeChatId) || null;
 }
 
+function chatAcceptsImageDrop(chat = activeChat()) {
+  return Boolean(
+    chat
+    && !chat.initialized
+    && !chat.messages.length
+    && !String(chat.mainPrompt || "").trim()
+    && !String(chat.finalPrompt || "").trim()
+  );
+}
+
 function promptVersion(mainPrompt = state.mainPrompt, finalPrompt = state.currentPrompt) {
   return {
     mainPrompt: String(mainPrompt || ""),
@@ -238,6 +334,39 @@ function promptVersionsEqual(left, right) {
   return Boolean(left && right
     && left.mainPrompt === right.mainPrompt
     && left.finalPrompt === right.finalPrompt);
+}
+
+function normalizeLoraStack(value) {
+  if (!Array.isArray(value)) return [];
+  return value
+    .filter((entry) => entry && typeof entry === "object" && String(entry.name || "").trim())
+    .map((entry) => ({
+      name: String(entry.name),
+      strength: Number.isFinite(Number(entry.strength)) ? Number(entry.strength) : 1,
+    }));
+}
+
+function normalizeGenerationLoraState(value) {
+  if (!Array.isArray(value)) return null;
+  const normalized = [];
+  const nodeIds = new Set();
+  for (const entry of value) {
+    const nodeId = String(entry?.nodeId || "").trim();
+    if (!nodeId || nodeIds.has(nodeId)) continue;
+    nodeIds.add(nodeId);
+    normalized.push({
+      nodeId,
+      loraType: String(entry?.loraType || "").trim(),
+      selections: normalizeLoraStack(entry?.selections),
+    });
+  }
+  return normalized;
+}
+
+function normalizeGenerationSnapshot(value) {
+  const output = value?.output;
+  if (!output || typeof output !== "object" || Array.isArray(output)) return null;
+  return { output };
 }
 
 function normalizeChat(chat) {
@@ -263,6 +392,8 @@ function normalizeChat(chat) {
         generationAction: ["edit", "upscale"].includes(message?.generationAction) ? message.generationAction : "create",
         workflowProfileId: String(message?.workflowProfileId || ""),
         workflowName: String(message?.workflowName || ""),
+        loraState: normalizeGenerationLoraState(message?.loraState),
+        generationSnapshot: normalizeGenerationSnapshot(message?.generationSnapshot),
         sourceImage: normalizeImageReference(message?.sourceImage),
         upscaleFactor: message?.upscaleFactor != null && Number.isFinite(Number(message.upscaleFactor))
           ? Number(message.upscaleFactor)
@@ -301,6 +432,7 @@ function normalizeChat(chat) {
     updatedAt,
     initialized: recoverGeneratedPrompt || (chat?.initialized == null ? Boolean(finalPrompt) : Boolean(chat.initialized)),
     mainPrompt,
+    mainPromptDirty: Boolean(chat?.mainPromptDirty),
     finalPrompt,
     currentPrompt: finalPrompt,
     versions,
@@ -326,7 +458,7 @@ function normalizeImageReference(value) {
   const normalized = {
     filename,
     subfolder: String(value.subfolder || ""),
-    type: ["input", "output", "temp"].includes(value.type) ? value.type : "output",
+    type: ["input", "output", "temp", "promptstudio"].includes(value.type) ? value.type : "output",
   };
   if (Number.isInteger(width) && width > 0 && Number.isInteger(height) && height > 0) {
     normalized.width = width;
@@ -402,11 +534,23 @@ function normalizeLastGeneration(value) {
 function normalizePendingGeneration(value) {
   if (!value || typeof value !== "object") return null;
   return {
-    action: value.action === "edit" ? "edit" : "create",
+    action: ["edit", "upscale"].includes(value.action) ? value.action : "create",
     mainPrompt: String(value.mainPrompt || value.canonicalPrompt || ""),
     canonicalPrompt: String(value.canonicalPrompt || ""),
     executionPrompt: String(value.executionPrompt || ""),
     workflowProfileId: String(value.workflowProfileId || ""),
+    workflowName: String(value.workflowName || ""),
+    loraState: normalizeGenerationLoraState(value.loraState),
+    generationSnapshot: normalizeGenerationSnapshot(value.generationSnapshot),
+    replayFingerprint: String(value.replayFingerprint || ""),
+    sourceImage: normalizeImageReference(value.sourceImage),
+    upscaleFactor: value.upscaleFactor != null && Number.isFinite(Number(value.upscaleFactor))
+      ? Number(value.upscaleFactor)
+      : null,
+    resultNodeIds: Array.isArray(value.resultNodeIds) ? value.resultNodeIds.map(String) : [],
+    resultFields: Array.isArray(value.resultFields) && value.resultFields.length
+      ? value.resultFields.map(String)
+      : ["images", "gifs"],
   };
 }
 
@@ -644,6 +788,18 @@ function syncActiveChat() {
 function normalizeWorkflowProfile(profile) {
   const snapshot = profile?.snapshot && typeof profile.snapshot === "object" ? profile.snapshot : null;
   const path = String(profile?.path || profile?.id || "").replaceAll("\\", "/");
+  const snapshotLoraNodes = Object.entries(snapshot?.output || {})
+    .filter(([, node]) => node?.class_type === LORA_LOADER_TYPE)
+    .map(([id, node]) => ({
+      id: String(id),
+      loraType: String(node.inputs?.lora_type || "").trim(),
+    }));
+  const loraNodes = Array.isArray(profile?.loraNodes)
+    ? profile.loraNodes.map((node) => ({
+      id: String(node?.id || ""),
+      loraType: String(node?.loraType || "").trim(),
+    })).filter((node) => node.id)
+    : snapshotLoraNodes;
   return {
     id: path,
     path,
@@ -653,6 +809,7 @@ function normalizeWorkflowProfile(profile) {
     promptNodeId: String(profile?.promptNodeId || ""),
     imageNodeId: String(profile?.imageNodeId || ""),
     upscaleNodeId: String(profile?.upscaleNodeId || ""),
+    loraNodes,
     resultNodeIds: Array.isArray(profile?.resultNodeIds) ? profile.resultNodeIds.map(String) : [],
     resultFields: ["images", "gifs"],
     snapshot,
@@ -799,6 +956,12 @@ async function buildWorkflowTemplate(file, workflowData, cached) {
   }
 
   const output = snapshot?.output || {};
+  const loraNodes = Object.entries(output)
+    .filter(([, node]) => node?.class_type === LORA_LOADER_TYPE)
+    .map(([id, node]) => ({
+      id: String(id),
+      loraType: String(node.inputs?.lora_type || "").trim(),
+    }));
   const imageOutputs = (graph._nodes || []).filter((node) => (
     Object.hasOwn(output, String(node.id)) && imageOutputNode(node)
   ));
@@ -814,6 +977,7 @@ async function buildWorkflowTemplate(file, workflowData, cached) {
     promptNodeId: upscaleWorkflow ? "" : String(promptNode.id),
     imageNodeId: editingWorkflow ? String(imageNode.id) : "",
     upscaleNodeId: upscaleWorkflow ? String(upscaleNode.id) : "",
+    loraNodes,
     resultNodeIds: [String(imageOutputs[0].id)],
     snapshot,
     updatedAt: Date.now(),
@@ -947,12 +1111,23 @@ function controlsNeedApply() {
   return Boolean(useLlmAmplification() && chat?.initialized && chat.controlsFingerprint !== controlsFingerprint());
 }
 
+function mainPromptNeedsRender() {
+  const chat = activeChat();
+  return Boolean(useLlmAmplification() && chat?.initialized && chat.mainPromptDirty);
+}
+
+function promptNeedsRender() {
+  return mainPromptNeedsRender() || controlsNeedApply();
+}
+
 function markControlsChanged() {
   saveSettings();
   if (!useLlmAmplification()) {
     setStatus(`Direct prompt mode. ${llmProviderName()} will not be used.`, "ready");
   } else if (!activeChat()?.initialized) {
     setStatus("Describe an image to create the first prompt.", "ready");
+  } else if (mainPromptNeedsRender()) {
+    setStatus(`Main prompt changed. ${llmProviderName()} will rebuild the final prompt before generation.`, "warning");
   } else if (controlsNeedApply()) {
     setStatus(`Generation controls changed. ${llmProviderName()} will update the prompt before generation.`, "warning");
   } else if (selectedWorkflowProfile(selectedAction())) {
@@ -1036,11 +1211,49 @@ function scrollHistoryToEnd({ instant = false } = {}) {
   }
 }
 
+function setImageDropFeedback(text, kind = "") {
+  const feedback = state.panel?.querySelector(".promptstudio-empty-drop-feedback");
+  if (!feedback) return;
+  feedback.textContent = text;
+  feedback.dataset.kind = kind;
+}
+
+function refreshEmptyImageDropZone() {
+  const history = state.panel?.querySelector("#promptstudio-history");
+  if (!history) return;
+  const existing = history.querySelector(".promptstudio-empty-drop");
+  if (!chatAcceptsImageDrop()) {
+    existing?.remove();
+    history.dataset.dragActive = "false";
+    return;
+  }
+  if (existing) {
+    existing.querySelector("button").disabled = state.busy;
+    existing.querySelector(".promptstudio-empty-drop-copy").textContent =
+      `${llmProviderName()} will read it and build a prompt with the selected profile and style.`;
+    return;
+  }
+  const zone = document.createElement("div");
+  zone.className = "promptstudio-empty-drop";
+  zone.innerHTML = `
+    <span class="promptstudio-empty-drop-icon" aria-hidden="true">+</span>
+    <strong>Type a prompt or drop an image to start</strong>
+    <span class="promptstudio-empty-drop-copy">${llmProviderName()} will read it and build a prompt with the selected profile and style.</span>
+    <button type="button" data-disable-busy>Choose image</button>
+    <small class="promptstudio-empty-drop-feedback" aria-live="polite">A vision-capable model must be active to import an image.</small>`;
+  zone.querySelector("button").disabled = state.busy;
+  zone.querySelector("button").addEventListener("click", () => {
+    state.panel?.querySelector("#promptstudio-image-import")?.click();
+  });
+  history.appendChild(zone);
+}
+
 function renderChatHistory() {
   const history = state.panel?.querySelector("#promptstudio-history");
   if (!history) return;
   history.replaceChildren();
   for (const message of activeChat()?.messages || []) renderMessage(message, { scroll: false });
+  refreshEmptyImageDropZone();
   scrollHistoryToEnd({ instant: true });
   updateComposeMode();
 }
@@ -1064,6 +1277,7 @@ function updateComposeMode() {
   const editor = state.panel.querySelector("#promptstudio-current-prompt");
   const action = selectedAction();
   const autoGenerate = state.panel.querySelector("#promptstudio-auto-generate")?.checked !== false;
+  const hasRevision = Boolean(input?.value.trim());
   const editPromptAction = state.panel.querySelector("#promptstudio-edit-prompt-action");
   if (editPromptAction) editPromptAction.hidden = action !== "edit";
   if (!amplificationEnabled) {
@@ -1078,17 +1292,20 @@ function updateComposeMode() {
     return;
   }
   if (heading) heading.textContent = creating ? "Describe the image" : "Describe the next change";
-  if (hint) hint.textContent = creating ? `${llmProviderName()} will create the initial prompt` : "Leave empty to reroll";
+  if (hint) hint.textContent = creating
+    ? `${llmProviderName()} will create the initial prompt`
+    : "Leave empty to create from the current prompt";
   if (input) input.placeholder = creating ? "A portrait of an astronaut in a greenhouse…" : "Make the background more varied…";
   if (send) {
     if (!autoGenerate) send.textContent = creating ? "Create prompt" : "Revise prompt";
     else {
       send.textContent = action === "edit"
-        ? (creating ? "Describe & edit selected" : "Revise & edit selected")
-        : (creating ? "Create new image" : "Revise & create new");
+        ? (hasRevision ? "Revise & edit selected" : "Edit selected")
+        : (hasRevision ? "Revise & create new" : "Create new");
     }
   }
   if (editor) editor.readOnly = creating;
+  refreshEmptyImageDropZone();
 }
 
 function updateAmplificationMode({ announce = true, persist = true } = {}) {
@@ -1111,6 +1328,7 @@ function syncManualPrompt(value) {
   if (chat) chat.initialized = Boolean(value.trim());
   updatePromptEditors(value, value);
   syncActiveChat();
+  refreshEmptyImageDropZone();
 }
 
 function createChat() {
@@ -1183,6 +1401,8 @@ function activateChat(chatId) {
     setStatus(`Direct prompt mode. ${llmProviderName()} will not be used.`, "ready");
   } else if (!chat.initialized) {
     setStatus("Describe an image to create the first prompt.", "ready");
+  } else if (mainPromptNeedsRender()) {
+    setStatus(`Main prompt changed. ${llmProviderName()} will rebuild the final prompt before generation.`, "warning");
   } else if (controlsNeedApply()) {
     setStatus(`Generation controls differ from this prompt. ${llmProviderName()} will update it before generation.`, "warning");
   } else {
@@ -1247,10 +1467,248 @@ function selectedWorkflowProfile(action = selectedAction()) {
   return workflowProfileById(selectedWorkflowProfileId(action));
 }
 
+function loraSelectionKey(profileId, nodeId) {
+  return `${String(profileId || "")}\u0000${String(nodeId || "")}`;
+}
+
+function selectionsForLoraNode(profileId, nodeId) {
+  const stored = state.loraSelections[loraSelectionKey(profileId, nodeId)];
+  return normalizeLoraStack(stored);
+}
+
+function setSelectionsForLoraNode(profileId, nodeId, selections) {
+  const key = loraSelectionKey(profileId, nodeId);
+  if (selections.length) state.loraSelections[key] = selections;
+  else delete state.loraSelections[key];
+  saveLoraSelections();
+}
+
+function generationLoraState(profile, descriptors = profile?.loraNodes) {
+  if (!profile || !Array.isArray(descriptors)) return [];
+  return descriptors
+    .map((descriptor) => ({
+      nodeId: String(descriptor?.id || "").trim(),
+      loraType: String(descriptor?.loraType || "").trim(),
+      selections: selectionsForLoraNode(profile.id, descriptor?.id),
+    }))
+    .filter((entry) => entry.nodeId);
+}
+
+function generationUiFingerprint() {
+  if (!state.panel) return "";
+  const controls = [
+    ...state.panel.querySelectorAll(
+      ".promptstudio-mode-control input, .promptstudio-generation-action input, "
+      + ".promptstudio-workflow-routing select, .promptstudio-settings input, "
+      + ".promptstudio-settings select, .promptstudio-settings textarea, "
+      + ".promptstudio-resolution-details input, .promptstudio-resolution-details select, "
+      + ".promptstudio-secondary-details textarea, .promptstudio-toggles input, #promptstudio-kobold-url",
+    ),
+  ].map((control, index) => ({
+    key: control.id || control.name || `${control.tagName}:${index}`,
+    value: ["checkbox", "radio"].includes(control.type) ? Boolean(control.checked) : String(control.value ?? ""),
+  }));
+  const action = selectedAction();
+  const profile = selectedWorkflowProfile(action);
+  return JSON.stringify({
+    action,
+    profileId: profile?.id || "",
+    mainPrompt: state.mainPrompt,
+    finalPrompt: state.currentPrompt,
+    sourceImage: action === "create" ? null : storedImageReference(editingSource()),
+    loraState: generationLoraState(profile),
+    controls,
+  });
+}
+
+async function loadLoraCatalog(loraType, { refresh = false } = {}) {
+  const normalizedType = String(loraType || "").trim();
+  if (!normalizedType) return [];
+  const key = normalizedType.toLowerCase();
+  if (refresh) state.loraCatalogs.delete(key);
+  if (!state.loraCatalogs.has(key)) {
+    const request = (async () => {
+      const response = await api.fetchApi(
+        `/promptstudio/prompt-studio/loras?type=${encodeURIComponent(normalizedType)}`,
+      );
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.error || `LoRAs could not be listed (${response.status}).`);
+      return Array.isArray(data.loras)
+        ? data.loras
+          .filter((item) => item && typeof item.name === "string")
+          .map((item) => ({
+            name: item.name,
+            label: String(item.label || item.name),
+          }))
+        : [];
+    })().catch((error) => {
+      state.loraCatalogs.delete(key);
+      throw error;
+    });
+    state.loraCatalogs.set(key, request);
+  }
+  return state.loraCatalogs.get(key);
+}
+
+function buildLoraNodeControls(profile, descriptor, catalog) {
+  const group = document.createElement("div");
+  group.className = "promptstudio-lora-group";
+
+  const heading = document.createElement("div");
+  heading.className = "promptstudio-lora-group-heading";
+  const title = document.createElement("strong");
+  title.textContent = descriptor.loraType
+    ? `LoRA Type: ${descriptor.loraType}`
+    : "LoRA Type is not set";
+  const nodeLabel = document.createElement("small");
+  nodeLabel.textContent = `Node ${descriptor.id}`;
+  heading.append(title, nodeLabel);
+  group.appendChild(heading);
+
+  if (!descriptor.loraType) {
+    const note = document.createElement("p");
+    note.className = "promptstudio-lora-empty";
+    note.textContent = "Enter a top-level LoRA folder name in this loader node.";
+    group.appendChild(note);
+    return group;
+  }
+
+  const canonicalByName = new Map(catalog.map((item) => [item.name.toLowerCase(), item]));
+  const storedSelections = selectionsForLoraNode(profile.id, descriptor.id);
+  const retainedNames = new Set();
+  let selections = storedSelections
+    .map((entry) => {
+      const canonical = canonicalByName.get(entry.name.toLowerCase());
+      const key = canonical?.name.toLowerCase();
+      if (!canonical || retainedNames.has(key)) return null;
+      retainedNames.add(key);
+      return { name: canonical.name, strength: entry.strength };
+    })
+    .filter(Boolean);
+  if (JSON.stringify(selections) !== JSON.stringify(storedSelections)) {
+    setSelectionsForLoraNode(profile.id, descriptor.id, selections);
+  }
+  const used = new Set(selections.map((entry) => entry.name.toLowerCase()));
+
+  const rows = document.createElement("div");
+  rows.className = "promptstudio-lora-rows";
+  selections.forEach((selection, index) => {
+    const row = document.createElement("div");
+    row.className = "promptstudio-lora-row";
+
+    const name = document.createElement("span");
+    name.className = "promptstudio-lora-name";
+    name.textContent = canonicalByName.get(selection.name.toLowerCase())?.label || selection.name;
+    name.title = selection.name;
+
+    const strength = document.createElement("input");
+    strength.type = "number";
+    strength.min = "-100";
+    strength.max = "100";
+    strength.step = "0.01";
+    strength.value = String(selection.strength);
+    strength.setAttribute("aria-label", `Strength for ${name.textContent}`);
+    strength.addEventListener("change", () => {
+      const numeric = Number(strength.value);
+      selections[index].strength = Number.isFinite(numeric)
+        ? Math.max(-100, Math.min(100, numeric))
+        : 1;
+      strength.value = String(selections[index].strength);
+      setSelectionsForLoraNode(profile.id, descriptor.id, selections);
+    });
+
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.className = "promptstudio-lora-remove";
+    remove.textContent = "×";
+    remove.title = `Remove ${name.textContent}`;
+    remove.setAttribute("aria-label", remove.title);
+    remove.addEventListener("click", () => {
+      selections.splice(index, 1);
+      setSelectionsForLoraNode(profile.id, descriptor.id, selections);
+      refreshLoraSection();
+    });
+    row.append(name, strength, remove);
+    rows.appendChild(row);
+  });
+  group.appendChild(rows);
+
+  const addRow = document.createElement("div");
+  addRow.className = "promptstudio-lora-add";
+  const select = document.createElement("select");
+  select.setAttribute("aria-label", `Add a ${descriptor.loraType} LoRA`);
+  for (const item of catalog) {
+    if (used.has(item.name.toLowerCase())) continue;
+    const option = document.createElement("option");
+    option.value = item.name;
+    option.textContent = item.label;
+    select.appendChild(option);
+  }
+  const add = document.createElement("button");
+  add.type = "button";
+  add.textContent = "Add";
+  add.disabled = !select.options.length;
+  add.addEventListener("click", () => {
+    if (!select.value) return;
+    selections.push({ name: select.value, strength: 1 });
+    setSelectionsForLoraNode(profile.id, descriptor.id, selections);
+    refreshLoraSection();
+  });
+  if (!select.options.length) {
+    const option = document.createElement("option");
+    option.textContent = catalog.length ? "All available LoRAs added" : "No LoRAs found";
+    select.appendChild(option);
+    select.disabled = true;
+  }
+  addRow.append(select, add);
+  group.appendChild(addRow);
+  return group;
+}
+
+async function refreshLoraSection({ refresh = false } = {}) {
+  const details = state.panel?.querySelector("#promptstudio-lora-details");
+  const container = state.panel?.querySelector("#promptstudio-lora-groups");
+  const summary = state.panel?.querySelector("#promptstudio-lora-summary");
+  if (!details || !container || !summary) return;
+  const profile = selectedWorkflowProfile(selectedAction());
+  const descriptors = Array.isArray(profile?.loraNodes) ? profile.loraNodes : [];
+  details.hidden = !descriptors.length;
+  if (!descriptors.length) {
+    container.replaceChildren();
+    return;
+  }
+
+  const token = ++state.loraRenderToken;
+  summary.textContent = "Loading available LoRAs…";
+  container.textContent = "";
+  try {
+    const catalogs = await Promise.all(
+      descriptors.map((descriptor) => loadLoraCatalog(descriptor.loraType, { refresh })),
+    );
+    if (token !== state.loraRenderToken) return;
+    container.replaceChildren(
+      ...descriptors.map((descriptor, index) => buildLoraNodeControls(profile, descriptor, catalogs[index])),
+    );
+    const selectedCount = descriptors.reduce(
+      (count, descriptor) => count + selectionsForLoraNode(profile.id, descriptor.id).length,
+      0,
+    );
+    summary.textContent = `${selectedCount} selected`;
+  } catch (error) {
+    if (token !== state.loraRenderToken) return;
+    summary.textContent = "Unavailable";
+    const note = document.createElement("p");
+    note.className = "promptstudio-lora-empty";
+    note.textContent = error.message || "LoRAs could not be listed.";
+    container.replaceChildren(note);
+  }
+}
+
 function announceWorkflowSelection(action, { persist = true } = {}) {
   if (persist) syncActiveChat();
   const profile = selectedWorkflowProfile(action);
   refreshSecondaryInstructionsControl();
+  refreshLoraSection();
   const role = action === "upscale" ? "upscaling" : action === "edit" ? "editing" : "creation";
   const verb = action === "upscale" ? "Upscale" : action === "edit" ? "Edit" : "Create";
   if (!profile) {
@@ -1301,6 +1759,7 @@ function refreshWorkflowControls() {
   refreshSecondaryInstructionsControl();
   updateComposeMode();
   renderWorkflowStatus();
+  refreshLoraSection();
 }
 
 function renderWorkflowStatus() {
@@ -1400,8 +1859,13 @@ function generationRetryOptionsFromMessage(message) {
     finalPrompt: message.canonicalPrompt || "",
     preserveSeed: true,
     workflowProfileId: message.workflowProfileId || null,
+    loraState: message.loraState,
+    generationSnapshot: message.generationSnapshot,
+    workflowName: message.workflowName || "",
     sourceImage: message.sourceImage || null,
     upscaleFactor: message.upscaleFactor ?? null,
+    resultNodeIds: message.resultNodeIds,
+    resultFields: message.resultFields,
   };
 }
 
@@ -1450,6 +1914,9 @@ function imageReferenceKey(reference) {
 function imageReferenceUrl(reference) {
   const value = storedImageReference(reference);
   if (!value) return "";
+  if (value.type === "promptstudio") {
+    return `/promptstudio/prompt-studio/image?filename=${encodeURIComponent(value.filename)}`;
+  }
   return `/view?${new URLSearchParams(value)}`;
 }
 
@@ -1480,6 +1947,7 @@ function restoreStoredCanonicalPrompt(data) {
   if (chat) {
     chat.initialized = true;
     chat.controlsFingerprint = data.llmAmplified ? String(data.controlsFingerprint || "") : "";
+    chat.mainPromptDirty = false;
     chat.pendingGeneration = null;
   }
   updatePromptEditors(mainPrompt, finalPrompt);
@@ -1487,6 +1955,91 @@ function restoreStoredCanonicalPrompt(data) {
   if (!promptVersionsEqual(previousVersion, restoredVersion)) pushVersion();
   else syncActiveChat();
   updateComposeMode();
+  return true;
+}
+
+function restoreStoredLoraState(data) {
+  const storedState = normalizeGenerationLoraState(data?.loraState);
+  const profileId = String(data?.workflowProfileId || "");
+  if (storedState === null || !profileId) return false;
+  const profile = workflowProfileById(profileId);
+  const validNodeIds = new Set(
+    (Array.isArray(profile?.loraNodes) ? profile.loraNodes : [])
+      .map((descriptor) => String(descriptor?.id || "").trim())
+      .filter(Boolean),
+  );
+  const restorable = storedState.filter((entry) => validNodeIds.has(entry.nodeId));
+  if (!restorable.length) return false;
+  let changed = false;
+  for (const entry of restorable) {
+    const key = loraSelectionKey(profileId, entry.nodeId);
+    const current = selectionsForLoraNode(profileId, entry.nodeId);
+    if (JSON.stringify(current) === JSON.stringify(entry.selections)) continue;
+    changed = true;
+    if (entry.selections.length) state.loraSelections[key] = entry.selections;
+    else delete state.loraSelections[key];
+  }
+  if (changed) saveLoraSelections();
+  if (selectedWorkflowProfileId() === profileId) refreshLoraSection();
+  return true;
+}
+
+function restoreStoredGenerationRouting(data) {
+  const action = data?.generationAction === "edit" ? "edit" : data?.generationAction === "create" ? "create" : "";
+  const profileId = String(data?.workflowProfileId || "");
+  const profile = workflowProfileById(profileId);
+  if (!action || !profile || profile.kind !== action) return false;
+  const actionControl = state.panel?.querySelector(
+    `input[name="promptstudio-generation-action"][value="${action}"]`,
+  );
+  const workflowControl = state.panel?.querySelector(
+    action === "edit" ? "#promptstudio-edit-workflow" : "#promptstudio-create-workflow",
+  );
+  if (!actionControl || !workflowControl || ![...workflowControl.options].some((option) => option.value === profileId)) {
+    return false;
+  }
+  actionControl.checked = true;
+  workflowControl.value = profileId;
+  updateComposeMode();
+  refreshSecondaryInstructionsControl();
+  refreshLoraSection();
+  syncActiveChat();
+  return true;
+}
+
+function armStoredGenerationReplay(data) {
+  const generationSnapshot = normalizeGenerationSnapshot(data?.generationSnapshot);
+  const chat = activeChat();
+  const action = data?.generationAction === "edit" ? "edit" : data?.generationAction === "create" ? "create" : "";
+  const workflowProfileId = String(data?.workflowProfileId || "");
+  if (!chat || !generationSnapshot || !action
+      || selectedAction() !== action || selectedWorkflowProfileId(action) !== workflowProfileId) {
+    return false;
+  }
+  chat.pendingGeneration = {
+    action,
+    mainPrompt: String(data?.mainPrompt || data?.canonicalPrompt || ""),
+    canonicalPrompt: String(data?.canonicalPrompt || ""),
+    executionPrompt: String(data?.executionPrompt || data?.canonicalPrompt || ""),
+    workflowProfileId,
+    workflowName: String(data?.workflowName || ""),
+    loraState: normalizeGenerationLoraState(data?.loraState),
+    generationSnapshot,
+    replayFingerprint: "",
+    sourceImage: normalizeImageReference(data?.sourceImage),
+    upscaleFactor: data?.upscaleFactor ?? null,
+    resultNodeIds: Array.isArray(data?.resultNodeIds) ? data.resultNodeIds.map(String) : [],
+    resultFields: Array.isArray(data?.resultFields) && data.resultFields.length
+      ? data.resultFields.map(String)
+      : ["images", "gifs"],
+  };
+  if (action === "edit" && chat.pendingGeneration.sourceImage) {
+    chat.selectedSource = chat.pendingGeneration.sourceImage;
+    refreshRenderedImageSources();
+  }
+  chat.pendingGeneration.replayFingerprint = generationUiFingerprint();
+  chat.updatedAt = Date.now();
+  saveChats();
   return true;
 }
 
@@ -1501,15 +2054,19 @@ function selectImageSource(reference, generationData = null) {
   const editAction = state.panel?.querySelector('input[name="promptstudio-generation-action"][value="edit"]');
   if (editAction) editAction.checked = true;
   const promptRestored = restoreStoredCanonicalPrompt(generationData);
+  const loraRestored = restoreStoredLoraState(generationData);
   saveChats();
   refreshRenderedImageSources();
   updateComposeMode();
   if (promptRestored && controlsNeedApply()) {
-    setStatus(`Selected ${value.filename} and restored its prompt. ${llmProviderName()} will apply the current controls before generation.`, "warning");
+    setStatus(
+      `Selected ${value.filename} and restored its prompt${loraRestored ? " and LoRAs" : ""}. ${llmProviderName()} will apply the current controls before generation.`,
+      "warning",
+    );
   } else {
     setStatus(
       promptRestored
-        ? `Selected ${value.filename} as the editing source and restored its main and final prompts.`
+        ? `Selected ${value.filename} as the editing source and restored its main and final prompts${loraRestored ? " and LoRAs" : ""}.`
         : `Selected ${value.filename} as the editing source.`,
       "ready",
     );
@@ -1581,12 +2138,104 @@ function renderImageGallery(message, images, generationData = null) {
 function useStoredCanonicalPrompt(data, details) {
   if (state.busy) return setStatus("Wait for the current operation to finish.", "warning");
   if (!restoreStoredCanonicalPrompt(data)) return;
+  const routingRestored = restoreStoredGenerationRouting(data);
+  const loraRestored = restoreStoredLoraState(data);
+  const generationRestored = routingRestored && armStoredGenerationReplay(data);
   details.open = false;
-  if (controlsNeedApply()) {
-    setStatus(`Prompts restored. ${llmProviderName()} will rebuild the final prompt with the current controls before generation.`, "warning");
+  if (generationRestored) {
+    setStatus(
+      "Prompts, LoRAs, and the complete generation state were restored. Generate without changes to repeat the exact queued parameters.",
+      "ready",
+    );
+  } else if (controlsNeedApply()) {
+    setStatus(
+      `Prompts${loraRestored ? " and LoRAs" : ""} restored. ${llmProviderName()} will rebuild the final prompt with the current controls before generation.`,
+      "warning",
+    );
   } else {
-    setStatus("Main and final prompts restored from this generation.", "ready");
+    setStatus(`Main and final prompts${loraRestored ? " and LoRAs" : ""} restored from this generation.`, "ready");
   }
+}
+
+function appendStoredGenerationInfo(panel, data) {
+  const workflowHeading = document.createElement("strong");
+  workflowHeading.textContent = "Generation";
+  const workflowText = document.createElement("div");
+  workflowText.className = "promptstudio-prompt-info-text promptstudio-generation-overview";
+  const action = data.generationAction === "edit"
+    ? "Edit"
+    : data.generationAction === "upscale" ? "Upscale" : "Create";
+  workflowText.textContent = [
+    `Action: ${action}`,
+    `Workflow: ${data.workflowName || data.workflowProfileId || "Unknown"}`,
+    data.promptId ? `ComfyUI prompt ID: ${data.promptId}` : "",
+    data.sourceImage?.filename ? `Source image: ${data.sourceImage.filename}` : "",
+    data.upscaleFactor != null ? `Upscale factor: ${data.upscaleFactor}` : "",
+    ...(Array.isArray(data.images) ? data.images : []).map((image) => (
+      `Output: ${image.filename}${image.width && image.height ? ` (${image.width} × ${image.height})` : ""}`
+    )),
+  ].filter(Boolean).join("\n");
+  panel.append(workflowHeading, workflowText);
+
+  const loraHeading = document.createElement("strong");
+  loraHeading.textContent = "LoRAs";
+  const loraPanel = document.createElement("div");
+  loraPanel.className = "promptstudio-generation-loras";
+  const loraState = normalizeGenerationLoraState(data.loraState);
+  if (loraState?.length) {
+    for (const loader of loraState) {
+      const group = document.createElement("div");
+      group.className = "promptstudio-generation-lora-loader";
+      const label = document.createElement("b");
+      label.textContent = `${loader.loraType || "LoRA loader"} · node ${loader.nodeId}`;
+      group.appendChild(label);
+      if (loader.selections.length) {
+        const list = document.createElement("ul");
+        for (const selection of loader.selections) {
+          const item = document.createElement("li");
+          item.textContent = `${selection.name} — strength ${selection.strength}`;
+          list.appendChild(item);
+        }
+        group.appendChild(list);
+      } else {
+        const empty = document.createElement("span");
+        empty.textContent = "No LoRAs selected";
+        group.appendChild(empty);
+      }
+      loraPanel.appendChild(group);
+    }
+  } else {
+    loraPanel.textContent = loraState === null
+      ? "Not recorded for this older generation."
+      : "This workflow had no Prompt Studio LoRA loaders.";
+  }
+  panel.append(loraHeading, loraPanel);
+
+  const parametersHeading = document.createElement("strong");
+  parametersHeading.textContent = "All workflow inputs";
+  const parameters = document.createElement("div");
+  parameters.className = "promptstudio-generation-parameters";
+  const snapshot = normalizeGenerationSnapshot(data.generationSnapshot);
+  const nodes = Object.entries(snapshot?.output || {});
+  if (!nodes.length) {
+    parameters.textContent = "Not recorded for this older generation.";
+  } else {
+    for (const [nodeId, node] of nodes) {
+      const nodeDetails = document.createElement("details");
+      nodeDetails.className = "promptstudio-generation-node";
+      const summary = document.createElement("summary");
+      const title = String(node?._meta?.title || node?.class_type || "Workflow node");
+      summary.textContent = `${title} · node ${nodeId}`;
+      const nodeType = document.createElement("div");
+      nodeType.className = "promptstudio-generation-node-type";
+      nodeType.textContent = `Class: ${String(node?.class_type || "Unknown")}`;
+      const inputs = document.createElement("pre");
+      inputs.textContent = JSON.stringify(node?.inputs || {}, null, 2);
+      nodeDetails.append(summary, nodeType, inputs);
+      parameters.appendChild(nodeDetails);
+    }
+  }
+  panel.append(parametersHeading, parameters);
 }
 
 function renderPromptInfo(message, data) {
@@ -1596,7 +2245,7 @@ function renderPromptInfo(message, data) {
   details.className = "promptstudio-prompt-info";
   const summary = document.createElement("summary");
   summary.textContent = "i";
-  summary.title = "Show the main and final prompts used for this generation";
+  summary.title = "Show prompts and all workflow inputs used for this generation";
   summary.setAttribute("aria-label", summary.title);
   const panel = document.createElement("div");
   panel.className = "promptstudio-prompt-info-panel";
@@ -1625,6 +2274,7 @@ function renderPromptInfo(message, data) {
     executionText.textContent = data.executionPrompt;
     panel.append(executionHeading, executionText);
   }
+  appendStoredGenerationInfo(panel, data);
   panel.append(usePrompt);
   details.append(summary, panel);
   message.appendChild(details);
@@ -1676,7 +2326,7 @@ function appendMessage(role, text, options = {}) {
     role,
     text: String(text || ""),
     label: options.label || "",
-    images: [],
+    images: Array.isArray(options.images) ? options.images.map(normalizeImageReference).filter(Boolean) : [],
     mainPrompt: String(options.mainPrompt || options.canonicalPrompt || ""),
     canonicalPrompt: String(options.canonicalPrompt || ""),
     controlsFingerprint: String(options.controlsFingerprint || ""),
@@ -1685,6 +2335,8 @@ function appendMessage(role, text, options = {}) {
     generationAction: ["edit", "upscale"].includes(options.generationAction) ? options.generationAction : "create",
     workflowProfileId: String(options.workflowProfileId || ""),
     workflowName: String(options.workflowName || ""),
+    loraState: normalizeGenerationLoraState(options.loraState),
+    generationSnapshot: normalizeGenerationSnapshot(options.generationSnapshot),
     sourceImage: normalizeImageReference(options.sourceImage),
     upscaleFactor: options.upscaleFactor != null && Number.isFinite(Number(options.upscaleFactor))
       ? Number(options.upscaleFactor)
@@ -1753,6 +2405,26 @@ function updatePromptEditors(mainPrompt, finalPrompt) {
   updatePromptEditor(finalPrompt);
 }
 
+function syncMainPromptEditor(prompt, { userEdit = false } = {}) {
+  updateMainPromptEditor(prompt);
+  const chat = activeChat();
+  if (!chat) return;
+  chat.mainPrompt = prompt;
+  if (userEdit) {
+    chat.mainPromptDirty = true;
+    chat.pendingGeneration = null;
+  }
+  chat.updatedAt = Date.now();
+  saveChats();
+  refreshEmptyImageDropZone();
+  if (!userEdit || !chat.initialized) return;
+  if (!prompt.trim()) {
+    setStatus("The main prompt is empty.", "warning");
+  } else {
+    setStatus(`Main prompt changed. ${llmProviderName()} will rebuild the final prompt before generation.`, "warning");
+  }
+}
+
 function syncCanonicalEditor(prompt, { userEdit = false } = {}) {
   updatePromptEditor(prompt);
   const chat = activeChat();
@@ -1767,10 +2439,16 @@ function syncCanonicalEditor(prompt, { userEdit = false } = {}) {
 }
 
 function commitPromptEditorVersion() {
+  const mainEditor = state.panel?.querySelector("#promptstudio-main-prompt");
   const editor = state.panel?.querySelector("#promptstudio-current-prompt");
-  if (!editor || editor.readOnly) return;
-  const prompt = editor.value;
-  syncCanonicalEditor(prompt, { userEdit: prompt !== state.currentPrompt });
+  if (mainEditor && !mainEditor.readOnly) {
+    const mainPrompt = mainEditor.value;
+    syncMainPromptEditor(mainPrompt, { userEdit: mainPrompt !== state.mainPrompt });
+  }
+  if (editor && !editor.readOnly) {
+    const prompt = editor.value;
+    syncCanonicalEditor(prompt, { userEdit: prompt !== state.currentPrompt });
+  }
   if (!promptVersionsEqual(state.versions[state.versionIndex], promptVersion())) pushVersion();
 }
 
@@ -1845,7 +2523,7 @@ function syncLlmProviderControls({ refreshModels = false } = {}) {
   const thinking = state.panel?.querySelector("#promptstudio-thinking-control");
   if (thinking) thinking.title = provider === "ollama"
     ? "Controls Ollama thinking. Minimal and Low both request Ollama's low thinking level."
-    : "Controls KoboldCpp reasoning effort. High receives up to 4,096 private-reasoning tokens while preserving the final-answer allowance.";
+    : "Private-reasoning limits: Minimal 200 tokens, Low 500, Medium 1,000, and High uses the available context window.";
   const tokens = state.panel?.querySelector("#promptstudio-token-control");
   if (tokens) tokens.title = provider === "ollama"
     ? "Final-answer allowance. Ollama receives an additional thinking allowance; 0 uses the selected profile default."
@@ -2097,6 +2775,7 @@ async function workflowQueueContext(action, profileId = null) {
     promptNodeId: selectedProfile.promptNodeId,
     imageNodeId: selectedProfile.imageNodeId,
     upscaleNodeId: selectedProfile.upscaleNodeId,
+    loraNodes: selectedProfile.loraNodes,
     resultNodeIds: selectedProfile.resultNodeIds,
     resultFields: selectedProfile.resultFields,
     workflowName: selectedProfile.name,
@@ -2109,15 +2788,29 @@ async function queueGeneration({
   mainPrompt = state.mainPrompt,
   finalPrompt = state.currentPrompt,
   preserveSeed = false,
+  forceNewSeed = false,
   workflowProfileId = null,
+  loraState = null,
+  generationSnapshot = null,
+  workflowName = "",
   sourceImage = null,
   upscaleFactor = null,
+  resultNodeIds = null,
+  resultFields = null,
 } = {}) {
   const operationToken = state.operationToken;
   let source = action === "create" ? null : editingSource(sourceImage);
   if (action !== "create" && !source) throw new Error(`There is no image in this conversation to ${action}.`);
   const context = await workflowQueueContext(action, workflowProfileId);
   if (operationToken !== state.operationToken) return false;
+  const storedGenerationSnapshot = normalizeGenerationSnapshot(generationSnapshot);
+  if (generationSnapshot != null && !storedGenerationSnapshot) {
+    throw new Error("The stored generation snapshot is invalid.");
+  }
+  const replayExactGeneration = Boolean(storedGenerationSnapshot);
+  if (replayExactGeneration) {
+    context.snapshot.output = structuredClone(storedGenerationSnapshot.output);
+  }
   if (action === "edit") {
     try {
       source = await imageReferenceWithDimensions(source);
@@ -2126,13 +2819,12 @@ async function queueGeneration({
     }
   }
   if (operationToken !== state.operationToken) return false;
-  const useNewSeed = !preserveSeed
-    && generationMatchesLatestQueuedPrompt()
+  const useNewSeed = (forceNewSeed || (!preserveSeed && generationMatchesLatestQueuedPrompt()))
     && state.panel.querySelector("#promptstudio-randomize-seed")?.checked;
-  if (useNewSeed) randomizeSnapshotSeeds(context.snapshot);
+  if (!replayExactGeneration && useNewSeed) randomizeSnapshotSeeds(context.snapshot);
 
   const secondaryInstructions = state.panel.querySelector("#promptstudio-secondary-instructions")?.value || "";
-  if (action !== "upscale") {
+  if (!replayExactGeneration && action !== "upscale") {
     const apiNode = context.snapshot.output?.[String(context.promptNodeId)];
     if (!apiNode || ![SLOT_TYPE, AMPLIFY_TYPE].includes(apiNode.class_type)) {
       throw new Error("The configured prompt node was not included in the executable workflow.");
@@ -2153,13 +2845,13 @@ async function queueGeneration({
     }
   }
 
-  if (action === "edit") {
+  if (!replayExactGeneration && action === "edit") {
     const imageNode = context.snapshot.output?.[String(context.imageNodeId)];
     if (!imageNode || imageNode.class_type !== IMAGE_SOURCE_TYPE) {
       throw new Error("The configured Prompt Studio Image Source node was not included in the editing workflow.");
     }
     imageNode.inputs.image_ref = JSON.stringify(storedImageReference(source));
-  } else if (action === "upscale") {
+  } else if (!replayExactGeneration && action === "upscale") {
     const factor = Number(upscaleFactor);
     if (!Number.isFinite(factor) || factor < 1 || factor > 16) {
       throw new Error("Upscale factor must be between 1 and 16.");
@@ -2174,7 +2866,35 @@ async function queueGeneration({
     upscaleNode.inputs.secondary_instructions = secondaryInstructions;
   }
 
+  const requestedLoraState = normalizeGenerationLoraState(loraState);
+  const queuedLoraState = replayExactGeneration && requestedLoraState !== null
+    ? requestedLoraState
+    : generationLoraState(context.profile, context.loraNodes)
+      .map((entry) => {
+        const requested = requestedLoraState?.find((item) => item.nodeId === entry.nodeId);
+        return requested ? { ...entry, selections: requested.selections } : entry;
+      });
+  for (const descriptor of replayExactGeneration ? [] : (context.loraNodes || [])) {
+    const loraNode = context.snapshot.output?.[String(descriptor.id)];
+    if (!loraNode || loraNode.class_type !== LORA_LOADER_TYPE) {
+      throw new Error("A configured Prompt Studio LoRA Loader was not included in the executable workflow.");
+    }
+    loraNode.inputs ||= {};
+    const storedState = queuedLoraState.find((entry) => entry.nodeId === String(descriptor.id));
+    loraNode.inputs.lora_stack_json = JSON.stringify(
+      storedState?.selections || [],
+    );
+  }
+
   if (operationToken !== state.operationToken) return false;
+  const queuedGenerationSnapshot = normalizeGenerationSnapshot(structuredClone(context.snapshot));
+  const queuedResultNodeIds = replayExactGeneration && Array.isArray(resultNodeIds) && resultNodeIds.length
+    ? resultNodeIds.map(String)
+    : context.resultNodeIds;
+  const queuedResultFields = replayExactGeneration && Array.isArray(resultFields) && resultFields.length
+    ? resultFields.map(String)
+    : context.resultFields;
+  const queuedWorkflowName = String(workflowName || context.workflowName);
 
   const retryOptions = {
     action,
@@ -2183,8 +2903,13 @@ async function queueGeneration({
     finalPrompt,
     preserveSeed,
     workflowProfileId: context.profile?.id || workflowProfileId,
+    loraState: queuedLoraState,
+    generationSnapshot: queuedGenerationSnapshot,
+    workflowName: queuedWorkflowName,
     sourceImage: source,
     upscaleFactor,
+    resultNodeIds: queuedResultNodeIds,
+    resultFields: queuedResultFields,
   };
 
   let queued;
@@ -2223,11 +2948,13 @@ async function queueGeneration({
     executionPrompt,
     generationAction: action,
     workflowProfileId: context.profile?.id || "",
-    workflowName: context.workflowName,
+    workflowName: queuedWorkflowName,
+    loraState: queuedLoraState,
+    generationSnapshot: queuedGenerationSnapshot,
     sourceImage: source,
     upscaleFactor,
-    resultNodeIds: context.resultNodeIds,
-    resultFields: context.resultFields,
+    resultNodeIds: queuedResultNodeIds,
+    resultFields: queuedResultFields,
     promptId,
     generationState: "queued",
     controlsFingerprint: chat?.controlsFingerprint || "",
@@ -2236,7 +2963,7 @@ async function queueGeneration({
   state.generating = true;
   setStatus("ComfyUI is generating…", "working");
   const token = ++state.pollToken;
-  waitForResult(promptId, resultMessage, token, context.resultNodeIds, context.resultFields, retryOptions).catch((error) => {
+  waitForResult(promptId, resultMessage, token, queuedResultNodeIds, queuedResultFields, retryOptions).catch((error) => {
     if (token !== state.pollToken) return;
     const message = error.message || String(error);
     markGenerationAttemptFailed(resultMessage, message);
@@ -2272,6 +2999,17 @@ async function queueUpscale(source, generationData = null, factor = null, workfl
 
 async function generateDirectPrompt(action = selectedAction()) {
   if (state.busy) return;
+  const pendingGeneration = activeChat()?.pendingGeneration;
+  if (
+    pendingGeneration?.action === action
+    && pendingGeneration.mainPrompt === state.mainPrompt
+    && pendingGeneration.canonicalPrompt === state.currentPrompt
+    && pendingGeneration.workflowProfileId === selectedWorkflowProfileId(action)
+    && pendingGeneration.generationSnapshot
+    && pendingGeneration.replayFingerprint === generationUiFingerprint()
+  ) {
+    return createNewFromCurrentPrompt({ applyControls: false, generationAction: action });
+  }
   if (!selectedWorkflowProfile(action)) {
     return setStatus("Select a compatible [PS] workflow first.", "warning");
   }
@@ -2285,7 +3023,10 @@ async function generateDirectPrompt(action = selectedAction()) {
   const directVersion = promptVersion(prompt, prompt);
   const promptChanged = !promptVersionsEqual(previousVersion, directVersion);
   const chat = activeChat();
-  if (chat) chat.initialized = true;
+  if (chat) {
+    chat.initialized = true;
+    chat.mainPromptDirty = false;
+  }
   input.value = prompt;
   updatePromptEditors(prompt, prompt);
   if (promptChanged) pushVersion();
@@ -2315,9 +3056,168 @@ async function requestPromptRevision(payload, actionLabel) {
   return prompt;
 }
 
+function llmConnectionPayload() {
+  const value = (id) => state.panel.querySelector(`#${id}`)?.value;
+  return {
+    llm_provider: value("promptstudio-llm-provider"),
+    kobold_url: value("promptstudio-kobold-url"),
+    ollama_url: value("promptstudio-ollama-url"),
+    ollama_model: value("promptstudio-ollama-model"),
+  };
+}
+
+async function requireVisionCapability() {
+  const response = await api.fetchApi("/promptstudio/prompt-studio/vision-capability", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(llmConnectionPayload()),
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok || !data.available) {
+    throw new Error(data.reason || data.error || `${llmProviderName()} vision capability could not be verified.`);
+  }
+}
+
+async function uploadPromptStudioImage(file) {
+  const form = new FormData();
+  form.append("image", file, file.name || `prompt-studio-${Date.now()}.png`);
+  const response = await api.fetchApi("/promptstudio/prompt-studio/import-image", {
+    method: "POST",
+    body: form,
+  });
+  const data = await response.json().catch(() => ({}));
+  const reference = normalizeImageReference(data.image);
+  if (!response.ok || !reference) {
+    throw new Error(data.error || data.message || `Prompt Studio could not sanitize the dropped image (${response.status}).`);
+  }
+  return imageReferenceWithDimensions(reference);
+}
+
+async function requestImageCaption(reference) {
+  const payload = {
+    ...collectRevisionPayload("Caption the image", "render", "", ""),
+    image: storedImageReference(reference),
+  };
+  const response = await api.fetchApi("/promptstudio/prompt-studio/caption-image", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(data.error || `${llmProviderName()} could not caption the image (${response.status}).`);
+  const prompt = String(data.prompt || "").trim();
+  if (!prompt) throw new Error(`${llmProviderName()} returned an empty image caption.`);
+  return prompt;
+}
+
+async function importDroppedImage(file) {
+  if (state.busy) return setStatus("Wait for the current operation to finish.", "warning");
+  if (!chatAcceptsImageDrop()) {
+    return setStatus("Image import is only available in a new, completely empty chat.", "warning");
+  }
+  if (!useLlmAmplification()) {
+    const message = "Enable “Use LLM amplification” before dropping an image; captioning needs the selected LLM and prompt controls.";
+    setStatus(message, "warning");
+    setImageDropFeedback(message, "warning");
+    return;
+  }
+  if (!file || typeof file !== "object" || typeof file.arrayBuffer !== "function") {
+    const message = "Drop one image file to start the chat.";
+    setStatus(message, "warning");
+    setImageDropFeedback(message, "warning");
+    return;
+  }
+  if (file.type && !file.type.startsWith("image/")) {
+    const message = `“${file.name}” is not an image file.`;
+    setStatus(message, "warning");
+    setImageDropFeedback(message, "warning");
+    return;
+  }
+  if (file.size <= 0 || file.size > MAX_DROPPED_IMAGE_BYTES) {
+    const message = file.size > MAX_DROPPED_IMAGE_BYTES
+      ? "The dropped image is larger than the 20 MB import limit."
+      : "The dropped image is empty.";
+    setStatus(message, "warning");
+    setImageDropFeedback(message, "warning");
+    return;
+  }
+
+  const operationToken = ++state.operationToken;
+  setBusy(true);
+  setStatus(`Checking ${llmProviderName()} vision support…`, "working");
+  setImageDropFeedback(`Checking ${llmProviderName()} vision support…`, "working");
+  try {
+    await requireVisionCapability();
+    if (operationToken !== state.operationToken) return;
+    setStatus("Sanitizing and storing the image…", "working");
+    setImageDropFeedback("Sanitizing and storing the image…", "working");
+    const reference = await uploadPromptStudioImage(file);
+    if (operationToken !== state.operationToken) return;
+    setStatus(`${llmProviderName()} is reading the image…`, "working");
+    setImageDropFeedback(`${llmProviderName()} is reading the image…`, "working");
+    const mainPrompt = await requestImageCaption(reference);
+    if (operationToken !== state.operationToken) return;
+    setStatus(`${llmProviderName()} is applying the selected prompt style…`, "working");
+    setImageDropFeedback(`${llmProviderName()} is applying the selected prompt style…`, "working");
+    const finalPrompt = await requestPromptRevision(
+      collectRevisionPayload(mainPrompt, "render", "", ""),
+      "Image-prompt rendering",
+    );
+    if (operationToken !== state.operationToken) return;
+
+    const chat = activeChat();
+    if (!chat || !chatAcceptsImageDrop(chat)) {
+      throw new Error("The active chat changed before the image caption was ready.");
+    }
+    updatePromptEditors(mainPrompt, finalPrompt);
+    state.versions = [promptVersion()];
+    state.versionIndex = 0;
+    chat.initialized = true;
+    chat.mainPromptDirty = false;
+    chat.controlsFingerprint = controlsFingerprint();
+    chat.pendingGeneration = null;
+    chat.selectedSource = reference;
+    syncActiveChat();
+    refreshEmptyImageDropZone();
+    appendMessage("assistant", "", {
+      label: "Imported image",
+      images: [reference],
+      mainPrompt,
+      canonicalPrompt: finalPrompt,
+      executionPrompt: finalPrompt,
+      controlsFingerprint: chat.controlsFingerprint,
+      llmAmplified: true,
+    });
+    updateComposeMode();
+    refreshRenderedImageSources();
+    setStatus("Image captioned and selected as the editing source.", "ready");
+  } catch (error) {
+    if (operationToken !== state.operationToken) return;
+    const message = error.message || String(error);
+    setStatus(message, "error");
+    setImageDropFeedback(message, "error");
+  } finally {
+    if (operationToken === state.operationToken) setBusy(false);
+  }
+}
+
+function importSelectedImageFiles(fileList) {
+  const files = [...(fileList || [])];
+  if (files.length !== 1) {
+    const message = files.length
+      ? "Drop exactly one image into an empty chat."
+      : "The drop did not contain an image file.";
+    setStatus(message, "warning");
+    setImageDropFeedback(message, "warning");
+    return;
+  }
+  importDroppedImage(files[0]);
+}
+
 async function reviseAndMaybeGenerate({
   controlsOnly = false,
   forceGenerate = false,
+  regenerateFinal = false,
   generationAction = selectedAction(),
   revisionOverride = null,
   recordRevision = true,
@@ -2325,8 +3225,9 @@ async function reviseAndMaybeGenerate({
   if (state.busy) return;
   if (!useLlmAmplification()) return generateDirectPrompt(generationAction);
   const input = state.panel.querySelector("#promptstudio-revision");
-  const revision = revisionOverride == null ? input.value.trim() : String(revisionOverride).trim();
+  let revision = revisionOverride == null ? input.value.trim() : String(revisionOverride).trim();
   const creating = !activeChat()?.initialized;
+  if (creating && !revision) revision = state.mainPrompt.trim();
   if (!selectedWorkflowProfile(generationAction)) {
     return setStatus("Select a compatible [PS] workflow first.", "warning");
   }
@@ -2335,14 +3236,16 @@ async function reviseAndMaybeGenerate({
   }
   if (creating && !revision) return setStatus("Describe an image to create the first prompt.", "warning");
   if (!creating && !state.currentPrompt.trim()) return setStatus("The final prompt is empty.", "warning");
+  if (!creating && !state.mainPrompt.trim()) return setStatus("The main prompt is empty.", "warning");
 
-  const renderControlsChanged = !creating && controlsNeedApply();
-  controlsOnly = !creating && (controlsOnly || (!revision && renderControlsChanged));
-  if (!revision && !controlsOnly) return reroll({ applyControls: false, generationAction });
+  const promptNeedsRebuild = !creating && promptNeedsRender();
+  controlsOnly = !creating && (controlsOnly || (!revision && promptNeedsRebuild));
+  if (!revision && !controlsOnly) return createNewFromCurrentPrompt({ applyControls: false, generationAction });
   if (!creating) commitPromptEditorVersion();
   if (revision && !controlsOnly && recordRevision) {
     appendMessage("user", revision);
     input.value = "";
+    updateComposeMode();
   }
   saveSettings();
   const operationToken = ++state.operationToken;
@@ -2350,8 +3253,10 @@ async function reviseAndMaybeGenerate({
   setStatus(
     creating
       ? `${llmProviderName()} is rendering the initial final prompt...`
-      : controlsOnly || renderControlsChanged
-        ? `${llmProviderName()} is rebuilding the final prompt with the changed controls...`
+      : regenerateFinal
+        ? `${llmProviderName()} is regenerating the final prompt...`
+        : controlsOnly || promptNeedsRebuild
+        ? `${llmProviderName()} is rebuilding the final prompt from the main prompt and controls...`
         : `${llmProviderName()} is revising the main and final prompts...`,
     "working",
   );
@@ -2375,7 +3280,7 @@ async function reviseAndMaybeGenerate({
         collectRevisionPayload(mainPrompt, "render", "", previousFinalPrompt),
         "Control update",
       );
-    } else if (renderControlsChanged) {
+    } else if (promptNeedsRebuild) {
       mainPrompt = await requestPromptRevision(
         collectRevisionPayload(revision, "revise_main", previousMainPrompt, previousFinalPrompt),
         "Main-prompt revision",
@@ -2412,6 +3317,7 @@ async function reviseAndMaybeGenerate({
     }
     if (chat) {
       chat.controlsFingerprint = requestedControlsFingerprint;
+      chat.mainPromptDirty = false;
       chat.pendingGeneration = {
         action: generationAction,
         mainPrompt,
@@ -2425,7 +3331,14 @@ async function reviseAndMaybeGenerate({
       };
       saveChats();
     }
-    setStatus(creating ? "Initial main and final prompts created." : "Main and final prompts updated.", "ready");
+    setStatus(
+      creating
+        ? "Initial main and final prompts created."
+        : regenerateFinal
+          ? "Final prompt regenerated."
+          : "Main and final prompts updated.",
+      "ready",
+    );
     if (forceGenerate || state.panel.querySelector("#promptstudio-auto-generate")?.checked) {
       const executionPrompt = chat?.pendingGeneration?.executionPrompt || finalPrompt;
       generationOptions = {
@@ -2434,6 +3347,7 @@ async function reviseAndMaybeGenerate({
         mainPrompt,
         finalPrompt,
         preserveSeed: true,
+        forceNewSeed: regenerateFinal,
       };
       await queueGeneration(generationOptions);
     } else {
@@ -2449,6 +3363,7 @@ async function reviseAndMaybeGenerate({
       showGenerationFailure(message, () => reviseAndMaybeGenerate({
         controlsOnly,
         forceGenerate,
+        regenerateFinal,
         generationAction,
         revisionOverride: revision,
         recordRevision: false,
@@ -2457,23 +3372,31 @@ async function reviseAndMaybeGenerate({
   }
 }
 
-async function reroll({ applyControls = true, generationAction = selectedAction() } = {}) {
+async function createNewFromCurrentPrompt({ applyControls = true, generationAction = selectedAction() } = {}) {
   if (state.busy) return;
   const lastGeneration = activeChat()?.lastGeneration;
   const pendingGeneration = activeChat()?.pendingGeneration;
   const selectedProfileId = selectedWorkflowProfileId(generationAction);
-  const usePendingGeneration = pendingGeneration?.action === generationAction
+  const pendingGenerationMatches = pendingGeneration?.action === generationAction
     && pendingGeneration.mainPrompt === state.mainPrompt
     && pendingGeneration.canonicalPrompt === state.currentPrompt
     && pendingGeneration.workflowProfileId === selectedProfileId;
+  const replayStoredGeneration = Boolean(
+    pendingGenerationMatches
+    && pendingGeneration?.generationSnapshot
+    && pendingGeneration.replayFingerprint
+    && pendingGeneration.replayFingerprint === generationUiFingerprint(),
+  );
+  const usePendingGeneration = pendingGenerationMatches
+    && (!pendingGeneration?.generationSnapshot || replayStoredGeneration);
   const repeatLastConfiguration = !usePendingGeneration
     && lastGeneration?.action === generationAction
     && lastGeneration.mainPrompt === state.mainPrompt
     && lastGeneration.canonicalPrompt === state.currentPrompt
     && String(lastGeneration?.workflowProfileId || "") === selectedProfileId;
-  if (!useLlmAmplification()) return generateDirectPrompt(generationAction);
-  if (!activeChat()?.initialized) return setStatus("Create the first prompt before rerolling.", "warning");
-  if (applyControls && controlsNeedApply()) {
+  if (!useLlmAmplification() && !replayStoredGeneration) return generateDirectPrompt(generationAction);
+  if (!activeChat()?.initialized) return setStatus("Create the first prompt before creating another image.", "warning");
+  if (!replayStoredGeneration && applyControls && promptNeedsRender()) {
     return reviseAndMaybeGenerate({ controlsOnly: true, forceGenerate: true, generationAction });
   }
   const editedPrompt = state.panel.querySelector("#promptstudio-current-prompt").value.trim();
@@ -2493,9 +3416,17 @@ async function reroll({ applyControls = true, generationAction = selectedAction(
       : repeatLastConfiguration
         ? (lastGeneration.executionPrompt || state.currentPrompt)
         : state.currentPrompt,
-    preserveSeed: promptChanged,
-    workflowProfileId: null,
-    sourceImage: repeatLastConfiguration ? lastGeneration.sourceImage : null,
+    preserveSeed: replayStoredGeneration || promptChanged,
+    workflowProfileId: replayStoredGeneration ? pendingGeneration.workflowProfileId : null,
+    loraState: replayStoredGeneration ? pendingGeneration.loraState : null,
+    generationSnapshot: replayStoredGeneration ? pendingGeneration.generationSnapshot : null,
+    workflowName: replayStoredGeneration ? pendingGeneration.workflowName : "",
+    sourceImage: replayStoredGeneration
+      ? pendingGeneration.sourceImage
+      : repeatLastConfiguration ? lastGeneration.sourceImage : null,
+    upscaleFactor: replayStoredGeneration ? pendingGeneration.upscaleFactor : null,
+    resultNodeIds: replayStoredGeneration ? pendingGeneration.resultNodeIds : null,
+    resultFields: replayStoredGeneration ? pendingGeneration.resultFields : null,
   };
   try {
     await queueGeneration(generationOptions);
@@ -2505,12 +3436,27 @@ async function reroll({ applyControls = true, generationAction = selectedAction(
   }
 }
 
+async function reroll({ generationAction = selectedAction() } = {}) {
+  if (state.busy) return;
+  if (!useLlmAmplification()) return generateDirectPrompt(generationAction);
+  if (!activeChat()?.initialized) return setStatus("Create the first prompt before rerolling.", "warning");
+  return reviseAndMaybeGenerate({
+    controlsOnly: true,
+    forceGenerate: true,
+    regenerateFinal: true,
+    generationAction,
+  });
+}
+
 function undoPrompt() {
   if (state.busy || state.versionIndex <= 0) return;
   state.versionIndex -= 1;
   const version = state.versions[state.versionIndex];
   const chat = activeChat();
-  if (chat) chat.pendingGeneration = null;
+  if (chat) {
+    chat.mainPromptDirty = false;
+    chat.pendingGeneration = null;
+  }
   updatePromptEditors(version.mainPrompt, version.finalPrompt);
   syncActiveChat();
   updateComposeMode();
@@ -2563,17 +3509,18 @@ function buildPanel() {
         </div>
       </header>
       <div id="promptstudio-history" class="promptstudio-history"></div>
+      <input id="promptstudio-image-import" type="file" accept="image/*" hidden />
       <div class="promptstudio-compose">
         <div class="promptstudio-compose-heading">
           <strong id="promptstudio-compose-title">Describe the next change</strong>
           <span id="promptstudio-status" class="promptstudio-status" role="status" aria-live="polite">Loading…</span>
-          <span id="promptstudio-compose-hint">Leave empty to reroll</span>
+          <span id="promptstudio-compose-hint">Leave empty to create from the current prompt</span>
         </div>
         <textarea id="promptstudio-revision" rows="3" placeholder="Make the background more varied…"></textarea>
         <div class="promptstudio-compose-footer">
           <div class="promptstudio-toggles">
             <label class="promptstudio-auto-generate-toggle"><input id="promptstudio-auto-generate" type="checkbox" ${settings.auto_generate ? "checked" : ""} /> Generate after revision</label>
-            <label><input id="promptstudio-randomize-seed" type="checkbox" ${settings.randomize_seed ? "checked" : ""} /> New seed on reroll</label>
+            <label><input id="promptstudio-randomize-seed" type="checkbox" ${settings.randomize_seed ? "checked" : ""} /> New seed on create / reroll</label>
             <div class="promptstudio-generation-action" role="radiogroup" aria-label="Generation action">
               <label><input type="radio" name="promptstudio-generation-action" value="create" checked /><span>Create</span></label>
               <label><input type="radio" name="promptstudio-generation-action" value="edit" /><span>Edit</span></label>
@@ -2587,8 +3534,8 @@ function buildPanel() {
             <button id="promptstudio-toggle-inspector" class="promptstudio-inspector-button" type="button">Settings</button>
             <button id="promptstudio-undo" type="button" data-disable-busy disabled>Undo</button>
             <button id="promptstudio-stop" type="button">Stop</button>
-            <button id="promptstudio-reroll" type="button" data-disable-busy>Reroll</button>
-            <button id="promptstudio-send" class="promptstudio-primary" type="button" data-disable-busy>Revise & Generate</button>
+            <button id="promptstudio-reroll" type="button" title="Regenerate the final prompt and create a new image" data-disable-busy>Reroll</button>
+            <button id="promptstudio-send" class="promptstudio-primary" type="button" data-disable-busy>Create new</button>
           </div>
         </div>
       </div>
@@ -2597,7 +3544,7 @@ function buildPanel() {
       <header class="promptstudio-header">
         <div class="promptstudio-brand">
           <span class="promptstudio-brand-mark">PS</span>
-          <div><strong>Prompt Studio</strong><span>Iterative local generation</span></div>
+          <div><strong>Prompt Studio</strong><span>by tiko13</span></div>
         </div>
         <div class="promptstudio-header-actions">
           <button id="promptstudio-toggle-chats" class="promptstudio-chats-button" type="button" title="Show chats" aria-label="Show chats" data-promptstudio-drawer="chats" aria-expanded="false">Sessions</button>
@@ -2615,8 +3562,8 @@ function buildPanel() {
       </section>
       <section class="promptstudio-control-deck">
         <details class="promptstudio-current-details" open>
-          <summary><span>Main prompt</span><small>Stable user intent</small></summary>
-          <textarea id="promptstudio-main-prompt" rows="5" placeholder="The user's model-neutral image description" readonly></textarea>
+          <summary><span>Main prompt</span><small>Editable source intent</small></summary>
+          <textarea id="promptstudio-main-prompt" rows="5" placeholder="The user's model-neutral image description"></textarea>
         </details>
         <details class="promptstudio-current-details" open>
           <summary><span>Final prompt</span><small>Editable; rebuilt when controls change</small></summary>
@@ -2635,6 +3582,16 @@ function buildPanel() {
             <label id="promptstudio-token-control" title="Final-answer allowance; 0 uses the selected profile default.">Final-answer tokens<input id="promptstudio-max-tokens" type="number" min="0" max="8192" /></label>
             <label>Temperature<input id="promptstudio-temperature" type="number" min="0" max="5" step="0.05" /></label>
           </div>
+        </details>
+        <details id="promptstudio-lora-details" class="promptstudio-lora-details" open hidden>
+          <summary>
+            <span>LoRA</span>
+            <span class="promptstudio-lora-summary-tools">
+              <small id="promptstudio-lora-summary">0 selected</small>
+              <button id="promptstudio-refresh-loras" type="button" title="Refresh LoRAs" aria-label="Refresh LoRAs">↻</button>
+            </span>
+          </summary>
+          <div id="promptstudio-lora-groups" class="promptstudio-lora-groups"></div>
         </details>
         <details class="promptstudio-resolution-details" open>
           <summary><span>Resolution</span><small>Create size; Edit preserves source</small></summary>
@@ -2754,6 +3711,41 @@ function buildPanel() {
     </div>`;
   document.body.appendChild(panel);
   state.panel = panel;
+  installTypeAnywhereFocus(panel.ownerDocument);
+  const history = panel.querySelector("#promptstudio-history");
+  const imageImport = panel.querySelector("#promptstudio-image-import");
+  const carriesFiles = (event) => [...(event.dataTransfer?.types || [])].includes("Files");
+  history.addEventListener("dragenter", (event) => {
+    if (!carriesFiles(event)) return;
+    event.preventDefault();
+    state.dragDepth += 1;
+    history.dataset.dragActive = chatAcceptsImageDrop() ? "true" : "refused";
+  });
+  history.addEventListener("dragover", (event) => {
+    if (!carriesFiles(event)) return;
+    event.preventDefault();
+    if (event.dataTransfer) event.dataTransfer.dropEffect = chatAcceptsImageDrop() ? "copy" : "none";
+  });
+  history.addEventListener("dragleave", (event) => {
+    if (!state.dragDepth) return;
+    state.dragDepth = Math.max(0, state.dragDepth - 1);
+    if (!state.dragDepth) history.dataset.dragActive = "false";
+  });
+  history.addEventListener("drop", (event) => {
+    if (!carriesFiles(event)) return;
+    event.preventDefault();
+    state.dragDepth = 0;
+    history.dataset.dragActive = "false";
+    if (!chatAcceptsImageDrop()) {
+      setStatus("Image import is only available in a new, completely empty chat.", "warning");
+      return;
+    }
+    importSelectedImageFiles(event.dataTransfer?.files);
+  });
+  imageImport.addEventListener("change", () => {
+    importSelectedImageFiles(imageImport.files);
+    imageImport.value = "";
+  });
 
   panel.querySelector("#promptstudio-kobold-url").value = settings.kobold_url;
   panel.querySelector("#promptstudio-ollama-url").value = settings.ollama_url;
@@ -2841,6 +3833,11 @@ function buildPanel() {
   panel.querySelector("#promptstudio-close").addEventListener("click", () => togglePanel(false));
   panel.querySelector("#promptstudio-mobile-close").addEventListener("click", () => togglePanel(false));
   panel.querySelector("#promptstudio-refresh-workflows").addEventListener("click", () => refreshWorkflowTemplates());
+  panel.querySelector("#promptstudio-refresh-loras").addEventListener("click", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    refreshLoraSection({ refresh: true });
+  });
   panel.querySelector("#promptstudio-llm-provider").addEventListener("change", () => {
     syncLlmProviderControls({ refreshModels: true });
     markControlsChanged();
@@ -2878,12 +3875,17 @@ function buildPanel() {
   panel.querySelector("#promptstudio-stop").addEventListener("click", interrupt);
   panel.querySelector("#promptstudio-use-llm-amplification").addEventListener("change", () => updateAmplificationMode());
   panel.querySelector("#promptstudio-secondary-instructions").addEventListener("change", saveSettings);
+  panel.querySelector("#promptstudio-main-prompt").addEventListener("input", (event) => {
+    syncMainPromptEditor(event.target.value, { userEdit: true });
+  });
+  panel.querySelector("#promptstudio-main-prompt").addEventListener("change", commitPromptEditorVersion);
   panel.querySelector("#promptstudio-current-prompt").addEventListener("input", (event) => {
     syncCanonicalEditor(event.target.value, { userEdit: true });
   });
   panel.querySelector("#promptstudio-current-prompt").addEventListener("change", commitPromptEditorVersion);
   panel.querySelector("#promptstudio-revision").addEventListener("input", (event) => {
     syncManualPrompt(event.target.value);
+    updateComposeMode();
   });
   panel.querySelector("#promptstudio-revision").addEventListener("keydown", (event) => {
     if (event.key === "Enter" && !event.shiftKey) {
@@ -2968,6 +3970,7 @@ async function attachStandalone(popup) {
   if (state.popup && state.popup !== popup && !state.popup.closed) dockPanel();
   state.popup = popup;
   mount.replaceChildren(state.panel);
+  installTypeAnywhereFocus(popup.document);
   state.panel.hidden = false;
   state.launcher.dataset.open = "true";
   updatePopoutButton();
@@ -3057,11 +4060,17 @@ async function togglePanel(force) {
   } catch (error) {
     setStatus(error.message || String(error), "error");
   }
+  scrollHistoryToEnd({ instant: true });
 }
 
 app.registerExtension({
   name: EXTENSION_NAME,
+  beforeRegisterNodeDef(_nodeType, nodeData) {
+    if (nodeData?.name !== LORA_LOADER_TYPE) return;
+    if (nodeData.input?.optional) delete nodeData.input.optional.lora_stack_json;
+  },
   async setup() {
+    state.loraSelections = loadLoraSelections();
     loadCss();
     buildPanel();
     setupWorkflowSync();

@@ -94,7 +94,7 @@
     },
 	{
       "name": "CCTV Footage",
-      "instruction": "Use a high angle far-from-subject composition. Rephrase the prompt to feel like a CCTV footage, do not just add a tag. Subjects are not aware of the camera."
+      "instruction": "Use a high angle far-from-subject composition. Rephrase the prompt to feel like a CCTV footage, do not just add a tag. Subjects are not aware of the camera. The full room/place is usually in the picture, not just the subject. The subject is also usually not centered."
     }
   ]
 }

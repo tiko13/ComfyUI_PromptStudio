@@ -1,9 +1,12 @@
+import base64
 import hashlib
+import io
 import ipaddress
 import json
 import math
 import os
 import re
+import secrets
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -11,7 +14,7 @@ from datetime import date
 
 import numpy as np
 import torch
-from PIL import Image, ImageOps, ImageSequence
+from PIL import Image, ImageOps, ImageSequence, UnidentifiedImageError
 
 import folder_paths
 
@@ -47,7 +50,7 @@ LEGACY_FRAMING_ALIASES = {
 FINAL_PROMPT_MARKER = "Final prompt:"
 CHAT_SYSTEM_MESSAGE = (
     "You are an expert image-generation prompt editor. Follow the requested transformation and "
-    "output-format constraints precisely. Keep analysis in the model's private reasoning channel. "
+    "output-format constraints precisely. NSFW and explicit content is allowed. Keep analysis in the model's private reasoning channel. "
     "The final answer must contain only the requested prompt output, without commentary or markdown."
 )
 DEFAULT_CONTINUATION_STOPS = [
@@ -62,6 +65,10 @@ DEFAULT_CONTINUATION_STOPS = [
     "\nTarget profile:",
     "\nReference:",
 ]
+VISION_IMAGE_MAX_PIXELS = 64 * 1024 * 1024
+VISION_IMAGE_MAX_EDGE = 2048
+PROMPT_STUDIO_IMAGE_SUBDIRECTORY = os.path.join("prompt_studio", "images")
+MAX_PROMPT_STUDIO_LORAS = 64
 
 RESOLUTION_ASPECT_RATIOS = {
     "1:1 (Square)": (1, 1),
@@ -488,6 +495,82 @@ def _server_capabilities(base_url, timeout):
     return data if isinstance(data, dict) else {}
 
 
+def _kobold_vision_unavailable_reason(capabilities):
+    if capabilities.get("vision") is True:
+        if capabilities.get("jinja") is False:
+            return (
+                "KoboldCpp vision is active, but Use Jinja is disabled. Enable Use Jinja and "
+                "restart KoboldCpp before captioning an image."
+            )
+        return ""
+    if "vision" in capabilities:
+        return (
+            "KoboldCpp vision is not active. Load a vision-capable text model with its matching "
+            "MMProj file, then restart KoboldCpp."
+        )
+    return (
+        "KoboldCpp did not report whether vision is active. Check that the server is reachable "
+        "and update KoboldCpp to a version whose /api/extra/version response includes 'vision'."
+    )
+
+
+def _ollama_model_capabilities(base_url, model, timeout):
+    result = _post_json(
+        _ollama_api_url(base_url, "show"),
+        {"model": model},
+        timeout,
+        service_name="Ollama",
+    )
+    if not isinstance(result, dict):
+        raise RuntimeError(f"Unexpected Ollama model-info response: {result}")
+    capabilities = result.get("capabilities")
+    return [str(value).strip().casefold() for value in capabilities] if isinstance(capabilities, list) else []
+
+
+def _ollama_vision_unavailable_reason(capabilities, model):
+    if "vision" in capabilities:
+        return ""
+    if capabilities:
+        return (
+            f"The selected Ollama model '{model}' does not support vision. "
+            "Select an Ollama model whose capabilities include vision."
+        )
+    return (
+        f"Ollama did not advertise capabilities for '{model}'. Update Ollama or select a model "
+        "that reports the vision capability."
+    )
+
+
+def _llm_vision_capability(
+    llm_provider,
+    *,
+    kobold_url="http://localhost:5001",
+    ollama_url="http://localhost:11434",
+    ollama_model="",
+    request_timeout=10,
+):
+    provider = str(llm_provider or "koboldcpp").strip().casefold()
+    timeout = int(request_timeout)
+    if provider == "koboldcpp":
+        base_url = _clean_base_url(kobold_url)
+        capabilities = _server_capabilities(base_url, timeout)
+        reason = _kobold_vision_unavailable_reason(capabilities)
+        return {"available": not reason, "provider": "KoboldCpp", "reason": reason}
+    if provider == "ollama":
+        base_url = _clean_ollama_base_url(ollama_url)
+        model = str(ollama_model or "").strip()
+        if not model:
+            return {
+                "available": False,
+                "provider": "Ollama",
+                "reason": "Select an Ollama model before dropping an image.",
+            }
+        capabilities = _ollama_model_capabilities(base_url, model, timeout)
+        reason = _ollama_vision_unavailable_reason(capabilities, model)
+        return {"available": not reason, "provider": "Ollama", "model": model, "reason": reason}
+    raise ValueError("llm_provider must be koboldcpp or ollama")
+
+
 def _kobold_token_count(
     base_url,
     timeout,
@@ -539,19 +622,39 @@ def _requested_response_tokens(max_response_tokens, default_max_response_tokens)
     return max(1, requested)
 
 
-def _chat_generation_budget(response_tokens, thinking_mode, safe_limit=None):
-    """Return total completion tokens and an optional explicit high-effort thinking cap.
+def _chat_generation_budget(
+    response_tokens,
+    thinking_mode,
+    safe_limit=None,
+    fixed_reasoning_budgets=False,
+):
+    """Return total completion tokens and an optional explicit thinking cap.
 
     ``response_tokens`` remains the workflow's final-answer allowance. KoboldCpp counts
-    native reasoning and final content in one completion limit, so lower effort levels
-    receive enough total tokens to leave roughly this allowance after their percentage
-    reasoning budget. High effort is unrestricted upstream; give it a generous explicit
-    budget while reserving the requested final-answer allowance.
+    native reasoning and final content in one completion limit. Minimal, Low, and
+    Medium receive fixed reasoning allowances while preserving the requested final-answer
+    allowance. High has no reasoning cap and may use the remaining context window.
     """
     response_tokens = max(1, int(response_tokens))
     effort = _reasoning_effort(thinking_mode)
     thinking_budget = None
-    if effort == "minimal":
+    if fixed_reasoning_budgets and effort == "minimal":
+        desired_reasoning = 200
+        total = response_tokens + desired_reasoning
+        thinking_budget = desired_reasoning
+    elif fixed_reasoning_budgets and effort == "low":
+        desired_reasoning = 500
+        total = response_tokens + desired_reasoning
+        thinking_budget = desired_reasoning
+    elif fixed_reasoning_budgets and effort == "medium":
+        desired_reasoning = 1000
+        total = response_tokens + desired_reasoning
+        thinking_budget = desired_reasoning
+    elif fixed_reasoning_budgets and effort == "high":
+        # Normal requests supply safe_limit from KoboldCpp's actual context window.
+        # Keep a generous fallback for direct calls if that capability is unavailable.
+        total = int(safe_limit) if safe_limit is not None and safe_limit > 0 else response_tokens + 65536
+    elif effort == "minimal":
         total = (response_tokens * 10 + 8) // 9
     elif effort == "low":
         total = (response_tokens * 10 + 6) // 7
@@ -591,7 +694,7 @@ def _common_kcpp_inputs(default_max_response_tokens=0, raw_completion=False):
             ["Disabled", "Minimal", "Low", "Medium", "High"],
             {
                 "default": "Disabled",
-                "tooltip": "Controls KoboldCpp reasoning_effort. High receives up to 4096 private-reasoning tokens while preserving the final-answer allowance.",
+                "tooltip": "Private-reasoning limits: Minimal 200 tokens, Low 500, Medium 1000, and High uses the available context window.",
             },
         ),
         "kobold_url": (
@@ -673,6 +776,7 @@ def _generate_kcpp(
     stop_sequence,
     request_timeout,
     include_default_continuation_stops=False,
+    image_data_uri=None,
 ):
     base_url = _clean_base_url(kobold_url)
     timeout = int(request_timeout)
@@ -682,9 +786,19 @@ def _generate_kcpp(
             "KoboldCpp Chat Completions requires Use Jinja for reliable model-native formatting. "
             "Enable Use Jinja in KoboldCpp, restart the server, and run the workflow again."
         )
+    if image_data_uri:
+        vision_reason = _kobold_vision_unavailable_reason(capabilities)
+        if vision_reason:
+            raise RuntimeError(vision_reason)
+        user_content = [
+            {"type": "text", "text": str(prompt or "")},
+            {"type": "image_url", "image_url": {"url": str(image_data_uri)}},
+        ]
+    else:
+        user_content = str(prompt or "")
     messages = [
         {"role": "system", "content": CHAT_SYSTEM_MESSAGE},
-        {"role": "user", "content": str(prompt or "")},
+        {"role": "user", "content": user_content},
     ]
     response_tokens = _requested_response_tokens(max_response_tokens, default_max_response_tokens)
     context_length = _server_context_length(base_url, timeout)
@@ -720,7 +834,9 @@ def _generate_kcpp(
             response_tokens,
             request_thinking_mode,
             safe_limit,
+            fixed_reasoning_budgets=True,
         )
+        chat_template_kwargs = {"enable_thinking": enable_thinking}
         payload = {
             "model": "koboldcpp",
             "messages": messages,
@@ -732,13 +848,19 @@ def _generate_kcpp(
             "rep_pen": float(rep_pen),
             "rep_pen_range": int(rep_pen_range),
             "seed": int(sampler_seed),
-            "reasoning_effort": effort,
-            "chat_template_kwargs": {"enable_thinking": enable_thinking},
+            "chat_template_kwargs": chat_template_kwargs,
             "stop": stop_sequences,
             "encapsulate_thinking": True,
             "continue_assistant_turn": False,
             "stream": False,
         }
+        if thinking_budget is not None:
+            # KoboldCpp's top-level Minimal/Low/Medium efforts enforce percentage caps
+            # before consulting thinking_budget_tokens. Keep the effort as a template
+            # hint and omit it at the top level so the explicit fixed cap takes effect.
+            chat_template_kwargs["reasoning_effort"] = effort
+        else:
+            payload["reasoning_effort"] = effort
         if thinking_budget is not None:
             payload["thinking_budget_tokens"] = thinking_budget
 
@@ -800,11 +922,17 @@ def _generate_ollama(
     stop_sequence,
     request_timeout,
     include_default_continuation_stops=False,
+    image_base64=None,
 ):
     base_url = _clean_ollama_base_url(ollama_url)
     model = str(ollama_model or "").strip()
     if not model:
         raise ValueError("Select an Ollama model in Prompt Studio settings")
+    if image_base64:
+        capabilities = _ollama_model_capabilities(base_url, model, int(request_timeout))
+        vision_reason = _ollama_vision_unavailable_reason(capabilities, model)
+        if vision_reason:
+            raise RuntimeError(vision_reason)
 
     stop_sequences = _split_stop_sequences(stop_sequence)
     if include_default_continuation_stops and _reasoning_effort(thinking_mode) == "none":
@@ -824,11 +952,14 @@ def _generate_ollama(
     if int(sampler_seed) >= 0:
         options["seed"] = int(sampler_seed)
 
+    user_message = {"role": "user", "content": str(prompt or "")}
+    if image_base64:
+        user_message["images"] = [str(image_base64)]
     payload = {
         "model": model,
         "messages": [
             {"role": "system", "content": CHAT_SYSTEM_MESSAGE},
-            {"role": "user", "content": str(prompt or "")},
+            user_message,
         ],
         "options": options,
         "think": _ollama_thinking_value(thinking_mode),
@@ -1320,6 +1451,7 @@ def _build_expansion_retry_prompt(
             "- Expand by adding visible attributes, textures, materials, colors, pose, expression, composition, and ordinary supporting setting details.",
             "- Do not add new main subjects, extra characters, animals, vehicles, signs, symbols, readable text, logos, landmarks, brands, new focal props, loose decorative props, or new story events.",
             "- Use visible details only. Do not add sounds, smells, emotions, mood labels, or invisible sensory details unless the user asks for them.",
+            "- Follow any explicit, NSFW and similar content orders if asked for.",
             *_expansion_rule_lines(embellishment_level, profile),
             "- Do not explain your changes.",
             "- Do not include markdown.",
@@ -1871,7 +2003,7 @@ class KCPP_PromptAmplify:
                     ["Disabled", "Minimal", "Low", "Medium", "High"],
                     {
                         "default": "Disabled",
-                        "tooltip": "Controls KoboldCpp reasoning_effort. Disabled sends 'none'; the other modes enable model thinking at that effort level.",
+                        "tooltip": "Private-reasoning limits: Minimal 200 tokens, Low 500, Medium 1000, and High uses the available context window.",
                     },
                 ),
                 "embellishment_level": (
@@ -2082,9 +2214,10 @@ def _parse_chat_image_reference(image_ref):
         "input": folder_paths.get_input_directory,
         "output": folder_paths.get_output_directory,
         "temp": folder_paths.get_temp_directory,
+        "promptstudio": _prompt_studio_image_directory,
     }
     if storage_type not in roots:
-        raise ValueError("Image reference type must be input, output, or temp")
+        raise ValueError("Image reference type must be input, output, temp, or promptstudio")
 
     filename = str(reference.get("filename") or "").strip()
     subfolder = str(reference.get("subfolder") or "").strip()
@@ -2098,17 +2231,106 @@ def _parse_chat_image_reference(image_ref):
     root = os.path.realpath(roots[storage_type]())
     relative_path = os.path.normpath(os.path.join(subfolder, filename))
     if relative_path == os.pardir or relative_path.startswith(os.pardir + os.sep):
-        raise ValueError("Image reference cannot leave its ComfyUI storage directory")
+        raise ValueError("Image reference cannot leave its configured storage directory")
     path = os.path.realpath(os.path.join(root, relative_path))
     try:
         inside_root = os.path.commonpath((root, path)) == root
     except ValueError:
         inside_root = False
     if not inside_root:
-        raise ValueError("Image reference cannot leave its ComfyUI storage directory")
+        raise ValueError("Image reference cannot leave its configured storage directory")
     if not os.path.isfile(path):
         raise ValueError(f"Referenced image does not exist: {relative_path}")
     return reference, path
+
+
+def _prompt_studio_image_directory():
+    get_user_directory = getattr(folder_paths, "get_user_directory", None)
+    if not callable(get_user_directory):
+        raise RuntimeError("This ComfyUI version does not expose a user-data directory")
+    return os.path.realpath(os.path.join(get_user_directory(), PROMPT_STUDIO_IMAGE_SUBDIRECTORY))
+
+
+def _sanitize_prompt_studio_image(image_bytes):
+    if not isinstance(image_bytes, (bytes, bytearray, memoryview)) or not image_bytes:
+        raise ValueError("The dropped image is empty")
+
+    try:
+        with Image.open(io.BytesIO(bytes(image_bytes))) as source:
+            source.seek(0)
+            if source.width <= 0 or source.height <= 0:
+                raise ValueError("The dropped image has invalid dimensions")
+            if source.width * source.height > VISION_IMAGE_MAX_PIXELS:
+                raise ValueError("The dropped image exceeds the 64-megapixel safety limit")
+            has_alpha = (
+                source.mode in {"RGBA", "LA"}
+                or (source.mode == "P" and "transparency" in source.info)
+            )
+            image = ImageOps.exif_transpose(source)
+            image.load()
+            image = image.convert("RGBA" if has_alpha else "RGB")
+            image.info.clear()
+    except (Image.DecompressionBombError, UnidentifiedImageError) as exc:
+        raise ValueError("The dropped file is not a safe, supported raster image") from exc
+
+    image.thumbnail((VISION_IMAGE_MAX_EDGE, VISION_IMAGE_MAX_EDGE), Image.Resampling.LANCZOS)
+    output_directory = _prompt_studio_image_directory()
+    os.makedirs(output_directory, exist_ok=True)
+    filename = f"{secrets.token_hex(16)}.webp"
+    destination = os.path.join(output_directory, filename)
+    temporary = destination + ".tmp"
+    try:
+        image.save(
+            temporary,
+            format="WEBP",
+            lossless=False,
+            quality=80,
+            method=4,
+            exact=False,
+        )
+        os.replace(temporary, destination)
+    except Exception:
+        try:
+            os.remove(temporary)
+        except FileNotFoundError:
+            pass
+        raise
+    return {
+        "filename": filename,
+        "subfolder": "",
+        "type": "promptstudio",
+        "width": image.width,
+        "height": image.height,
+    }
+
+
+def _chat_image_vision_payload(image_ref):
+    reference, path = _parse_chat_image_reference(image_ref)
+    if str(reference.get("type") or "").strip().lower() == "promptstudio":
+        with open(path, "rb") as file:
+            encoded = base64.b64encode(file.read()).decode("ascii")
+        return encoded, f"data:image/webp;base64,{encoded}"
+
+    with Image.open(path) as source:
+        image = ImageOps.exif_transpose(source)
+        if image.width <= 0 or image.height <= 0:
+            raise ValueError("The dropped image has invalid dimensions")
+        if image.width * image.height > VISION_IMAGE_MAX_PIXELS:
+            raise ValueError("The dropped image exceeds the 64-megapixel vision limit")
+        image = image.copy()
+
+    image.thumbnail((VISION_IMAGE_MAX_EDGE, VISION_IMAGE_MAX_EDGE), Image.Resampling.LANCZOS)
+    buffer = io.BytesIO()
+    if "A" in image.getbands():
+        image.save(buffer, format="PNG", optimize=True)
+        media_type = "image/png"
+    else:
+        if image.mode != "RGB":
+            image = image.convert("RGB")
+        image.save(buffer, format="JPEG", quality=92, optimize=True)
+        media_type = "image/jpeg"
+    encoded = base64.b64encode(buffer.getvalue()).decode("ascii")
+    return encoded, f"data:{media_type};base64,{encoded}"
 
 
 def _chat_image_dimensions(image_ref):
@@ -2219,7 +2441,7 @@ class Save_as_webp_cond:
 
 
 class KCPP_ChatImageInput:
-    """Load a Prompt Studio chat image directly from ComfyUI storage."""
+    """Load a generated or imported Prompt Studio chat image."""
 
     @classmethod
     def INPUT_TYPES(cls):
@@ -2230,7 +2452,7 @@ class KCPP_ChatImageInput:
                     {
                         "default": "",
                         "multiline": False,
-                        "tooltip": "Injected by Prompt Studio. References an existing input, output, or temp image without copying it.",
+                        "tooltip": "Injected by Prompt Studio. References an existing generated image or sanitized Prompt Studio import without copying it.",
                     },
                 ),
                 "source_name": (
@@ -2427,6 +2649,142 @@ class KCPP_Apply:
         return (_strip_apply_response(result),)
 
 
+def _normalized_lora_type(value):
+    value = str(value or "").strip()
+    if not value or value in {".", ".."} or "/" in value or "\\" in value:
+        return ""
+    return value
+
+
+def _lora_names_for_type(lora_type):
+    normalized_type = _normalized_lora_type(lora_type)
+    if not normalized_type:
+        return []
+    type_key = normalized_type.casefold()
+    matches = []
+    for name in folder_paths.get_filename_list("loras"):
+        normalized_name = str(name or "").replace("\\", "/").strip("/")
+        parts = normalized_name.split("/")
+        if (
+            len(parts) > 1
+            and parts[0].casefold() == type_key
+            and not parts[-1].startswith("_")
+        ):
+            matches.append(normalized_name)
+    return sorted(set(matches), key=lambda name: (name.casefold(), name))
+
+
+class KCPP_PromptStudioLoraLoader:
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "model": ("MODEL",),
+                "lora_type": (
+                    "STRING",
+                    {
+                        "default": "",
+                        "tooltip": "Only LoRAs inside a top-level folder with this name are offered in Prompt Studio.",
+                    },
+                ),
+            },
+            # Prompt Studio removes this implementation detail from the graph UI and
+            # injects it only into the executable API snapshot.
+            "optional": {
+                "lora_stack_json": ("STRING", {"default": "[]", "multiline": True}),
+            },
+        }
+
+    RETURN_TYPES = ("MODEL",)
+    RETURN_NAMES = ("model",)
+    FUNCTION = "load_loras"
+    CATEGORY = "Prompt Studio"
+
+    def __init__(self):
+        self._cached_loras = []
+        self._cache_signature = None
+
+    def _parse_stack(self, lora_type, lora_stack_json):
+        normalized_type = _normalized_lora_type(lora_type)
+        if not normalized_type:
+            if str(lora_stack_json or "").strip() not in {"", "[]"}:
+                raise ValueError("LoRA Type must name one top-level LoRA folder")
+            return []
+        if len(str(lora_stack_json or "")) > 64 * 1024:
+            raise ValueError("Prompt Studio LoRA selection is too large")
+        try:
+            entries = json.loads(str(lora_stack_json or "[]"))
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"Prompt Studio LoRA selection is not valid JSON: {exc}") from exc
+        if not isinstance(entries, list):
+            raise ValueError("Prompt Studio LoRA selection must be a list")
+        if len(entries) > MAX_PROMPT_STUDIO_LORAS:
+            raise ValueError(f"Prompt Studio supports at most {MAX_PROMPT_STUDIO_LORAS} LoRAs per loader")
+
+        available = {name.casefold(): name for name in _lora_names_for_type(normalized_type)}
+        parsed = []
+        seen = set()
+        for entry in entries:
+            if not isinstance(entry, dict):
+                raise ValueError("Each Prompt Studio LoRA selection must be an object")
+            requested_name = str(entry.get("name") or "").replace("\\", "/").strip("/")
+            canonical_name = available.get(requested_name.casefold())
+            if not canonical_name:
+                raise ValueError(
+                    f"LoRA '{requested_name}' is not inside the '{normalized_type}' LoRA folder"
+                )
+            if canonical_name.casefold() in seen:
+                continue
+            try:
+                strength = float(entry.get("strength", 1.0))
+            except (TypeError, ValueError) as exc:
+                raise ValueError(f"LoRA '{canonical_name}' has an invalid strength") from exc
+            if not math.isfinite(strength) or strength < -100 or strength > 100:
+                raise ValueError(f"LoRA '{canonical_name}' strength must be between -100 and 100")
+            seen.add(canonical_name.casefold())
+            parsed.append((canonical_name, strength))
+        return parsed
+
+    def load_loras(self, model, lora_type, lora_stack_json="[]"):
+        stack = self._parse_stack(lora_type, lora_stack_json)
+        if not stack:
+            self._cached_loras = []
+            self._cache_signature = None
+            return (model,)
+
+        import comfy.sd
+        import comfy.utils
+
+        resolved = []
+        for name, strength in stack:
+            if hasattr(folder_paths, "get_full_path_or_raise"):
+                path = folder_paths.get_full_path_or_raise("loras", name)
+            else:
+                path = folder_paths.get_full_path("loras", name)
+                if not path:
+                    raise ValueError(f"LoRA '{name}' could not be found")
+            resolved.append((name, strength, path, os.path.getmtime(path)))
+
+        signature = tuple((path, modified) for _, _, path, modified in resolved)
+        if signature != self._cache_signature:
+            self._cached_loras = [
+                comfy.utils.load_torch_file(path, safe_load=True)
+                for _, _, path, _ in resolved
+            ]
+            self._cache_signature = signature
+
+        loaded_model = model
+        for (_, strength, _, _), lora in zip(resolved, self._cached_loras):
+            loaded_model, _ = comfy.sd.load_lora_for_models(
+                loaded_model,
+                None,
+                lora,
+                strength,
+                0,
+            )
+        return (loaded_model,)
+
+
 class KCPP_Ideogram4:
     @classmethod
     def INPUT_TYPES(cls):
@@ -2464,7 +2822,7 @@ class KCPP_Ideogram4:
                     ["Disabled", "Minimal", "Low", "Medium", "High"],
                     {
                         "default": "Disabled",
-                        "tooltip": "Controls KoboldCpp reasoning_effort. Disabled sends 'none'; the other modes enable model thinking at that effort level.",
+                        "tooltip": "Private-reasoning limits: Minimal 200 tokens, Low 500, Medium 1000, and High uses the available context window.",
                     },
                 ),
                 "embellishment_level": (
@@ -2716,6 +3074,7 @@ NODE_CLASS_MAPPINGS = {
     "KCPP_PromptSlot": KCPP_PromptSlot,
     "KCPP_ChatImageInput": KCPP_ChatImageInput,
     "KCPP_PromptStudioUpscale": KCPP_PromptStudioUpscale,
+    "KCPP_PromptStudioLoraLoader": KCPP_PromptStudioLoraLoader,
     "KCPP_Apply": KCPP_Apply,
     "KCPP_Ideogram4": KCPP_Ideogram4,
 }
@@ -2726,6 +3085,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "KCPP_PromptSlot": "KoboldCpp Prompt Slot",
     "KCPP_ChatImageInput": "Prompt Studio Image Source",
     "KCPP_PromptStudioUpscale": "Prompt Studio Upscale",
+    "KCPP_PromptStudioLoraLoader": "Prompt Studio LoRA Loader",
     "KCPP_Apply": "KoboldCpp Apply",
     "KCPP_Ideogram4": "Ideogram4-KoboldCPP",
 }

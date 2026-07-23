@@ -24,6 +24,7 @@ from .nodes import (
     _build_instruction_prompt,
     _build_main_revision_prompt,
     _build_revision_prompt,
+    _chat_image_vision_payload,
     _chat_image_dimensions,
     _density_count,
     _generate_kcpp,
@@ -35,9 +36,13 @@ from .nodes import (
     _load_profiles,
     _load_style_templates,
     _list_ollama_models,
+    _lora_names_for_type,
+    _llm_vision_capability,
     _needs_expansion_retry,
+    _parse_chat_image_reference,
     _remove_known_profile_wrappers,
     _retry_seed,
+    _sanitize_prompt_studio_image,
     _strip_response,
 )
 
@@ -51,6 +56,9 @@ MAX_WORKFLOW_STORE_BYTES = 100 * 1024 * 1024
 MAX_REVISE_REQUEST_BYTES = 1024 * 1024
 MAX_IMAGE_REFERENCE_BYTES = 16 * 1024
 MAX_LLM_CONFIG_REQUEST_BYTES = 16 * 1024
+MAX_VISION_REQUEST_BYTES = 32 * 1024
+MAX_IMAGE_UPLOAD_BYTES = 20 * 1024 * 1024
+MAX_IMAGE_UPLOAD_REQUEST_BYTES = MAX_IMAGE_UPLOAD_BYTES + 1024 * 1024
 STANDALONE_PAGE_PATH = os.path.join(BASE_DIR, "web", "prompt_studio.html")
 STANDALONE_ALIAS_PATH = "/PromptStudio"
 
@@ -66,6 +74,9 @@ LAN_LOGIN_FAILURE_LIMIT = 5
 LAN_LOGIN_FAILURE_WINDOW = 5 * 60
 LAN_SESSION_SECRET = secrets.token_bytes(32)
 LAN_LOGIN_FAILURES = {}
+VISION_CAPTION_PROMPT = """Inspect the attached image and write an accurate, model-neutral source prompt for an image-generation workflow.
+
+Describe only what is visibly present. Capture the subjects and their count, appearance, pose or action, setting, composition, viewpoint, lighting, colors, medium, and any legible text when relevant. Do not invent hidden details or identify real people. Do not mention that you saw an image, a reference, or an attachment. Return only one concise but sufficiently detailed natural-language description, without a label, commentary, or Markdown."""
 
 _LAN_IPV4_NETWORKS = tuple(
     ipaddress.ip_network(value)
@@ -500,6 +511,20 @@ def _validate_workflow_templates(templates):
             upscale_node = output[upscale_node_id]
             if not isinstance(upscale_node, dict) or upscale_node.get("class_type") != "KCPP_PromptStudioUpscale":
                 raise ValueError(f"Workflow cache entry {index + 1} upscale node has an incompatible class")
+        lora_nodes = template.get("loraNodes", [])
+        if not isinstance(lora_nodes, list):
+            raise ValueError(f"Workflow cache entry {index + 1} LoRA nodes must be a list")
+        lora_node_ids = set()
+        for lora_node in lora_nodes:
+            if not isinstance(lora_node, dict):
+                raise ValueError(f"Workflow cache entry {index + 1} has an invalid LoRA node")
+            lora_node_id = _text(lora_node.get("id")).strip()
+            if not lora_node_id or lora_node_id in lora_node_ids or lora_node_id not in output:
+                raise ValueError(f"Workflow cache entry {index + 1} has an invalid executable LoRA node")
+            api_lora_node = output[lora_node_id]
+            if not isinstance(api_lora_node, dict) or api_lora_node.get("class_type") != "KCPP_PromptStudioLoraLoader":
+                raise ValueError(f"Workflow cache entry {index + 1} LoRA node has an incompatible class")
+            lora_node_ids.add(lora_node_id)
         result_node_ids = template.get("resultNodeIds", [])
         if (
             not isinstance(result_node_ids, list)
@@ -678,6 +703,111 @@ def _revise(data):
     return _apply_profile_wrappers(revised, profile)
 
 
+def _vision_capability(data):
+    llm_provider = _text(data.get("llm_provider"), "koboldcpp").strip().casefold()
+    request_timeout = _bounded_number(data.get("request_timeout"), 10, 5, 60, integer=True)
+    return _llm_vision_capability(
+        llm_provider,
+        kobold_url=_text(data.get("kobold_url"), "http://localhost:5001"),
+        ollama_url=_text(data.get("ollama_url"), "http://localhost:11434"),
+        ollama_model=_text(data.get("ollama_model")).strip(),
+        request_timeout=request_timeout,
+    )
+
+
+def _caption_image(data):
+    image_reference = data.get("image")
+    if not isinstance(image_reference, dict):
+        raise ValueError("image must be a Prompt Studio image reference")
+
+    profile = _get_profile(_text(data.get("model_profile"), "General Natural Language"))
+    thinking_mode = _text(data.get("thinking_mode"), "Disabled")
+    if thinking_mode not in {"Disabled", "Minimal", "Low", "Medium", "High"}:
+        raise ValueError("Invalid thinking_mode")
+
+    max_response_tokens = _bounded_number(data.get("max_response_tokens"), 0, 0, 8192, integer=True)
+    temperature = _bounded_number(data.get("temperature"), 0.7, 0.0, 5.0)
+    top_p = _bounded_number(data.get("top_p"), 0.9, 0.0, 1.0)
+    top_k = _bounded_number(data.get("top_k"), 100, 0, 200, integer=True)
+    min_p = _bounded_number(data.get("min_p"), 0.0, 0.0, 1.0)
+    rep_pen = _bounded_number(data.get("rep_pen"), 1.05, 0.5, 3.0)
+    rep_pen_range = _bounded_number(data.get("rep_pen_range"), 360, 0, 4096, integer=True)
+    sampler_seed = _bounded_number(data.get("sampler_seed"), -1, -1, 999999, integer=True)
+    request_timeout = _bounded_number(data.get("request_timeout"), 120, 5, 600, integer=True)
+    llm_provider = _text(data.get("llm_provider"), "koboldcpp").strip().casefold()
+    if llm_provider not in {"koboldcpp", "ollama"}:
+        raise ValueError("llm_provider must be koboldcpp or ollama")
+
+    image_base64, image_data_uri = _chat_image_vision_payload(json.dumps(image_reference))
+    default_max_response_tokens = int(
+        profile.get("default_max_response_tokens") or DEFAULT_PROFILE["default_max_response_tokens"]
+    )
+    common_args = (
+        max_response_tokens,
+        default_max_response_tokens,
+        temperature,
+        top_p,
+        top_k,
+        min_p,
+        rep_pen,
+        rep_pen_range,
+        sampler_seed,
+        thinking_mode,
+        _text(data.get("stop_sequence")),
+        request_timeout,
+    )
+    if llm_provider == "ollama":
+        raw = _generate_ollama(
+            VISION_CAPTION_PROMPT,
+            _text(data.get("ollama_url"), "http://localhost:11434"),
+            _text(data.get("ollama_model")).strip(),
+            *common_args,
+            include_default_continuation_stops=True,
+            image_base64=image_base64,
+        )
+    else:
+        raw = _generate_kcpp(
+            VISION_CAPTION_PROMPT,
+            _text(data.get("kobold_url"), "http://localhost:5001"),
+            *common_args,
+            include_default_continuation_stops=True,
+            image_data_uri=image_data_uri,
+        )
+
+    caption = _strip_response(raw)
+    if not caption:
+        provider_name = "Ollama" if llm_provider == "ollama" else "KoboldCpp"
+        raise RuntimeError(f"{provider_name} returned an empty image caption")
+    return caption
+
+
+async def _read_uploaded_image(request):
+    if request.content_length is not None and request.content_length > MAX_IMAGE_UPLOAD_REQUEST_BYTES:
+        raise ValueError("The dropped image exceeds the 20 MB upload limit")
+    reader = await request.multipart()
+    image_data = None
+    while True:
+        field = await reader.next()
+        if field is None:
+            break
+        if field.name != "image":
+            continue
+        if image_data is not None:
+            raise ValueError("Upload exactly one image")
+        buffer = bytearray()
+        while True:
+            chunk = await field.read_chunk(size=64 * 1024)
+            if not chunk:
+                break
+            buffer.extend(chunk)
+            if len(buffer) > MAX_IMAGE_UPLOAD_BYTES:
+                raise ValueError("The dropped image exceeds the 20 MB upload limit")
+        image_data = bytes(buffer)
+    if image_data is None:
+        raise ValueError("The upload did not contain an image")
+    return image_data
+
+
 @PromptServer.instance.routes.get(f"{STANDALONE_ALIAS_PATH}/")
 async def prompt_studio_alias_redirect(request):
     query = f"?{request.query_string}" if request.query_string else ""
@@ -710,6 +840,26 @@ async def prompt_studio_config(request):
     )
 
 
+@PromptServer.instance.routes.get("/promptstudio/prompt-studio/loras")
+async def prompt_studio_loras(request):
+    try:
+        lora_type = request.query.get("type", "")
+        if len(lora_type) > 256:
+            raise ValueError("LoRA Type is too long")
+        names = await asyncio.to_thread(_lora_names_for_type, lora_type)
+        return web.json_response(
+            {
+                "type": str(lora_type).strip(),
+                "loras": [
+                    {"name": name, "label": name.split("/", 1)[1]}
+                    for name in names
+                ],
+            }
+        )
+    except (OSError, ValueError) as exc:
+        return web.json_response({"error": str(exc)}, status=400)
+
+
 @PromptServer.instance.routes.post("/promptstudio/prompt-studio/ollama-models")
 async def prompt_studio_ollama_models(request):
     try:
@@ -722,6 +872,67 @@ async def prompt_studio_ollama_models(request):
         models = await asyncio.to_thread(_list_ollama_models, ollama_url, 10)
         return web.json_response({"models": models})
     except (ValueError, json.JSONDecodeError) as exc:
+        return web.json_response({"error": str(exc)}, status=400)
+    except Exception as exc:
+        return web.json_response({"error": str(exc)}, status=502)
+
+
+@PromptServer.instance.routes.post("/promptstudio/prompt-studio/import-image")
+async def prompt_studio_import_image(request):
+    try:
+        image_data = await _read_uploaded_image(request)
+        reference = await asyncio.to_thread(_sanitize_prompt_studio_image, image_data)
+        return web.json_response({"image": reference})
+    except (ValueError, OSError) as exc:
+        return web.json_response({"error": str(exc)}, status=400)
+    except Exception as exc:
+        return web.json_response({"error": f"The image could not be sanitized: {exc}"}, status=500)
+
+
+@PromptServer.instance.routes.get("/promptstudio/prompt-studio/image")
+async def prompt_studio_image(request):
+    try:
+        reference = {
+            "filename": _text(request.query.get("filename")).strip(),
+            "subfolder": "",
+            "type": "promptstudio",
+        }
+        _, path = await asyncio.to_thread(_parse_chat_image_reference, json.dumps(reference))
+        response = web.FileResponse(path)
+        response.headers["Cache-Control"] = "private, max-age=31536000, immutable"
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        return response
+    except (ValueError, OSError) as exc:
+        return web.json_response({"error": str(exc)}, status=404)
+
+
+@PromptServer.instance.routes.post("/promptstudio/prompt-studio/vision-capability")
+async def prompt_studio_vision_capability(request):
+    try:
+        if request.content_length is not None and request.content_length > MAX_LLM_CONFIG_REQUEST_BYTES:
+            raise ValueError("Prompt Studio LLM configuration request exceeds the 16 KB limit")
+        data = await request.json()
+        if not isinstance(data, dict):
+            raise ValueError("JSON body must be an object")
+        capability = await asyncio.to_thread(_vision_capability, data)
+        return web.json_response(capability)
+    except (ValueError, json.JSONDecodeError) as exc:
+        return web.json_response({"available": False, "reason": str(exc)}, status=400)
+    except Exception as exc:
+        return web.json_response({"available": False, "reason": str(exc)})
+
+
+@PromptServer.instance.routes.post("/promptstudio/prompt-studio/caption-image")
+async def prompt_studio_caption_image(request):
+    try:
+        if request.content_length is not None and request.content_length > MAX_VISION_REQUEST_BYTES:
+            raise ValueError("Prompt Studio image-caption request exceeds the 32 KB limit")
+        data = await request.json()
+        if not isinstance(data, dict):
+            raise ValueError("JSON body must be an object")
+        caption = await asyncio.to_thread(_caption_image, data)
+        return web.json_response({"prompt": caption})
+    except (ValueError, json.JSONDecodeError, OSError) as exc:
         return web.json_response({"error": str(exc)}, status=400)
     except Exception as exc:
         return web.json_response({"error": str(exc)}, status=502)

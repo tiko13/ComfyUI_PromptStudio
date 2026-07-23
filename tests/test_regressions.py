@@ -1,5 +1,6 @@
 import asyncio
 import base64
+import io
 import importlib.util
 import json
 import math
@@ -12,7 +13,7 @@ from pathlib import Path
 from unittest import mock
 
 import numpy as np
-from PIL import Image
+from PIL import Image, PngImagePlugin
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -41,6 +42,7 @@ def install_runtime_stubs(storage_root):
     folder_paths.get_input_directory = lambda: storage_root
     folder_paths.get_output_directory = lambda: storage_root
     folder_paths.get_temp_directory = lambda: storage_root
+    folder_paths.get_user_directory = lambda: storage_root
     sys.modules["folder_paths"] = folder_paths
 
     class FakeResponse:
@@ -401,13 +403,14 @@ class RegressionTests(unittest.TestCase):
         self.assertIn("Add no new visible details", natural)
         self.assertIn("Add no new visible details", tags)
 
-    def test_chat_budget_adds_reasoning_space_to_the_final_answer_allowance(self):
-        self.assertEqual(self.nodes._chat_generation_budget(300, "Disabled"), (300, None))
-        self.assertEqual(self.nodes._chat_generation_budget(300, "Minimal"), (334, None))
-        self.assertEqual(self.nodes._chat_generation_budget(300, "Low"), (429, None))
-        self.assertEqual(self.nodes._chat_generation_budget(300, "Medium"), (750, None))
-        self.assertEqual(self.nodes._chat_generation_budget(300, "High"), (4396, 4096))
-        self.assertEqual(self.nodes._chat_generation_budget(300, "High", 900), (900, 600))
+    def test_kobold_chat_budget_uses_fixed_reasoning_allowances(self):
+        budget = self.nodes._chat_generation_budget
+        self.assertEqual(budget(300, "Disabled", fixed_reasoning_budgets=True), (300, None))
+        self.assertEqual(budget(300, "Minimal", fixed_reasoning_budgets=True), (500, 200))
+        self.assertEqual(budget(300, "Low", fixed_reasoning_budgets=True), (800, 500))
+        self.assertEqual(budget(300, "Medium", fixed_reasoning_budgets=True), (1300, 1000))
+        self.assertEqual(budget(300, "Medium", 900, fixed_reasoning_budgets=True), (900, 600))
+        self.assertEqual(budget(300, "High", 6000, fixed_reasoning_budgets=True), (6000, None))
 
     def test_high_thinking_length_failure_is_not_retried_without_thinking(self):
         response = {
@@ -423,7 +426,7 @@ class RegressionTests(unittest.TestCase):
             mock.patch.object(self.nodes, "_server_context_length", return_value=8192),
             mock.patch.object(self.nodes, "_kobold_token_count", return_value=250),
             mock.patch.object(self.nodes, "_post_json", return_value=response) as post,
-            self.assertRaisesRegex(RuntimeError, "4396-token completion budget"),
+            self.assertRaisesRegex(RuntimeError, "6552-token completion budget"),
         ):
             self.nodes._generate_kcpp(
                 "Rewrite this prompt",
@@ -445,7 +448,7 @@ class RegressionTests(unittest.TestCase):
 
         self.assertEqual(post.call_count, 1)
         self.assertEqual(post.call_args.args[1]["reasoning_effort"], "high")
-        self.assertEqual(post.call_args.args[1]["thinking_budget_tokens"], 4096)
+        self.assertNotIn("thinking_budget_tokens", post.call_args.args[1])
         self.assertEqual(post.call_args.args[1]["stop"], [])
 
     def test_chat_generation_uses_profile_default_as_final_answer_allowance(self):
@@ -484,9 +487,11 @@ class RegressionTests(unittest.TestCase):
         request_url, payload, timeout = post.call_args.args
         self.assertTrue(request_url.endswith("/v1/chat/completions"))
         self.assertEqual(timeout, 120)
-        self.assertEqual(payload["max_tokens"], 750)
-        self.assertEqual(payload["reasoning_effort"], "medium")
+        self.assertEqual(payload["max_tokens"], 1300)
+        self.assertEqual(payload["thinking_budget_tokens"], 1000)
+        self.assertNotIn("reasoning_effort", payload)
         self.assertTrue(payload["chat_template_kwargs"]["enable_thinking"])
+        self.assertEqual(payload["chat_template_kwargs"]["reasoning_effort"], "medium")
 
     def test_ollama_generation_uses_native_chat_options_and_separate_thinking(self):
         response = {
@@ -525,6 +530,121 @@ class RegressionTests(unittest.TestCase):
         self.assertEqual(payload["options"]["repeat_last_n"], 360)
         self.assertNotIn("seed", payload["options"])
         self.assertEqual(post.call_args.kwargs["service_name"], "Ollama")
+
+    def test_vision_capability_uses_provider_runtime_signals(self):
+        with mock.patch.object(self.nodes, "_server_capabilities", return_value={"vision": False}):
+            kobold = self.nodes._llm_vision_capability(
+                "koboldcpp",
+                kobold_url="http://localhost:5001",
+            )
+        self.assertFalse(kobold["available"])
+        self.assertIn("MMProj", kobold["reason"])
+
+        with mock.patch.object(
+            self.nodes,
+            "_ollama_model_capabilities",
+            return_value=["completion", "vision"],
+        ):
+            ollama = self.nodes._llm_vision_capability(
+                "ollama",
+                ollama_url="http://localhost:11434",
+                ollama_model="gemma3:4b",
+            )
+        self.assertTrue(ollama["available"])
+        self.assertEqual(ollama["model"], "gemma3:4b")
+
+    def test_kobold_vision_generation_uses_openai_multimodal_content(self):
+        response = {
+            "choices": [
+                {
+                    "message": {"content": "A blue lighthouse beside the sea."},
+                    "finish_reason": "stop",
+                }
+            ]
+        }
+        with (
+            mock.patch.object(self.nodes, "_server_capabilities", return_value={"jinja": True, "vision": True}),
+            mock.patch.object(self.nodes, "_server_context_length", return_value=8192),
+            mock.patch.object(self.nodes, "_kobold_token_count", return_value=250),
+            mock.patch.object(self.nodes, "_post_json", return_value=response) as post,
+        ):
+            result = self.nodes._generate_kcpp(
+                "Describe only the visible image",
+                "http://localhost:5001",
+                0,
+                300,
+                0.25,
+                0.8,
+                40,
+                0.0,
+                1.05,
+                360,
+                -1,
+                "Disabled",
+                "",
+                120,
+                image_data_uri="data:image/jpeg;base64,aW1hZ2U=",
+            )
+
+        self.assertEqual(result, "A blue lighthouse beside the sea.")
+        user_content = post.call_args.args[1]["messages"][1]["content"]
+        self.assertEqual(user_content[0], {"type": "text", "text": "Describe only the visible image"})
+        self.assertEqual(user_content[1]["type"], "image_url")
+        self.assertTrue(user_content[1]["image_url"]["url"].startswith("data:image/jpeg;base64,"))
+
+    def test_ollama_vision_generation_checks_model_and_sends_image(self):
+        show = {"capabilities": ["completion", "vision"]}
+        completion = {
+            "message": {"role": "assistant", "content": "A blue lighthouse beside the sea."},
+            "done": True,
+            "done_reason": "stop",
+        }
+        with mock.patch.object(self.nodes, "_post_json", side_effect=[show, completion]) as post:
+            result = self.nodes._generate_ollama(
+                "Describe only the visible image",
+                "http://localhost:11434",
+                "gemma3:4b",
+                0,
+                300,
+                0.25,
+                0.8,
+                40,
+                0.0,
+                1.05,
+                360,
+                -1,
+                "Disabled",
+                "",
+                120,
+                image_base64="aW1hZ2U=",
+            )
+
+        self.assertEqual(result, "A blue lighthouse beside the sea.")
+        self.assertTrue(post.call_args_list[0].args[0].endswith("/api/show"))
+        self.assertEqual(post.call_args_list[0].args[1], {"model": "gemma3:4b"})
+        chat_payload = post.call_args_list[1].args[1]
+        self.assertEqual(chat_payload["messages"][1]["images"], ["aW1hZ2U="])
+
+    def test_caption_image_reads_comfy_reference_and_returns_neutral_prompt(self):
+        path = Path(self.temp.name) / "reference.png"
+        Image.new("RGB", (640, 360), color="navy").save(path)
+        payload = {
+            "image": {"filename": path.name, "subfolder": "", "type": "output"},
+            "llm_provider": "koboldcpp",
+            "kobold_url": "http://localhost:5001",
+            "model_profile": "Tag-Based Anime Model",
+            "thinking_mode": "Disabled",
+        }
+        with mock.patch.object(
+            self.routes,
+            "_generate_kcpp",
+            return_value="Final prompt: A navy blue rectangular field.",
+        ) as generate:
+            caption = self.routes._caption_image(payload)
+
+        self.assertEqual(caption, "A navy blue rectangular field.")
+        self.assertIn("model-neutral source prompt", generate.call_args.args[0])
+        self.assertTrue(generate.call_args.kwargs["image_data_uri"].startswith("data:image/jpeg;base64,"))
 
     def test_raw_generation_keeps_one_total_continuation_limit(self):
         response = {"results": [{"text": "raw continuation", "finish_reason": "stop"}]}
@@ -603,6 +723,39 @@ class RegressionTests(unittest.TestCase):
         reference = json.dumps({"filename": path.name, "subfolder": "", "type": "output"})
         self.assertEqual(self.nodes._chat_image_dimensions(reference), (1237, 811))
 
+    def test_dropped_images_are_sanitized_to_dedicated_lossy_webp_storage(self):
+        source = Image.new("RGB", (4096, 1024), color="navy")
+        metadata = PngImagePlugin.PngInfo()
+        metadata.add_text("comment", "metadata that must not survive")
+        encoded = io.BytesIO()
+        source.save(encoded, format="PNG", pnginfo=metadata)
+
+        reference = self.nodes._sanitize_prompt_studio_image(encoded.getvalue())
+
+        self.assertEqual(reference["type"], "promptstudio")
+        self.assertEqual(reference["subfolder"], "")
+        self.assertTrue(reference["filename"].endswith(".webp"))
+        self.assertEqual((reference["width"], reference["height"]), (2048, 512))
+        stored_path = Path(self.temp.name) / "prompt_studio" / "images" / reference["filename"]
+        self.assertTrue(stored_path.is_file())
+        webp_header = stored_path.read_bytes()[:32]
+        self.assertIn(b"VP8 ", webp_header)
+        self.assertNotIn(b"VP8L", webp_header)
+        with Image.open(stored_path) as stored:
+            self.assertEqual(stored.format, "WEBP")
+            self.assertEqual(stored.size, (2048, 512))
+            self.assertFalse(stored.getexif())
+            self.assertNotIn("comment", stored.info)
+        parsed_reference, parsed_path = self.nodes._parse_chat_image_reference(json.dumps(reference))
+        self.assertEqual(parsed_reference["type"], "promptstudio")
+        self.assertEqual(Path(parsed_path), stored_path)
+        _, data_uri = self.nodes._chat_image_vision_payload(json.dumps(reference))
+        self.assertTrue(data_uri.startswith("data:image/webp;base64,"))
+
+    def test_dropped_image_sanitizer_rejects_non_images(self):
+        with self.assertRaisesRegex(ValueError, "safe, supported raster image"):
+            self.nodes._sanitize_prompt_studio_image(b"not an image")
+
     def test_prompt_studio_upscale_node_loads_image_and_calculates_target_size(self):
         path = Path(self.temp.name) / "upscale.png"
         Image.new("RGB", (640, 360), color="navy").save(path)
@@ -642,6 +795,48 @@ class RegressionTests(unittest.TestCase):
             self.assertEqual(second["revision"], 2)
             backup = json.loads(Path(chat_path + ".bak").read_text(encoding="utf-8"))
             self.assertEqual(backup["revision"], 1)
+
+    def test_chat_store_preserves_generation_lora_state(self):
+        chat_path = str(Path(self.temp.name) / "chats.json")
+        message = {
+            "id": "generation-1",
+            "role": "assistant",
+            "workflowProfileId": "[PS] Create.json",
+            "loraState": [{
+                "nodeId": "17",
+                "loraType": "flux",
+                "selections": [
+                    {"name": "flux/styles/cinematic.safetensors", "strength": 0.75},
+                    {"name": "flux/characters/subject.safetensors", "strength": 1.1},
+                ],
+            }],
+            "generationSnapshot": {
+                "output": {
+                    "3": {
+                        "class_type": "KSampler",
+                        "inputs": {
+                            "seed": 123456,
+                            "steps": 28,
+                            "cfg": 4.5,
+                            "sampler_name": "euler",
+                            "scheduler": "normal",
+                        },
+                    },
+                },
+            },
+        }
+        chat = {"id": "chat-1", "messages": [message]}
+        with mock.patch.object(self.routes, "CHAT_STORE_PATH", chat_path):
+            self.routes._write_chat_store(
+                {"activeChatId": "chat-1", "chats": [chat]},
+                current_revision=0,
+            )
+            stored = self.routes._read_chat_store()
+        self.assertEqual(stored["chats"][0]["messages"][0]["loraState"], message["loraState"])
+        self.assertEqual(
+            stored["chats"][0]["messages"][0]["generationSnapshot"],
+            message["generationSnapshot"],
+        )
 
     def test_chat_get_skips_unchanged_store_payload(self):
         chat_path = str(Path(self.temp.name) / "chats.json")

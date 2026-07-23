@@ -47,7 +47,7 @@ The first message becomes the main prompt and is rendered into a complete final 
 
 Revisions use the smallest edit scope implied by the request. References that conflict with the requested change are replaced, while unrelated clauses and tags are preserved where possible. Removing an automatic detail that is absent from the main prompt changes only the final prompt; Prompt Studio does not add negative wording to the main prompt.
 
-The inspector displays the stable **Main prompt** and editable **Final prompt**. Manual final-prompt edits are used for generation and preserved by later precision revisions. **Undo** restores the main and final prompt together, and every generated-image message records both. In an editing workflow's **Text only** mode, the workflow intentionally receives the latest edit instruction instead of the complete final prompt.
+The inspector displays the stable **Main prompt** and editable **Final prompt**. Manual final-prompt edits are used for generation and preserved by later precision revisions. **Undo** restores the main and final prompt together, and every generated-image message records both plus the complete executable workflow inputs that were queued. Its **i** panel shows the workflow, LoRAs and strengths, and every saved node input. **Use these prompts** restores the prompt, routing, LoRAs, source image when applicable, and arms the saved executable snapshot; generating without making a change reuses every stored input, including seeds, to reproduce the original queue as closely as the installed nodes and runtime allow. In an editing workflow's **Text only** mode, the workflow intentionally receives the latest edit instruction instead of the complete final prompt.
 
 ### Generate and reroll
 
@@ -118,6 +118,16 @@ Both nodes return the image prompt and unchanged `secondary_instructions` as the
 
 If a `[PS]` workflow contains more than one compatible prompt node, Prompt Studio uses the first executable one in graph order.
 
+## Prompt Studio LoRA Loader
+
+Add **Prompt Studio LoRA Loader** anywhere in the model path of a saved `[PS]` workflow. It accepts and returns `MODEL`, so it can replace a model-only LoRA loader or sit between the checkpoint loader and the rest of the model pipeline.
+
+Set its **LoRA Type** to the name of a top-level folder under any ComfyUI LoRA directory. For example, `flux` exposes files under `<LoRA directory>/flux`, including nested folders, and matches the folder name case-insensitively (`flux`, `Flux`, and `FLUX` are equivalent). LoRAs outside that top-level folder are not exposed.
+
+LoRA filenames beginning with `_` are reserved for internal use and are never shown in Prompt Studio. For example, `flux/_internal.safetensors` is hidden while `flux/styles/_internal.safetensors` is also hidden.
+
+When the active workflow contains this loader, the inspector shows a **LoRA** section. Add any number of the available LoRAs, set an independent model strength for each one, and remove them without editing the saved workflow. Prompt Studio injects the ordered selection only into the temporary queued snapshot. Each generated-image message records the ordered LoRA selections and strengths used by its workflow; the image's **i** panel displays them, and selecting that image or choosing **Use these prompts** restores them. Older history entries without a LoRA snapshot leave the current selection unchanged. Normal ComfyUI queues of the saved workflow remain pass-through unless a stack was explicitly supplied through the API.
+
 ## Creation, image-editing, and upscaling workflows
 
 Prompt Studio uses normal workflows saved in ComfyUI's workflow library. Prefix a workflow's filename with `[PS]` to make it visible to Prompt Studio; other saved workflows remain available for manual use without cluttering Studio's selectors.
@@ -187,12 +197,12 @@ KoboldCpp counts reasoning and final text inside one completion. To preserve app
 | Thinking mode | Native reasoning budget | Combined completion request |
 | --- | --- | --- |
 | Disabled | 0 | final-answer allowance |
-| Minimal | up to 10% | allowance divided by 0.9 |
-| Low | up to 30% | allowance divided by 0.7 |
-| Medium | up to 60% | allowance divided by 0.4 |
-| High | up to 4,096 tokens | allowance plus 4,096 reasoning tokens |
+| Minimal | up to 200 tokens | allowance plus 200 reasoning tokens |
+| Low | up to 500 tokens | allowance plus 500 reasoning tokens |
+| Medium | up to 1,000 tokens | allowance plus 1,000 reasoning tokens |
+| High | unrestricted | available context window |
 
-The server context window remains the hard upper bound, so the High reasoning budget is reduced only when necessary to preserve the final-answer allowance inside that window. A completion that ends with `finish_reason: length`, or returns reasoning without final content, is rejected rather than passing a truncated prompt into the image workflow or silently retrying with thinking disabled.
+The server context window remains the hard upper bound. Prompt Studio supplies Minimal, Low, and Medium to the Jinja template separately and uses KoboldCpp's explicit `thinking_budget_tokens` field, avoiding KoboldCpp's percentage-based caps. High uses KoboldCpp's unrestricted native effort and the remaining context window. A completion that ends with `finish_reason: length`, or returns reasoning without final content, is rejected rather than passing a truncated prompt into the image workflow or silently retrying with thinking disabled.
 
 The node preserves the input subject, action, setting, and concrete visible details while applying the selected prompt grammar, style, framing, and detail level. If an expansive setting produces an output that is still too sparse, it may make a second KoboldCpp request and keep the denser result.
 
