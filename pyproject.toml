@@ -16,3 +16,4 @@ Documentation = "https://github.com/tiko13/ComfyUI_PromptStudio#readme"
 [tool.comfy]
 PublisherId = "tiko13"
 DisplayName = "ComfyUI_PromptStudio"
+Icon = "https://raw.githubusercontent.com/tiko13/ComfyUI_PromptStudio/master/web/prompt-studio-icon.svg"

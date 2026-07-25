@@ -90,7 +90,7 @@
     },
 	{
       "name": "First-Person Downward View",
-      "instruction": "The scene is viewed from the first-person perspective of the subject. Frame the scene such as 'first-person perspective of a woman looking down on her legs'."
+      "instruction": "The scene is viewed from the first-person perspective of the subject. Frame the scene such as 'first-person perspective of a woman looking down on her legs'. This being a FIRST PERSON perspective, remove any mention of subject's head, face or anything the subject cannot see from their point of view, and don't mention it in the prompt at all."
     },
 	{
       "name": "CCTV Footage",

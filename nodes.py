@@ -7,6 +7,7 @@ import math
 import os
 import re
 import secrets
+import struct
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -21,8 +22,20 @@ import folder_paths
 
 BASE_DIR = os.path.dirname(os.path.realpath(__file__))
 PROFILES_PATH = os.path.join(BASE_DIR, "model_profiles.json")
-STYLE_TEMPLATES_PATH = os.path.join(BASE_DIR, "style_templates.json")
-FRAMING_TEMPLATES_PATH = os.path.join(BASE_DIR, "framing_templates.json")
+DEFAULT_PRESETS_DIR = os.path.join(BASE_DIR, "presets", "default")
+PRESET_EXAMPLES_DIR = os.path.join(BASE_DIR, "presets", "examples")
+STYLE_TEMPLATES_PATH = os.path.join(DEFAULT_PRESETS_DIR, "style_templates.json")
+FRAMING_TEMPLATES_PATH = os.path.join(DEFAULT_PRESETS_DIR, "framing_templates.json")
+ADDITIONAL_STYLE_TEMPLATES_PATH = os.path.join(BASE_DIR, "style_templates.additional.json")
+ADDITIONAL_FRAMING_TEMPLATES_PATH = os.path.join(BASE_DIR, "framing_templates.additional.json")
+ADDITIONAL_STYLE_TEMPLATES_EXAMPLE_PATH = os.path.join(
+    PRESET_EXAMPLES_DIR,
+    "style_templates.additional.example.json",
+)
+ADDITIONAL_FRAMING_TEMPLATES_EXAMPLE_PATH = os.path.join(
+    PRESET_EXAMPLES_DIR,
+    "framing_templates.additional.example.json",
+)
 DEFAULT_PROFILE = {
     "name": "Default",
     "style": "natural_language",
@@ -175,6 +188,31 @@ def _require_json_object(data, label):
     return data
 
 
+def _ensure_additional_template_file(path, example_path):
+    if os.path.exists(path):
+        return
+
+    try:
+        with open(example_path, "r", encoding="utf-8") as file:
+            example = file.read()
+    except OSError:
+        return
+
+    created = False
+    try:
+        with open(path, "x", encoding="utf-8") as file:
+            created = True
+            file.write(example)
+    except FileExistsError:
+        return
+    except OSError:
+        if created:
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+
+
 def _load_profiles():
     try:
         with open(PROFILES_PATH, "r", encoding="utf-8") as file:
@@ -251,58 +289,79 @@ def _profile_notes(profile):
     return str(notes or "").strip()
 
 
-def _load_style_templates():
+def _load_template_file(path, collection_name, label, default_template):
     try:
-        with open(STYLE_TEMPLATES_PATH, "r", encoding="utf-8") as file:
+        with open(path, "r", encoding="utf-8") as file:
             data = json.load(file)
     except FileNotFoundError:
-        return [DEFAULT_STYLE_TEMPLATE]
+        return []
     except json.JSONDecodeError as exc:
-        raise ValueError(f"Invalid KoboldCpp style template JSON: {STYLE_TEMPLATES_PATH}: {exc}") from exc
+        raise ValueError(f"Invalid {label} JSON: {path}: {exc}") from exc
 
-    _require_json_object(data, "KoboldCpp style template")
-    templates = data.get("style_templates", [])
+    _require_json_object(data, label)
+    templates = data.get(collection_name, [])
     if not isinstance(templates, list):
-        raise ValueError("KoboldCpp style template JSON must contain a 'style_templates' list.")
+        raise ValueError(f"{label} JSON must contain a '{collection_name}' list.")
 
     normalized = []
     for index, template in enumerate(templates):
         if not isinstance(template, dict):
             continue
-        merged = dict(DEFAULT_STYLE_TEMPLATE)
+        if template.get("enabled", True) is False:
+            continue
+        merged = dict(default_template)
         merged.update(template)
-        merged["name"] = str(merged.get("name") or "").strip() or f"Style {index + 1}"
+        merged.pop("enabled", None)
+        fallback_label = label.split(" ", 1)[0]
+        merged["name"] = str(merged.get("name") or "").strip() or f"{fallback_label} {index + 1}"
         normalized.append(merged)
+    return normalized
 
+
+def _load_style_templates():
+    _ensure_additional_template_file(
+        ADDITIONAL_STYLE_TEMPLATES_PATH,
+        ADDITIONAL_STYLE_TEMPLATES_EXAMPLE_PATH,
+    )
+    normalized = _load_template_file(
+        STYLE_TEMPLATES_PATH,
+        "style_templates",
+        "Style template",
+        DEFAULT_STYLE_TEMPLATE,
+    )
     normalized = normalized or [DEFAULT_STYLE_TEMPLATE]
+    normalized.extend(
+        _load_template_file(
+            ADDITIONAL_STYLE_TEMPLATES_PATH,
+            "style_templates",
+            "Style template",
+            DEFAULT_STYLE_TEMPLATE,
+        )
+    )
     _validate_unique_names(normalized, "style template")
     return normalized
 
 
 def _load_framing_templates():
-    try:
-        with open(FRAMING_TEMPLATES_PATH, "r", encoding="utf-8") as file:
-            data = json.load(file)
-    except FileNotFoundError:
-        return [DEFAULT_FRAMING_TEMPLATE]
-    except json.JSONDecodeError as exc:
-        raise ValueError(f"Invalid framing template JSON: {FRAMING_TEMPLATES_PATH}: {exc}") from exc
-
-    _require_json_object(data, "Framing template")
-    templates = data.get("framing_templates", [])
-    if not isinstance(templates, list):
-        raise ValueError("Framing template JSON must contain a 'framing_templates' list.")
-
-    normalized = []
-    for index, template in enumerate(templates):
-        if not isinstance(template, dict):
-            continue
-        merged = dict(DEFAULT_FRAMING_TEMPLATE)
-        merged.update(template)
-        merged["name"] = str(merged.get("name") or "").strip() or f"Framing {index + 1}"
-        normalized.append(merged)
-
+    _ensure_additional_template_file(
+        ADDITIONAL_FRAMING_TEMPLATES_PATH,
+        ADDITIONAL_FRAMING_TEMPLATES_EXAMPLE_PATH,
+    )
+    normalized = _load_template_file(
+        FRAMING_TEMPLATES_PATH,
+        "framing_templates",
+        "Framing template",
+        DEFAULT_FRAMING_TEMPLATE,
+    )
     normalized = normalized or [DEFAULT_FRAMING_TEMPLATE]
+    normalized.extend(
+        _load_template_file(
+            ADDITIONAL_FRAMING_TEMPLATES_PATH,
+            "framing_templates",
+            "Framing template",
+            DEFAULT_FRAMING_TEMPLATE,
+        )
+    )
     _validate_unique_names(normalized, "framing template")
     return normalized
 
@@ -777,6 +836,7 @@ def _generate_kcpp(
     request_timeout,
     include_default_continuation_stops=False,
     image_data_uri=None,
+    messages_override=None,
 ):
     base_url = _clean_base_url(kobold_url)
     timeout = int(request_timeout)
@@ -786,7 +846,22 @@ def _generate_kcpp(
             "KoboldCpp Chat Completions requires Use Jinja for reliable model-native formatting. "
             "Enable Use Jinja in KoboldCpp, restart the server, and run the workflow again."
         )
-    if image_data_uri:
+    if messages_override is not None:
+        messages = messages_override
+        has_images = any(
+            isinstance(message, dict)
+            and isinstance(message.get("content"), list)
+            and any(
+                isinstance(part, dict) and part.get("type") == "image_url"
+                for part in message["content"]
+            )
+            for message in messages
+        )
+        if has_images:
+            vision_reason = _kobold_vision_unavailable_reason(capabilities)
+            if vision_reason:
+                raise RuntimeError(vision_reason)
+    elif image_data_uri:
         vision_reason = _kobold_vision_unavailable_reason(capabilities)
         if vision_reason:
             raise RuntimeError(vision_reason)
@@ -796,10 +871,11 @@ def _generate_kcpp(
         ]
     else:
         user_content = str(prompt or "")
-    messages = [
-        {"role": "system", "content": CHAT_SYSTEM_MESSAGE},
-        {"role": "user", "content": user_content},
-    ]
+    if messages_override is None:
+        messages = [
+            {"role": "system", "content": CHAT_SYSTEM_MESSAGE},
+            {"role": "user", "content": user_content},
+        ]
     response_tokens = _requested_response_tokens(max_response_tokens, default_max_response_tokens)
     context_length = _server_context_length(base_url, timeout)
     stop_sequences = _split_stop_sequences(stop_sequence)
@@ -923,12 +999,20 @@ def _generate_ollama(
     request_timeout,
     include_default_continuation_stops=False,
     image_base64=None,
+    messages_override=None,
 ):
     base_url = _clean_ollama_base_url(ollama_url)
     model = str(ollama_model or "").strip()
     if not model:
         raise ValueError("Select an Ollama model in Prompt Studio settings")
-    if image_base64:
+    has_images = bool(image_base64) or (
+        messages_override is not None
+        and any(
+            isinstance(message, dict) and bool(message.get("images"))
+            for message in messages_override
+        )
+    )
+    if has_images:
         capabilities = _ollama_model_capabilities(base_url, model, int(request_timeout))
         vision_reason = _ollama_vision_unavailable_reason(capabilities, model)
         if vision_reason:
@@ -955,12 +1039,13 @@ def _generate_ollama(
     user_message = {"role": "user", "content": str(prompt or "")}
     if image_base64:
         user_message["images"] = [str(image_base64)]
+    messages = messages_override if messages_override is not None else [
+        {"role": "system", "content": CHAT_SYSTEM_MESSAGE},
+        user_message,
+    ]
     payload = {
         "model": model,
-        "messages": [
-            {"role": "system", "content": CHAT_SYSTEM_MESSAGE},
-            user_message,
-        ],
+        "messages": messages,
         "options": options,
         "think": _ollama_thinking_value(thinking_mode),
         "stream": False,
@@ -1207,10 +1292,10 @@ def _embellishment_instruction(embellishment_level, profile):
             "none": "Preserve only the user's stated content. Add no new visible details; change wording only when required by the target profile, active style, or active framing controls.",
             "minimal": "Keep the rewrite short. Only convert style or format. Do not add new details.",
             "clean": "Lightly improve clarity and wording. Add little or no new detail.",
-            "detailed": "Add useful visible details, composition, materials, and environment where appropriate. Write a clearly expanded sentence or two. Keep all added language consistent with the selected style.",
+            "detailed": "Add useful visible details, composition, materials, and environment where appropriate. Write exactly two short descriptive sentences. Keep all added language consistent with the selected style.",
             "rich": "Use cohesive descriptive prose with stronger visual specificity and tasteful detail. Write a longer prompt with several concrete descriptive clauses. Keep atmosphere, lighting, quality, camera, and medium language consistent with the selected style. Do not add props, landmarks, extra subjects, or interactions with unmentioned entities unless explicitly present in the input.",
-            "maximum": "Create a highly expanded prompt with extensive visible detail, composition, materials, environment, and style-appropriate descriptive language while still respecting the user's intent. Aim for a substantial prompt, usually 35 to 70 words unless the original is already long. Elaborate existing content; do not introduce a different style or new focal objects.",
-            "ultra maximum": "Create a highly detailed, extremely expanded prompt with extensive visible detail, composition, materials, environment, body language, expressions, and style-appropriate descriptive language while still respecting the user's intent. Aim for a substantial prompt, usually 60 to 110 words unless the original is already long. Expand with attributes, textures, pose, expression, sub-details of existing subjects, and plausible non-focal setting details. Do not introduce a different style, new characters, or new focal objects.",
+            "maximum": "Create a highly expanded prompt with extensive visible detail, composition, materials, environment, and style-appropriate descriptive language while still respecting the user's intent. Aim for a substantial prompt, usually 50 to 90 words unless the original is already long. Elaborate existing content; do not introduce a different style or new focal objects.",
+            "ultra maximum": "Create a highly detailed, extensively expanded prompt with strong visible detail, composition, materials, environment, body language, expressions, and style-appropriate descriptive language while still respecting the user's intent. Aim for about 120 to 160 words unless the original is already long. Sentence count is irrelevant. Faithful adherence to the user's intent and all active content, style, and framing constraints is more important than reaching the word target. Expand with attributes, textures, pose, expression, sub-details of existing subjects, and plausible non-focal setting details. Do not introduce a different style, new characters, or new focal objects.",
         }
     return instructions.get(level, instructions["clean"])
 
@@ -1269,16 +1354,15 @@ def _expansion_requirement(embellishment_level, profile, fragment=False):
         )
     else:
         if level == "ultra maximum":
-            amount = "about 60 to 110 words"
-            clauses = "at least six concrete descriptive clauses"
-            shape = "five short descriptive sentences, or one paragraph with at least six concrete descriptive clauses"
+            amount = "about 120 to 160 words"
+            shape = "a cohesive, extensively detailed prompt using whatever sentence structure best preserves the user's intent"
         else:
-            amount = "about 35 to 70 words"
-            clauses = "at least four concrete descriptive clauses"
+            amount = "about 50 to 90 words"
             shape = "three to four short descriptive sentences, or one paragraph with at least four concrete descriptive clauses"
         text = (
             f"The final {target} must be visibly longer and more detailed than the {source}. If the {source} is short, "
-            f"write {shape}, usually {amount}. Each sentence or clause should add concrete visible detail; do not merely clean up or restate the input."
+            f"write {shape}, usually {amount}. Each sentence or clause should add concrete visible detail; do not merely clean up or restate the input. "
+            "Preserving the user's intent and obeying all content, style, and framing constraints takes priority over reaching the target length."
         )
 
     return [
@@ -1292,13 +1376,15 @@ def _expansion_requirement(embellishment_level, profile, fragment=False):
 
 def _expansion_rule_lines(embellishment_level, profile, fragment=False):
     level = str(embellishment_level or "Clean").strip().lower()
-    if level not in {"maximum", "ultra maximum"}:
+    if level not in {"detailed", "maximum", "ultra maximum"}:
         return []
 
     style = str(profile.get("style") or "").lower()
     tag_mode = "tag" in style
     target = "fragment" if fragment else "prompt"
     if tag_mode:
+        if level == "detailed":
+            return []
         if level == "ultra maximum":
             return [
                 f"- For Ultra Maximum tag output, do not stop after the core tags; make the final {target} a dense expanded tag set.",
@@ -1310,14 +1396,21 @@ def _expansion_rule_lines(embellishment_level, profile, fragment=False):
         ]
 
     if fragment:
+        if level == "detailed":
+            return [f"- For Detailed natural-language output, write exactly two short descriptive sentences in the final {target}."]
         if level == "ultra maximum":
             return [f"- For Ultra Maximum natural-language output, do not return a terse one-clause {target}; use several concrete descriptive clauses."]
         return [f"- For Maximum natural-language output, do not return a terse one-clause {target}; include multiple concrete descriptive clauses."]
 
+    if level == "detailed":
+        return [
+            "- For Detailed natural-language output, write exactly two short descriptive sentences about the same scene.",
+            "- Make each sentence add useful visible detail while preserving the user's intent and active constraints.",
+        ]
     if level == "ultra maximum":
         return [
-            "- For Ultra Maximum natural-language output, do not return a one-sentence prompt.",
-            "- Write exactly five short descriptive sentences about the same scene, and make each sentence add visible detail.",
+            "- Sentence count is irrelevant; use the structure that best preserves the user's intent and active constraints.",
+            "- Aim for about 120 to 160 words, but never pad the prompt with unrelated content merely to reach the target.",
         ]
     return [
         "- For Maximum natural-language output, do not return a one-sentence prompt.",
@@ -1327,6 +1420,10 @@ def _expansion_rule_lines(embellishment_level, profile, fragment=False):
 
 def _word_count(text):
     return len(re.findall(r"\b[\w'-]+\b", str(text or "")))
+
+
+def _sentence_count(text):
+    return len([part for part in re.split(r"[.!?]+", str(text or "")) if part.strip()])
 
 
 def _tag_count(text):
@@ -1342,7 +1439,7 @@ def _density_count(text, profile):
 
 def _needs_expansion_retry(original, rewritten, embellishment_level, profile):
     level = str(embellishment_level or "Clean").strip().lower()
-    if level not in {"maximum", "ultra maximum"}:
+    if level not in {"detailed", "maximum", "ultra maximum"}:
         return False
     if not str(original or "").strip():
         return False
@@ -1351,14 +1448,19 @@ def _needs_expansion_retry(original, rewritten, embellishment_level, profile):
 
     style = str(profile.get("style") or "").lower()
     if "tag" in style:
+        if level == "detailed":
+            return False
         original_tags = max(_tag_count(original), max(1, _word_count(original) // 2))
         rewritten_tags = _tag_count(rewritten)
         floor = 16 if level == "ultra maximum" else 10
         return rewritten_tags <= original_tags or rewritten_tags < floor
 
+    if level == "detailed":
+        return _sentence_count(rewritten) != 2
+
     original_words = _word_count(original)
     rewritten_words = _word_count(rewritten)
-    floor = 60 if level == "ultra maximum" else 35
+    floor = 120 if level == "ultra maximum" else 50
     if original_words < floor:
         return rewritten_words < floor
     return rewritten_words <= original_words
@@ -1384,8 +1486,8 @@ def _build_expansion_retry_prompt(
     additional_instructions,
 ):
     prompt_parts = [
-        "You are expanding an image-generation prompt because the previous rewrite was too short for the selected embellishment level.",
-        "Use the current rewritten prompt as the base, preserve the original user intent, and add concrete visible detail.",
+        "You are correcting an image-generation prompt because the previous rewrite did not meet the selected embellishment level's output target.",
+        "Use the current rewritten prompt as the base, preserve the original user intent, and adjust its detail and structure only as needed.",
         "",
         f"Target profile: {profile.get('name', '')}",
         f"Target style: {profile.get('style', '')}",
@@ -1987,7 +2089,7 @@ class KCPP_PromptAmplify:
                     {
                         "default": "",
                         "multiline": True,
-                        "tooltip": "Optional aesthetic/style guidance for this run without editing style_templates.json.",
+                        "tooltip": "Optional aesthetic/style guidance for this run without editing preset files.",
                     },
                 ),
                 "framing_preset": (_framing_template_names(),),
@@ -2305,12 +2407,7 @@ def _sanitize_prompt_studio_image(image_bytes):
 
 
 def _chat_image_vision_payload(image_ref):
-    reference, path = _parse_chat_image_reference(image_ref)
-    if str(reference.get("type") or "").strip().lower() == "promptstudio":
-        with open(path, "rb") as file:
-            encoded = base64.b64encode(file.read()).decode("ascii")
-        return encoded, f"data:image/webp;base64,{encoded}"
-
+    _reference, path = _parse_chat_image_reference(image_ref)
     with Image.open(path) as source:
         image = ImageOps.exif_transpose(source)
         if image.width <= 0 or image.height <= 0:
@@ -2672,6 +2769,32 @@ def _lora_names_for_type(lora_type):
         ):
             matches.append(normalized_name)
     return sorted(set(matches), key=lambda name: (name.casefold(), name))
+
+
+def _normalized_model_type(value):
+    value = str(value or "").strip()
+    if not value or value in {".", ".."} or "/" in value or "\\" in value:
+        return ""
+    return value
+
+
+def _model_name_key(value):
+    return str(value or "").replace("\\", "/").strip("/").casefold()
+
+
+def _diffusion_model_names_for_type(model_type):
+    normalized_type = _normalized_model_type(model_type)
+    if not normalized_type:
+        return []
+    type_key = normalized_type.casefold()
+    matches = {}
+    for name in folder_paths.get_filename_list("diffusion_models"):
+        canonical_name = str(name or "").strip().strip("/\\")
+        normalized_name = canonical_name.replace("\\", "/")
+        parts = normalized_name.split("/")
+        if len(parts) > 1 and parts[0].casefold() == type_key:
+            matches.setdefault(_model_name_key(canonical_name), canonical_name)
+    return sorted(matches.values(), key=lambda name: (_model_name_key(name), name))
 
 
 class KCPP_PromptStudioLoraLoader:
@@ -3068,6 +3191,117 @@ class KCPP_Ideogram4:
         return (json.dumps(data, ensure_ascii=False, separators=(",", ":")),)
 
 
+def _safetensors_uses_int8(unet_path):
+    """Inspect a safetensors header without reading the model tensor data."""
+    if not str(unet_path).lower().endswith((".safetensors", ".sft")):
+        return False
+
+    try:
+        file_size = os.path.getsize(unet_path)
+        with open(unet_path, "rb") as file:
+            size_bytes = file.read(8)
+            if len(size_bytes) != 8:
+                return False
+            header_size = struct.unpack("<Q", size_bytes)[0]
+            if header_size <= 0 or header_size > min(file_size - 8, 64 * 1024 * 1024):
+                return False
+            header = json.loads(file.read(header_size))
+    except (OSError, ValueError, json.JSONDecodeError, struct.error):
+        return False
+
+    return any(
+        name.endswith(".weight")
+        and isinstance(tensor_info, dict)
+        and tensor_info.get("dtype") == "I8"
+        for name, tensor_info in header.items()
+        if name != "__metadata__"
+    )
+
+
+def _uses_int8_diffusion_loader(unet_name):
+    """Select the INT8 loader from the safetensors weight dtype."""
+    try:
+        unet_path = folder_paths.get_full_path_or_raise("diffusion_models", unet_name)
+    except (AttributeError, FileNotFoundError):
+        return False
+    return _safetensors_uses_int8(unet_path)
+
+
+class KCPP_PromptStudioModelLoader:
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "model_type": (
+                    "STRING",
+                    {
+                        "default": "",
+                        "tooltip": (
+                            "Only diffusion models inside a top-level folder with this name "
+                            "are offered in Prompt Studio."
+                        ),
+                    },
+                ),
+                "unet_name": (
+                    folder_paths.get_filename_list("diffusion_models"),
+                    {
+                        "tooltip": (
+                            "The default diffusion model outside Prompt Studio. Prompt Studio "
+                            "can replace it with a model from the configured Model Type folder."
+                        ),
+                    },
+                ),
+            },
+        }
+
+    RETURN_TYPES = ("MODEL",)
+    FUNCTION = "load_model"
+    CATEGORY = "Prompt Studio"
+    DESCRIPTION = (
+        "Automatically selects the standard ComfyUI diffusion-model loader or "
+        "Load Diffusion Model INT8 (W8A8)."
+    )
+
+    def load_model(self, model_type, unet_name):
+        import nodes as comfy_nodes
+
+        normalized_type = _normalized_model_type(model_type)
+        if normalized_type:
+            available = {
+                _model_name_key(name): name
+                for name in _diffusion_model_names_for_type(normalized_type)
+            }
+            requested_name = str(unet_name or "").strip().strip("/\\")
+            canonical_name = available.get(_model_name_key(requested_name))
+            if not canonical_name:
+                raise ValueError(
+                    f"Diffusion model '{requested_name}' is not inside the "
+                    f"'{normalized_type}' model folder"
+                )
+            unet_name = canonical_name
+
+        if _uses_int8_diffusion_loader(unet_name):
+            loader_class = comfy_nodes.NODE_CLASS_MAPPINGS.get("OTUNetLoaderW8A8")
+            if loader_class is None:
+                raise RuntimeError(
+                    "This model requires Load Diffusion Model INT8 (W8A8), but "
+                    "ComfyUI-INT8-Fast is not installed or did not load successfully."
+                )
+            return loader_class().load_unet(
+                unet_name,
+                "default",
+                "krea2",
+                False,
+                enable_convrot=False,
+                lora_mode="None",
+            )
+
+        loader_class = comfy_nodes.NODE_CLASS_MAPPINGS.get("UNETLoader")
+        if loader_class is None:
+            raise RuntimeError("ComfyUI's standard diffusion model loader is unavailable.")
+        return loader_class().load_unet(unet_name, "default")
+
+
 NODE_CLASS_MAPPINGS = {
     "Save_as_webp_cond": Save_as_webp_cond,
     "KCPP_PromptAmplify": KCPP_PromptAmplify,
@@ -3077,6 +3311,7 @@ NODE_CLASS_MAPPINGS = {
     "KCPP_PromptStudioLoraLoader": KCPP_PromptStudioLoraLoader,
     "KCPP_Apply": KCPP_Apply,
     "KCPP_Ideogram4": KCPP_Ideogram4,
+    "KCPP_PromptStudioModelLoader": KCPP_PromptStudioModelLoader,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
@@ -3088,4 +3323,5 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "KCPP_PromptStudioLoraLoader": "Prompt Studio LoRA Loader",
     "KCPP_Apply": "KoboldCpp Apply",
     "KCPP_Ideogram4": "Ideogram4-KoboldCPP",
+    "KCPP_PromptStudioModelLoader": "Prompt Studio Model Loader",
 }

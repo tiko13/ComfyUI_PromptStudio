@@ -49,3 +49,7 @@ prompt_studio_chats.json
 prompt_studio_chats.json.tmp
 prompt_studio_workflows.json
 prompt_studio_workflows.json.tmp
+
+# User-owned presets (copy the tracked examples from presets/examples/)
+style_templates.additional.json
+framing_templates.additional.json

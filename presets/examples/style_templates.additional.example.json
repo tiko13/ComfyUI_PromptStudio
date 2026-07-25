@@ -1,0 +1,9 @@
+{
+  "style_templates": [
+    {
+      "name": "Example custom style",
+      "instruction": "Describe the reusable aesthetic guidance for this custom style.",
+      "enabled": false
+    }
+  ]
+}

@@ -1,0 +1,480 @@
+{
+  "style_templates": [
+    {
+      "name": "None",
+      "instruction": ""
+    },
+    {
+      "name": "Neutral",
+      "instruction": "Use direct descriptive language. Keep the result plain, factual, and style-neutral even when embellishment is high. Add ordinary visible details only. Avoid cinematic, dramatic, atmospheric, professional, masterpiece, award-winning, studio, commercial-photo, moody lighting, glow, dramatic shadow, cozy, majestic, sleek, and other stylized or decorative phrasing unless the user asked for it."
+    },
+    {
+      "name": "Casual Snapshot",
+      "instruction": "Make the result feel candid, ordinary, and natural. Prefer everyday wording. Avoid polished cinematic, editorial, commercial, or studio-style language."
+    },
+	{
+      "name": "Amateur Photography",
+      "instruction": "The feeling of the result should be amateur and natural. Prefer everyday wording. Avoid polished cinematic, editorial, commercial, or studio-style language. The result should feel like a simple phone photo, but do not add props, events, extra subjects, landmarks, or new actions."
+    },
+    {
+      "name": "Candid Photography",
+      "instruction": "Make the result feel like an unpolished candid phone-camera photo with everyday colors, imperfect exposure, simple lighting, and ordinary realism. This style changes only the photographic finish; do not add props, events, extra subjects, landmarks, or new actions."
+    },
+    {
+      "name": "Tag Dense",
+      "instruction": "Prefer compact comma-separated visual tags. Avoid full sentences and avoid adding cinematic prose."
+    },
+    {
+      "name": "Minimal",
+      "instruction": "Keep the prompt short and focused. Do not add extra mood, lighting, camera, quality, or production terms unless requested."
+    },
+    {
+      "name": "Cinematic Perfect Quality",
+      "instruction": "Favor a polished cinematic image with excellent composition, rich lighting, high detail, clean focus, strong atmosphere, and premium production quality. Add quality language only where it supports the subject."
+    },
+	{
+      "name": "Glamorous",
+      "instruction": "Favor a polished glam image with excellent composition, rich lighting, high detail, clean focus, and strong atmosphere. Add quality language only where it supports the subject. Use sexualized clothing, posing, or makeup only when the prompt explicitly describes an adult subject aged 18 or older; otherwise keep the styling glamorous but non-sexualized."
+    },
+    {
+      "name": "Studio Photography",
+      "instruction": "Make the result feel like controlled studio photography. Emphasize clean backdrop, intentional posing or placement, professional lighting, crisp detail, and carefully arranged composition."
+    },
+    {
+      "name": "Editorial Fashion",
+      "instruction": "Use a high-end editorial look with refined styling, confident composition, curated wardrobe or object presentation, elegant lighting, and magazine-quality visual polish."
+    },
+    {
+      "name": "Product Photography",
+      "instruction": "Make the subject read clearly as a product or object shot. Emphasize clean presentation, controlled lighting, sharp detail, uncluttered background, and accurate visible features."
+    },
+    {
+      "name": "Old Polaroid Photo",
+      "instruction": "Make the result feel like an old instant Polaroid photo. Favor casual framing, soft focus, faded colors, slight flash harshness, imperfect exposure, and nostalgic everyday realism."
+    },
+    {
+      "name": "Analog Film Photo",
+      "instruction": "Make the result feel like analog film photography. Favor natural grain, imperfect exposure, subtle color shifts, organic contrast, and a lived-in photographic feel."
+    },
+    {
+      "name": "Disposable Camera",
+      "instruction": "Make the result feel like a cheap disposable camera snapshot. Favor harsh flash, casual framing, slight blur, imperfect colors, mundane realism, and unpolished spontaneity."
+    },
+    {
+      "name": "Documentary Photo",
+      "instruction": "Rephrase the prompt so it reads like the shot is from a documentary movie. Favor grounded realism, natural environments, honest composition, observable details, and minimal stylization."
+    },
+    {
+      "name": "Dreamy Soft Focus",
+      "instruction": "Favor a soft, dreamy visual mood with gentle light, delicate contrast, muted detail, airy composition, and a calm atmospheric feel."
+    },
+    {
+      "name": "Dark Moody",
+      "instruction": "Favor a darker moody look with controlled shadows, restrained highlights, atmospheric contrast, and a serious tone while keeping the subject readable."
+    },
+    {
+      "name": "Subtly Uncanny",
+      "instruction": "Make the image feel almost normal but quietly wrong. Preserve the requested subject and scene while introducing restrained unease through too-perfect stillness, subtly skewed perspective, slightly unnatural spacing, sickly subdued color, ambiguous shadow shapes, and ordinary details that seem fractionally out of place. Keep the horror understated: nothing openly attacks, and the source of discomfort should remain difficult to identify."
+    },
+    {
+      "name": "Creepy Quiet",
+      "instruction": "Create the breath-held silence of a place that should not be empty. Favor dim ambient light, deep inactive shadows, stale air, abandoned textures, negative space that feels watched, and a small readable subject surrounded by oppressive stillness. Suggest that something has just left or may be just beyond sight without adding a visible creature, extra person, or new action."
+    },
+    {
+      "name": "Liminal Dread",
+      "instruction": "Transform the visual treatment into liminal horror: eerily vacant transitional space, repeating architecture, buzzing artificial light, washed-out institutional colors, distant vanishing points, subtly impossible geometry, and the sensation of being stranded between familiar places. Keep the prompt's actual subject and setting recognizable; make emptiness, scale, repetition, and spatial wrongness carry the fear."
+    },
+    {
+      "name": "Haunted Photograph",
+      "instruction": "Make the result resemble an old photograph with a deeply haunted presence. Use faded monochrome or sepia, silvering at the edges, soft chemical stains, scratched emulsion, uneven exposure, slight motion smears, murky corners, and unsettlingly rigid stillness. Let faces, reflections, or shadows appear faintly wrong only when those elements already belong to the prompt; do not invent extra people."
+    },
+    {
+      "name": "Cursed VHS",
+      "instruction": "Render the scene like a cursed late-generation VHS tape recovered after an unexplained event. Emphasize crawling static, warped tracking lines, chromatic bleed, crushed black shadows, blown highlights, timecode-like recording grime, unstable freeze-frame distortion, and barely legible forms swallowed by analog noise. Preserve the requested scene, using signal corruption and ominous ambiguity as the horror."
+    },
+    {
+      "name": "Analog Horror Broadcast",
+      "instruction": "Use the visual language of an interrupted analog emergency broadcast: severe broadcast graphics, degraded videotape texture, monochrome instructional imagery, dirty scanlines, off-register text-like shapes, stark warning colors, frozen low-fidelity frames, and an impersonal official tone collapsing into menace. Do not add readable claims, logos, or unrelated entities; express the alarm through composition, degradation, and cold institutional presentation."
+    },
+    {
+      "name": "Found-Footage Horror",
+      "instruction": "Make the image feel like a terrifying frame from recovered handheld footage. Favor frantic imperfect framing, harsh on-camera light, deep surrounding darkness, motion blur, sensor noise, compression artifacts, tilted horizons, clipped highlights, and the raw immediacy of a camera operator reacting too late. Keep the prompt's subjects and action intact rather than inventing a separate incident."
+    },
+    {
+      "name": "Surveillance Horror",
+      "instruction": "Present the scene as disturbing security-camera footage: fixed high-angle viewpoint, wide distorted lens, cold monochrome or dirty low-saturation color, timestamp-like interface residue, coarse digital noise, blind corners, hard pools of light, and large areas of unreadable darkness. Create dread from helpless distance and an important detail nearly missed in the frame; do not add unrelated people or events."
+    },
+    {
+      "name": "Gothic Haunting",
+      "instruction": "Favor lush gothic supernatural horror with towering darkness, funereal elegance, decayed ornament, damp stone or aged surfaces appropriate to the scene, candlelike pools of weak light, drifting mist, elongated shadows, moon-pale highlights, and the mournful atmosphere of a centuries-old haunting. Preserve the core subject and setting while making beauty and dread inseparable."
+    },
+    {
+      "name": "Dark Fairy Tale",
+      "instruction": "Turn the presentation into a sinister old fairy tale: enchanted but hostile atmosphere, tangled organic silhouettes, ancient carved textures, jewel-dark colors, pale storybook light, delicate beauty edged with cruelty, and the sense that every charming detail conceals a trap. Keep the original subject and action; use symbolic shapes, material treatment, and ominous wonder instead of adding unrelated characters."
+    },
+    {
+      "name": "Folk Horror",
+      "instruction": "Use earthy, ritualistic folk-horror aesthetics: weathered rural textures, handmade objects already supported by the scene, tangled vegetation, bone-pale daylight or firelit dusk, primitive repeated patterns, muddy natural colors, communal unease, and an old landscape that seems to remember something terrible. Preserve the prompt's people and events, building dread through place, tradition, and patient inevitability."
+    },
+    {
+      "name": "Occult Horror",
+      "instruction": "Create elaborate occult horror through forbidden symmetry, severe ritual composition, soot-black shadow, ember-red or corpse-pale accents, arcane-looking geometric motifs without readable text, smoke-veiled light, ancient worn materials, and the oppressive sense that an unseen boundary has been crossed. Do not invent extra participants or a new ritual action; apply the menace to what the prompt already depicts."
+    },
+    {
+      "name": "Psychological Dread",
+      "instruction": "Make the scene feel mentally destabilizing rather than openly monstrous. Favor isolating composition, invasive negative space, repeated visual echoes, uncertain reflections, subtly inconsistent scale, compressed perspective, desaturated color, sour fluorescent or pallid window light, and details that invite mutually incompatible interpretations. Preserve literal prompt content while making the viewer doubt what is real."
+    },
+    {
+      "name": "Sleep-Paralysis Nightmare",
+      "instruction": "Give the image the suffocating logic of sleep paralysis: immobile viewpoint, oppressive darkness gathering around the edges, shallow breathless space, weak predawn light, heavy vignetting, stretched shadows, indistinct vertical forms, and the intimate certainty of a presence too close to escape. Keep additions abstract and shadow-like unless the prompt already specifies a creature or intruder."
+    },
+    {
+      "name": "Surreal Fever Nightmare",
+      "instruction": "Push the image into feverish nightmare surrealism. Use impossible spatial transitions, liquefying perspective, repeated or misplaced features, organic architecture, bruised crimson and bilious color accents, waxy textures, dreamlike scale shifts, and sharp islands of detail inside smeared unreality. Retain the prompt's core subject and intent even as its visual logic becomes deeply disturbing."
+    },
+    {
+      "name": "Claustrophobic Terror",
+      "instruction": "Make the composition physically suffocating. Crowd the subject with close foreground obstructions, crushing darkness, narrow slits of light, shallow depth, cramped framing, abrasive texture, damp air, and little or no visual escape route. Use tight perspective and implied off-frame pressure to create panic while preserving the requested location, subjects, and action."
+    },
+    {
+      "name": "Cosmic Horror",
+      "instruction": "Infuse the scene with cosmic horror: impossible scale, non-Euclidean depth, starless voids, ancient geometries too vast to understand, cold spectral light, infinitesimal human perspective where applicable, and reality seeming thin or damaged around the subject. Avoid naming established fictional deities or adding an unrelated monster; evoke incomprehensible presence through scale, space, and visual contradiction."
+    },
+    {
+      "name": "Abyssal Horror",
+      "instruction": "Use deep-abyss horror with near-total darkness, immense unseen depth, suspended particles, narrow beams lost in black water or black air, cold blue-green undertones, wet reflective textures, crushing pressure, and a silhouette only partly resolved at the limit of visibility. Adapt these qualities metaphorically when the prompt is not underwater, preserving its actual scene and subject."
+    },
+    {
+      "name": "Creature Feature Horror",
+      "instruction": "Favor a ferocious practical creature-feature aesthetic: tactile monster detail when a creature is already requested, wet or leathery surfaces, strained anatomy, harsh backlight, turbulent shadow, debris-filled atmosphere, dramatic scale, and a clear readable silhouette revealed only in fragments. If no creature exists in the prompt, make the existing subject or threat feel creature-feature intense without adding a new monster."
+    },
+    {
+      "name": "Body Horror",
+      "instruction": "Apply disturbing body-horror aesthetics to anatomy or organic forms already present in the prompt: uncanny asymmetry, waxy skin, stretched contours, impossible articulation, scar-like textures, invasive organic patterning, clinical highlights, and a revolting mixture of familiarity and biological wrongness. Do not introduce mutilation, wounds, or additional bodies unless the prompt supports them."
+    },
+    {
+      "name": "Visceral Gore Horror",
+      "instruction": "When the prompt already includes injury, gore, or violent aftermath, render it with unflinching visceral horror: wet crimson-black color, torn organic texture, sticky reflective surfaces, smeared evidence, stark directional light, dirty practical-effects realism, and nauseating close detail. Do not invent violence, wounds, victims, or perpetrators when they are absent; in nonviolent prompts, use only the grimy high-intensity splatter-film atmosphere."
+    },
+    {
+      "name": "Demonic Horror",
+      "instruction": "Create infernal supernatural terror with scorched darkness, furnace-red fissures or icy corpse-pale light, smoke-like shadow, subtly blasphemous-looking symmetry without real-world sacred symbols, warped silhouettes, heat-haze distortion, and a palpable sense of malicious intelligence. Preserve the prompt's actual cast and actions; do not add a demon unless a demonic entity is already requested."
+    },
+    {
+      "name": "Extreme Nightmare Fuel",
+      "instruction": "Generate a profoundly unsettling scene characterized by distorted anatomy: unnaturally elongated limbs, disjointed joints, and slender, multi-jointed fingers. Use a sickly, diseased color scheme dominated by jaundiced yellows, bruised purples, and emerald greens, with accents of coagulated red. Focus on visceral textures: peeling, oozing wallpaper; slick, wet surfaces; and skin that appears translucent and veined. Incorporate 'uncanny valley' elements such as asymmetrical facial features, glassy unblinking eyes, and a slightly hunched, rigid posture. Create visual tension through 'impossible geometry' where chair legs curve into the floor and shadows seem to detach from their sources. The lighting should be harsh and directional, casting long, sharp shadows that emphasize the gauntness of the subject. Aim for a feeling of stagnant decay and biological wrongness."
+    },
+    {
+      "name": "Jumpscare - Sudden Reveal",
+      "instruction": "Compose the image as the exact split second of a devastating jump scare. Use a violently abrupt close reveal of the prompt's existing threat or subject, explosive forward perspective, severe wide-angle distortion, hard frontal light, razor-sharp near detail against collapsing darkness, clipped motion at the frame edges, and almost no safe negative space. Do not invent a new attacker; turn the requested focal element into the sudden reveal."
+    },
+    {
+      "name": "Jumpscare - Flashlit Shock",
+      "instruction": "Create a flashlit jump-scare frame in which darkness is shattered for one terrible instant. Favor a near-black scene, brutal white on-camera flash, the prompt's frightening focal element much closer than expected, blown highlights, red-eye-like reflections where anatomically appropriate, frantic crooked framing, frozen motion, and background detail disappearing into black. Preserve the existing subjects and event."
+    },
+    {
+      "name": "Jumpscare - Found-Footage Lunge",
+      "instruction": "Make the result feel like the final corrupted frame before a found-footage camera is struck. Push the prompt's existing threat or subject toward the lens with lunging perspective, violent camera tilt, radial motion smear, rolling-shutter warp, digital breakup, harsh camera light, partial cropping, and a face or form too close to resolve comfortably. Do not add a separate creature or victim."
+    },
+    {
+      "name": "Grimdark Fantasy",
+      "instruction": "Recast the visual treatment as merciless grimdark fantasy: a war-scarred world, soot-blackened materials, mud, rust, battered grandeur, dying firelight, storm-heavy skies, brutal silhouettes, desaturated iron and blood-red accents, and victory that feels temporary. Preserve the prompt's subjects and action; express the genre through harsh atmosphere, worn design, and moral bleakness rather than inventing a battle."
+    },
+    {
+      "name": "Dark Fantasy",
+      "instruction": "Favor richly atmospheric dark fantasy where beauty has become dangerous. Use ancient shadowed architecture or natural forms appropriate to the setting, moonlit mist, thorn-like silhouettes, tarnished metal, blackened jewel colors, occult-looking ornament without readable symbols, dramatic chiaroscuro, and the sense of old magic awakening at a terrible price. Keep the original subject clearly recognizable."
+    },
+    {
+      "name": "Sword and Sorcery",
+      "instruction": "Give the image a vivid sword-and-sorcery adventure aesthetic: muscular painterly forms, weathered bronze and leather, blazing sunset or torchlight, ancient ruins when compatible with the setting, bold heroic silhouettes, dangerous magic, saturated mineral colors, and pulpy high-stakes energy. Do not add weapons, monsters, or extra characters unless the prompt supports them."
+    },
+    {
+      "name": "Epic High Fantasy",
+      "instruction": "Make the scene feel like grand high fantasy on a legendary scale. Favor majestic depth, monumental landscapes or architecture appropriate to the prompt, intricate noble materials, sweeping atmospheric light, radiant skies, banners of color, ancient history visible in every surface, and a polished painterly-cinematic finish. Preserve the requested cast and event while elevating their world into myth."
+    },
+    {
+      "name": "Heroic Fantasy",
+      "instruction": "Use an uplifting heroic-fantasy style with confident readable silhouettes, wind-swept movement, gleaming highlights, rich heraldic color, noble material detail, dramatic clouds, and a strong visual path from hardship toward hope. Make the existing subject feel courageous or consequential without adding a quest, weapon, enemy, or companion that was not requested."
+    },
+    {
+      "name": "Mythic Legend",
+      "instruction": "Present the prompt like an image from an ancient living myth. Favor archetypal composition, colossal natural scale, solemn gold and earth colors, carved or woven visual motifs, timeless garments and materials when applicable, sacred-looking light without copying real religious iconography, and the weight of a story remembered for thousands of years."
+    },
+    {
+      "name": "Medieval Fantasy",
+      "instruction": "Apply a richly detailed medieval-fantasy aesthetic: hand-worked stone and timber, forged metal, embroidered cloth, candle or overcast daylight, earthy pigments, heraldic accents, lived-in craftsmanship, and believable preindustrial texture touched by restrained wonder. Adapt only compatible surfaces and styling; preserve modern or unusual subject details when they are essential to the prompt."
+    },
+    {
+      "name": "Arcane Sorcery",
+      "instruction": "Saturate the scene with sophisticated arcane magic. Use luminous geometric spell structures without readable writing, orbiting particles, layered translucent energy, violet-blue and molten-gold radiance, magical refraction, levitating fragments where compositionally appropriate, and precise controlled power bending light around the existing subject. Do not introduce a new caster or spellcasting action."
+    },
+    {
+      "name": "Elemental Magic",
+      "instruction": "Infuse the image with spectacular elemental magic expressed through fire, water, air, earth, ice, lightning, or a prompt-appropriate combination. Favor physically convincing energy flow, glowing embers, suspended droplets, wind-torn particles, crystalline frost, branching electricity, illuminated vapor, and strong color contrast, all organized around the existing subject rather than obscuring it."
+    },
+    {
+      "name": "Celestial Magic",
+      "instruction": "Create luminous celestial fantasy with starlit energy, moon-silver and sun-gold accents, constellation-like geometry without readable symbols, delicate cosmic dust, haloed atmospheric light, prismatic auroras, vast blue-violet depth, and the serene impression that the heavens are responding to the scene. Preserve the prompt's cast, objects, setting, and action."
+    },
+    {
+      "name": "Witchcraft Fantasy",
+      "instruction": "Use an earthy, mysterious witchcraft-fantasy aesthetic: hand-bound materials, botanical textures, dark glass, wax, smoke, moonlit greens and purples, intimate pools of warm light, delicate ritual-like arrangements, and magic that feels practical, old, and alive. Do not add a witch, familiar, cauldron, or ritual unless one is already supported by the prompt."
+    },
+    {
+      "name": "Alchemical Fantasy",
+      "instruction": "Favor ornate alchemical fantasy with glowing liquids, aged copper and brass, smoked glass, mineral pigments, intricate apparatus-like forms when appropriate, transmutation circles rendered as nonverbal geometry, handwritten-manuscript texture without legible text, amber illumination, and the atmosphere of matter being coaxed into impossible new states."
+    },
+    {
+      "name": "Dragon Fantasy",
+      "instruction": "Give the scene the immense scale and visual richness of dragon fantasy: volcanic or jewel-like color, smoke-cut light, vast wing-shaped compositional rhythms, ancient treasure-like materials, scorched texture, monumental perspective, and a sense of legendary power nearby. Add or depict an actual dragon only when the prompt requests one; otherwise keep the influence symbolic and environmental."
+    },
+    {
+      "name": "Enchanted Forest",
+      "instruction": "Transform compatible surroundings into enchanted-forest fantasy with cathedral-like trees, luminous moss, silver mist, intricate leaves, drifting spores, hidden pools of colored light, roots forming graceful natural architecture, and layers of emerald, teal, and gold depth. If the setting is not a forest, translate these qualities into organic pattern, filtered light, and living magical atmosphere."
+    },
+    {
+      "name": "Faerie Realm",
+      "instruction": "Use an opulent faerie-realm aesthetic: impossible botanical delicacy, dew-bright detail, iridescent wings or wing-like motifs only where appropriate, pearlescent light, miniature and monumental scales coexisting, jewel-toned flowers, elegant asymmetry, and beauty so precise that it feels otherworldly. Do not add fairies or extra beings unless requested."
+    },
+    {
+      "name": "Radiant Light Fantasy",
+      "instruction": "Create the luminous opposite of dark fantasy: an open, benevolent world flooded with pearly daylight, clear color, airy monumental forms, living greenery, polished pale materials, soft gold accents, gentle magical particles, and an atmosphere of safety, renewal, and wonder. Preserve the prompt's subject and action while making the visual world feel healed and hopeful."
+    },
+    {
+      "name": "Ethereal Fantasy",
+      "instruction": "Make the image feel weightless and otherworldly through translucent layers, soft luminous haze, floating fabric or particles where appropriate, opalescent color, delicate edge light, vast quiet negative space, graceful elongated shapes, and materials that seem made from mist, moonlight, glass, or memory. Keep the focal subject readable rather than dissolving it completely."
+    },
+    {
+      "name": "Whimsical Fantasy",
+      "instruction": "Favor playful whimsical fantasy with expressive shapes, charming asymmetry, lively color, miniature visual surprises, buoyant motion, hand-crafted texture, warm storybook light, and a world whose ordinary objects seem touched by friendly magic. Preserve the prompt's subject and avoid adding unrelated characters, props, or slapstick events."
+    },
+    {
+      "name": "Cozy Fantasy",
+      "instruction": "Create intimate cozy fantasy with amber windowlight, soft textiles, worn wood or handmade materials appropriate to the scene, small magical glows, gentle steam or haze, rounded welcoming shapes, rich autumnal or pastel color, and the feeling of shelter after a long journey. Do not invent food, fireplaces, companions, or domestic actions that the prompt does not contain."
+    },
+    {
+      "name": "Storybook Fantasy",
+      "instruction": "Render the scene like a lavishly illustrated fantasy storybook. Use elegant hand-painted forms, decorative borders or vignette-like edges when composition permits, textured paper, jewel-like but harmonious color, expressive scale, charming environmental detail, and clear visual storytelling. Retain the original subjects and moment rather than illustrating an unrelated tale."
+    },
+    {
+      "name": "Science Fantasy",
+      "instruction": "Blend advanced technology and mythic magic into one coherent visual language. Combine luminous circuitry with arcane geometry, engineered relics, energy that feels both scientific and enchanted, sleek surfaces beside ancient materials, cosmic color, monumental scale, and a sense of civilizations where starships and sorcery evolved together. Preserve the prompt's actual objects and cast."
+    },
+    {
+      "name": "Steampunk Adventure",
+      "instruction": "Use an exuberant steampunk-adventure aesthetic with burnished brass, copper tubing, riveted iron, leather, polished wood, steam haze, clockwork detail, warm workshop light, Victorian-inspired ornament where compatible, and optimistic mechanical ingenuity. Do not add goggles, gears, airships, weapons, or machinery unless they naturally reinterpret something already present."
+    },
+    {
+      "name": "Clockpunk Fantasy",
+      "instruction": "Favor intricate clockpunk fantasy inspired by spring-driven Renaissance machinery: exposed escapements, filigreed brass, astronomical mechanisms, engraved metal, ivory and dark wood, candlelit workshops, elegant mechanical motion, and precise hand-built complexity entwined with magic. Preserve the original subject instead of covering everything with arbitrary gears."
+    },
+    {
+      "name": "Dieselpunk Sci-Fi",
+      "instruction": "Give the scene a heavy dieselpunk science-fiction style: armored industrial forms, oily steel, stamped panels, analog gauges, smoke-streaked atmosphere, powerful engines when context supports them, searchlight beams, bold geometric design, muted military greens and browns, and dramatic orange firelight. Do not invent warfare or vehicles that the prompt does not imply."
+    },
+    {
+      "name": "Atompunk Retrofuture",
+      "instruction": "Present an exuberant atomic-age future with sweeping aerodynamic forms, chrome, enamel color, starburst motifs, glowing vacuum-tube technology, optimistic monumental architecture, turquoise and coral accents, crisp illustrated lighting, and the playful confidence of yesterday's imagined tomorrow. Preserve the prompt's subject and avoid adding branded or readable signage."
+    },
+    {
+      "name": "Retro Science Fiction",
+      "instruction": "Render the prompt like lavish classic science-fiction cover art: bold painted color, mysterious planets or cosmic shapes only when setting permits, dramatic rim light, chunky imaginative machinery, sweeping perspective, clean heroic silhouettes, and wondrous speculative scale. Keep all additions subordinate to the requested scene rather than inventing a different space adventure."
+    },
+    {
+      "name": "Cassette Futurism",
+      "instruction": "Use tactile cassette-futurist design with chunky beige or charcoal hardware, recessed controls, monochrome displays, labeled-looking but unreadable interface marks, coiled cables, modular panels, worn plastic, utilitarian lighting, and an analog vision of advanced technology. Adapt existing objects and surroundings instead of adding unnecessary consoles."
+    },
+    {
+      "name": "Hard Science Fiction",
+      "instruction": "Favor plausible hard-science-fiction realism: functional engineering, restrained materials, purposeful mechanisms, believable scale, physically motivated lighting, vacuum-rated or industrial construction where applicable, clear environmental wear, minimal decorative glow, and technology shaped by practical constraints. Preserve the prompt and avoid magical effects or gratuitous holograms."
+    },
+    {
+      "name": "Space Opera",
+      "instruction": "Make the image feel like spectacular space opera with grand cosmic depth, radiant energy, polished futuristic materials, sweeping light, monumental vehicles or architecture only when the prompt supports them, heroic color contrast, atmospheric planetary scale, and elegant high-drama composition. Do not add a space battle, spaceship, or extra cast unless requested."
+    },
+    {
+      "name": "Alien World",
+      "instruction": "Transform compatible environments into a convincing alien world using unfamiliar geology, non-Earth color relationships, strange atmospheric scattering, biologically coherent but unexpected organic forms, multiple layers of scale, exotic weather, and distant terrain that suggests a complete ecosystem. Keep the requested subject intact and do not automatically turn it into an alien."
+    },
+    {
+      "name": "Cyberpunk Neon",
+      "instruction": "Apply dense cyberpunk aesthetics: rain-slick reflective surfaces, saturated cyan, magenta, and acid-color neon, towering urban layers where compatible, cables and augmented materials, smoky backlight, holographic-looking shapes without readable advertisements, crowded depth, and beautiful technological decay. Preserve the subject and do not add implants, weapons, or a city when unsupported."
+    },
+    {
+      "name": "Tech-Noir Future",
+      "instruction": "Use a restrained tech-noir future style with cold corporate architecture, deep black shadow, narrow bands of artificial light, wet reflective texture, smoked glass, surveillance-like distance, desaturated steel color with sparse neon accents, and advanced technology that feels isolating rather than wondrous. Preserve the prompt's scene and cast."
+    },
+    {
+      "name": "Solarpunk Utopia",
+      "instruction": "Create an optimistic solarpunk aesthetic through lush integrated greenery, warm daylight, airy organic architecture where compatible, recycled and natural materials, elegant renewable technology, translucent solar surfaces, water-bright reflections, communal openness, and vivid life-affirming color. Do not add buildings, crowds, or devices unless they suit the original prompt."
+    },
+    {
+      "name": "Biopunk Future",
+      "instruction": "Favor a biopunk future where technology is grown rather than manufactured: translucent membranes, vascular light, cultured tissue-like materials, cellular patterns, glossy organic interfaces, laboratory clarity mixed with strange life, pale clinical color punctuated by vivid biological hues, and forms that appear engineered through genetics. Preserve the prompt's anatomy and avoid adding injury."
+    },
+    {
+      "name": "Biomechanical Sci-Fi",
+      "instruction": "Fuse mechanical and organic design into dark biomechanical science fiction: ribbed alloy, tendon-like cabling, bone-smooth structures, oily reflections, repeating anatomical machinery, cold backlight, cavernous engineered depth, and a seamless uncertainty about where organism ends and machine begins. Apply this to existing subjects or structures rather than adding an unrelated creature."
+    },
+    {
+      "name": "Post-Apocalyptic Sci-Fi",
+      "instruction": "Give the scene a post-apocalyptic science-fiction atmosphere through sun-bleached ruins or worn surfaces appropriate to the setting, scavenged technology, dust-filled light, faded hazard colors, improvised repairs, invasive nature, vast silence, and remnants of a sophisticated world made fragile. Do not invent corpses, weapons, disasters, or survivors not present in the prompt."
+    },
+    {
+      "name": "Megastructure Sci-Fi",
+      "instruction": "Emphasize awe-inspiring futuristic megastructure scale: architecture extending beyond the frame, repeating structural layers, kilometer-deep perspective, tiny scale cues, hard engineered geometry, atmospheric haze, severe shafts of light, and a balance of sublime order and human insignificance. Translate these qualities to the existing environment without replacing the requested subject."
+    },
+    {
+      "name": "Holographic Future",
+      "instruction": "Use a clean holographic-future aesthetic with translucent luminous interfaces, volumetric color, layered glass, spectral reflections, precise light grids, floating information-like forms without readable text, white and graphite surfaces, and elegant cyan-violet energy. Keep holographic effects compositionally controlled so the existing subject remains clear."
+    },
+    {
+      "name": "Vibrant Color Pop",
+      "instruction": "Favor bright, saturated colors, clear visual separation, energetic composition, and a lively polished result without changing the subject."
+    },
+    {
+      "name": "Vintage Poster",
+      "instruction": "Make the result feel like a vintage illustrated poster. Favor bold shapes, limited palette, graphic composition, aged print texture, and clear subject readability."
+    },
+    {
+      "name": "Concept Art",
+      "instruction": "The style is concept-art. Focus on language with clear design intent, readable silhouettes, low detail, visual development. Even when the original prompt says it's a photo, rewrite the prompt as concept-art."
+    },
+    {
+      "name": "Painterly Illustration",
+      "instruction": "Favor painterly illustration qualities such as visible brushwork, artistic color choices, expressive lighting, and a composed hand-crafted feel."
+    },
+    {
+      "name": "Silhouette",
+      "instruction": "Use a silhouette-focused visual style. Emphasize strong readable shapes, dark subject forms, clear outlines, minimal internal detail, and strong contrast between figure and background."
+    },
+    {
+      "name": "Line Drawing",
+      "instruction": "Use a clean line drawing style. Emphasize outlines, contour lines, simple visible details, minimal shading, and a hand-drawn graphic look."
+    },
+    {
+      "name": "Pencil Drawing",
+      "instruction": "Use a pencil drawing style. Emphasize graphite lines, soft sketch marks, light shading, visible strokes, and monochrome hand-drawn texture."
+    },
+    {
+      "name": "Charcoal Drawing",
+      "instruction": "Use a charcoal drawing style. Emphasize rough black strokes, smudged shading, high contrast, textured paper, and expressive hand-rendered marks."
+    },
+    {
+      "name": "Ink Drawing",
+      "instruction": "Use an ink drawing style. Emphasize crisp black ink lines, controlled hatching, bold contours, and clear graphic detail."
+    },
+    {
+      "name": "Crayon Drawing",
+      "instruction": "Use a crayon drawing style. Emphasize waxy texture, simple shapes, uneven hand-colored areas, playful marks, and childlike drawn charm."
+    },
+    {
+      "name": "Colored Pencil",
+      "instruction": "Use a colored-pencil illustration style. Emphasize layered pencil strokes, textured color, soft shading, and hand-drawn detail."
+    },
+    {
+      "name": "Watercolor",
+      "instruction": "Use a watercolor painting style. Emphasize translucent washes, soft color bleeding, gentle edges, paper texture, and light hand-painted detail."
+    },
+    {
+      "name": "Oil Painting",
+      "instruction": "Use an oil painting style. Emphasize rich paint texture, visible brushstrokes, layered color, and traditional painted depth."
+    },
+    {
+      "name": "Acrylic Painting",
+      "instruction": "Use an acrylic painting style. Emphasize bold opaque colors, visible brush texture, clean painted shapes, and a modern hand-painted finish."
+    },
+    {
+      "name": "Pastel Drawing",
+      "instruction": "Use a pastel drawing style. Emphasize soft powdery color, smudged edges, gentle blending, and textured paper."
+    },
+    {
+      "name": "Marker Illustration",
+      "instruction": "Use a marker illustration style. Emphasize bold marker strokes, smooth color blocks, clean graphic shapes, and hand-rendered shading."
+    },
+    {
+      "name": "Comic Book",
+      "instruction": "Use a comic-book illustration style. Emphasize bold outlines, inked contours, simplified shading, clear action-readable forms, and graphic color."
+    },
+    {
+      "name": "Manga Ink",
+      "instruction": "Use a manga ink style. Emphasize black-and-white linework, screentone-like shading, expressive outlines, and clean illustrated detail."
+    },
+    {
+      "name": "Woodcut Print",
+      "instruction": "Use a woodcut print style. Emphasize carved-looking lines, high contrast, rough printed texture, limited tones, and bold graphic shapes."
+    },
+    {
+      "name": "Paper Cutout",
+      "instruction": "Use a paper-cutout style. Emphasize layered flat shapes, crisp edges, simple color areas, and handmade collage-like construction."
+    },
+    {
+      "name": "Pixel Art",
+      "instruction": "Use a pixel-art style. Emphasize low-resolution blocky shapes, limited palette, crisp pixel edges, and sprite-like readable detail."
+    },
+    {
+      "name": "Claymation",
+      "instruction": "Use a claymation style. Emphasize handmade clay texture, rounded sculpted forms, subtle fingerprints, and stop-motion-like material detail."
+    },
+    {
+      "name": "3D Render",
+      "instruction": "Use a 3D-rendered style. Emphasize modeled forms, material surfaces, rendered lighting, and computer-generated visual clarity."
+    },
+    {
+      "name": "Booru Tags",
+      "instruction": "Prefer booru-style comma-separated tags. Focus on subject, pose, setting, clothing or object details, expression, and composition. Avoid prose sentences."
+    },
+    {
+      "name": "Realistic Natural Light",
+      "instruction": "Favor realistic natural-light photography. Emphasize believable light direction, natural color, grounded setting, and ordinary physical details."
+    },
+    {
+      "name": "No Quality Tags",
+      "instruction": "Do not add quality tags or hype terms such as masterpiece, best quality, ultra detailed, award winning, cinematic, professional, or 8k. Keep only subject-relevant prompt content."
+    },
+    {
+      "name": "Playful Anime",
+      "instruction": "Favor playful anime-style wording or tags. Avoid realism, cinematic photography, and professional studio phrasing unless requested."
+    },
+    {
+      "name": "Fixed Ceiling CCTV",
+      "instruction": "Make the result look like footage from a fixed ceiling-mounted security camera. Use a high corner viewpoint, very wide lens, mild barrel distortion, deep room coverage, flat automatic exposure, muted color, modest sensor noise, low-bitrate compression blocks, slight oversharpening, and subtle timestamp-like interface residue without readable text. Preserve the actual subjects and event; do not invent suspicious behavior."
+    },
+    {
+      "name": "Analog Monochrome CCTV",
+      "instruction": "Present the scene as old monochrome analog CCTV footage: fixed distant framing, black-and-white video, soft low resolution, interlaced scanlines, unstable contrast, blooming highlights, crushed shadows, tape noise, faint ghosting, rounded screen corners, and unobtrusive recorder markings without legible words or numbers. Keep the prompt's content unchanged."
+    },
+    {
+      "name": "Infrared Night-Vision CCTV",
+      "instruction": "Render the scene as infrared night-vision security footage. Favor a fixed wide viewpoint, near-monochrome gray or green-tinted output, harsh infrared illumination fading rapidly into darkness, pale reflective surfaces, bright eye reflection only where anatomically appropriate, coarse sensor grain, clipped highlights, deep black distance, and restrained security-overlay artifacts without readable text."
+    },
+    {
+      "name": "Hidden Pinhole Camera",
+      "instruction": "Make the image feel captured unknowingly by a tiny concealed pinhole camera. Use an awkward off-center or low placement, narrow partially obstructed view, strong edge vignetting, soft miniature optics, uneven focus, dim available light, poor dynamic range, muted color, digital noise, and compressed detail. Preserve the requested scene and do not add a voyeur, camera device, or new activity."
+    },
+    {
+      "name": "Doorbell Camera",
+      "instruction": "Use the recognizable look of smart doorbell-camera footage: fixed chest-height entry viewpoint, strong fisheye distortion, broad near-field coverage, sharp central detail, compressed peripheral forms, aggressive automatic HDR, slightly cool color, video sharpening, motion artifacts, and minimal interface-like residue without readable labels. Do not add a doorway, visitor, package, or homeowner unless present in the prompt."
+    },
+    {
+      "name": "Body-Worn Camera",
+      "instruction": "Make the scene look like a frame from a body-worn camera. Favor chest-height first-person placement, ultra-wide rectilinear distortion, urgent imperfect framing, natural body movement, rolling-shutter skew, mixed exposure, hard practical light, compressed video texture, and partial foreground occlusion only when supported by the action. Do not invent an officer, uniform, confrontation, or crime."
+    },
+    {
+      "name": "Dashcam Footage",
+      "instruction": "Present the image as fixed forward-facing dashcam footage with a low centered viewpoint, very wide road-oriented framing when compatible, windshield reflections, subtle dashboard-edge occlusion only if a vehicle is already implied, automatic exposure, headlight or streetlight bloom, motion compression, sensor noise, and timestamp-like marks without readable text. Preserve the requested event and setting."
+    },
+    {
+      "name": "Elevator Security Camera",
+      "instruction": "Use the impersonal look of an elevator security camera: extreme upper-corner angle, compact enclosed framing, wide-lens distortion, flat overhead illumination, desaturated color, reflective surfaces and repeating panel geometry only when compatible with the setting, compressed low-frame-rate video texture, and a blind area directly beneath the camera. Do not invent an elevator or additional occupants."
+    },
+    {
+      "name": "Trail Camera",
+      "instruction": "Make the result resemble an unattended motion-triggered trail-camera image. Use a fixed waist-height viewpoint, rough utilitarian framing, deep outdoor focus when compatible, harsh white flash or monochrome infrared illumination, abrupt falloff into darkness, foreground vegetation occlusion only when supported by the scene, high ISO noise, limited resolution, and a stark frozen instant. Do not add wildlife or a forest unless requested."
+    },
+    {
+      "name": "Aerial Surveillance Camera",
+      "instruction": "Present the scene as stabilized aerial surveillance imagery from directly overhead or a steep oblique angle. Favor distant compressed perspective, broad environmental coverage, restrained color, atmospheric haze, high digital sharpening, slight transmission artifacts, tracking-box-like geometry without targeting claims or readable text, and a detached observational mood. Do not add a drone, aircraft, pursuit, or military context."
+    }
+  ]
+}

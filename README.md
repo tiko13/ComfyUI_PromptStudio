@@ -47,6 +47,13 @@ The first message becomes the main prompt and is rendered into a complete final 
 
 Revisions use the smallest edit scope implied by the request. References that conflict with the requested change are replaced, while unrelated clauses and tags are preserved where possible. Removing an automatic detail that is absent from the main prompt changes only the final prompt; Prompt Studio does not add negative wording to the main prompt.
 
+After a generation completes, the main composer offers an optional **Use latest image for LLM**
+toggle. It sends the newest completed generated image alongside prompt rendering and revision
+requests, giving a vision-capable local model direct visual context for instructions such as
+“correct the pose” or “keep everything else the same.” The option is off by default, is unavailable
+until the current session contains a completed generated image, and never selects an imported source,
+failed generation, or in-progress result.
+
 The inspector displays the stable **Main prompt** and editable **Final prompt**. Manual final-prompt edits are used for generation and preserved by later precision revisions. **Undo** restores the main and final prompt together, and every generated-image message records both plus the complete executable workflow inputs that were queued. Its **i** panel shows the workflow, LoRAs and strengths, and every saved node input. **Use these prompts** restores the prompt, routing, LoRAs, source image when applicable, and arms the saved executable snapshot; generating without making a change reuses every stored input, including seeds, to reproduce the original queue as closely as the installed nodes and runtime allow. In an editing workflow's **Text only** mode, the workflow intentionally receives the latest edit instruction instead of the complete final prompt.
 
 ### Generate and reroll
@@ -76,6 +83,85 @@ The original extension URL remains available for compatibility:
 ```
 
 On direct navigation or refresh, it reconnects to an open ComfyUI tab when possible and otherwise starts a hidden same-origin workflow host.
+
+### Local model consultation chat
+
+The standalone interface adds a chat-bubble button beside its header controls. It opens a normal,
+session-specific conversation with the local KoboldCpp or Ollama model selected in Prompt Studio
+settings. This assistant chat is separate from prompt rewriting: responses are conversational and
+never modify the main prompt, final prompt, or generation controls automatically.
+
+Ordinary consultation starts without Prompt Studio context. Previous experiment messages are also
+excluded from ordinary chat requests, so using the assistant for an unrelated question does not
+silently attach prompts, presets, settings, or images. Open **Attach context** and choose
+**Start prompt experiment** to explicitly create an isolated experiment from the current main and
+final prompts plus read-only copies of the selected style and framing instructions.
+
+Inside an active prompt experiment, the assistant may propose a complete candidate prompt and
+temporary style or framing guidance. Candidate cards can generate through the currently selected
+Studio workflow while keeping the result in consultation history. **Promote to Studio** explicitly
+copies the selected candidate into the Final Prompt and, when available, adds its chosen generated
+result to the main conversation. Promotion does not change preset selections or files, workflows,
+diffusion models, LoRAs, resolution, seeds, or provider settings. Ending an experiment returns the
+assistant to ordinary chat; completed candidates remain available in consultation history until
+normal consultation expiry.
+
+Turn on **Prompt agent** directly above the chat composer, describe the desired image, and press
+**Start agent**. The current draft becomes the image goal and selected consultation images become
+labelled references. Prompt Agent
+requires a vision-capable local model and a compatible `[PS]` creation workflow. It runs a
+checkpointed loop with separate, fresh local-model contexts for brief compilation, prompt
+architecture, and pixel-grounded visual judging:
+
+1. Compile the goal into weighted required and preferred visual criteria.
+2. Build a complete prompt with run-local style and framing guidance.
+3. Generate through the selected creation workflow.
+4. Judge only the generated pixels against the locked goal, rubric, and references.
+5. Refine and repeat until the rubric passes, five iterations are exhausted, or progress plateaus.
+
+Prompt comparisons preserve the workflow seed. A passing candidate is generated once more with a
+fresh seed and must pass again before autonomous completion. The run keeps its best-scoring result
+if a later iteration regresses. **Pause** checkpoints the loop, **Stop** interrupts an active
+ComfyUI generation, and **Promote best to Studio** explicitly copies the chosen prompt and image
+into the main session. The agent never changes global style or framing preset files, workflow
+selection, models, LoRAs, resolution, provider settings, or other Studio controls.
+
+Agent mode remains selected after a run finishes. Enter a correction in the same composer and press
+**Continue agent** to compile the updated goal and run more iterations. Earlier iterations remain
+visible for comparison, while the new cycle chooses a fresh best result against the corrected goal.
+Turn off **Prompt agent** to return the composer to ordinary consultation chat.
+
+Agent state is stored with the session and can resume after a refresh. If Prompt Studio is closed,
+an already queued ComfyUI image may finish, but further local-model phases resume only after Prompt
+Studio is opened again.
+
+Each message can attach the current main prompt, final prompt, and generation settings. Attached
+generation settings include the selected style and framing preset names plus their full resolved
+instruction text, so the assistant can audit exactly how those presets shaped the prompt. Recent
+generated images can also be attached. An image attachment sends only the image and its explicitly
+selected role; prompts and generation settings are included only when their separate context
+checkboxes are selected. Images may be labelled as base/target images, generated results, general references, pose
+references, style references, or composition references so the model can compare them without
+guessing their intended roles.
+Additional reference images can be uploaded directly in the attachment tray.
+The upload control is also a drop target, so one image can be dragged directly beside the recent
+image thumbnails.
+
+The chat composer has its own **Gen settings** panel for Thinking, response tokens, temperature,
+Top P, Top K, Min P, repeat penalty and range, and seed. These values are stored separately and do
+not change the LLM settings used for Prompt Studio prompt rewriting.
+
+Consultation messages are temporary and automatically expire seven days after they are created.
+The **Clear** action removes the full consultation history, draft, and all pending context
+attachments for that session.
+Normal Prompt Studio session history is retained as before. When expired consultation messages
+contained uploaded Prompt Studio reference images, files that are no longer referenced anywhere
+else are removed from the managed image store as well.
+
+Image attachment is available only when the connected model reports vision support. Text chat
+continues to work with non-vision models. Prompt Studio sanitizes uploaded images and sends stored
+image references to its Python backend; the browser does not send local filesystem paths to the
+model service.
 
 ### Password-protected LAN access
 
@@ -127,6 +213,12 @@ Set its **LoRA Type** to the name of a top-level folder under any ComfyUI LoRA d
 LoRA filenames beginning with `_` are reserved for internal use and are never shown in Prompt Studio. For example, `flux/_internal.safetensors` is hidden while `flux/styles/_internal.safetensors` is also hidden.
 
 When the active workflow contains this loader, the inspector shows a **LoRA** section. Add any number of the available LoRAs, set an independent model strength for each one, and remove them without editing the saved workflow. Prompt Studio injects the ordered selection only into the temporary queued snapshot. Each generated-image message records the ordered LoRA selections and strengths used by its workflow; the image's **i** panel displays them, and selecting that image or choosing **Use these prompts** restores them. Older history entries without a LoRA snapshot leave the current selection unchanged. Normal ComfyUI queues of the saved workflow remain pass-through unless a stack was explicitly supplied through the API.
+
+## Prompt Studio Model Loader
+
+Use **Prompt Studio Model Loader** in place of ComfyUI's standard diffusion-model loader in a saved `[PS]` workflow. Set **Model Type** to the name of a top-level folder under any configured ComfyUI diffusion-model directory. The match is case-insensitive and includes models in nested folders below that top-level folder.
+
+When the active workflow contains this loader, Prompt Studio shows a **Model** selector directly below **LoRA** in the sidebar. Only models from the configured Model Type folder are offered, and the selection is injected into the temporary queued workflow. INT8 weights are detected from the safetensors header and use **Load Diffusion Model INT8 (W8A8)** with the fixed Krea 2 defaults; other weights use ComfyUI's standard loader. Model selections are recorded with generated images and restored with their saved generation state.
 
 ## Creation, image-editing, and upscaling workflows
 
@@ -180,11 +272,11 @@ primitive text → KoboldCpp Prompt Amplify → positive text encoder → sample
 Its prompt controls are:
 
 - `model_profile`: selects the target prompt grammar, examples, token default, and optional exact prefix or suffix from `model_profiles.json`.
-- `style_preset`: selects reusable aesthetic guidance from `style_templates.json`.
+- `style_preset`: selects reusable aesthetic guidance from the built-in and additional style presets.
 - `style_modifier`: supplies freeform style guidance for this run. When present, it becomes the target style and replaces conflicting medium, rendering, camera, or quality language.
-- `framing_preset`: selects composition, viewpoint, shot type, angle, and placement guidance from `framing_templates.json`.
+- `framing_preset`: selects composition, viewpoint, shot type, angle, and placement guidance from the built-in and additional framing presets.
 - `framing_modifier`: supplies freeform framing guidance for this run and takes precedence over the preset when non-empty.
-- `embellishment_level`: controls expansion after style conversion. **None** adds no new visible detail; **Minimal** stays short; **Clean** lightly polishes; **Detailed** adds useful visible detail; **Rich** produces a denser description; **Maximum** and **Ultra Maximum** allow progressively more expansion. Tag-based profiles increase tag density instead of prose length.
+- `embellishment_level`: controls expansion after style conversion. **None** adds no new visible detail; **Minimal** stays short; **Clean** lightly polishes; **Detailed** produces two descriptive sentences; **Rich** produces denser prose; **Maximum** targets about 50–90 words; and **Ultra Maximum** targets about 120–160 words with no sentence-count requirement and prioritizes prompt adherence over padding. Tag-based profiles keep their existing tag-density targets instead of using prose length.
 - `additional_instructions`: adds one-run task guidance without changing the profile files.
 - `thinking_mode`: selects KoboldCpp native reasoning effort from **Disabled** through **High**. Native thinking is kept in Chat Completions' separate `reasoning_content` field; only the final `content` is used as the image prompt.
 - `secondary_instructions`: passes through unchanged to the second output and is not part of the LLM request.
@@ -276,25 +368,53 @@ Edit `model_profiles.json` to add prompt formats for different image models:
 
 ### Style presets
 
-Edit `style_templates.json` to add reusable aesthetics:
+Built-in styles live in `presets/default/style_templates.json`. That file is maintained by the
+repository and should not be edited for personal presets.
+
+For personal or private styles, edit `style_templates.additional.json`, change its example, and
+set `"enabled": true`:
 
 ```json
 {
-  "name": "Casual Snapshot",
-  "instruction": "Make the result feel candid, ordinary, and natural. Prefer everyday wording. Avoid polished cinematic, editorial, commercial, or studio-style language."
+  "style_templates": [
+    {
+      "name": "My custom style",
+      "instruction": "Describe the reusable aesthetic guidance for this custom style.",
+      "enabled": true
+    }
+  ]
 }
 ```
 
 ### Framing presets
 
-Edit `framing_templates.json` to add reusable compositions and viewpoints:
+Built-in framings live in `presets/default/framing_templates.json`. For personal framings, edit
+`framing_templates.additional.json`, change its example, and set `"enabled": true`:
 
 ```json
 {
-  "name": "Selfie",
-  "instruction": "Show the finished selfie from the subject's front-facing phone-camera viewpoint, as the captured image itself. The viewer occupies the phone camera's position; do not show the phone or an outside observer's view."
+  "framing_templates": [
+    {
+      "name": "My custom framing",
+      "instruction": "Describe the reusable composition and viewpoint guidance.",
+      "enabled": true
+    }
+  ]
 }
 ```
+
+The two `.additional.json` files use the same top-level list format as their built-in
+counterparts. Entries with `"enabled": false` are ignored, which keeps the included example out
+of Prompt Studio. Additional presets are appended to the built-ins, and names must remain unique
+without regard to letter case.
+
+The `.additional.json` files are intentionally ignored by Git, so private content and local edits
+cannot make a normal pull fail. Their `.example.json` counterparts are tracked and distributed by
+the repository. Prompt Studio automatically creates each missing local file from its tracked
+example when ComfyUI starts or first loads the preset list. Creation is best-effort, so a read-only
+installation still loads the built-in presets. Do not manually add the local files to GitHub: once
+tracked, `.gitignore` can no longer provide this protection. Restart ComfyUI after changing either
+file.
 
 ## Backend API
 
@@ -304,7 +424,19 @@ Prompt Studio revisions are served by ComfyUI at:
 POST /promptstudio/prompt-studio/revise
 ```
 
-The browser uses `revise_main` to precision-edit model-neutral intent, `revise` to precision-edit the existing final prompt, and `render` to build a fresh final prompt after prompt-shaping controls change. Ordinary revisions run the two precision edits independently; a control change renders only from the updated main prompt.
+Standalone consultation messages are served separately at:
+
+```text
+POST /promptstudio/prompt-studio/chat
+```
+
+Prompt Agent's isolated `compile`, `architect`, and `evaluate` phases use:
+
+```text
+POST /promptstudio/prompt-studio/agent
+```
+
+The browser uses `revise_main` to precision-edit model-neutral intent, `revise` to precision-edit the existing final prompt, and `render` to build a fresh final prompt after prompt-shaping controls change. Ordinary revisions run the two precision edits independently; a control change renders only from the updated main prompt. Revision requests may include one stored `context_image` reference when the user enables latest-image context.
 
 KoboldCpp and Ollama requests remain on the Python side, so the browser does not need direct access to the local model server.
 
