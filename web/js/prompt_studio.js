@@ -3,6 +3,7 @@ import { api } from "/scripts/api.js";
 
 const EXTENSION_NAME = "ComfyUI_PromptStudio.PromptStudio";
 const ICON_URL = new URL("../prompt-studio-icon.svg", import.meta.url).href;
+const ACTIVITY_ICON_URL = new URL("../prompt-studio-activity-icon.svg", import.meta.url).href;
 const SLOT_TYPE = "KCPP_PromptSlot";
 const AMPLIFY_TYPE = "KCPP_PromptAmplify";
 const IMAGE_SOURCE_TYPE = "KCPP_ChatImageInput";
@@ -45,6 +46,17 @@ const RENDER_CONTROL_IDS = [
   "promptstudio-style-modifier",
   "promptstudio-framing-modifier",
   "promptstudio-embellishment",
+];
+const DISCONNECTED_CONTROL_SELECTOR = "input, textarea, select, button";
+const DISCONNECTED_ALLOWED_CONTROL_IDS = [
+  "promptstudio-close",
+  "promptstudio-mobile-close",
+  "promptstudio-close-chats",
+  "promptstudio-close-inspector",
+  "promptstudio-consult-close",
+  "promptstudio-lightbox-close",
+  "promptstudio-upscale-cancel",
+  "promptstudio-generation-failure-cancel",
 ];
 const TYPE_ANYWHERE_WINDOWS = new WeakSet();
 
@@ -110,7 +122,84 @@ const state = {
   generationRetry: null,
   generationFailureTrigger: null,
   dragDepth: 0,
+  activityIndicatorDocument: null,
+  activityIndicatorVisible: false,
+  activityOriginalTitle: "",
+  activityOriginalFavicon: null,
+  activityOriginalFaviconHref: null,
+  activityOriginalFaviconType: null,
+  activityCreatedFavicon: false,
+  apiConnected: true,
+  disconnectedControls: new Map(),
+  disconnectedControlObserver: null,
 };
+
+function backgroundActivityLabel() {
+  const selector = state.consultBusy ? "#promptstudio-consult-status" : "#promptstudio-status";
+  return state.panel?.querySelector(selector)?.textContent?.trim() || "Prompt Studio is working";
+}
+
+function restoreBackgroundActivityVisual() {
+  if (!state.activityIndicatorVisible) return;
+  const doc = state.activityIndicatorDocument;
+  if (doc) doc.title = state.activityOriginalTitle;
+  const favicon = state.activityOriginalFavicon;
+  if (favicon) {
+    if (state.activityCreatedFavicon) {
+      favicon.remove();
+    } else {
+      if (state.activityOriginalFaviconHref === null) favicon.removeAttribute("href");
+      else favicon.setAttribute("href", state.activityOriginalFaviconHref);
+      if (state.activityOriginalFaviconType === null) favicon.removeAttribute("type");
+      else favicon.setAttribute("type", state.activityOriginalFaviconType);
+    }
+  }
+  state.activityIndicatorVisible = false;
+  state.activityOriginalTitle = "";
+  state.activityOriginalFavicon = null;
+  state.activityOriginalFaviconHref = null;
+  state.activityOriginalFaviconType = null;
+  state.activityCreatedFavicon = false;
+}
+
+function detachBackgroundActivityDocument() {
+  restoreBackgroundActivityVisual();
+  state.activityIndicatorDocument?.removeEventListener("visibilitychange", syncBackgroundActivityIndicator);
+  state.activityIndicatorDocument = null;
+}
+
+function syncBackgroundActivityIndicator() {
+  const doc = state.panel?.ownerDocument || null;
+  const active = state.busy || state.consultBusy;
+  if (state.activityIndicatorDocument !== doc) {
+    detachBackgroundActivityDocument();
+    state.activityIndicatorDocument = doc;
+    doc?.addEventListener("visibilitychange", syncBackgroundActivityIndicator);
+  }
+  if (!doc || !active || doc.visibilityState !== "hidden") {
+    restoreBackgroundActivityVisual();
+    if (!active) detachBackgroundActivityDocument();
+    return;
+  }
+
+  if (!state.activityIndicatorVisible) {
+    state.activityOriginalTitle = doc.title;
+    let favicon = doc.querySelector('link[rel~="icon"]');
+    if (!favicon) {
+      favicon = doc.createElement("link");
+      favicon.rel = "icon";
+      doc.head?.appendChild(favicon);
+      state.activityCreatedFavicon = true;
+    }
+    state.activityOriginalFavicon = favicon;
+    state.activityOriginalFaviconHref = favicon.getAttribute("href");
+    state.activityOriginalFaviconType = favicon.getAttribute("type");
+    favicon.type = "image/svg+xml";
+    favicon.href = ACTIVITY_ICON_URL;
+    state.activityIndicatorVisible = true;
+  }
+  doc.title = `● ${backgroundActivityLabel()} · ${state.activityOriginalTitle || "Prompt Studio"}`;
+}
 
 function loadCss() {
   if (document.querySelector("link[data-promptstudio-prompt-studio]")) return;
@@ -2593,10 +2682,97 @@ function setStatus(text, kind = "") {
   el.textContent = text;
   el.title = text;
   el.dataset.kind = kind;
+  syncBackgroundActivityIndicator();
+}
+
+function isDisconnectedAllowedControl(control) {
+  return control?.dataset?.promptstudioAllowDisconnected === "true";
+}
+
+function freezeDisconnectedControls(root = state.panel) {
+  if (state.apiConnected || !root) return;
+  const controls = [
+    ...(root.matches?.(DISCONNECTED_CONTROL_SELECTOR) ? [root] : []),
+    ...root.querySelectorAll(DISCONNECTED_CONTROL_SELECTOR),
+  ];
+  controls.forEach((control) => {
+    if (isDisconnectedAllowedControl(control)) return;
+    if (!state.disconnectedControls.has(control)) {
+      state.disconnectedControls.set(control, control.disabled);
+    } else if (!control.disabled) {
+      state.disconnectedControls.set(control, false);
+    }
+    control.disabled = true;
+  });
+}
+
+function setApiConnected(connected, { announce = true } = {}) {
+  connected = Boolean(connected);
+  if (state.apiConnected === connected && state.panel?.dataset.apiConnected) return;
+  state.apiConnected = connected;
+  const panel = state.panel;
+  if (!panel) return;
+  const banner = panel.querySelector("#promptstudio-api-connection");
+  panel.dataset.apiConnected = connected ? "true" : "false";
+  if (banner) banner.hidden = connected;
+
+  if (!connected) {
+    freezeDisconnectedControls();
+    const activeElement = panel.ownerDocument?.activeElement;
+    if (activeElement && panel.contains(activeElement) && !isDisconnectedAllowedControl(activeElement)) {
+      activeElement.blur();
+    }
+    setStatus("ComfyUI disconnected — Prompt Studio is frozen.", "error");
+    setConsultStatus("ComfyUI disconnected — messages are paused.", "error");
+    return;
+  }
+
+  for (const [control, wasDisabled] of state.disconnectedControls) {
+    if (control.isConnected) control.disabled = wasDisabled;
+  }
+  state.disconnectedControls.clear();
+  if (announce) {
+    setStatus("ComfyUI reconnected. Prompt Studio is ready.", "ready");
+    if (!state.consultBusy) setConsultStatus("Ready", "ready");
+  }
+}
+
+function setupApiConnectionState() {
+  api.addEventListener("reconnecting", () => setApiConnected(false));
+  api.addEventListener("reconnected", () => setApiConnected(true));
+  api.addEventListener("status", (event) => setApiConnected(event.detail !== null));
+
+  state.disconnectedControlObserver?.disconnect();
+  state.disconnectedControlObserver = new MutationObserver((mutations) => {
+    if (state.apiConnected) return;
+    for (const mutation of mutations) {
+      if (mutation.type === "childList") {
+        mutation.addedNodes.forEach((node) => {
+          if (node.nodeType === Node.ELEMENT_NODE) freezeDisconnectedControls(node);
+        });
+      } else if (
+        mutation.type === "attributes"
+        && mutation.target.matches?.(DISCONNECTED_CONTROL_SELECTOR)
+        && !mutation.target.disabled
+        && !isDisconnectedAllowedControl(mutation.target)
+      ) {
+        state.disconnectedControls.set(mutation.target, false);
+        mutation.target.disabled = true;
+      }
+    }
+  });
+  state.disconnectedControlObserver.observe(state.panel, {
+    attributes: true,
+    attributeFilter: ["disabled"],
+    childList: true,
+    subtree: true,
+  });
+  setApiConnected(api.socket ? api.socket.readyState === WebSocket.OPEN : true, { announce: false });
 }
 
 function setBusy(busy) {
   state.busy = busy;
+  queueMicrotask(syncBackgroundActivityIndicator);
   state.panel?.querySelectorAll("button[data-disable-busy]").forEach((button) => {
     button.disabled = busy;
   });
@@ -4083,6 +4259,7 @@ async function queueGeneration({
   consultTarget = null,
   agentTarget = null,
 } = {}) {
+  if (!state.apiConnected) throw new Error("ComfyUI is disconnected. Wait for it to reconnect before generating.");
   const operationToken = state.operationToken;
   let source = action === "create" ? null : editingSource(sourceImage);
   if (action !== "create" && !source) throw new Error(`There is no image in this conversation to ${action}.`);
@@ -4401,6 +4578,7 @@ async function queueUpscale(source, generationData = null, factor = null, workfl
 }
 
 async function generateDirectPrompt(action = selectedAction()) {
+  if (!state.apiConnected) return setStatus("ComfyUI is disconnected. Prompt Studio is frozen.", "error");
   if (state.busy) return;
   const pendingGeneration = activeChat()?.pendingGeneration;
   if (
@@ -4447,6 +4625,7 @@ async function generateDirectPrompt(action = selectedAction()) {
 }
 
 async function requestPromptRevision(payload, actionLabel) {
+  if (!state.apiConnected) throw new Error("ComfyUI is disconnected. Wait for it to reconnect before sending.");
   const response = await api.fetchApi("/promptstudio/prompt-studio/revise", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -5638,10 +5817,12 @@ function setConsultStatus(text, kind = "") {
   status.textContent = text;
   status.title = text;
   status.dataset.kind = kind;
+  syncBackgroundActivityIndicator();
 }
 
 function setConsultBusy(busy) {
   state.consultBusy = busy;
+  queueMicrotask(syncBackgroundActivityIndicator);
   state.panel?.querySelectorAll(".promptstudio-consult button, .promptstudio-consult input, .promptstudio-consult select, .promptstudio-consult textarea")
     .forEach((control) => {
       if (control.id === "promptstudio-consult-close" || control.dataset.agentControl === "true") return;
@@ -6205,6 +6386,7 @@ function selectConsultResponse(messageId, variantIndex) {
 }
 
 async function requestConsultResponse(messages) {
+  if (!state.apiConnected) throw new Error("ComfyUI is disconnected. Wait for it to reconnect before sending.");
   const generationSettings = collectConsultGenerationSettings();
   const experimentMode = Boolean(activeConsultExperiment());
   const response = await api.fetchApi("/promptstudio/prompt-studio/chat", {
@@ -6266,6 +6448,7 @@ async function regenerateConsultResponse(messageId) {
 }
 
 async function sendConsultMessage() {
+  if (!state.apiConnected) return setConsultStatus("ComfyUI is disconnected. Messages are paused.", "error");
   if (state.consultBusy) return;
   const chat = activeChat();
   const input = state.panel?.querySelector("#promptstudio-consult-input");
@@ -6503,6 +6686,7 @@ async function reviseAndMaybeGenerate({
   revisionOverride = null,
   recordRevision = true,
 } = {}) {
+  if (!state.apiConnected) return setStatus("ComfyUI is disconnected. Prompt Studio is frozen.", "error");
   if (state.busy) return;
   if (!useLlmAmplification()) return generateDirectPrompt(generationAction);
   const input = state.panel.querySelector("#promptstudio-revision");
@@ -6820,6 +7004,11 @@ function buildPanel() {
   panel.id = "promptstudio-prompt-studio";
   panel.hidden = true;
   panel.innerHTML = `
+    <div id="promptstudio-api-connection" class="promptstudio-api-connection" role="alert" hidden>
+      <span aria-hidden="true"></span>
+      <strong>ComfyUI disconnected</strong>
+      <small>Prompt Studio is frozen until the API connection returns.</small>
+    </div>
     <aside class="promptstudio-chat-sidebar">
       <div class="promptstudio-chat-sidebar-header">
         <div class="promptstudio-chat-sidebar-title">
@@ -7182,6 +7371,10 @@ function buildPanel() {
     </div>`;
   document.body.appendChild(panel);
   state.panel = panel;
+  DISCONNECTED_ALLOWED_CONTROL_IDS.forEach((id) => {
+    panel.querySelector(`#${id}`)?.setAttribute("data-promptstudio-allow-disconnected", "true");
+  });
+  panel.querySelector(".promptstudio-mobile-scrim")?.setAttribute("data-promptstudio-allow-disconnected", "true");
   installTypeAnywhereFocus(panel.ownerDocument);
   const history = panel.querySelector("#promptstudio-history");
   const imageImport = panel.querySelector("#promptstudio-image-import");
@@ -7487,6 +7680,7 @@ function dockPanel({ closePopup = true, keepOpen = true } = {}) {
   if (state.popupCloseTimer) window.clearInterval(state.popupCloseTimer);
   state.popupCloseTimer = null;
   if (state.panel.ownerDocument !== document) document.body.appendChild(state.panel);
+  syncBackgroundActivityIndicator();
   state.panel.hidden = !keepOpen;
   state.popup = null;
   state.returnToEmbedded = false;
@@ -7511,6 +7705,7 @@ async function attachStandalone(popup) {
   if (state.popup && state.popup !== popup && !state.popup.closed) dockPanel();
   state.popup = popup;
   mount.replaceChildren(state.panel);
+  syncBackgroundActivityIndicator();
   installTypeAnywhereFocus(popup.document);
   state.panel.hidden = false;
   state.launcher.dataset.open = "true";
@@ -7621,6 +7816,7 @@ app.registerExtension({
     state.modelSelections = loadModelSelections();
     loadCss();
     buildPanel();
+    setupApiConnectionState();
     setupGenerationProgressEvents();
     setupWorkflowSync();
     installWorkflowSaveObserver();

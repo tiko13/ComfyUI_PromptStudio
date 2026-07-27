@@ -1,0 +1,65 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
+  <defs>
+    <linearGradient id="background" x1="28" y1="20" x2="226" y2="238" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#151722"/>
+      <stop offset="1" stop-color="#090a0f"/>
+    </linearGradient>
+    <linearGradient id="mark" x1="49" y1="35" x2="202" y2="235" gradientUnits="userSpaceOnUse">
+      <stop class="promptstudio-activity-start" stop-color="#795cff"/>
+      <stop class="promptstudio-activity-middle" offset="0.52" stop-color="#9a7fff"/>
+      <stop class="promptstudio-activity-end" offset="1" stop-color="#c1afff"/>
+    </linearGradient>
+  </defs>
+  <style>
+    .promptstudio-activity-start {
+      animation: promptstudio-activity-start 1.8s ease-in-out infinite;
+    }
+    .promptstudio-activity-middle {
+      animation: promptstudio-activity-middle 1.8s ease-in-out infinite;
+    }
+    .promptstudio-activity-end {
+      animation: promptstudio-activity-end 1.8s ease-in-out infinite;
+    }
+    @keyframes promptstudio-activity-start {
+      0%, 100% { stop-color: #795cff; }
+      50% { stop-color: #ff334f; }
+    }
+    @keyframes promptstudio-activity-middle {
+      0%, 100% { stop-color: #9a7fff; }
+      50% { stop-color: #ff5a67; }
+    }
+    @keyframes promptstudio-activity-end {
+      0%, 100% { stop-color: #c1afff; }
+      50% { stop-color: #ff9a8b; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .promptstudio-activity-start,
+      .promptstudio-activity-middle,
+      .promptstudio-activity-end {
+        animation: none;
+      }
+      .promptstudio-activity-start { stop-color: #ff334f; }
+      .promptstudio-activity-middle { stop-color: #ff5a67; }
+      .promptstudio-activity-end { stop-color: #ff9a8b; }
+    }
+  </style>
+  <rect x="4" y="4" width="248" height="248" rx="52" fill="url(#background)"/>
+  <rect x="4.5" y="4.5" width="247" height="247" rx="51.5" fill="none" stroke="#fff" stroke-opacity=".1"/>
+  <path
+    d="M58 219V42h84c37 0 61 21 61 53 0 29-20 47-55 47h-39"
+    fill="none"
+    stroke="url(#mark)"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+    stroke-width="26"
+  />
+  <path d="m163 132 23 35-8-37Z" fill="url(#mark)"/>
+  <path
+    d="M178 139h-65c-22 0-35 11-35 28s13 28 35 28h40c19 0 30 9 30 22s-12 21-30 21H88"
+    fill="none"
+    stroke="url(#mark)"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+    stroke-width="22"
+  />
+</svg>
