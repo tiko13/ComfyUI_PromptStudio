@@ -14,6 +14,7 @@ const STORAGE_KEY = "promptstudio.promptStudio.settings.v1";
 const LORA_STORAGE_KEY = "promptstudio.promptStudio.loras.v1";
 const MODEL_STORAGE_KEY = "promptstudio.promptStudio.models.v1";
 const CONSULT_STORAGE_KEY = "promptstudio.promptStudio.consult.settings.v1";
+const SIDEBAR_GROUP_ORDER_STORAGE_KEY = "promptstudio.promptStudio.sidebarGroupOrder.v1";
 const STANDALONE_CHANNEL = "promptstudio.promptStudio.standalone.v1";
 const WORKFLOW_SYNC_CHANNEL = "promptstudio.promptStudio.workflows.v1";
 const CHAT_SYNC_CHANNEL = "promptstudio.promptStudio.chats.v1";
@@ -409,6 +410,17 @@ function toggleConsultSubpanel(name) {
   if (show && target === attachments) renderConsultAttachments();
 }
 
+function closeConsultSubpanels() {
+  const attachments = state.panel?.querySelector("#promptstudio-consult-attachments");
+  const generation = state.panel?.querySelector("#promptstudio-consult-generation-settings");
+  if (attachments) attachments.hidden = true;
+  if (generation) generation.hidden = true;
+  state.panel?.querySelector("#promptstudio-consult-toggle-attachments")
+    ?.setAttribute("aria-expanded", "false");
+  state.panel?.querySelector("#promptstudio-consult-toggle-generation-settings")
+    ?.setAttribute("aria-expanded", "false");
+}
+
 function loadLoraSelections() {
   try {
     const stored = JSON.parse(localStorage.getItem(LORA_STORAGE_KEY) || "{}");
@@ -441,6 +453,128 @@ function saveModelSelections() {
   } catch (error) {
     setStatus(error.message || "Model selections could not be saved.", "warning");
   }
+}
+
+function saveSidebarGroupOrder(deck) {
+  const order = [...deck.querySelectorAll(":scope > details[data-promptstudio-sidebar-group]")]
+    .map((group) => group.dataset.promptstudioSidebarGroup);
+  try {
+    localStorage.setItem(SIDEBAR_GROUP_ORDER_STORAGE_KEY, JSON.stringify(order));
+  } catch (error) {
+    setStatus(error.message || "Sidebar group order could not be saved.", "warning");
+  }
+}
+
+function installSidebarGroupReordering(panel) {
+  const deck = panel.querySelector(".promptstudio-control-deck");
+  if (!deck) return;
+  const groups = [...deck.querySelectorAll(":scope > details[data-promptstudio-sidebar-group]")];
+  const groupsByKey = new Map(groups.map((group) => [group.dataset.promptstudioSidebarGroup, group]));
+  let storedOrder = [];
+  try {
+    const stored = JSON.parse(localStorage.getItem(SIDEBAR_GROUP_ORDER_STORAGE_KEY) || "[]");
+    if (Array.isArray(stored)) storedOrder = stored;
+  } catch (_) {
+    storedOrder = [];
+  }
+  const orderedKeys = [...new Set([
+    ...storedOrder.filter((key) => typeof key === "string" && groupsByKey.has(key)),
+    ...groups.map((group) => group.dataset.promptstudioSidebarGroup),
+  ])];
+  orderedKeys.forEach((key) => deck.appendChild(groupsByKey.get(key)));
+
+  let draggedGroup = null;
+  let dropTarget = null;
+  let dropBefore = false;
+  const clearDropTarget = () => {
+    dropTarget?.classList.remove("promptstudio-sidebar-drop-before", "promptstudio-sidebar-drop-after");
+    dropTarget = null;
+  };
+  const finishDrag = () => {
+    clearDropTarget();
+    draggedGroup?.classList.remove("promptstudio-sidebar-group-dragging");
+    draggedGroup = null;
+    deck.classList.remove("promptstudio-sidebar-reordering");
+  };
+  const visibleGroups = () => [...deck.querySelectorAll(":scope > details[data-promptstudio-sidebar-group]")]
+    .filter((group) => !group.hidden);
+
+  groups.forEach((group) => {
+    const summary = group.querySelector(":scope > summary");
+    if (!summary) return;
+    const label = summary.querySelector("span:not(.promptstudio-lora-summary-tools)")?.textContent?.trim()
+      || group.dataset.promptstudioSidebarGroup;
+    const handle = document.createElement("span");
+    handle.className = "promptstudio-sidebar-drag-handle";
+    handle.draggable = true;
+    handle.tabIndex = 0;
+    handle.setAttribute("role", "button");
+    handle.setAttribute("aria-label", `Reorder ${label}`);
+    handle.title = "Drag to reorder. Use Up or Down while focused.";
+    summary.prepend(handle);
+    handle.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+    });
+    handle.addEventListener("keydown", (event) => {
+      if (!["ArrowUp", "ArrowDown"].includes(event.key)) return;
+      event.preventDefault();
+      event.stopPropagation();
+      const visible = visibleGroups();
+      const index = visible.indexOf(group);
+      const sibling = visible[index + (event.key === "ArrowUp" ? -1 : 1)];
+      if (!sibling) return;
+      if (event.key === "ArrowUp") deck.insertBefore(group, sibling);
+      else deck.insertBefore(group, sibling.nextSibling);
+      saveSidebarGroupOrder(deck);
+      handle.focus();
+    });
+    handle.addEventListener("dragstart", (event) => {
+      draggedGroup = group;
+      deck.classList.add("promptstudio-sidebar-reordering");
+      event.dataTransfer.effectAllowed = "move";
+      event.dataTransfer.setData("text/plain", group.dataset.promptstudioSidebarGroup);
+      panel.ownerDocument.defaultView?.requestAnimationFrame(() => {
+        group.classList.add("promptstudio-sidebar-group-dragging");
+      });
+    });
+    handle.addEventListener("dragend", finishDrag);
+  });
+
+  deck.addEventListener("dragover", (event) => {
+    if (!draggedGroup) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "move";
+    let target = event.target.closest?.("details[data-promptstudio-sidebar-group]");
+    if (!target || target === draggedGroup || target.hidden) {
+      const candidates = visibleGroups().filter((group) => group !== draggedGroup);
+      target = candidates.reduce((nearest, group) => {
+        const rect = group.getBoundingClientRect();
+        const distance = Math.hypot(event.clientX - (rect.left + rect.width / 2), event.clientY - (rect.top + rect.height / 2));
+        return !nearest || distance < nearest.distance ? { group, distance } : nearest;
+      }, null)?.group || null;
+    }
+    if (!target || target === draggedGroup) {
+      clearDropTarget();
+      return;
+    }
+    const rect = target.getBoundingClientRect();
+    const before = event.clientY < rect.top + rect.height / 2;
+    if (target === dropTarget && before === dropBefore) return;
+    clearDropTarget();
+    dropTarget = target;
+    dropBefore = before;
+    dropTarget.classList.add(before ? "promptstudio-sidebar-drop-before" : "promptstudio-sidebar-drop-after");
+  });
+  deck.addEventListener("drop", (event) => {
+    if (!draggedGroup) return;
+    event.preventDefault();
+    if (dropTarget) {
+      deck.insertBefore(draggedGroup, dropBefore ? dropTarget : dropTarget.nextSibling);
+      saveSidebarGroupOrder(deck);
+    }
+    finishDrag();
+  });
 }
 
 function isEditableTarget(target) {
@@ -635,6 +769,12 @@ function chatAcceptsImageDrop(chat = activeChat()) {
     && !String(chat.mainPrompt || "").trim()
     && !String(chat.finalPrompt || "").trim()
   );
+}
+
+function mainChatImageDropMode(chat = activeChat()) {
+  if (chatAcceptsImageDrop(chat)) return "import";
+  if (chat?.initialized) return "reference";
+  return "refused";
 }
 
 function promptVersion(mainPrompt = state.mainPrompt, finalPrompt = state.currentPrompt) {
@@ -4671,11 +4811,12 @@ function clipboardImageFiles(event) {
     .filter((file) => file?.type?.startsWith("image/"));
 }
 
-function pastedImageFileError(file) {
-  if (!file || typeof file.arrayBuffer !== "function") return "The clipboard did not contain a readable image.";
-  if (file.type && !file.type.startsWith("image/")) return "The clipboard item is not an image.";
-  if (file.size <= 0) return "The pasted image is empty.";
-  if (file.size > MAX_DROPPED_IMAGE_BYTES) return "The pasted image is larger than the 20 MB import limit.";
+function pastedImageFileError(file, source = "pasted") {
+  const label = source === "dropped" ? "dropped" : "pasted";
+  if (!file || typeof file.arrayBuffer !== "function") return `The ${label} item did not contain a readable image.`;
+  if (file.type && !file.type.startsWith("image/")) return `The ${label} item is not an image.`;
+  if (file.size <= 0) return `The ${label} image is empty.`;
+  if (file.size > MAX_DROPPED_IMAGE_BYTES) return `The ${label} image is larger than the 20 MB import limit.`;
   return "";
 }
 
@@ -4715,12 +4856,13 @@ function clearMainPastedImage() {
   renderMainPastedImage();
 }
 
-async function pasteMainReference(file) {
+async function pasteMainReference(file, { source = "pasted" } = {}) {
   if (state.busy) return setStatus("Wait for the current operation to finish.", "warning");
   if (!useLlmAmplification()) {
-    return setStatus("Enable “Use LLM amplification” before pasting a reference image.", "warning");
+    const action = source === "dropped" ? "dropping" : "pasting";
+    return setStatus(`Enable “Use LLM amplification” before ${action} a reference image.`, "warning");
   }
-  const validationError = pastedImageFileError(file);
+  const validationError = pastedImageFileError(file, source);
   if (validationError) return setStatus(validationError, "warning");
 
   const operationToken = ++state.operationToken;
@@ -4729,12 +4871,12 @@ async function pasteMainReference(file) {
   try {
     await requireVisionCapability();
     if (operationToken !== state.operationToken) return;
-    setStatus("Sanitizing and attaching the pasted image…", "working");
+    setStatus("Sanitizing and attaching the reference image…", "working");
     const reference = await uploadPromptStudioImage(file);
     if (operationToken !== state.operationToken) return;
     state.mainPastedImage = reference;
     renderMainPastedImage();
-    setStatus("Pasted image attached to the next prompt.", "ready");
+    setStatus("Image attached to the next prompt.", "ready");
   } catch (error) {
     if (operationToken !== state.operationToken) return;
     setStatus(error.message || String(error), "error");
@@ -4752,6 +4894,20 @@ function handleMainImagePaste(event) {
     return;
   }
   pasteMainReference(files[0]);
+}
+
+function dropMainReferenceFiles(fileList) {
+  const files = [...(fileList || [])];
+  if (files.length !== 1) {
+    setStatus(
+      files.length
+        ? "Drop one reference image at a time in the main chat."
+        : "The drop did not contain an image file.",
+      "warning",
+    );
+    return;
+  }
+  pasteMainReference(files[0], { source: "dropped" });
 }
 
 async function requestImageCaption(reference) {
@@ -5112,10 +5268,16 @@ async function runConsultAgent(agentId = activeConsultAgent()?.id) {
           .slice(0, Math.max(0, agent.iterations.indexOf(iteration)))
           .reverse()
           .find((item) => item.evaluation);
+        const attachedGuidance = {};
+        if (agent.initialStyle.name !== "None" || agent.initialStyle.instruction) {
+          attachedGuidance.initial_style = agent.initialStyle;
+        }
+        if (agent.initialFraming.name !== "None" || agent.initialFraming.instruction) {
+          attachedGuidance.initial_framing = agent.initialFraming;
+        }
         const designed = await requestPromptAgentPhase("architect", agent, {
           iteration: iteration.index,
-          initial_style: agent.initialStyle,
-          initial_framing: agent.initialFraming,
+          ...attachedGuidance,
           previous_candidate: promptAgentCandidatePayload(previous?.candidate),
           previous_evaluation: previous?.index >= (agent.cycleStartIndex || 1)
             ? promptAgentEvaluationPayload(previous.evaluation)
@@ -5265,8 +5427,15 @@ async function startConsultAgent() {
     image: item.reference,
     purpose: item.purpose,
   }));
-  const styleName = state.panel?.querySelector("#promptstudio-style")?.value || "None";
-  const framingName = state.panel?.querySelector("#promptstudio-framing")?.value || "None";
+  const attachGenerationSettings = Boolean(
+    state.panel?.querySelector("#promptstudio-consult-attach-settings")?.checked,
+  );
+  const styleName = attachGenerationSettings
+    ? state.panel?.querySelector("#promptstudio-style")?.value || "None"
+    : "None";
+  const framingName = attachGenerationSettings
+    ? state.panel?.querySelector("#promptstudio-framing")?.value || "None"
+    : "None";
   const maxIterations = requestedPromptAgentIterations();
   const now = Date.now();
   chat.consultAgent = normalizeConsultAgent({
@@ -5298,9 +5467,13 @@ async function startConsultAgent() {
   input.value = "";
   state.consultSelectedImages.clear();
   state.consultUploadedImages = [];
+  state.panel?.querySelectorAll(".promptstudio-consult-context-options input").forEach((control) => {
+    control.checked = false;
+  });
   saveChats({ immediate: true });
   state.operationToken += 1;
   renderConsultAttachments();
+  closeConsultSubpanels();
   renderConsultHistory();
   updateConsultExperimentUi();
   runConsultAgent(chat.consultAgent.id);
@@ -6109,6 +6282,38 @@ function renderConsultAgentCard(history, agent) {
   goal.textContent = agent.goal;
   card.appendChild(goal);
 
+  if (agent.references.length) {
+    const references = document.createElement("section");
+    references.className = "promptstudio-agent-references";
+    const referencesTitle = document.createElement("strong");
+    referencesTitle.textContent = "Agent references";
+    const gallery = document.createElement("div");
+    gallery.className = "promptstudio-consult-message-images";
+    agent.references.forEach((item, index) => {
+      const label = `Reference ${index + 1}`;
+      const purpose = item.purpose || "general reference";
+      const figure = document.createElement("figure");
+      const image = document.createElement("img");
+      image.src = imageReferenceUrl(item.image);
+      image.alt = `${label}: ${purpose}`;
+      image.tabIndex = 0;
+      image.setAttribute("role", "button");
+      image.setAttribute("aria-label", `Preview ${label}, ${purpose}`);
+      image.addEventListener("click", () => openImageLightbox(image.src, image.alt, image));
+      image.addEventListener("keydown", (event) => {
+        if (!["Enter", " "].includes(event.key)) return;
+        event.preventDefault();
+        openImageLightbox(image.src, image.alt, image);
+      });
+      const caption = document.createElement("figcaption");
+      caption.textContent = `${label} · ${purpose}`;
+      figure.append(image, caption);
+      gallery.appendChild(figure);
+    });
+    references.append(referencesTitle, gallery);
+    card.appendChild(references);
+  }
+
   if (agent.feedback.length) {
     const feedback = document.createElement("div");
     feedback.className = "promptstudio-agent-feedback";
@@ -6574,6 +6779,16 @@ function clearConsultHistory() {
   setConsultStatus("Conversation cleared.", "ready");
 }
 
+function clearImageImportTemplates() {
+  for (const id of ["promptstudio-style", "promptstudio-framing"]) {
+    const select = state.panel?.querySelector(`#${id}`);
+    if (select && [...select.options].some((option) => option.value === "None")) {
+      select.value = "None";
+    }
+  }
+  saveSettings();
+}
+
 async function importDroppedImage(file) {
   if (state.busy) return setStatus("Wait for the current operation to finish.", "warning");
   if (!chatAcceptsImageDrop()) {
@@ -6606,6 +6821,7 @@ async function importDroppedImage(file) {
     return;
   }
 
+  clearImageImportTemplates();
   const operationToken = ++state.operationToken;
   setBusy(true);
   setStatus(`Checking ${llmProviderName()} vision support…`, "working");
@@ -7039,7 +7255,7 @@ function buildPanel() {
           <span id="promptstudio-status" class="promptstudio-status" role="status" aria-live="polite">Loading…</span>
           <span id="promptstudio-compose-hint">Leave empty to create from the current prompt</span>
         </div>
-        <textarea id="promptstudio-revision" rows="3" placeholder="Make the background more varied…" title="Paste an image with Ctrl+V to attach it as a visual reference."></textarea>
+        <textarea id="promptstudio-revision" rows="3" placeholder="Make the background more varied…" title="Paste with Ctrl+V or drop an image into the chat to attach it as a visual reference."></textarea>
         <div id="promptstudio-pasted-image" class="promptstudio-pasted-image" hidden>
           <img alt="" />
           <span><strong>Pasted reference</strong><small></small></span>
@@ -7096,15 +7312,15 @@ function buildPanel() {
         </label>
       </section>
       <section class="promptstudio-control-deck">
-        <details class="promptstudio-current-details" open>
+        <details class="promptstudio-current-details" data-promptstudio-sidebar-group="main-prompt" open>
           <summary><span>Main prompt</span><small>Editable source intent</small></summary>
           <textarea id="promptstudio-main-prompt" rows="5" placeholder="The user's model-neutral image description"></textarea>
         </details>
-        <details class="promptstudio-current-details" open>
+        <details class="promptstudio-current-details" data-promptstudio-sidebar-group="final-prompt" open>
           <summary><span>Final prompt</span><small>Editable; rebuilt when controls change</small></summary>
           <textarea id="promptstudio-current-prompt" rows="8" placeholder="The rendered prompt sent to the selected workflow"></textarea>
         </details>
-        <details class="promptstudio-settings" open>
+        <details class="promptstudio-settings" data-promptstudio-sidebar-group="generation-controls" open>
           <summary><span>Generation controls</span><small>Model, style and prompt shaping</small></summary>
           <div class="promptstudio-settings-grid">
             <label class="promptstudio-control-wide">Model profile<select id="promptstudio-profile"></select></label>
@@ -7118,7 +7334,7 @@ function buildPanel() {
             <label>Temperature<input id="promptstudio-temperature" type="number" min="0" max="5" step="0.05" /></label>
           </div>
         </details>
-        <details id="promptstudio-lora-details" class="promptstudio-lora-details" open hidden>
+        <details id="promptstudio-lora-details" class="promptstudio-lora-details" data-promptstudio-sidebar-group="lora" open hidden>
           <summary>
             <span>LoRA</span>
             <span class="promptstudio-lora-summary-tools">
@@ -7128,7 +7344,7 @@ function buildPanel() {
           </summary>
           <div id="promptstudio-lora-groups" class="promptstudio-lora-groups"></div>
         </details>
-        <details id="promptstudio-model-details" class="promptstudio-model-details" open hidden>
+        <details id="promptstudio-model-details" class="promptstudio-model-details" data-promptstudio-sidebar-group="model" open hidden>
           <summary>
             <span>Model</span>
             <span class="promptstudio-lora-summary-tools">
@@ -7138,7 +7354,7 @@ function buildPanel() {
           </summary>
           <div id="promptstudio-model-groups" class="promptstudio-lora-groups"></div>
         </details>
-        <details class="promptstudio-resolution-details" open>
+        <details class="promptstudio-resolution-details" data-promptstudio-sidebar-group="resolution" open>
           <summary><span>Resolution</span><small>Create size; Edit preserves source</small></summary>
           <div class="promptstudio-resolution-grid">
             <label>Aspect ratio<select id="promptstudio-resolution-aspect-ratio">${RESOLUTION_ASPECT_RATIOS.map((value) => `<option value="${value}">${value}</option>`).join("")}</select></label>
@@ -7146,7 +7362,7 @@ function buildPanel() {
             <label>Multiple<input id="promptstudio-resolution-multiple" type="number" min="8" max="128" step="4" value="8" /></label>
           </div>
         </details>
-        <details class="promptstudio-secondary-details" open>
+        <details class="promptstudio-secondary-details" data-promptstudio-sidebar-group="secondary-instructions" open>
           <summary><span>Secondary instructions</span><small>Optional pass-through output</small></summary>
           <textarea id="promptstudio-secondary-instructions" rows="3" placeholder="Returned unchanged from the secondary output"></textarea>
         </details>
@@ -7371,40 +7587,58 @@ function buildPanel() {
     </div>`;
   document.body.appendChild(panel);
   state.panel = panel;
+  installSidebarGroupReordering(panel);
   DISCONNECTED_ALLOWED_CONTROL_IDS.forEach((id) => {
     panel.querySelector(`#${id}`)?.setAttribute("data-promptstudio-allow-disconnected", "true");
   });
   panel.querySelector(".promptstudio-mobile-scrim")?.setAttribute("data-promptstudio-allow-disconnected", "true");
   installTypeAnywhereFocus(panel.ownerDocument);
   const history = panel.querySelector("#promptstudio-history");
+  const compose = panel.querySelector(".promptstudio-compose");
+  const mainDropTargets = [history, compose];
   const imageImport = panel.querySelector("#promptstudio-image-import");
   const carriesFiles = (event) => [...(event.dataTransfer?.types || [])].includes("Files");
-  history.addEventListener("dragenter", (event) => {
-    if (!carriesFiles(event)) return;
-    event.preventDefault();
-    state.dragDepth += 1;
-    history.dataset.dragActive = chatAcceptsImageDrop() ? "true" : "refused";
-  });
-  history.addEventListener("dragover", (event) => {
-    if (!carriesFiles(event)) return;
-    event.preventDefault();
-    if (event.dataTransfer) event.dataTransfer.dropEffect = chatAcceptsImageDrop() ? "copy" : "none";
-  });
-  history.addEventListener("dragleave", (event) => {
-    if (!state.dragDepth) return;
-    state.dragDepth = Math.max(0, state.dragDepth - 1);
-    if (!state.dragDepth) history.dataset.dragActive = "false";
-  });
-  history.addEventListener("drop", (event) => {
-    if (!carriesFiles(event)) return;
-    event.preventDefault();
-    state.dragDepth = 0;
-    history.dataset.dragActive = "false";
-    if (!chatAcceptsImageDrop()) {
-      setStatus("Image import is only available in a new, completely empty chat.", "warning");
-      return;
-    }
-    importSelectedImageFiles(event.dataTransfer?.files);
+  const showMainChatDropState = () => {
+    const mode = mainChatImageDropMode();
+    mainDropTargets.forEach((target) => {
+      target.dataset.dragActive = mode === "import" ? "true" : mode;
+    });
+    return mode;
+  };
+  mainDropTargets.forEach((target) => {
+    target.addEventListener("dragenter", (event) => {
+      if (!carriesFiles(event)) return;
+      event.preventDefault();
+      state.dragDepth += 1;
+      showMainChatDropState();
+    });
+    target.addEventListener("dragover", (event) => {
+      if (!carriesFiles(event)) return;
+      event.preventDefault();
+      const mode = showMainChatDropState();
+      if (event.dataTransfer) event.dataTransfer.dropEffect = mode === "refused" ? "none" : "copy";
+    });
+    target.addEventListener("dragleave", () => {
+      if (!state.dragDepth) return;
+      state.dragDepth = Math.max(0, state.dragDepth - 1);
+      if (!state.dragDepth) {
+        mainDropTargets.forEach((dropTarget) => {
+          dropTarget.dataset.dragActive = "false";
+        });
+      }
+    });
+    target.addEventListener("drop", (event) => {
+      if (!carriesFiles(event)) return;
+      event.preventDefault();
+      state.dragDepth = 0;
+      mainDropTargets.forEach((dropTarget) => {
+        dropTarget.dataset.dragActive = "false";
+      });
+      const mode = mainChatImageDropMode();
+      if (mode === "import") return importSelectedImageFiles(event.dataTransfer?.files);
+      if (mode === "reference") return dropMainReferenceFiles(event.dataTransfer?.files);
+      setStatus("Start the chat before dropping a visual reference.", "warning");
+    });
   });
   imageImport.addEventListener("change", () => {
     importSelectedImageFiles(imageImport.files);

@@ -705,6 +705,24 @@ body.promptstudio-popout-body .promptstudio-standalone-only {
   overflow-wrap: anywhere;
 }
 
+.promptstudio-agent-references {
+  display: grid;
+  gap: 7px;
+}
+
+.promptstudio-agent-references > strong {
+  color: var(--ps-muted);
+  font-size: 10px;
+}
+
+.promptstudio-agent-references .promptstudio-consult-message-images {
+  margin-top: 0;
+}
+
+.promptstudio-agent-references img {
+  cursor: zoom-in;
+}
+
 .promptstudio-agent-feedback {
   display: grid;
   gap: 6px;
@@ -1550,6 +1568,11 @@ body.promptstudio-popout-body .promptstudio-standalone-only {
   transform: scale(0.995);
 }
 
+.promptstudio-history[data-drag-active="reference"] {
+  background: rgba(137, 111, 232, 0.055);
+  box-shadow: inset 0 0 0 2px rgba(169, 145, 255, 0.55);
+}
+
 .promptstudio-history[data-drag-active="refused"] {
   outline: 1px dashed rgba(255, 112, 132, 0.42);
   outline-offset: -10px;
@@ -1985,13 +2008,53 @@ body.promptstudio-popout-body .promptstudio-standalone-only {
 .promptstudio-model-details summary,
 .promptstudio-resolution-details summary,
 .promptstudio-secondary-details summary {
-  display: flex;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
   align-items: baseline;
-  justify-content: space-between;
-  gap: 12px;
+  gap: 8px;
   padding: 8px 10px;
   cursor: pointer;
   list-style: none;
+}
+
+#promptstudio-prompt-studio .promptstudio-sidebar-drag-handle {
+  display: inline-block;
+  align-self: center;
+  width: 11px;
+  height: 16px;
+  background-image: radial-gradient(circle, var(--ps-muted) 1.2px, transparent 1.4px);
+  background-position: center;
+  background-size: 5px 5px;
+  border-radius: 4px;
+  cursor: grab;
+  opacity: 0.72;
+}
+
+#promptstudio-prompt-studio .promptstudio-sidebar-drag-handle:hover,
+#promptstudio-prompt-studio .promptstudio-sidebar-drag-handle:focus-visible {
+  opacity: 1;
+  outline: 1px solid rgba(190, 172, 255, 0.65);
+  outline-offset: 2px;
+}
+
+#promptstudio-prompt-studio .promptstudio-sidebar-reordering .promptstudio-sidebar-drag-handle {
+  cursor: grabbing;
+}
+
+.promptstudio-control-deck > details {
+  transition: opacity 100ms ease, box-shadow 100ms ease;
+}
+
+.promptstudio-control-deck > .promptstudio-sidebar-group-dragging {
+  opacity: 0.42;
+}
+
+.promptstudio-control-deck > .promptstudio-sidebar-drop-before {
+  box-shadow: 0 -4px 0 rgba(169, 145, 255, 0.9);
+}
+
+.promptstudio-control-deck > .promptstudio-sidebar-drop-after {
+  box-shadow: 0 4px 0 rgba(169, 145, 255, 0.9);
 }
 
 .promptstudio-current-details summary::-webkit-details-marker,
@@ -2003,12 +2066,12 @@ body.promptstudio-popout-body .promptstudio-standalone-only {
   display: none;
 }
 
-.promptstudio-current-details summary span,
-.promptstudio-settings summary span,
-.promptstudio-lora-details summary > span:first-child,
-.promptstudio-model-details summary > span:first-child,
-.promptstudio-resolution-details summary span,
-.promptstudio-secondary-details summary span {
+.promptstudio-current-details summary > span:not(.promptstudio-sidebar-drag-handle),
+.promptstudio-settings summary > span:not(.promptstudio-sidebar-drag-handle),
+.promptstudio-lora-details summary > span:not(.promptstudio-sidebar-drag-handle):not(.promptstudio-lora-summary-tools),
+.promptstudio-model-details summary > span:not(.promptstudio-sidebar-drag-handle):not(.promptstudio-lora-summary-tools),
+.promptstudio-resolution-details summary > span:not(.promptstudio-sidebar-drag-handle),
+.promptstudio-secondary-details summary > span:not(.promptstudio-sidebar-drag-handle) {
   font-weight: 700;
 }
 
@@ -2317,6 +2380,14 @@ body.promptstudio-popout-body .promptstudio-standalone-only {
   background: rgba(17, 19, 28, 0.96);
   border-top: 1px solid var(--ps-border);
   box-shadow: 0 -16px 40px rgba(0, 0, 0, 0.16);
+  transition: box-shadow 140ms ease;
+}
+
+.promptstudio-compose[data-drag-active="true"],
+.promptstudio-compose[data-drag-active="reference"] {
+  box-shadow:
+    inset 0 0 0 2px rgba(169, 145, 255, 0.55),
+    0 -16px 40px rgba(0, 0, 0, 0.16);
 }
 
 .promptstudio-compose-heading {

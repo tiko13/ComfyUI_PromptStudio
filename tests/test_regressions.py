@@ -1110,6 +1110,9 @@ class RegressionTests(unittest.TestCase):
         self.assertNotIn("[Ref", result["candidate"]["prompt"])
         retry_messages = generate.call_args.kwargs["messages_override"]
         self.assertIn("previous response was rejected", retry_messages[0]["content"])
+        architect_payload = json.loads(retry_messages[1]["content"][0]["text"])
+        self.assertNotIn("initial_style", architect_payload)
+        self.assertNotIn("initial_framing", architect_payload)
 
     def test_prompt_agent_evaluation_recomputes_weighted_score_and_enforces_hard_failures(self):
         rubric = self.routes._normalize_prompt_agent_rubric({

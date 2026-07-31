@@ -108,7 +108,10 @@ normal consultation expiry.
 
 Turn on **Prompt agent** directly above the chat composer, describe the desired image, and press
 **Start agent**. The current draft becomes the image goal and selected consultation images become
-labelled references. Prompt Agent
+labelled references. To give the prompt architect the current run-local style and framing preset
+text, explicitly select **Generation settings** under **Attach context** before starting; otherwise
+those settings are omitted. The agent card keeps its labelled reference thumbnails beside the goal
+for visual context, and the open context panel collapses when the run starts. Prompt Agent
 requires a vision-capable local model and a compatible `[PS]` creation workflow. It runs a
 checkpointed loop with separate, fresh local-model contexts for brief compilation, prompt
 architecture, and pixel-grounded visual judging:

@@ -107,6 +107,8 @@ PROMPT_AGENT_ARCHITECT_SYSTEM_MESSAGE = """You are the prompt architect for an a
 
 Create the next complete image-generation prompt from the current goal, including any later corrections, acceptance rubric and its concrete reference notes, current run-local style and framing guidance, the attached reference pixels, and (when supplied) the previous visual judge report. Address failed requirements with the smallest coherent changes. Do not change workflow, model, LoRAs, resolution, seed, provider, or global preset files. The prompt must be directly usable and must incorporate all useful style and framing guidance; metadata alone does not affect generation.
 
+Style and framing guidance are optional, explicitly attached context. When either field is absent, do not infer or mention its current Studio setting.
+
 The diffusion image generator receives only your prompt. It cannot see the reference images, their labels, the rubric, or your metadata. Therefore spell out the intended subject, appearance, composition, palette, lighting, and style in the prompt itself. Never emit placeholders or deictic phrases such as "[Ref 1]", "Reference 1", "the reference image", "the attached image", "same as above", or "like this".
 
 Return only JSON:
@@ -1492,8 +1494,6 @@ def _prompt_agent(data):
             "immutable_goal": goal,
             "rubric": rubric,
             "iteration": _bounded_number(data.get("iteration"), 1, 1, 10000, integer=True),
-            "initial_style": data.get("initial_style") if isinstance(data.get("initial_style"), dict) else {},
-            "initial_framing": data.get("initial_framing") if isinstance(data.get("initial_framing"), dict) else {},
             "previous_candidate": (
                 _normalize_prompt_agent_candidate(previous_candidate)
                 if isinstance(previous_candidate, dict)
@@ -1510,6 +1510,10 @@ def _prompt_agent(data):
                 else None
             ),
         }
+        if isinstance(data.get("initial_style"), dict):
+            payload["initial_style"] = data["initial_style"]
+        if isinstance(data.get("initial_framing"), dict):
+            payload["initial_framing"] = data["initial_framing"]
     else:
         system_message = PROMPT_AGENT_JUDGE_SYSTEM_MESSAGE
         payload = {
