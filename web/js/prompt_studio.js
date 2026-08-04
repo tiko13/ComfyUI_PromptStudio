@@ -89,6 +89,9 @@ const state = {
   consultAgentRunning: false,
   consultAgentRunToken: 0,
   generationProgress: new Map(),
+  generationJobs: new Map(),
+  studioPreparations: new Map(),
+  latestStudioPreparationByChat: new Map(),
   chats: [],
   activeChatId: null,
   chatRevision: 0,
@@ -105,6 +108,7 @@ const state = {
   consultImageChoices: new Map(),
   consultUploadedImages: [],
   mainPastedImage: null,
+  mainPastedImagesByChat: new Map(),
   workflowProfiles: [],
   workflowIssues: [],
   workflowRevision: 0,
@@ -142,6 +146,16 @@ function backgroundActivityLabel() {
   return state.panel?.querySelector(selector)?.textContent?.trim() || "Prompt Studio is working";
 }
 
+function pendingStudioGenerationCount() {
+  return state.chats.reduce((count, chat) => count + chat.messages.filter((message) => (
+    message.promptId && ["queued", "generating"].includes(message.generationState)
+  )).length, 0);
+}
+
+function hasPendingStudioGenerations() {
+  return pendingStudioGenerationCount() > 0 || state.studioPreparations.size > 0;
+}
+
 function restoreBackgroundActivityVisual() {
   if (!state.activityIndicatorVisible) return;
   const doc = state.activityIndicatorDocument;
@@ -173,7 +187,7 @@ function detachBackgroundActivityDocument() {
 
 function syncBackgroundActivityIndicator() {
   const doc = state.panel?.ownerDocument || null;
-  const active = state.busy || state.consultBusy;
+  const active = state.busy || state.consultBusy || hasPendingStudioGenerations();
   if (state.activityIndicatorDocument !== doc) {
     detachBackgroundActivityDocument();
     state.activityIndicatorDocument = doc;
@@ -2058,6 +2072,11 @@ function renderChatList() {
   list.replaceChildren();
   const ordered = [...state.chats].sort(compareChatsNewestFirst);
   for (const chat of ordered) {
+    const generationCount = chat.messages.filter((message) => (
+      message.promptId && ["queued", "generating"].includes(message.generationState)
+    )).length;
+    const preparationCount = [...state.studioPreparations.values()]
+      .filter((preparation) => preparation.chatId === chat.id).length;
     const row = document.createElement("div");
     row.className = "promptstudio-chat-row";
     row.dataset.active = chat.id === state.activeChatId ? "true" : "false";
@@ -2070,16 +2089,20 @@ function renderChatList() {
     title.textContent = chatTitle(chat.createdAt);
     const date = document.createElement("span");
     date.className = "promptstudio-chat-date";
-    date.textContent = `${chat.messages.length} message${chat.messages.length === 1 ? "" : "s"}`;
+    date.textContent = `${chat.messages.length} message${chat.messages.length === 1 ? "" : "s"}`
+      + (preparationCount ? ` · ${preparationCount} preparing` : "")
+      + (generationCount ? ` · ${generationCount} in queue` : "");
     button.append(title, date);
     button.addEventListener("click", () => activateChat(chat.id));
     const remove = document.createElement("button");
     remove.type = "button";
     remove.className = "promptstudio-chat-delete";
     remove.dataset.disableBusy = "";
-    remove.disabled = state.busy;
+    remove.disabled = state.busy || preparationCount > 0 || generationCount > 0;
     remove.textContent = "Delete";
-    remove.title = `Delete chat from ${chatTitle(chat.createdAt)}`;
+    remove.title = preparationCount || generationCount
+      ? "Wait for this chat's pending Studio work to finish before deleting it."
+      : `Delete chat from ${chatTitle(chat.createdAt)}`;
     remove.setAttribute("aria-label", remove.title);
     remove.addEventListener("click", () => deleteChat(chat.id));
     row.append(button, remove);
@@ -2170,6 +2193,9 @@ function updateComposeMode() {
   const editor = state.panel.querySelector("#promptstudio-current-prompt");
   const action = selectedAction();
   const autoGenerate = state.panel.querySelector("#promptstudio-auto-generate")?.checked !== false;
+  const queueingGeneration = hasPendingStudioGenerations();
+  const reroll = state.panel.querySelector("#promptstudio-reroll");
+  if (reroll) reroll.textContent = queueingGeneration ? "Queue reroll" : "Reroll";
   const hasRevision = Boolean(input?.value.trim());
   const editPromptAction = state.panel.querySelector("#promptstudio-edit-prompt-action");
   if (editPromptAction) editPromptAction.hidden = action !== "edit";
@@ -2180,7 +2206,9 @@ function updateComposeMode() {
       input.placeholder = "Describe the image to generate…";
       input.value = state.currentPrompt;
     }
-    if (send) send.textContent = action === "edit" ? "Edit selected image" : "Create new image";
+    if (send) send.textContent = queueingGeneration
+      ? (action === "edit" ? "Queue edit" : "Queue create new")
+      : (action === "edit" ? "Edit selected image" : "Create new image");
     if (editor) editor.readOnly = false;
     return;
   }
@@ -2192,9 +2220,10 @@ function updateComposeMode() {
   if (send) {
     if (!autoGenerate) send.textContent = creating ? "Create prompt" : "Revise prompt";
     else {
-      send.textContent = action === "edit"
+      const label = action === "edit"
         ? (hasRevision ? "Revise & edit selected" : "Edit selected")
         : (hasRevision ? "Revise & create new" : "Create new");
+      send.textContent = queueingGeneration ? `Queue ${label.toLowerCase()}` : label;
     }
   }
   if (editor) editor.readOnly = creating;
@@ -2290,7 +2319,7 @@ function activateChat(chatId) {
   state.activeChatId = chat.id;
   state.consultSelectedImages.clear();
   state.consultUploadedImages = [];
-  if (switchingChats) clearMainPastedImage();
+  if (switchingChats) showMainPastedImageForChat(chat.id);
   restoreChatState(chat);
   refreshWorkflowControls();
   renderChatHistory();
@@ -3008,11 +3037,14 @@ function generationRetryOptionsFromMessage(message) {
 async function retryGeneration(options) {
   if (state.busy || !options) return;
   closeGenerationFailureDialog({ restoreFocus: false });
-  state.operationToken += 1;
-  setBusy(true);
   setStatus("Retrying generation...", "working");
   try {
-    await queueGeneration(options);
+    await queueGeneration({
+      ...options,
+      originChatId: options.originChatId || activeChat()?.id || null,
+      independent: true,
+      releaseBusy: false,
+    });
   } catch (error) {
     const message = error.message || String(error);
     showGenerationFailure(message, () => retryGeneration(options));
@@ -3094,10 +3126,10 @@ function refreshLatestImageContextControl() {
     : "Generate an image in this session before using it as LLM context.";
 }
 
-function editingSource(sourceImage = null) {
+function editingSource(sourceImage = null, chat = activeChat()) {
   return normalizeImageReference(sourceImage)
-    || normalizeImageReference(activeChat()?.selectedSource)
-    || latestConversationImage();
+    || normalizeImageReference(chat?.selectedSource)
+    || latestConversationImage(chat);
 }
 
 function restoreStoredCanonicalPrompt(data) {
@@ -3513,7 +3545,9 @@ function renderGenerationProgress(message, data) {
   const max = Number(progress?.max);
   const determinate = Number.isFinite(value) && Number.isFinite(max) && max > 0;
   const percent = determinate ? Math.max(0, Math.min(100, Math.round((value / max) * 100))) : null;
-  const statusText = progress?.phase === "finalizing"
+  const statusText = progress?.phase === "queued" || (!progress?.phase && data.generationState === "queued")
+    ? "Queued…"
+    : progress?.phase === "finalizing"
     ? "Finalizing…"
     : data.generationAction === "upscale"
       ? "Upscaling…"
@@ -3621,20 +3655,37 @@ function appendMessage(role, text, options = {}) {
     createdAt: now,
     updatedAt: now,
   };
-  const chat = activeChat();
+  const chat = options.chatId
+    ? state.chats.find((item) => item.id === options.chatId)
+    : activeChat();
   if (chat) {
     chat.messages.push(data);
     chat.updatedAt = Date.now();
     saveChats();
     renderChatList();
   }
-  return renderMessage(data);
+  return chat?.id === state.activeChatId ? renderMessage(data) : null;
 }
 
-async function appendImages(message, images) {
-  if (!message || !images.length) return;
-  const chat = activeChat();
-  const stored = chat?.messages.find((item) => item.id === message.dataset.messageId);
+function studioGenerationRecord(promptId) {
+  const id = String(promptId || "");
+  if (!id) return null;
+  for (const chat of state.chats) {
+    const message = chat.messages.find((item) => item.promptId === id);
+    if (message) return { chat, message };
+  }
+  return null;
+}
+
+function studioGenerationElement(record) {
+  return record?.chat.id === state.activeChatId ? messageElement(record.message.id) : null;
+}
+
+async function appendGenerationImages(promptId, images) {
+  if (!images.length) return;
+  const record = studioGenerationRecord(promptId);
+  if (!record) return;
+  const { chat, message: stored } = record;
   const enrichedImages = await Promise.all(images.map(async (image) => {
     try {
       return await imageReferenceWithDimensions(image);
@@ -3642,23 +3693,25 @@ async function appendImages(message, images) {
       return normalizeImageReference(image);
     }
   }));
-  renderImageGallery(message, enrichedImages, stored);
-  if (stored) {
-    stored.images = enrichedImages;
-    stored.updatedAt = Date.now();
-    if (enrichedImages[0] && state.panel?.querySelector("#promptstudio-auto-advance-source")?.checked) {
-      chat.selectedSource = normalizeImageReference(enrichedImages[0]);
-    } else if (!chat.selectedSource && enrichedImages[0]) {
-      chat.selectedSource = normalizeImageReference(enrichedImages[0]);
-    }
-    renderPromptInfo(message, stored);
-    chat.updatedAt = Date.now();
-    saveChats();
-    renderChatList();
+  stored.images = enrichedImages;
+  stored.updatedAt = Date.now();
+  const autoAdvanceSource = state.generationJobs.get(String(promptId))?.autoAdvanceSource
+    ?? state.panel?.querySelector("#promptstudio-auto-advance-source")?.checked;
+  if (enrichedImages[0] && autoAdvanceSource) {
+    chat.selectedSource = normalizeImageReference(enrichedImages[0]);
+  } else if (!chat.selectedSource && enrichedImages[0]) {
+    chat.selectedSource = normalizeImageReference(enrichedImages[0]);
   }
-  updateComposeMode();
-  const history = state.panel?.querySelector("#promptstudio-history");
-  if (history) history.scrollTop = history.scrollHeight;
+  chat.updatedAt = Date.now();
+  saveChats();
+  renderChatList();
+  if (chat.id === state.activeChatId) renderChatHistory();
+}
+
+async function appendImages(message, images) {
+  if (!message || !images.length) return;
+  const stored = activeChat()?.messages.find((item) => item.id === message.dataset.messageId);
+  if (stored?.promptId) await appendGenerationImages(stored.promptId, images);
 }
 
 function updateMainPromptEditor(prompt) {
@@ -3924,6 +3977,24 @@ function collectRevisionPayload(
   return payload;
 }
 
+function captureGenerationQueueSettings(action, chat = activeChat()) {
+  const profile = selectedWorkflowProfile(action);
+  return {
+    originChatId: chat?.id || null,
+    workflowProfileId: profile?.id || null,
+    loraState: structuredClone(generationLoraState(profile)),
+    modelState: structuredClone(generationModelState(profile)),
+    sourceImage: action === "create" ? null : editingSource(null, chat),
+    randomizeSeed: state.panel?.querySelector("#promptstudio-randomize-seed")?.checked === true,
+    secondaryInstructionsOverride: state.panel?.querySelector("#promptstudio-secondary-instructions")?.value || "",
+    resolutionOverride: structuredClone(resolutionSettings()),
+    controlsFingerprintOverride: controlsFingerprint(),
+    llmAmplifiedOverride: useLlmAmplification(),
+    autoAdvanceSource: state.panel?.querySelector("#promptstudio-auto-advance-source")?.checked !== false,
+    preserveUiSelections: true,
+  };
+}
+
 function randomizeSnapshotSeeds(snapshot) {
   for (const node of Object.values(snapshot?.output || {})) {
     for (const name of Object.keys(node?.inputs || {})) {
@@ -3932,15 +4003,19 @@ function randomizeSnapshotSeeds(snapshot) {
   }
 }
 
-function generationMatchesLatestQueuedPrompt() {
-  const chat = activeChat();
+function generationMatchesLatestQueuedPrompt(
+  chat = activeChat(),
+  mainPrompt = state.mainPrompt,
+  finalPrompt = state.currentPrompt,
+  fingerprint = String(chat?.controlsFingerprint || ""),
+) {
   const latestGeneration = [...(chat?.messages || [])]
     .reverse()
     .find((message) => Boolean(message.canonicalPrompt));
   if (!latestGeneration) return false;
-  return latestGeneration.mainPrompt === state.mainPrompt
-    && latestGeneration.canonicalPrompt === state.currentPrompt
-    && latestGeneration.controlsFingerprint === String(chat?.controlsFingerprint || "");
+  return latestGeneration.mainPrompt === mainPrompt
+    && latestGeneration.canonicalPrompt === finalPrompt
+    && latestGeneration.controlsFingerprint === fingerprint;
 }
 
 function historyImages(historyItem, resultNodeIds = [], resultFields = ["images", "gifs"]) {
@@ -4019,21 +4094,54 @@ function messageElement(messageId) {
 }
 
 function pendingGenerationMessage(promptId) {
-  const id = String(promptId || "");
-  if (!id) return null;
-  return (activeChat()?.messages || []).find((message) => (
-    message.promptId === id && ["queued", "generating"].includes(message.generationState)
-  )) || null;
+  const record = studioGenerationRecord(promptId);
+  return record && ["queued", "generating"].includes(record.message.generationState)
+    ? record.message
+    : null;
 }
 
 function updateGenerationProgress(promptId, progress = {}) {
-  const stored = pendingGenerationMessage(promptId);
-  if (!stored) return;
+  const record = studioGenerationRecord(promptId);
+  const stored = record?.message;
+  if (!stored || !["queued", "generating"].includes(stored.generationState)) return;
   const id = String(promptId);
   const current = state.generationProgress.get(id) || {};
   state.generationProgress.set(id, { ...current, ...progress });
-  const element = messageElement(stored.id);
+  if (stored.generationState === "queued" && ["generating", "finalizing"].includes(progress.phase)) {
+    setStudioGenerationState(id, "generating");
+    return;
+  }
+  const element = studioGenerationElement(record);
   if (element) renderGenerationProgress(element, stored);
+}
+
+function updateStudioGenerationText(promptId, text) {
+  const record = studioGenerationRecord(promptId);
+  if (!record) return;
+  record.message.text = String(text || "");
+  record.message.updatedAt = Date.now();
+  record.chat.updatedAt = record.message.updatedAt;
+  saveChats();
+  renderChatList();
+  if (record.chat.id === state.activeChatId) renderChatHistory();
+}
+
+function setStudioGenerationState(promptId, generationState) {
+  const record = studioGenerationRecord(promptId);
+  if (!record) return;
+  record.message.generationState = generationState;
+  if (!["queued", "generating"].includes(generationState)) {
+    state.generationProgress.delete(String(promptId));
+    state.generationJobs.delete(String(promptId));
+    if (state.activeGenerationPromptId === String(promptId)) state.activeGenerationPromptId = "";
+  }
+  record.message.updatedAt = Date.now();
+  record.chat.updatedAt = record.message.updatedAt;
+  saveChats();
+  renderChatList();
+  if (record.chat.id === state.activeChatId) renderChatHistory();
+  else updateComposeMode();
+  queueMicrotask(syncBackgroundActivityIndicator);
 }
 
 function setupGenerationProgressEvents() {
@@ -4041,7 +4149,12 @@ function setupGenerationProgressEvents() {
     event?.detail?.prompt_id || event?.detail?.promptId || state.activeGenerationPromptId || "",
   );
   api.addEventListener("execution_start", (event) => {
-    updateGenerationProgress(eventPromptId(event), { phase: "generating" });
+    const promptId = eventPromptId(event);
+    if (studioGenerationRecord(promptId)) {
+      state.activeGenerationPromptId = promptId;
+      setStudioGenerationState(promptId, "generating");
+    }
+    updateGenerationProgress(promptId, { phase: "generating" });
   });
   api.addEventListener("executing", (event) => {
     updateGenerationProgress(eventPromptId(event), {
@@ -4093,8 +4206,8 @@ function markGenerationAttemptFailed(message, text) {
   setMessageGenerationState(message, "error");
 }
 
-function setConsultExperimentGeneration(messageId, variantId, generation) {
-  const chat = activeChat();
+function setConsultExperimentGeneration(messageId, variantId, generation, chatId = null) {
+  const chat = chatId ? state.chats.find((item) => item.id === chatId) : activeChat();
   const message = chat?.consultMessages.find((item) => item.id === messageId);
   const variant = message?.variants?.find((item) => item.id === variantId);
   if (!chat || !message || !variant) return false;
@@ -4105,7 +4218,7 @@ function setConsultExperimentGeneration(messageId, variantId, generation) {
   message.updatedAt = Date.now();
   chat.updatedAt = message.updatedAt;
   saveChats();
-  renderConsultHistory();
+  if (chat.id === state.activeChatId) renderConsultHistory();
   return true;
 }
 
@@ -4145,8 +4258,15 @@ function promptAgentIteration(agent, iterationId) {
   return agent?.iterations.find((item) => item.id === String(iterationId || "")) || null;
 }
 
-function updateConsultAgent(mutator, { immediate = false } = {}) {
-  const chat = activeChat();
+function consultAgentChat(agentId) {
+  const id = String(agentId || "");
+  return state.chats.find((chat) => activeConsultAgent(chat)?.id === id) || null;
+}
+
+function updateConsultAgent(mutator, { immediate = false, chatId = null, agentId = null } = {}) {
+  const chat = chatId
+    ? state.chats.find((item) => item.id === chatId)
+    : agentId ? consultAgentChat(agentId) : activeChat();
   const agent = activeConsultAgent(chat);
   if (!chat || !agent) return null;
   mutator(agent);
@@ -4154,12 +4274,14 @@ function updateConsultAgent(mutator, { immediate = false } = {}) {
   chat.consultAgent = normalizeConsultAgent(agent);
   chat.updatedAt = agent.updatedAt;
   saveChats({ immediate });
-  renderConsultHistory();
-  updateConsultExperimentUi();
+  if (chat.id === state.activeChatId) {
+    renderConsultHistory();
+    updateConsultExperimentUi();
+  }
   return chat.consultAgent;
 }
 
-function setConsultAgentGeneration(iterationId, generation, status = "generating") {
+function setConsultAgentGeneration(iterationId, generation, status = "generating", chatId = null) {
   return updateConsultAgent((agent) => {
     const iteration = promptAgentIteration(agent, iterationId);
     if (!iteration) return;
@@ -4168,7 +4290,7 @@ function setConsultAgentGeneration(iterationId, generation, status = "generating
     iteration.updatedAt = Date.now();
     agent.currentIterationId = iteration.id;
     agent.status = status === "generating" ? (iteration.validation ? "validating" : "generating") : agent.status;
-  }, { immediate: true });
+  }, { immediate: true, chatId });
 }
 
 async function waitForConsultAgentResult(
@@ -4198,7 +4320,10 @@ async function waitForConsultAgentResult(
               return normalizeImageReference(image);
             }
           }));
-          const agent = activeConsultAgent();
+          const agentChat = agentTarget.chatId
+            ? state.chats.find((item) => item.id === agentTarget.chatId)
+            : activeChat();
+          const agent = activeConsultAgent(agentChat);
           const iteration = promptAgentIteration(agent, agentTarget.iterationId);
           const current = normalizeConsultExperimentGeneration(iteration?.generation) || {};
           const generation = normalizeConsultExperimentGeneration({
@@ -4212,6 +4337,7 @@ async function waitForConsultAgentResult(
             agentTarget.iterationId,
             generation,
             generation.generationState === "complete" ? "evaluating" : "error",
+            agentTarget.chatId,
           );
           state.generationProgress.delete(String(promptId));
           if (state.activeGenerationPromptId === String(promptId)) state.activeGenerationPromptId = "";
@@ -4248,7 +4374,9 @@ async function waitForConsultExperimentResult(
         const completed = Boolean(item.status?.completed);
         const failure = generationFailureMessage(item);
         if (failure || images.length || completed) {
-          const chat = activeChat();
+          const chat = consultTarget.chatId
+            ? state.chats.find((entry) => entry.id === consultTarget.chatId)
+            : activeChat();
           const message = chat?.consultMessages.find((entry) => entry.id === consultTarget.messageId);
           const variant = message?.variants?.find((entry) => entry.id === consultTarget.variantId);
           const current = normalizeConsultExperimentGeneration(variant?.generation) || {};
@@ -4266,12 +4394,11 @@ async function waitForConsultExperimentResult(
             images: enrichedImages,
             updatedAt: Date.now(),
           };
-          setConsultExperimentGeneration(consultTarget.messageId, consultTarget.variantId, generation);
+          setConsultExperimentGeneration(consultTarget.messageId, consultTarget.variantId, generation, consultTarget.chatId);
           state.generationProgress.delete(String(promptId));
           if (state.activeGenerationPromptId === String(promptId)) state.activeGenerationPromptId = "";
           state.generating = false;
           state.consultGenerationTarget = null;
-          setBusy(false);
           setConsultBusy(false);
           if (generation.generationState === "complete") {
             setConsultStatus(`Generated ${enrichedImages.length} experimental image${enrichedImages.length === 1 ? "" : "s"}.`, "ready");
@@ -4285,7 +4412,9 @@ async function waitForConsultExperimentResult(
     await new Promise((resolve) => setTimeout(resolve, 900));
   }
   if (token === state.pollToken) {
-    const chat = activeChat();
+    const chat = consultTarget.chatId
+      ? state.chats.find((entry) => entry.id === consultTarget.chatId)
+      : activeChat();
     const message = chat?.consultMessages.find((entry) => entry.id === consultTarget.messageId);
     const variant = message?.variants?.find((entry) => entry.id === consultTarget.variantId);
     const current = normalizeConsultExperimentGeneration(variant?.generation) || {};
@@ -4294,10 +4423,9 @@ async function waitForConsultExperimentResult(
       generationState: "error",
       text: "Stopped waiting for the experimental generation result.",
       updatedAt: Date.now(),
-    });
+    }, consultTarget.chatId);
     state.generating = false;
     state.consultGenerationTarget = null;
-    setBusy(false);
     setConsultBusy(false);
     setConsultStatus("Stopped waiting for the experimental generation result.", "error");
   }
@@ -4314,6 +4442,7 @@ function resumeSyncedGeneration() {
   const pending = [...(activeChat()?.messages || [])]
     .reverse()
     .find((message) => ["queued", "generating"].includes(message.generationState) && message.promptId);
+  if (pending && state.generationJobs.has(String(pending.promptId))) return;
   if (!pending) {
     const consultMessages = [...(activeChat()?.consultMessages || [])].reverse();
     for (const message of consultMessages) {
@@ -4324,11 +4453,15 @@ function resumeSyncedGeneration() {
       ));
       if (!variant) continue;
       const generation = normalizeConsultExperimentGeneration(variant.generation);
-      const target = { messageId: message.id, variantId: variant.id, promptId: generation.promptId };
+      const target = {
+        chatId: activeChat()?.id || "",
+        messageId: message.id,
+        variantId: variant.id,
+        promptId: generation.promptId,
+      };
       state.generating = true;
       state.activeGenerationPromptId = generation.promptId;
       state.consultGenerationTarget = target;
-      setBusy(true);
       setConsultBusy(true);
       setConsultStatus(`Following experimental generation ${generation.promptId.slice(0, 8)}…`, "working");
       const token = ++state.pollToken;
@@ -4345,10 +4478,9 @@ function resumeSyncedGeneration() {
           generationState: "error",
           text: error.message || String(error),
           updatedAt: Date.now(),
-        });
+        }, target.chatId);
         state.generating = false;
         state.consultGenerationTarget = null;
-        setBusy(false);
         setConsultBusy(false);
         setConsultStatus(error.message || String(error), "error");
       });
@@ -4359,59 +4491,54 @@ function resumeSyncedGeneration() {
   const targetMessage = [...state.panel.querySelectorAll(".promptstudio-message")]
     .find((message) => message.dataset.messageId === pending.id);
   if (!targetMessage) return;
-  state.generating = true;
-  state.activeGenerationPromptId = pending.promptId;
-  setBusy(true);
+  state.generationJobs.set(String(pending.promptId), { chatId: activeChat()?.id || "" });
   setStatus(`Following synced generation ${pending.promptId.slice(0, 8)}…`, "working");
-  const token = ++state.pollToken;
   const retryOptions = generationRetryOptionsFromMessage(pending);
-  waitForResult(pending.promptId, targetMessage, token, pending.resultNodeIds, pending.resultFields, retryOptions).catch((error) => {
-    if (token !== state.pollToken) return;
+  waitForResult(pending.promptId, targetMessage, 0, pending.resultNodeIds, pending.resultFields, retryOptions).catch((error) => {
+    if (!state.generationJobs.has(String(pending.promptId))) return;
     const message = error.message || String(error);
-    markGenerationAttemptFailed(targetMessage, message);
-    showGenerationFailure(message, retryOptions ? () => retryGeneration(retryOptions) : null);
+    updateStudioGenerationText(pending.promptId, message);
+    setStudioGenerationState(pending.promptId, "error");
+    setStatus(message, "error");
   });
 }
 
 async function waitForResult(
   promptId,
-  targetMessage,
-  token,
+  _targetMessage,
+  _token,
   resultNodeIds = [],
   resultFields = ["images", "gifs"],
   retryOptions = null,
 ) {
+  const id = String(promptId);
   const started = Date.now();
-  while (token === state.pollToken && Date.now() - started < 10 * 60 * 1000) {
+  while (state.generationJobs.has(id) && Date.now() - started < 10 * 60 * 1000) {
     const response = await api.fetchApi(`/history/${encodeURIComponent(promptId)}`);
-    if (token !== state.pollToken) return;
+    if (!state.generationJobs.has(id)) return;
     if (response.ok) {
       const history = await response.json();
-      if (token !== state.pollToken) return;
+      if (!state.generationJobs.has(id)) return;
       const item = history?.[promptId];
       if (item) {
         const images = historyImages(item, resultNodeIds, resultFields);
         const completed = Boolean(item.status?.completed);
         const failureMessage = generationFailureMessage(item);
         if (failureMessage || images.length || completed) {
-          await appendImages(targetMessage, images);
+          await appendGenerationImages(promptId, images);
           if (failureMessage) {
-            updateMessageText(targetMessage, failureMessage);
-            setMessageGenerationState(targetMessage, "error");
-            showGenerationFailure(failureMessage, retryOptions ? () => retryGeneration(retryOptions) : null);
+            updateStudioGenerationText(promptId, failureMessage);
+            setStudioGenerationState(promptId, "error");
+            setStatus(failureMessage, "error");
           } else if (images.length) {
-            updateMessageText(targetMessage, "");
-            setMessageGenerationState(targetMessage, "complete");
+            updateStudioGenerationText(promptId, "");
+            setStudioGenerationState(promptId, "complete");
             setStatus(`Generated ${images.length} image${images.length === 1 ? "" : "s"}.`, "ready");
           } else {
             const message = "Generation completed without an image output.";
-            updateMessageText(targetMessage, message);
-            setMessageGenerationState(targetMessage, "error");
-            showGenerationFailure(message, retryOptions ? () => retryGeneration(retryOptions) : null);
-          }
-          if (!failureMessage && images.length) {
-            setBusy(false);
-            state.generating = false;
+            updateStudioGenerationText(promptId, message);
+            setStudioGenerationState(promptId, "error");
+            setStatus(message, "error");
           }
           return;
         }
@@ -4419,10 +4546,11 @@ async function waitForResult(
     }
     await new Promise((resolve) => setTimeout(resolve, 900));
   }
-  if (token === state.pollToken) {
+  if (state.generationJobs.has(id)) {
     const message = "Stopped waiting for the generation result.";
-    markGenerationAttemptFailed(targetMessage, message);
-    showGenerationFailure(message, retryOptions ? () => retryGeneration(retryOptions) : null);
+    updateStudioGenerationText(promptId, message);
+    setStudioGenerationState(promptId, "error");
+    setStatus(message, "error");
   }
 }
 
@@ -4480,13 +4608,28 @@ async function queueGeneration({
   resultFields = null,
   consultTarget = null,
   agentTarget = null,
+  originChatId = null,
+  randomizeSeed = null,
+  secondaryInstructionsOverride = null,
+  resolutionOverride = null,
+  controlsFingerprintOverride = null,
+  llmAmplifiedOverride = null,
+  autoAdvanceSource = null,
+  independent = false,
+  releaseBusy = true,
+  preserveUiSelections = false,
 } = {}) {
   if (!state.apiConnected) throw new Error("ComfyUI is disconnected. Wait for it to reconnect before generating.");
-  const operationToken = state.operationToken;
-  let source = action === "create" ? null : editingSource(sourceImage);
+  const chat = originChatId
+    ? state.chats.find((item) => item.id === originChatId)
+    : activeChat();
+  if (!chat && !consultTarget && !agentTarget) throw new Error("The originating chat no longer exists.");
+  const operationToken = independent ? null : state.operationToken;
+  const operationCancelled = () => operationToken !== null && operationToken !== state.operationToken;
+  let source = action === "create" ? null : editingSource(sourceImage, chat);
   if (action !== "create" && !source) throw new Error(`There is no image in this conversation to ${action}.`);
   const context = await workflowQueueContext(action, workflowProfileId);
-  if (operationToken !== state.operationToken) return false;
+  if (operationCancelled()) return false;
   const storedGenerationSnapshot = normalizeGenerationSnapshot(generationSnapshot);
   if (generationSnapshot != null && !storedGenerationSnapshot) {
     throw new Error("The stored generation snapshot is invalid.");
@@ -4502,21 +4645,31 @@ async function queueGeneration({
       throw new Error(`Prompt Studio could not preserve the editing source size: ${error.message || String(error)}`);
     }
   }
-  if (operationToken !== state.operationToken) return false;
+  if (operationCancelled()) return false;
+  const shouldRandomizeSeed = randomizeSeed == null
+    ? Boolean(state.panel.querySelector("#promptstudio-randomize-seed")?.checked)
+    : Boolean(randomizeSeed);
   const useNewSeed = alwaysNewSeed || (
-    (forceNewSeed || (!preserveSeed && generationMatchesLatestQueuedPrompt()))
-    && state.panel.querySelector("#promptstudio-randomize-seed")?.checked
+    (forceNewSeed || (!preserveSeed && generationMatchesLatestQueuedPrompt(
+      chat,
+      mainPrompt,
+      finalPrompt,
+      controlsFingerprintOverride ?? String(chat?.controlsFingerprint || ""),
+    )))
+    && shouldRandomizeSeed
   );
   if (!replayExactGeneration && useNewSeed) randomizeSnapshotSeeds(context.snapshot);
 
-  const secondaryInstructions = state.panel.querySelector("#promptstudio-secondary-instructions")?.value || "";
+  const secondaryInstructions = secondaryInstructionsOverride == null
+    ? state.panel.querySelector("#promptstudio-secondary-instructions")?.value || ""
+    : String(secondaryInstructionsOverride);
   if (!replayExactGeneration && action !== "upscale") {
     const apiNode = context.snapshot.output?.[String(context.promptNodeId)];
     if (!apiNode || ![SLOT_TYPE, AMPLIFY_TYPE].includes(apiNode.class_type)) {
       throw new Error("The configured prompt node was not included in the executable workflow.");
     }
     const resolution = {
-      ...resolutionSettings(),
+      ...(resolutionOverride || resolutionSettings()),
       resolution_width: action === "edit" ? source.width : 0,
       resolution_height: action === "edit" ? source.height : 0,
     };
@@ -4602,7 +4755,7 @@ async function queueGeneration({
         );
       }
       storedState.modelName = canonical.name;
-      if (selectionForModelNode(context.profile.id, descriptor) !== canonical.name) {
+      if (!preserveUiSelections && selectionForModelNode(context.profile.id, descriptor) !== canonical.name) {
         setSelectionForModelNode(context.profile.id, descriptor.id, canonical.name);
       }
     }
@@ -4610,7 +4763,7 @@ async function queueGeneration({
     modelNode.inputs.unet_name = storedState.modelName;
   }
 
-  if (operationToken !== state.operationToken) return false;
+  if (operationCancelled()) return false;
   const queuedGenerationSnapshot = normalizeGenerationSnapshot(structuredClone(context.snapshot));
   const queuedResultNodeIds = replayExactGeneration && Array.isArray(resultNodeIds) && resultNodeIds.length
     ? resultNodeIds.map(String)
@@ -4635,6 +4788,13 @@ async function queueGeneration({
     upscaleFactor,
     resultNodeIds: queuedResultNodeIds,
     resultFields: queuedResultFields,
+    originChatId: chat?.id || null,
+    randomizeSeed: shouldRandomizeSeed,
+    secondaryInstructionsOverride: secondaryInstructions,
+    resolutionOverride: resolutionOverride || resolutionSettings(),
+    controlsFingerprintOverride: controlsFingerprintOverride ?? chat?.controlsFingerprint ?? "",
+    llmAmplifiedOverride: llmAmplifiedOverride,
+    autoAdvanceSource,
   };
 
   let queued;
@@ -4646,7 +4806,7 @@ async function queueGeneration({
   }
   const promptId = queued?.prompt_id;
   if (!promptId) throw new Error("ComfyUI did not return a prompt ID.");
-  if (operationToken !== state.operationToken) {
+  if (operationCancelled()) {
     if (typeof api.interrupt === "function") await api.interrupt();
     else await api.fetchApi("/interrupt", { method: "POST" });
     return false;
@@ -4670,7 +4830,7 @@ async function queueGeneration({
       createdAt: Date.now(),
       updatedAt: Date.now(),
     });
-    setConsultAgentGeneration(agentTarget.iterationId, generation, "generating");
+    setConsultAgentGeneration(agentTarget.iterationId, generation, "generating", agentTarget.chatId);
     state.activeGenerationPromptId = promptId;
     state.consultAgentGenerationTarget = { ...agentTarget, promptId };
     state.generating = true;
@@ -4702,7 +4862,12 @@ async function queueGeneration({
       createdAt: Date.now(),
       updatedAt: Date.now(),
     });
-    setConsultExperimentGeneration(consultTarget.messageId, consultTarget.variantId, generation);
+    setConsultExperimentGeneration(
+      consultTarget.messageId,
+      consultTarget.variantId,
+      generation,
+      consultTarget.chatId,
+    );
     state.activeGenerationPromptId = promptId;
     state.consultGenerationTarget = { ...consultTarget, promptId };
     state.generating = true;
@@ -4716,16 +4881,19 @@ async function queueGeneration({
     ).catch((error) => {
       if (token !== state.pollToken) return;
       const failed = { ...generation, generationState: "error", text: error.message || String(error), updatedAt: Date.now() };
-      setConsultExperimentGeneration(consultTarget.messageId, consultTarget.variantId, failed);
+      setConsultExperimentGeneration(
+        consultTarget.messageId,
+        consultTarget.variantId,
+        failed,
+        consultTarget.chatId,
+      );
       state.generating = false;
       state.consultGenerationTarget = null;
-      setBusy(false);
       setConsultBusy(false);
       setConsultStatus(failed.text, "error");
     });
     return true;
   }
-  const chat = activeChat();
   if (chat) {
     if (action === "edit") chat.selectedSource = source;
     chat.lastGeneration = {
@@ -4740,9 +4908,9 @@ async function queueGeneration({
     chat.updatedAt = Date.now();
     saveChats();
   }
-  state.activeGenerationPromptId = promptId;
-  state.generationProgress.set(promptId, { phase: "generating" });
+  state.generationProgress.set(promptId, { phase: "queued" });
   const resultMessage = appendMessage("assistant", "", {
+    chatId: chat?.id,
     label: "ComfyUI",
     mainPrompt,
     canonicalPrompt: finalPrompt,
@@ -4758,18 +4926,26 @@ async function queueGeneration({
     resultNodeIds: queuedResultNodeIds,
     resultFields: queuedResultFields,
     promptId,
-    generationState: "generating",
-    controlsFingerprint: chat?.controlsFingerprint || "",
-    llmAmplified: useLlmAmplification(),
+    generationState: "queued",
+    controlsFingerprint: controlsFingerprintOverride ?? chat?.controlsFingerprint ?? "",
+    llmAmplified: llmAmplifiedOverride == null ? useLlmAmplification() : Boolean(llmAmplifiedOverride),
   });
-  state.generating = true;
-  setStatus("ComfyUI is generating…", "working");
-  const token = ++state.pollToken;
-  waitForResult(promptId, resultMessage, token, queuedResultNodeIds, queuedResultFields, retryOptions).catch((error) => {
-    if (token !== state.pollToken) return;
+  state.generationJobs.set(String(promptId), {
+    chatId: chat?.id || "",
+    retryOptions,
+    autoAdvanceSource: autoAdvanceSource == null
+      ? state.panel?.querySelector("#promptstudio-auto-advance-source")?.checked !== false
+      : Boolean(autoAdvanceSource),
+  });
+  if (releaseBusy) setBusy(false);
+  updateComposeMode();
+  setStatus(`Queued with ComfyUI (${promptId.slice(0, 8)}).`, "working");
+  waitForResult(promptId, resultMessage, 0, queuedResultNodeIds, queuedResultFields, retryOptions).catch((error) => {
+    if (!state.generationJobs.has(String(promptId))) return;
     const message = error.message || String(error);
-    markGenerationAttemptFailed(resultMessage, message);
-    showGenerationFailure(message, () => retryGeneration(retryOptions));
+    updateStudioGenerationText(promptId, message);
+    setStudioGenerationState(promptId, "error");
+    setStatus(message, "error");
   });
   return true;
 }
@@ -4780,11 +4956,11 @@ async function queueUpscale(source, generationData = null, factor = null, workfl
   const executionPrompt = usePrompt
     ? String(generationData?.canonicalPrompt || state.currentPrompt || "")
     : "";
-  state.operationToken += 1;
-  setBusy(true);
-  setStatus("ComfyUI is upscaling…", "working");
+  const queueSettings = captureGenerationQueueSettings("upscale", activeChat());
+  setStatus("ComfyUI is preparing the upscale…", "working");
   try {
     await queueGeneration({
+      ...queueSettings,
       action: "upscale",
       executionPrompt,
       mainPrompt: String(generationData?.mainPrompt || state.mainPrompt || ""),
@@ -4792,6 +4968,8 @@ async function queueUpscale(source, generationData = null, factor = null, workfl
       workflowProfileId,
       sourceImage: source,
       upscaleFactor: factor,
+      independent: true,
+      releaseBusy: false,
     });
   } catch (error) {
     const message = error.message || String(error);
@@ -4835,11 +5013,19 @@ async function generateDirectPrompt(action = selectedAction()) {
   if (promptChanged) pushVersion();
   else syncActiveChat();
   saveSettings();
-  state.operationToken += 1;
-  setBusy(true);
-  setStatus("ComfyUI is generating the direct prompt…", "working");
+  const queueSettings = captureGenerationQueueSettings(action, chat);
+  setStatus("ComfyUI is preparing the direct prompt…", "working");
   try {
-    await queueGeneration({ action, executionPrompt: prompt, preserveSeed: promptChanged });
+    await queueGeneration({
+      ...queueSettings,
+      action,
+      executionPrompt: prompt,
+      mainPrompt: prompt,
+      finalPrompt: prompt,
+      preserveSeed: promptChanged,
+      independent: true,
+      releaseBusy: false,
+    });
   } catch (error) {
     const message = error.message || String(error);
     showGenerationFailure(message, () => generateDirectPrompt(action));
@@ -4870,11 +5056,11 @@ function llmConnectionPayload() {
   };
 }
 
-async function requireVisionCapability() {
+async function requireVisionCapability(connectionPayload = llmConnectionPayload()) {
   const response = await api.fetchApi("/promptstudio/prompt-studio/vision-capability", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(llmConnectionPayload()),
+    body: JSON.stringify(connectionPayload),
   });
   const data = await response.json().catch(() => ({}));
   if (!response.ok || !data.available) {
@@ -4934,12 +5120,17 @@ function renderMainPastedImage() {
 }
 
 function clearMainPastedImage() {
+  if (state.activeChatId) state.mainPastedImagesByChat.delete(state.activeChatId);
   state.mainPastedImage = null;
   renderMainPastedImage();
 }
 
+function showMainPastedImageForChat(chatId) {
+  state.mainPastedImage = normalizeImageReference(state.mainPastedImagesByChat.get(String(chatId || "")));
+  renderMainPastedImage();
+}
+
 async function pasteMainReference(file, { source = "pasted" } = {}) {
-  if (state.busy) return setStatus("Wait for the current operation to finish.", "warning");
   if (!useLlmAmplification()) {
     const action = source === "dropped" ? "dropping" : "pasting";
     return setStatus(`Enable “Use LLM amplification” before ${action} a reference image.`, "warning");
@@ -4947,23 +5138,38 @@ async function pasteMainReference(file, { source = "pasted" } = {}) {
   const validationError = pastedImageFileError(file, source);
   if (validationError) return setStatus(validationError, "warning");
 
-  const operationToken = ++state.operationToken;
-  setBusy(true);
-  setStatus(`Checking ${llmProviderName()} vision support…`, "working");
+  const chat = activeChat();
+  if (!chat) return;
+  const connectionPayload = llmConnectionPayload();
+  const providerName = connectionPayload.llm_provider === "ollama" ? "Ollama" : "KoboldCpp";
+  const preparationId = makeId();
+  state.studioPreparations.set(preparationId, { chatId: chat.id, kind: "reference-import" });
+  state.latestStudioPreparationByChat.set(chat.id, preparationId);
+  renderChatList();
+  updateComposeMode();
+  syncBackgroundActivityIndicator();
+  setStatus(`Checking ${providerName} vision support…`, "working");
   try {
-    await requireVisionCapability();
-    if (operationToken !== state.operationToken) return;
+    await requireVisionCapability(connectionPayload);
     setStatus("Sanitizing and attaching the reference image…", "working");
     const reference = await uploadPromptStudioImage(file);
-    if (operationToken !== state.operationToken) return;
-    state.mainPastedImage = reference;
-    renderMainPastedImage();
+    if (state.latestStudioPreparationByChat.get(chat.id) !== preparationId) return;
+    state.mainPastedImagesByChat.set(chat.id, reference);
+    if (chat.id === state.activeChatId) {
+      state.mainPastedImage = reference;
+      renderMainPastedImage();
+    }
     setStatus("Image attached to the next prompt.", "ready");
   } catch (error) {
-    if (operationToken !== state.operationToken) return;
     setStatus(error.message || String(error), "error");
   } finally {
-    if (operationToken === state.operationToken) setBusy(false);
+    state.studioPreparations.delete(preparationId);
+    if (state.latestStudioPreparationByChat.get(chat.id) === preparationId) {
+      state.latestStudioPreparationByChat.delete(chat.id);
+    }
+    renderChatList();
+    updateComposeMode();
+    syncBackgroundActivityIndicator();
   }
 }
 
@@ -4992,9 +5198,9 @@ function dropMainReferenceFiles(fileList) {
   pasteMainReference(files[0], { source: "dropped" });
 }
 
-async function requestImageCaption(reference) {
+async function requestImageCaption(reference, payloadOverride = null) {
   const payload = {
-    ...collectRevisionPayload("Caption the image", "render", "", ""),
+    ...(payloadOverride || collectRevisionPayload("Caption the image", "render", "", "")),
     image: storedImageReference(reference),
   };
   const response = await api.fetchApi("/promptstudio/prompt-studio/caption-image", {
@@ -5192,13 +5398,14 @@ function promptAgentReferencesPayload(agent) {
   })).filter((item) => item.image);
 }
 
-async function requestPromptAgentPhase(phase, agent, extra = {}) {
-  const generationSettings = collectConsultGenerationSettings();
+async function requestPromptAgentPhase(phase, agent, extra = {}, requestSettings = null) {
+  const generationSettings = requestSettings?.generationSettings || collectConsultGenerationSettings();
+  const connectionPayload = requestSettings?.connectionPayload || llmConnectionPayload();
   const response = await api.fetchApi("/promptstudio/prompt-studio/agent", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
-      ...llmConnectionPayload(),
+      ...connectionPayload,
       ...generationSettings,
       max_response_tokens: Math.max(1200, Number(generationSettings.max_response_tokens) || 0),
       phase,
@@ -5244,7 +5451,7 @@ function promptAgentPlateaued(agent) {
   return scores[1] - scores[0] < 2 && scores[2] - scores[1] < 2;
 }
 
-function createPromptAgentIteration({ validation = false, candidate = null } = {}) {
+function createPromptAgentIteration({ validation = false, candidate = null } = {}, chatId = null) {
   const id = makeId();
   updateConsultAgent((agent) => {
     const index = agent.iterations.reduce(
@@ -5263,56 +5470,65 @@ function createPromptAgentIteration({ validation = false, candidate = null } = {
     agent.currentIterationId = id;
     agent.status = validation ? "validating" : (candidate ? "generating" : "architecting");
     agent.error = "";
-  }, { immediate: true });
+  }, { immediate: true, chatId });
   return id;
 }
 
-function finishPromptAgent(status, message = "") {
+function finishPromptAgent(status, message = "", chatId = null) {
   updateConsultAgent((agent) => {
     agent.active = false;
     agent.status = status;
     agent.resumeStatus = "";
     agent.error = status === "error" ? message : "";
-  }, { immediate: true });
+  }, { immediate: true, chatId });
   state.consultAgentRunning = false;
   state.consultAgentGenerationTarget = null;
   state.activeGenerationPromptId = "";
   state.generating = false;
-  setBusy(false);
   setConsultBusy(false);
   setConsultStatus(message || (status === "complete" ? "Prompt Agent completed." : "Prompt Agent stopped."), status === "error" ? "error" : "ready");
 }
 
-async function runConsultAgent(agentId = activeConsultAgent()?.id) {
+async function runConsultAgent(agentId = activeConsultAgent()?.id, runtimeSettings = null) {
   if (state.consultAgentRunning) return;
-  let agent = activeConsultAgent();
+  const agentChat = consultAgentChat(agentId) || activeChat();
+  const agentChatId = agentChat?.id || "";
+  let agent = activeConsultAgent(agentChat);
   if (!agent || agent.id !== agentId || !agent.active) return;
+  const requestSettings = runtimeSettings?.requestSettings || {
+    connectionPayload: llmConnectionPayload(),
+    generationSettings: collectConsultGenerationSettings(),
+  };
+  const queueSettings = runtimeSettings?.queueSettings || captureGenerationQueueSettings("create", agentChat);
+  const updateAgent = (mutator, options = {}) => updateConsultAgent(
+    mutator,
+    { ...options, chatId: agentChatId },
+  );
   if (agent.status === "paused") {
-    updateConsultAgent((current) => {
+    updateAgent((current) => {
       current.status = current.resumeStatus || (current.rubric ? "architecting" : "compiling");
       current.resumeStatus = "";
     }, { immediate: true });
-    agent = activeConsultAgent();
+    agent = activeConsultAgent(agentChat);
   }
   state.consultAgentRunning = true;
   const runToken = ++state.consultAgentRunToken;
-  setBusy(true);
   setConsultBusy(true);
   try {
     while (runToken === state.consultAgentRunToken) {
-      agent = activeConsultAgent();
+      agent = activeConsultAgent(agentChat);
       if (!agent || agent.id !== agentId || !agent.active || agent.status === "paused") return;
 
       if (!agent.rubric) {
-        updateConsultAgent((current) => {
+        updateAgent((current) => {
           current.status = "compiling";
         }, { immediate: true });
         setConsultStatus("Prompt Agent is compiling the acceptance rubric…", "working");
-        const compiled = await requestPromptAgentPhase("compile", agent);
+        const compiled = await requestPromptAgentPhase("compile", agent, {}, requestSettings);
         if (runToken !== state.consultAgentRunToken) return;
         const rubric = normalizePromptAgentRubric(compiled.rubric);
         if (!rubric) throw new Error("Prompt Agent returned an invalid acceptance rubric.");
-        updateConsultAgent((current) => {
+        updateAgent((current) => {
           current.rubric = rubric;
           current.status = "architecting";
         }, { immediate: true });
@@ -5325,24 +5541,24 @@ async function runConsultAgent(agentId = activeConsultAgent()?.id) {
           item.evaluation && item.index >= (agent.cycleStartIndex || 1)
         ));
         if (last?.evaluation?.pass && !last.validation && agent.validationRequired) {
-          createPromptAgentIteration({ validation: true, candidate: last.candidate });
+          createPromptAgentIteration({ validation: true, candidate: last.candidate }, agentChatId);
           continue;
         }
         if (last?.evaluation?.pass && (!agent.validationRequired || last.validation)) {
-          finishPromptAgent("complete", `Prompt Agent completed with a score of ${Math.round(last.evaluation.score)}.`);
+          finishPromptAgent("complete", `Prompt Agent completed with a score of ${Math.round(last.evaluation.score)}.`, agentChatId);
           return;
         }
         const cycleCompleted = promptAgentCompletedIterations(agent)
           .filter((item) => item.index >= (agent.cycleStartIndex || 1));
         if (cycleCompleted.length >= agent.maxIterations) {
-          finishPromptAgent("stopped", `Prompt Agent reached ${agent.maxIterations} iterations without a validated pass; the best result is ready.`);
+          finishPromptAgent("stopped", `Prompt Agent reached ${agent.maxIterations} iterations without a validated pass; the best result is ready.`, agentChatId);
           return;
         }
         if (promptAgentPlateaued(agent)) {
-          finishPromptAgent("stopped", "Prompt Agent stopped after the score plateaued without a validated pass; the best result is ready.");
+          finishPromptAgent("stopped", "Prompt Agent stopped after the score plateaued without a validated pass; the best result is ready.", agentChatId);
           return;
         }
-        createPromptAgentIteration();
+        createPromptAgentIteration({}, agentChatId);
         continue;
       }
 
@@ -5366,11 +5582,11 @@ async function runConsultAgent(agentId = activeConsultAgent()?.id) {
           previous_evaluation: previous?.index >= (agent.cycleStartIndex || 1)
             ? promptAgentEvaluationPayload(previous.evaluation)
             : null,
-        });
+        }, requestSettings);
         if (runToken !== state.consultAgentRunToken) return;
         const candidate = normalizePromptAgentCandidate(designed.candidate);
         if (!candidate) throw new Error("Prompt Agent returned an invalid prompt candidate.");
-        updateConsultAgent((current) => {
+        updateAgent((current) => {
           const target = promptAgentIteration(current, iteration.id);
           target.candidate = candidate;
           target.status = "generating";
@@ -5386,6 +5602,7 @@ async function runConsultAgent(agentId = activeConsultAgent()?.id) {
         if (pending?.promptId && ["queued", "generating"].includes(pending.generationState)) {
           state.activeGenerationPromptId = pending.promptId;
           state.consultAgentGenerationTarget = {
+            chatId: agentChatId,
             agentId: agent.id,
             iterationId: iteration.id,
             promptId: pending.promptId,
@@ -5408,6 +5625,7 @@ async function runConsultAgent(agentId = activeConsultAgent()?.id) {
             "working",
           );
           generation = await queueGeneration({
+            ...queueSettings,
             action: "create",
             executionPrompt: iteration.candidate.prompt,
             mainPrompt: promptAgentEffectiveGoal(agent),
@@ -5415,13 +5633,16 @@ async function runConsultAgent(agentId = activeConsultAgent()?.id) {
             preserveSeed: !iteration.validation,
             alwaysNewSeed: iteration.validation,
             agentTarget: {
+              chatId: agentChatId,
               agentId: agent.id,
               iterationId: iteration.id,
             },
+            independent: true,
+            releaseBusy: false,
           });
         }
         if (runToken !== state.consultAgentRunToken || !generation) return;
-        updateConsultAgent((current) => {
+        updateAgent((current) => {
           const target = promptAgentIteration(current, iteration.id);
           target.status = "evaluating";
           target.updatedAt = Date.now();
@@ -5441,11 +5662,11 @@ async function runConsultAgent(agentId = activeConsultAgent()?.id) {
         );
         const judged = await requestPromptAgentPhase("evaluate", agent, {
           generated_images: generation.images.map(storedImageReference).filter(Boolean),
-        });
+        }, requestSettings);
         if (runToken !== state.consultAgentRunToken) return;
         const evaluation = normalizePromptAgentEvaluation(judged.evaluation);
         if (!evaluation) throw new Error("Prompt Agent returned an invalid visual evaluation.");
-        updateConsultAgent((current) => {
+        updateAgent((current) => {
           const target = promptAgentIteration(current, iteration.id);
           const previousBest = promptAgentBestIteration(current);
           target.evaluation = evaluation;
@@ -5472,14 +5693,13 @@ async function runConsultAgent(agentId = activeConsultAgent()?.id) {
     }
   } catch (error) {
     if (runToken !== state.consultAgentRunToken) return;
-    finishPromptAgent("error", error.message || String(error));
+    finishPromptAgent("error", error.message || String(error), agentChatId);
   } finally {
     if (runToken === state.consultAgentRunToken) {
       state.consultAgentRunning = false;
     }
-    const current = activeConsultAgent();
+    const current = activeConsultAgent(agentChat);
     if (current?.active && current.status === "paused" && !state.generating) {
-      setBusy(false);
       setConsultBusy(false);
       setConsultStatus("Prompt Agent paused.", "warning");
     }
@@ -5500,13 +5720,6 @@ async function startConsultAgent() {
     setConsultStatus("Select a compatible [PS] creation workflow before starting Prompt Agent.", "warning");
     return;
   }
-  setConsultStatus(`Checking ${llmProviderName()} vision support…`, "working");
-  try {
-    await requireVisionCapability();
-  } catch (error) {
-    setConsultStatus(error.message || String(error), "warning");
-    return;
-  }
   const references = [...state.consultSelectedImages.values()].slice(0, 4).map((item) => ({
     image: item.reference,
     purpose: item.purpose,
@@ -5521,6 +5734,19 @@ async function startConsultAgent() {
     ? state.panel?.querySelector("#promptstudio-framing")?.value || "None"
     : "None";
   const maxIterations = requestedPromptAgentIterations();
+  const requestSettings = {
+    connectionPayload: llmConnectionPayload(),
+    generationSettings: collectConsultGenerationSettings(),
+  };
+  const queueSettings = captureGenerationQueueSettings("create", chat);
+  const providerName = requestSettings.connectionPayload.llm_provider === "ollama" ? "Ollama" : "KoboldCpp";
+  setConsultStatus(`Checking ${providerName} vision support…`, "working");
+  try {
+    await requireVisionCapability(requestSettings.connectionPayload);
+  } catch (error) {
+    setConsultStatus(error.message || String(error), "warning");
+    return;
+  }
   const now = Date.now();
   chat.consultAgent = normalizeConsultAgent({
     id: makeId(),
@@ -5548,19 +5774,23 @@ async function startConsultAgent() {
   });
   chat.updatedAt = now;
   chat.consultAgentMode = true;
-  input.value = "";
-  state.consultSelectedImages.clear();
-  state.consultUploadedImages = [];
-  state.panel?.querySelectorAll(".promptstudio-consult-context-options input").forEach((control) => {
-    control.checked = false;
-  });
+  if (chat.id === state.activeChatId) {
+    input.value = "";
+    state.consultSelectedImages.clear();
+    state.consultUploadedImages = [];
+    state.panel?.querySelectorAll(".promptstudio-consult-context-options input").forEach((control) => {
+      control.checked = false;
+    });
+  }
   saveChats({ immediate: true });
   state.operationToken += 1;
-  renderConsultAttachments();
-  closeConsultSubpanels();
-  renderConsultHistory();
-  updateConsultExperimentUi();
-  runConsultAgent(chat.consultAgent.id);
+  if (chat.id === state.activeChatId) {
+    renderConsultAttachments();
+    closeConsultSubpanels();
+    renderConsultHistory();
+    updateConsultExperimentUi();
+  }
+  runConsultAgent(chat.consultAgent.id, { requestSettings, queueSettings });
 }
 
 async function continueConsultAgent() {
@@ -5578,18 +5808,24 @@ async function continueConsultAgent() {
     setConsultStatus("Select a compatible [PS] creation workflow before continuing Prompt Agent.", "warning");
     return;
   }
-  setConsultStatus(`Checking ${llmProviderName()} vision support…`, "working");
+  const selectedReferences = [...state.consultSelectedImages.values()].slice(0, 4).map((item) => ({
+    image: item.reference,
+    purpose: item.purpose,
+  }));
+  const requestSettings = {
+    connectionPayload: llmConnectionPayload(),
+    generationSettings: collectConsultGenerationSettings(),
+  };
+  const queueSettings = captureGenerationQueueSettings("create", chat);
+  const providerName = requestSettings.connectionPayload.llm_provider === "ollama" ? "Ollama" : "KoboldCpp";
+  setConsultStatus(`Checking ${providerName} vision support…`, "working");
   try {
-    await requireVisionCapability();
+    await requireVisionCapability(requestSettings.connectionPayload);
   } catch (error) {
     setConsultStatus(error.message || String(error), "warning");
     return;
   }
 
-  const selectedReferences = [...state.consultSelectedImages.values()].slice(0, 4).map((item) => ({
-    image: item.reference,
-    purpose: item.purpose,
-  }));
   const selectedKeys = new Set(selectedReferences.map((item) => imageReferenceKey(item.image)));
   const references = [
     ...selectedReferences,
@@ -5617,15 +5853,19 @@ async function continueConsultAgent() {
   });
   chat.consultAgentMode = true;
   chat.updatedAt = now;
-  input.value = "";
-  state.consultSelectedImages.clear();
-  state.consultUploadedImages = [];
+  if (chat.id === state.activeChatId) {
+    input.value = "";
+    state.consultSelectedImages.clear();
+    state.consultUploadedImages = [];
+  }
   saveChats({ immediate: true });
   state.operationToken += 1;
-  renderConsultAttachments();
-  renderConsultHistory();
-  updateConsultExperimentUi();
-  runConsultAgent(chat.consultAgent.id);
+  if (chat.id === state.activeChatId) {
+    renderConsultAttachments();
+    renderConsultHistory();
+    updateConsultExperimentUi();
+  }
+  runConsultAgent(chat.consultAgent.id, { requestSettings, queueSettings });
 }
 
 function pauseConsultAgent() {
@@ -5637,7 +5877,6 @@ function pauseConsultAgent() {
   }, { immediate: true });
   state.consultAgentRunning = false;
   if (!state.generating) {
-    setBusy(false);
     setConsultBusy(false);
   }
   setConsultStatus(
@@ -5760,8 +5999,7 @@ function parseConsultExperimentAnswer(answer, experimentActive = Boolean(activeC
   return { text, proposal };
 }
 
-function updateActiveConsultExperiment(message) {
-  const chat = activeChat();
+function updateActiveConsultExperiment(message, chat = activeChat()) {
   const experiment = activeConsultExperiment(chat);
   const proposal = normalizeConsultExperimentProposal(message?.proposal);
   if (!chat || !experiment || !proposal) return;
@@ -6205,12 +6443,12 @@ async function generateConsultExperiment(messageId) {
     setConsultStatus("The current Studio editing action has no source image.", "warning");
     return;
   }
-  state.operationToken += 1;
-  setBusy(true);
+  const queueSettings = captureGenerationQueueSettings(action, chat);
   setConsultBusy(true);
   setConsultStatus("ComfyUI is generating inside the prompt experiment…", "working");
   try {
     await queueGeneration({
+      ...queueSettings,
       action,
       executionPrompt: proposal.prompt,
       mainPrompt: experiment.baseMainPrompt,
@@ -6218,12 +6456,14 @@ async function generateConsultExperiment(messageId) {
       preserveSeed: previousGeneration?.generationState !== "complete",
       forceNewSeed: previousGeneration?.generationState === "complete",
       consultTarget: {
+        chatId: chat.id,
         messageId: message.id,
         variantId: variant.id,
       },
+      independent: true,
+      releaseBusy: false,
     });
   } catch (error) {
-    setBusy(false);
     setConsultBusy(false);
     setConsultStatus(error.message || String(error), "error");
   }
@@ -6708,7 +6948,7 @@ async function regenerateConsultResponse(messageId) {
   ) return;
 
   setConsultBusy(true);
-  setConsultStatus(`${llmProviderName()} is regenerating the answer…`, "working");
+  setConsultStatus(`Waiting for ${llmProviderName()} to regenerate the answer…`, "working");
   try {
     const answer = await requestConsultResponse(chat.consultMessages.slice(0, messageIndex));
     const answeredAt = Date.now();
@@ -6723,7 +6963,7 @@ async function regenerateConsultResponse(messageId) {
     message.text = answer.text;
     message.proposal = answer.proposal;
     message.generation = null;
-    updateActiveConsultExperiment(message);
+    updateActiveConsultExperiment(message, chat);
     message.updatedAt = answeredAt;
     chat.updatedAt = answeredAt;
     saveChats();
@@ -6796,7 +7036,7 @@ async function sendConsultMessage() {
   renderConsultHistory();
   renderConsultAttachments();
   setConsultBusy(true);
-  setConsultStatus(`${llmProviderName()} is thinking…`, "working");
+  setConsultStatus(`Waiting for ${llmProviderName()}…`, "working");
   try {
     const answer = await requestConsultResponse(chat.consultMessages);
     const answeredAt = Date.now();
@@ -6810,7 +7050,7 @@ async function sendConsultMessage() {
       updatedAt: answeredAt,
     });
     chat.consultMessages.push(assistantMessage);
-    updateActiveConsultExperiment(assistantMessage);
+    updateActiveConsultExperiment(assistantMessage, chat);
     chat.consultMessages = chat.consultMessages.slice(-100);
     chat.updatedAt = answeredAt;
     saveChats();
@@ -6905,63 +7145,89 @@ async function importDroppedImage(file) {
     return;
   }
 
+  const chat = activeChat();
   clearImageImportTemplates();
-  const operationToken = ++state.operationToken;
-  setBusy(true);
-  setStatus(`Checking ${llmProviderName()} vision support…`, "working");
-  setImageDropFeedback(`Checking ${llmProviderName()} vision support…`, "working");
+  const importFingerprint = controlsFingerprint();
+  const captionPayload = collectRevisionPayload("Caption the image", "render", "", "");
+  const providerName = captionPayload.llm_provider === "ollama" ? "Ollama" : "KoboldCpp";
+  const visionPayload = {
+    llm_provider: captionPayload.llm_provider,
+    kobold_url: captionPayload.kobold_url,
+    ollama_url: captionPayload.ollama_url,
+    ollama_model: captionPayload.ollama_model,
+  };
+  const preparationId = makeId();
+  state.studioPreparations.set(preparationId, { chatId: chat.id, kind: "image-import" });
+  state.latestStudioPreparationByChat.set(chat.id, preparationId);
+  renderChatList();
+  updateComposeMode();
+  syncBackgroundActivityIndicator();
+  setStatus(`Checking ${providerName} vision support…`, "working");
+  setImageDropFeedback(`Checking ${providerName} vision support…`, "working");
   try {
-    await requireVisionCapability();
-    if (operationToken !== state.operationToken) return;
+    await requireVisionCapability(visionPayload);
     setStatus("Sanitizing and storing the image…", "working");
     setImageDropFeedback("Sanitizing and storing the image…", "working");
     const reference = await uploadPromptStudioImage(file);
-    if (operationToken !== state.operationToken) return;
-    setStatus(`${llmProviderName()} is reading the image…`, "working");
-    setImageDropFeedback(`${llmProviderName()} is reading the image…`, "working");
-    const mainPrompt = await requestImageCaption(reference);
-    if (operationToken !== state.operationToken) return;
-    setStatus(`${llmProviderName()} is applying the selected prompt style…`, "working");
-    setImageDropFeedback(`${llmProviderName()} is applying the selected prompt style…`, "working");
+    setStatus(`${providerName} is reading the image…`, "working");
+    setImageDropFeedback(`${providerName} is reading the image…`, "working");
+    const mainPrompt = await requestImageCaption(reference, captionPayload);
+    setStatus(`${providerName} is applying the selected prompt style…`, "working");
+    setImageDropFeedback(`${providerName} is applying the selected prompt style…`, "working");
     const finalPrompt = await requestPromptRevision(
-      collectRevisionPayload(mainPrompt, "render", "", ""),
+      {
+        ...captionPayload,
+        revision: mainPrompt,
+        mode: "render",
+        current_prompt: "",
+        current_final_prompt: "",
+      },
       "Image-prompt rendering",
     );
-    if (operationToken !== state.operationToken) return;
-
-    const chat = activeChat();
-    if (!chat || !chatAcceptsImageDrop(chat)) {
-      throw new Error("The active chat changed before the image caption was ready.");
+    const targetChat = state.chats.find((item) => item.id === chat.id);
+    if (!targetChat || !chatAcceptsImageDrop(targetChat)) {
+      throw new Error("The originating chat changed before the image caption was ready.");
     }
-    updatePromptEditors(mainPrompt, finalPrompt);
-    state.versions = [promptVersion()];
-    state.versionIndex = 0;
-    chat.initialized = true;
-    chat.mainPromptDirty = false;
-    chat.controlsFingerprint = controlsFingerprint();
-    chat.pendingGeneration = null;
-    chat.selectedSource = reference;
-    syncActiveChat();
-    refreshEmptyImageDropZone();
+    targetChat.mainPrompt = mainPrompt;
+    targetChat.finalPrompt = finalPrompt;
+    targetChat.currentPrompt = finalPrompt;
+    targetChat.versions = [promptVersion(mainPrompt, finalPrompt)];
+    targetChat.versionIndex = 0;
+    targetChat.initialized = true;
+    targetChat.mainPromptDirty = false;
+    targetChat.controlsFingerprint = importFingerprint;
+    targetChat.pendingGeneration = null;
+    targetChat.selectedSource = reference;
+    targetChat.updatedAt = Date.now();
+    saveChats();
     appendMessage("assistant", "", {
+      chatId: targetChat.id,
       label: "Imported image",
       images: [reference],
       mainPrompt,
       canonicalPrompt: finalPrompt,
       executionPrompt: finalPrompt,
-      controlsFingerprint: chat.controlsFingerprint,
+      controlsFingerprint: targetChat.controlsFingerprint,
       llmAmplified: true,
     });
-    updateComposeMode();
-    refreshRenderedImageSources();
+    if (targetChat.id === state.activeChatId) {
+      restoreChatState(targetChat);
+      renderChatHistory();
+      refreshRenderedImageSources();
+    }
     setStatus("Image captioned and selected as the editing source.", "ready");
   } catch (error) {
-    if (operationToken !== state.operationToken) return;
     const message = error.message || String(error);
     setStatus(message, "error");
     setImageDropFeedback(message, "error");
   } finally {
-    if (operationToken === state.operationToken) setBusy(false);
+    state.studioPreparations.delete(preparationId);
+    if (state.latestStudioPreparationByChat.get(chat.id) === preparationId) {
+      state.latestStudioPreparationByChat.delete(chat.id);
+    }
+    renderChatList();
+    updateComposeMode();
+    syncBackgroundActivityIndicator();
   }
 }
 
@@ -6987,11 +7253,12 @@ async function reviseAndMaybeGenerate({
   recordRevision = true,
 } = {}) {
   if (!state.apiConnected) return setStatus("ComfyUI is disconnected. Prompt Studio is frozen.", "error");
-  if (state.busy) return;
   if (!useLlmAmplification()) return generateDirectPrompt(generationAction);
+  const chat = activeChat();
+  if (!chat) return;
   const input = state.panel.querySelector("#promptstudio-revision");
   let revision = revisionOverride == null ? input.value.trim() : String(revisionOverride).trim();
-  const creating = !activeChat()?.initialized;
+  const creating = !chat.initialized;
   const pastedContextImage = normalizeImageReference(state.mainPastedImage);
   if (!revision && pastedContextImage) {
     revision = creating
@@ -7002,7 +7269,7 @@ async function reviseAndMaybeGenerate({
   if (!selectedWorkflowProfile(generationAction)) {
     return setStatus("Select a compatible [PS] workflow first.", "warning");
   }
-  if (generationAction === "edit" && !editingSource()) {
+  if (generationAction === "edit" && !editingSource(null, chat)) {
     return setStatus("There is no image in this conversation to edit.", "warning");
   }
   if (creating && !revision) return setStatus("Describe an image to create the first prompt.", "warning");
@@ -7010,7 +7277,7 @@ async function reviseAndMaybeGenerate({
   if (!creating && !state.mainPrompt.trim()) return setStatus("The main prompt is empty.", "warning");
   const contextImage = pastedContextImage || (
     state.panel.querySelector("#promptstudio-use-latest-image-context")?.checked
-      ? latestGeneratedImage()
+      ? latestGeneratedImage(chat)
       : null
   );
 
@@ -7020,36 +7287,57 @@ async function reviseAndMaybeGenerate({
   if (!creating) commitPromptEditorVersion();
   if (revision && !controlsOnly && recordRevision) {
     appendMessage("user", revision, {
+      chatId: chat.id,
       images: pastedContextImage ? [pastedContextImage] : [],
     });
     input.value = "";
     updateComposeMode();
   }
   saveSettings();
-  const operationToken = ++state.operationToken;
-  setBusy(true);
+  const previousMainPrompt = chat.mainPrompt;
+  const previousFinalPrompt = chat.finalPrompt;
+  const requestedControlsFingerprint = controlsFingerprint();
+  const queueSettings = captureGenerationQueueSettings(generationAction, chat);
+  const autoGenerate = forceGenerate || state.panel.querySelector("#promptstudio-auto-generate")?.checked === true;
+  const editPromptMode = selectedEditPromptMode();
+  const basePayload = collectRevisionPayload("", "render", "", previousFinalPrompt, contextImage);
+  const payloadFor = (nextRevision, mode, currentPrompt, currentFinalPrompt) => ({
+    ...basePayload,
+    revision: nextRevision,
+    mode,
+    current_prompt: currentPrompt,
+    current_final_prompt: currentFinalPrompt,
+  });
+  const visionPayload = {
+    llm_provider: basePayload.llm_provider,
+    kobold_url: basePayload.kobold_url,
+    ollama_url: basePayload.ollama_url,
+    ollama_model: basePayload.ollama_model,
+  };
+  const providerName = basePayload.llm_provider === "ollama" ? "Ollama" : "KoboldCpp";
+  const preparationId = makeId();
+  state.studioPreparations.set(preparationId, { chatId: chat.id, kind: "revision" });
+  state.latestStudioPreparationByChat.set(chat.id, preparationId);
+  renderChatList();
+  updateComposeMode();
+  syncBackgroundActivityIndicator();
   const revisionStatus = (
     creating
-      ? `${llmProviderName()} is rendering the initial final prompt...`
+      ? `${providerName} is rendering the initial final prompt...`
       : regenerateFinal
-        ? `${llmProviderName()} is regenerating the final prompt...`
+        ? `${providerName} is regenerating the final prompt...`
         : controlsOnly || promptNeedsRebuild
-        ? `${llmProviderName()} is rebuilding the final prompt from the main prompt and controls...`
-        : `${llmProviderName()} is revising the main and final prompts...`
+        ? `${providerName} is rebuilding the final prompt from the main prompt and controls...`
+        : `${providerName} is revising the main and final prompts...`
   );
   setStatus(
-    contextImage ? `${llmProviderName()} is checking image support...` : revisionStatus,
+    contextImage ? `${providerName} is checking image support...` : revisionStatus,
     "working",
   );
-  const requestedControlsFingerprint = controlsFingerprint();
-  const previousMainPrompt = state.mainPrompt;
-  const previousFinalPrompt = state.currentPrompt;
-  let generationOptions = null;
 
   try {
     if (contextImage) {
-      await requireVisionCapability();
-      if (operationToken !== state.operationToken) return;
+      await requireVisionCapability(visionPayload);
       setStatus(revisionStatus, "working");
     }
     let mainPrompt;
@@ -7057,71 +7345,59 @@ async function reviseAndMaybeGenerate({
     if (creating) {
       mainPrompt = revision;
       finalPrompt = await requestPromptRevision(
-        collectRevisionPayload(mainPrompt, "render", "", "", contextImage),
+        payloadFor(mainPrompt, "render", "", ""),
         "Prompt rendering",
       );
     } else if (controlsOnly) {
       mainPrompt = previousMainPrompt;
       finalPrompt = await requestPromptRevision(
-        collectRevisionPayload(mainPrompt, "render", "", previousFinalPrompt, contextImage),
+        payloadFor(mainPrompt, "render", "", previousFinalPrompt),
         "Control update",
       );
     } else if (promptNeedsRebuild) {
       mainPrompt = await requestPromptRevision(
-        collectRevisionPayload(revision, "revise_main", previousMainPrompt, previousFinalPrompt, contextImage),
+        payloadFor(revision, "revise_main", previousMainPrompt, previousFinalPrompt),
         "Main-prompt revision",
       );
-      if (operationToken !== state.operationToken) return;
       finalPrompt = await requestPromptRevision(
-        collectRevisionPayload(mainPrompt, "render", "", previousFinalPrompt, contextImage),
+        payloadFor(mainPrompt, "render", "", previousFinalPrompt),
         "Final-prompt rendering",
       );
     } else {
       [mainPrompt, finalPrompt] = await Promise.all([
         requestPromptRevision(
-          collectRevisionPayload(revision, "revise_main", previousMainPrompt, previousFinalPrompt, contextImage),
+          payloadFor(revision, "revise_main", previousMainPrompt, previousFinalPrompt),
           "Main-prompt revision",
         ),
         requestPromptRevision(
-          collectRevisionPayload(revision, "revise", previousFinalPrompt, previousFinalPrompt, contextImage),
+          payloadFor(revision, "revise", previousFinalPrompt, previousFinalPrompt),
           "Final-prompt revision",
         ),
       ]);
     }
-    if (operationToken !== state.operationToken) return;
-
-    const chat = activeChat();
-    updatePromptEditors(mainPrompt, finalPrompt);
-    if (creating) {
-      state.versions = [promptVersion()];
-      state.versionIndex = 0;
-      if (chat) chat.initialized = true;
-      syncActiveChat();
-      updateComposeMode();
-    } else {
-      pushVersion();
-    }
+    const targetChat = state.chats.find((item) => item.id === chat.id);
+    if (!targetChat) throw new Error("The originating chat no longer exists.");
+    const executionPrompt = generationAction === "edit"
+      && editPromptMode === "edit_instruction"
+      && revision
+      ? revision
+      : finalPrompt;
+    applyPreparedPromptToChat(
+      targetChat,
+      preparationId,
+      previousMainPrompt,
+      previousFinalPrompt,
+      mainPrompt,
+      finalPrompt,
+      generationAction,
+      executionPrompt,
+      { ...queueSettings, controlsFingerprintOverride: requestedControlsFingerprint },
+    );
     if (
       pastedContextImage
       && imageReferenceKey(state.mainPastedImage) === imageReferenceKey(pastedContextImage)
     ) {
-      clearMainPastedImage();
-    }
-    if (chat) {
-      chat.controlsFingerprint = requestedControlsFingerprint;
-      chat.mainPromptDirty = false;
-      chat.pendingGeneration = {
-        action: generationAction,
-        mainPrompt,
-        canonicalPrompt: finalPrompt,
-        executionPrompt: generationAction === "edit"
-          && selectedEditPromptMode() === "edit_instruction"
-          && revision
-          ? revision
-          : finalPrompt,
-        workflowProfileId: selectedWorkflowProfileId(generationAction),
-      };
-      saveChats();
+      if (targetChat.id === state.activeChatId) clearMainPastedImage();
     }
     setStatus(
       creating
@@ -7131,43 +7407,40 @@ async function reviseAndMaybeGenerate({
           : "Main and final prompts updated.",
       "ready",
     );
-    if (forceGenerate || state.panel.querySelector("#promptstudio-auto-generate")?.checked) {
-      const executionPrompt = chat?.pendingGeneration?.executionPrompt || finalPrompt;
-      generationOptions = {
+    if (autoGenerate) {
+      await queueGeneration({
         action: generationAction,
         executionPrompt,
         mainPrompt,
         finalPrompt,
         preserveSeed: true,
         forceNewSeed: regenerateFinal,
-      };
-      await queueGeneration(generationOptions);
-    } else {
-      setBusy(false);
+        ...queueSettings,
+        controlsFingerprintOverride: requestedControlsFingerprint,
+        independent: true,
+        releaseBusy: false,
+      });
     }
   } catch (error) {
-    if (operationToken !== state.operationToken) return;
     const message = error.message || String(error);
-    appendMessage("system", message);
-    if (generationOptions) {
-      showGenerationFailure(message, () => retryGeneration(generationOptions));
-    } else {
-      showGenerationFailure(message, () => reviseAndMaybeGenerate({
-        controlsOnly,
-        forceGenerate,
-        regenerateFinal,
-        generationAction,
-        revisionOverride: revision,
-        recordRevision: false,
-      }));
+    appendMessage("system", message, { chatId: chat.id });
+    setStatus(message, "error");
+  } finally {
+    state.studioPreparations.delete(preparationId);
+    if (state.latestStudioPreparationByChat.get(chat.id) === preparationId) {
+      state.latestStudioPreparationByChat.delete(chat.id);
     }
+    renderChatList();
+    updateComposeMode();
+    syncBackgroundActivityIndicator();
   }
 }
 
 async function createNewFromCurrentPrompt({ applyControls = true, generationAction = selectedAction() } = {}) {
   if (state.busy) return;
-  const lastGeneration = activeChat()?.lastGeneration;
-  const pendingGeneration = activeChat()?.pendingGeneration;
+  const chat = activeChat();
+  const lastGeneration = chat?.lastGeneration;
+  const pendingGeneration = chat?.pendingGeneration;
   const selectedProfileId = selectedWorkflowProfileId(generationAction);
   const pendingGenerationMatches = pendingGeneration?.action === generationAction
     && pendingGeneration.mainPrompt === state.mainPrompt
@@ -7187,7 +7460,7 @@ async function createNewFromCurrentPrompt({ applyControls = true, generationActi
     && lastGeneration.canonicalPrompt === state.currentPrompt
     && String(lastGeneration?.workflowProfileId || "") === selectedProfileId;
   if (!useLlmAmplification() && !replayStoredGeneration) return generateDirectPrompt(generationAction);
-  if (!activeChat()?.initialized) return setStatus("Create the first prompt before creating another image.", "warning");
+  if (!chat?.initialized) return setStatus("Create the first prompt before creating another image.", "warning");
   if (!replayStoredGeneration && applyControls && promptNeedsRender()) {
     return reviseAndMaybeGenerate({ controlsOnly: true, forceGenerate: true, generationAction });
   }
@@ -7199,9 +7472,9 @@ async function createNewFromCurrentPrompt({ applyControls = true, generationActi
     pushVersion(editedPrompt);
   }
   saveSettings();
-  state.operationToken += 1;
-  setBusy(true);
+  const queueSettings = captureGenerationQueueSettings(generationAction, chat);
   const generationOptions = {
+    ...queueSettings,
     action: generationAction,
     executionPrompt: usePendingGeneration
       ? (pendingGeneration.executionPrompt || state.currentPrompt)
@@ -7209,17 +7482,21 @@ async function createNewFromCurrentPrompt({ applyControls = true, generationActi
         ? (lastGeneration.executionPrompt || state.currentPrompt)
         : state.currentPrompt,
     preserveSeed: replayStoredGeneration || promptChanged,
-    workflowProfileId: replayStoredGeneration ? pendingGeneration.workflowProfileId : null,
-    loraState: replayStoredGeneration ? pendingGeneration.loraState : null,
-    modelState: replayStoredGeneration ? pendingGeneration.modelState : null,
+    mainPrompt: state.mainPrompt,
+    finalPrompt: state.currentPrompt,
+    workflowProfileId: replayStoredGeneration ? pendingGeneration.workflowProfileId : queueSettings.workflowProfileId,
+    loraState: replayStoredGeneration ? pendingGeneration.loraState : queueSettings.loraState,
+    modelState: replayStoredGeneration ? pendingGeneration.modelState : queueSettings.modelState,
     generationSnapshot: replayStoredGeneration ? pendingGeneration.generationSnapshot : null,
     workflowName: replayStoredGeneration ? pendingGeneration.workflowName : "",
     sourceImage: replayStoredGeneration
       ? pendingGeneration.sourceImage
-      : repeatLastConfiguration ? lastGeneration.sourceImage : null,
+      : repeatLastConfiguration ? lastGeneration.sourceImage : queueSettings.sourceImage,
     upscaleFactor: replayStoredGeneration ? pendingGeneration.upscaleFactor : null,
     resultNodeIds: replayStoredGeneration ? pendingGeneration.resultNodeIds : null,
     resultFields: replayStoredGeneration ? pendingGeneration.resultFields : null,
+    independent: true,
+    releaseBusy: false,
   };
   try {
     await queueGeneration(generationOptions);
@@ -7229,16 +7506,154 @@ async function createNewFromCurrentPrompt({ applyControls = true, generationActi
   }
 }
 
-async function reroll({ generationAction = selectedAction() } = {}) {
-  if (state.busy) return;
+function applyPreparedPromptToChat(
+  chat,
+  preparationId,
+  previousMainPrompt,
+  previousFinalPrompt,
+  mainPrompt,
+  finalPrompt,
+  generationAction,
+  executionPrompt,
+  queueSettings,
+) {
+  const latest = state.latestStudioPreparationByChat.get(chat.id) === preparationId;
+  const promptUnchanged = chat.mainPrompt === previousMainPrompt && chat.finalPrompt === previousFinalPrompt;
+  if (!latest || !promptUnchanged) return false;
+
+  const version = promptVersion(mainPrompt, finalPrompt);
+  chat.mainPrompt = mainPrompt;
+  chat.finalPrompt = finalPrompt;
+  chat.currentPrompt = finalPrompt;
+  chat.initialized = true;
+  chat.mainPromptDirty = false;
+  chat.controlsFingerprint = queueSettings.controlsFingerprintOverride;
+  if (!promptVersionsEqual(chat.versions[chat.versionIndex], version)) {
+    chat.versions = chat.versions.slice(0, chat.versionIndex + 1);
+    chat.versions.push(version);
+    chat.versionIndex = chat.versions.length - 1;
+  }
+  chat.pendingGeneration = {
+    action: generationAction,
+    mainPrompt,
+    canonicalPrompt: finalPrompt,
+    executionPrompt,
+    workflowProfileId: queueSettings.workflowProfileId || "",
+  };
+  chat.updatedAt = Date.now();
+  saveChats();
+  if (chat.id === state.activeChatId) {
+    restoreChatState(chat);
+    updateComposeMode();
+    const undo = state.panel?.querySelector("#promptstudio-undo");
+    if (undo) undo.disabled = state.versionIndex <= 0;
+  }
+  return true;
+}
+
+async function queueBackgroundReroll(generationAction = selectedAction()) {
+  if (!state.apiConnected) return setStatus("ComfyUI is disconnected. Prompt Studio is frozen.", "error");
   if (!useLlmAmplification()) return generateDirectPrompt(generationAction);
-  if (!activeChat()?.initialized) return setStatus("Create the first prompt before rerolling.", "warning");
-  return reviseAndMaybeGenerate({
-    controlsOnly: true,
-    forceGenerate: true,
-    regenerateFinal: true,
-    generationAction,
-  });
+  const chat = activeChat();
+  if (!chat?.initialized) return setStatus("Create the first prompt before rerolling.", "warning");
+  const profile = selectedWorkflowProfile(generationAction);
+  if (!profile) return setStatus("Select a compatible [PS] workflow first.", "warning");
+  const sourceImage = generationAction === "create" ? null : editingSource(null, chat);
+  if (generationAction === "edit" && !sourceImage) {
+    return setStatus("There is no image in this conversation to edit.", "warning");
+  }
+
+  commitPromptEditorVersion();
+  const previousMainPrompt = chat.mainPrompt;
+  const previousFinalPrompt = chat.finalPrompt;
+  const pastedContextImage = normalizeImageReference(state.mainPastedImage);
+  const contextImage = pastedContextImage || (
+    state.panel.querySelector("#promptstudio-use-latest-image-context")?.checked
+      ? latestGeneratedImage(chat)
+      : null
+  );
+  const revisionPayload = collectRevisionPayload(
+    previousMainPrompt,
+    "render",
+    "",
+    previousFinalPrompt,
+    contextImage,
+  );
+  const visionPayload = {
+    llm_provider: revisionPayload.llm_provider,
+    kobold_url: revisionPayload.kobold_url,
+    ollama_url: revisionPayload.ollama_url,
+    ollama_model: revisionPayload.ollama_model,
+  };
+  const queueSettings = {
+    ...captureGenerationQueueSettings(generationAction, chat),
+    sourceImage,
+  };
+  const providerName = revisionPayload.llm_provider === "ollama" ? "Ollama" : "KoboldCpp";
+  const preparationId = makeId();
+  state.studioPreparations.set(preparationId, { chatId: chat.id, kind: "reroll" });
+  state.latestStudioPreparationByChat.set(chat.id, preparationId);
+  renderChatList();
+  updateComposeMode();
+  syncBackgroundActivityIndicator();
+  setStatus(
+    contextImage
+      ? `${providerName} is checking image support for a queued reroll...`
+      : `${providerName} is preparing a queued reroll...`,
+    "working",
+  );
+
+  try {
+    if (contextImage) await requireVisionCapability(visionPayload);
+    const finalPrompt = await requestPromptRevision(revisionPayload, "Final-prompt reroll");
+    const targetChat = state.chats.find((item) => item.id === chat.id);
+    if (!targetChat) throw new Error("The originating chat no longer exists.");
+    applyPreparedPromptToChat(
+      targetChat,
+      preparationId,
+      previousMainPrompt,
+      previousFinalPrompt,
+      previousMainPrompt,
+      finalPrompt,
+      generationAction,
+      finalPrompt,
+      queueSettings,
+    );
+    if (
+      targetChat.id === state.activeChatId
+      && pastedContextImage
+      && imageReferenceKey(state.mainPastedImage) === imageReferenceKey(pastedContextImage)
+    ) {
+      clearMainPastedImage();
+    }
+    await queueGeneration({
+      action: generationAction,
+      executionPrompt: finalPrompt,
+      mainPrompt: previousMainPrompt,
+      finalPrompt,
+      preserveSeed: true,
+      forceNewSeed: true,
+      ...queueSettings,
+      independent: true,
+      releaseBusy: false,
+    });
+  } catch (error) {
+    const message = error.message || String(error);
+    appendMessage("system", message, { chatId: chat.id });
+    setStatus(message, "error");
+  } finally {
+    state.studioPreparations.delete(preparationId);
+    if (state.latestStudioPreparationByChat.get(chat.id) === preparationId) {
+      state.latestStudioPreparationByChat.delete(chat.id);
+    }
+    renderChatList();
+    updateComposeMode();
+    syncBackgroundActivityIndicator();
+  }
+}
+
+async function reroll({ generationAction = selectedAction() } = {}) {
+  return queueBackgroundReroll(generationAction);
 }
 
 function undoPrompt() {
@@ -7263,14 +7678,19 @@ async function interrupt() {
   state.pollToken += 1;
   const interruptedPromptId = state.activeGenerationPromptId;
   const consultTarget = state.consultGenerationTarget;
+  const studioGenerationActive = state.generationJobs.has(String(interruptedPromptId || ""));
   try {
-    if (state.generating || state.queueing) {
+    if (state.generating || state.queueing || studioGenerationActive) {
       if (typeof api.interrupt === "function") await api.interrupt();
       else await api.fetchApi("/interrupt", { method: "POST" });
-      const pending = pendingGenerationMessage(interruptedPromptId);
-      if (pending) markGenerationAttemptFailed(messageElement(pending.id), "Generation interrupted.");
+      if (studioGenerationActive) {
+        updateStudioGenerationText(interruptedPromptId, "Generation interrupted.");
+        setStudioGenerationState(interruptedPromptId, "error");
+      }
       if (consultTarget) {
-        const chat = activeChat();
+        const chat = consultTarget.chatId
+          ? state.chats.find((item) => item.id === consultTarget.chatId)
+          : activeChat();
         const message = chat?.consultMessages.find((entry) => entry.id === consultTarget.messageId);
         const variant = message?.variants?.find((entry) => entry.id === consultTarget.variantId);
         const generation = normalizeConsultExperimentGeneration(variant?.generation) || {};
@@ -7279,7 +7699,7 @@ async function interrupt() {
           generationState: "error",
           text: "Generation interrupted.",
           updatedAt: Date.now(),
-        });
+        }, consultTarget.chatId);
         setConsultStatus("Experimental generation interrupted.", "warning");
       }
       setStatus(state.queueing ? "Queue cancellation requested." : "Generation interrupt requested.", "warning");

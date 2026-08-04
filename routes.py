@@ -4,6 +4,7 @@ import hashlib
 import hmac
 import html
 import ipaddress
+import itertools
 import json
 import logging
 import math
@@ -69,6 +70,56 @@ MAX_IMAGE_UPLOAD_BYTES = 20 * 1024 * 1024
 MAX_IMAGE_UPLOAD_REQUEST_BYTES = MAX_IMAGE_UPLOAD_BYTES + 1024 * 1024
 STANDALONE_PAGE_PATH = os.path.join(BASE_DIR, "web", "prompt_studio.html")
 STANDALONE_ALIAS_PATH = "/PromptStudio"
+
+LLM_PRIORITY_STUDIO = 0
+LLM_PRIORITY_CONSULT = 10
+_LLM_QUEUE_SEQUENCE = itertools.count()
+_LLM_QUEUES = {}
+_LLM_QUEUE_WORKERS = {}
+
+
+def _llm_queue_key(data):
+    provider = _text(data.get("llm_provider"), "koboldcpp").strip().casefold()
+    if provider == "ollama":
+        return (
+            provider,
+            _text(data.get("ollama_url"), "http://localhost:11434").strip(),
+            _text(data.get("ollama_model")).strip(),
+        )
+    return ("koboldcpp", _text(data.get("kobold_url"), "http://localhost:5001").strip())
+
+
+async def _llm_queue_worker(queue):
+    while True:
+        _, _, future, operation, data = await queue.get()
+        try:
+            if future.cancelled():
+                continue
+            try:
+                result = await asyncio.to_thread(operation, data)
+            except Exception as exc:
+                if not future.done():
+                    future.set_exception(exc)
+            else:
+                if not future.done():
+                    future.set_result(result)
+        finally:
+            queue.task_done()
+
+
+async def _run_llm_request(data, priority, operation):
+    """Serialize requests per LLM endpoint, preferring Studio work over consultation."""
+    key = _llm_queue_key(data)
+    queue = _LLM_QUEUES.get(key)
+    if queue is None:
+        queue = asyncio.PriorityQueue()
+        _LLM_QUEUES[key] = queue
+    worker = _LLM_QUEUE_WORKERS.get(key)
+    if worker is None or worker.done():
+        _LLM_QUEUE_WORKERS[key] = asyncio.create_task(_llm_queue_worker(queue))
+    future = asyncio.get_running_loop().create_future()
+    await queue.put((priority, next(_LLM_QUEUE_SEQUENCE), future, operation, data))
+    return await future
 
 LAN_PASSWORD_ENV = "PROMPT_STUDIO_LAN_PASSWORD"
 LAN_PASSWORD_BASE64_ENV = "PROMPT_STUDIO_LAN_PASSWORD_B64"
@@ -1924,7 +1975,7 @@ async def prompt_studio_caption_image(request):
         data = await request.json()
         if not isinstance(data, dict):
             raise ValueError("JSON body must be an object")
-        caption = await asyncio.to_thread(_caption_image, data)
+        caption = await _run_llm_request(data, LLM_PRIORITY_STUDIO, _caption_image)
         return web.json_response({"prompt": caption})
     except (ValueError, json.JSONDecodeError, OSError) as exc:
         return web.json_response({"error": str(exc)}, status=400)
@@ -2013,7 +2064,7 @@ async def prompt_studio_revise(request):
         data = await request.json()
         if not isinstance(data, dict):
             raise ValueError("JSON body must be an object")
-        revised = await asyncio.to_thread(_revise, data)
+        revised = await _run_llm_request(data, LLM_PRIORITY_STUDIO, _revise)
         return web.json_response({"prompt": revised})
     except ValueError as exc:
         return web.json_response({"error": str(exc)}, status=400)
@@ -2029,7 +2080,7 @@ async def prompt_studio_chat(request):
         data = await request.json()
         if not isinstance(data, dict):
             raise ValueError("JSON body must be an object")
-        response = await asyncio.to_thread(_consult, data)
+        response = await _run_llm_request(data, LLM_PRIORITY_CONSULT, _consult)
         return web.json_response({"message": response})
     except (ValueError, json.JSONDecodeError, OSError) as exc:
         return web.json_response({"error": str(exc)}, status=400)
@@ -2045,7 +2096,7 @@ async def prompt_studio_agent(request):
         data = await request.json()
         if not isinstance(data, dict):
             raise ValueError("JSON body must be an object")
-        response = await asyncio.to_thread(_prompt_agent, data)
+        response = await _run_llm_request(data, LLM_PRIORITY_STUDIO, _prompt_agent)
         return web.json_response(response)
     except (ValueError, json.JSONDecodeError, OSError) as exc:
         return web.json_response({"error": str(exc)}, status=400)

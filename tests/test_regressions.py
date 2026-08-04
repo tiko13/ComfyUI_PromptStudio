@@ -7,6 +7,7 @@ import math
 import os
 import sys
 import tempfile
+import threading
 import types
 import unittest
 from pathlib import Path
@@ -120,6 +121,70 @@ class RegressionTests(unittest.TestCase):
         self.assertTrue(math.isnan(self.nodes.KCPP_Apply.IS_CHANGED(sampler_seed=-1)))
         self.assertTrue(math.isnan(self.nodes.KCPP_Ideogram4.IS_CHANGED(sampler_seed=-1)))
         self.assertEqual(self.nodes.KCPP_Apply.IS_CHANGED(sampler_seed=42), 42)
+
+    def test_llm_queue_prioritizes_studio_requests_over_waiting_consultation(self):
+        started = threading.Event()
+        release = threading.Event()
+        order = []
+        payload = {"llm_provider": "koboldcpp", "kobold_url": "http://queue-priority.test:5001"}
+
+        def active_request(_data):
+            order.append("active")
+            started.set()
+            if not release.wait(2):
+                raise TimeoutError("test request was not released")
+            return "active"
+
+        def record(label):
+            def operation(_data):
+                order.append(label)
+                return label
+            return operation
+
+        async def scenario():
+            active = asyncio.create_task(self.routes._run_llm_request(
+                payload,
+                self.routes.LLM_PRIORITY_STUDIO,
+                active_request,
+            ))
+            self.assertTrue(await asyncio.to_thread(started.wait, 1))
+            consult = asyncio.create_task(self.routes._run_llm_request(
+                payload,
+                self.routes.LLM_PRIORITY_CONSULT,
+                record("consult"),
+            ))
+            await asyncio.sleep(0)
+            studio = asyncio.create_task(self.routes._run_llm_request(
+                payload,
+                self.routes.LLM_PRIORITY_STUDIO,
+                record("studio"),
+            ))
+            await asyncio.sleep(0)
+            release.set()
+            return await asyncio.gather(active, consult, studio)
+
+        results = asyncio.run(scenario())
+        self.assertEqual(results, ["active", "consult", "studio"])
+        self.assertEqual(order, ["active", "studio", "consult"])
+
+    def test_reroll_preparation_stays_nonblocking_and_keeps_its_origin(self):
+        source = (REPO_ROOT / "web" / "js" / "prompt_studio.js").read_text(encoding="utf-8")
+        self.assertNotIn("setBusy(true)", source)
+        revision_start = source.index("async function reviseAndMaybeGenerate")
+        revision_end = source.index("\nasync function createNewFromCurrentPrompt", revision_start)
+        revision = source[revision_start:revision_end]
+        start = source.index("async function queueBackgroundReroll")
+        end = source.index("\nasync function reroll", start)
+        reroll = source[start:end]
+        self.assertNotIn("setBusy(true)", revision)
+        self.assertIn("captureGenerationQueueSettings(generationAction, chat)", revision)
+        self.assertIn("independent: true", revision)
+        self.assertIn("releaseBusy: false", revision)
+        self.assertNotIn("setBusy(true)", reroll)
+        self.assertIn("captureGenerationQueueSettings(generationAction, chat)", reroll)
+        self.assertIn("independent: true", reroll)
+        self.assertIn("releaseBusy: false", reroll)
+        self.assertIn("chatId: chat.id", reroll)
 
     def test_lan_access_address_scope_is_private_only(self):
         for address in ("192.168.1.25", "10.2.3.4", "172.16.0.8", "169.254.10.20", "fd12::42", "fe80::1"):
