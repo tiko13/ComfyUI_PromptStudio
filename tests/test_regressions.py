@@ -482,7 +482,197 @@ class RegressionTests(unittest.TestCase):
         self.assertIn("Current rendered final prompt (reference only)", request)
         self.assertIn("Remove the necklace", request)
 
+    def test_medium_thinking_instructions_require_one_bounded_pass(self):
+        rewrite = self.nodes._thinking_instruction("Medium")
+        revision = self.nodes._revision_thinking_instruction("Medium")
+
+        self.assertIn("one concise pass", rewrite)
+        self.assertIn("without starting a second review pass", rewrite)
+        self.assertIn("one concise pass", revision)
+        self.assertIn("without starting a second review pass", revision)
+
+    def test_diffusion_prompt_builders_require_affirmative_output(self):
+        rules = "\n".join(self.nodes._positive_output_rule_lines("test prompt"))
+
+        self.assertIn("only as affirmative descriptions", rules)
+        self.assertIn("omit absent, rejected, removed, or superseded alternatives", rules)
+        self.assertIn("soft diffused lighting", rules)
+        self.assertIn("the subject gazes off-frame", rules)
+        self.assertIn("Use affirmative visual language only", self.routes.VISION_CAPTION_PROMPT)
+
+    def test_style_and_framing_modifiers_supplement_selected_presets(self):
+        profile = self.nodes.DEFAULT_PROFILE
+        style = {"name": "Pixel Art", "instruction": "Use crisp pixel edges and a limited palette."}
+        framing = {"name": "Overhead View", "instruction": "Look straight down on the scene."}
+        style_modifier = "Use warm sunset colors."
+        framing_modifier = "Keep the subject slightly off-center."
+
+        requests = [
+            self.nodes._build_instruction_prompt(
+                profile,
+                style,
+                style_modifier,
+                framing,
+                framing_modifier,
+                "Clean",
+                "Disabled",
+                "A woman reading",
+                "",
+            ),
+            self.nodes._build_revision_prompt(
+                profile,
+                style,
+                style_modifier,
+                framing,
+                framing_modifier,
+                "Clean",
+                "Disabled",
+                "A woman reading",
+                "Make the book blue",
+            ),
+            self.nodes._build_expansion_retry_prompt(
+                profile,
+                style,
+                style_modifier,
+                framing,
+                framing_modifier,
+                "Clean",
+                "Disabled",
+                "A woman reading",
+                "A woman reading a book",
+                "",
+            ),
+            self.nodes._build_fragment_rewrite_prompt(
+                profile,
+                style,
+                style_modifier,
+                framing,
+                framing_modifier,
+                "Clean",
+                "Disabled",
+                "A woman reading",
+                "",
+            ),
+        ]
+
+        for request in requests:
+            with self.subTest(builder=request.splitlines()[0]):
+                self.assertIn("Pixel Art + Style modifier", request)
+                self.assertIn(style["instruction"], request)
+                self.assertIn(style_modifier, request)
+                self.assertIn("Overhead View + Framing modifier", request)
+                self.assertIn(framing["instruction"], request)
+                self.assertIn(framing_modifier, request)
+                self.assertIn("additional refinement and must not replace or discard the preset", request)
+
+        modifier_name, modifier_only = self.nodes._combined_control_context(
+            self.nodes.DEFAULT_STYLE_TEMPLATE,
+            style_modifier,
+            "Style",
+        )
+        self.assertEqual(modifier_name, "Style modifier")
+        self.assertIn(style_modifier, modifier_only)
+
+    def test_protected_words_match_literals_without_injecting_the_full_file(self):
+        protected_path = Path(self.temp.name) / "protected_words.txt"
+        protected_path.write_text(
+            "# Local protected literals\nCiri\nAnn\nC++\nNew York\nUnused Term\n",
+            encoding="utf-8",
+        )
+
+        with mock.patch.object(self.nodes, "PROTECTED_WORDS_PATH", str(protected_path)):
+            lines = self.nodes._protected_word_instruction_lines(
+                "CIRI and Ciri carry a C++ manual through New York beside a banner."
+            )
+            unmatched = self.nodes._protected_word_instruction_lines("A quiet landscape")
+
+        instructions = "\n".join(lines)
+        self.assertEqual(unmatched, [])
+        self.assertIn('["CIRI", "Ciri", "C++", "New York"]', instructions)
+        self.assertNotIn("Unused Term", instructions)
+        self.assertNotIn('"Ann"', instructions)
+        self.assertIn("Copy each listed literal exactly as shown", instructions)
+
+    def test_protected_words_reload_after_the_local_file_changes(self):
+        protected_path = Path(self.temp.name) / "protected_words.txt"
+        protected_path.write_text("Ciri\n", encoding="utf-8")
+
+        with mock.patch.object(self.nodes, "PROTECTED_WORDS_PATH", str(protected_path)):
+            self.assertEqual(self.nodes._matched_protected_words("Ciri and RobotLong"), ["Ciri"])
+            protected_path.write_text("RobotLong\n", encoding="utf-8")
+            self.assertEqual(self.nodes._matched_protected_words("Ciri and RobotLong"), ["RobotLong"])
+
+    def test_all_rewrite_builders_add_only_relevant_protected_words(self):
+        protected_path = Path(self.temp.name) / "protected_words.txt"
+        protected_path.write_text("Ciri\niPhone\nReferenceOnly\n", encoding="utf-8")
+        profile = self.nodes.DEFAULT_PROFILE
+        style = self.nodes.DEFAULT_STYLE_TEMPLATE
+        framing = self.nodes.DEFAULT_FRAMING_TEMPLATE
+
+        with mock.patch.object(self.nodes, "PROTECTED_WORDS_PATH", str(protected_path)):
+            initial = self.nodes._build_instruction_prompt(
+                profile, style, "", framing, "", "Clean", "Disabled", "Ciri portrait", ""
+            )
+            revision = self.nodes._build_revision_prompt(
+                profile,
+                style,
+                "",
+                framing,
+                "",
+                "Clean",
+                "Disabled",
+                "Ciri portrait",
+                "Add an iPhone",
+            )
+            main_revision = self.nodes._build_main_revision_prompt(
+                "Ciri portrait",
+                "Ciri portrait with ReferenceOnly lighting",
+                "Refine the portrait",
+                "Disabled",
+            )
+            retry = self.nodes._build_expansion_retry_prompt(
+                profile,
+                style,
+                "",
+                framing,
+                "",
+                "Clean",
+                "Disabled",
+                "Ciri portrait",
+                "Ciri portrait holding an iPhone",
+                "",
+            )
+            fragment = self.nodes._build_fragment_rewrite_prompt(
+                profile, style, "", framing, "", "Clean", "Disabled", "iPhone", ""
+            )
+
+        self.assertIn('["Ciri"]', initial)
+        self.assertIn('["Ciri", "iPhone"]', revision)
+        self.assertIn('["Ciri"]', main_revision)
+        self.assertNotIn("ReferenceOnly", main_revision.split("Current rendered final prompt", 1)[0])
+        self.assertIn('["Ciri", "iPhone"]', retry)
+        self.assertIn('["iPhone"]', fragment)
+
+    def test_output_length_defaults_follow_profile_and_embellishment(self):
+        natural = self.nodes._get_profile("General Natural Language")
+        tags = self.nodes._get_profile("Tag-Based Anime Model")
+
+        self.assertEqual(self.nodes._output_length_spec(natural, "Clean")["default"], 35)
+        self.assertEqual(self.nodes._output_length_spec(natural, "Ultra Maximum")["default"], 140)
+        self.assertEqual(self.nodes._output_length_spec(tags, "Maximum")["unit"], "tags")
+        self.assertEqual(self.nodes._output_length_spec(tags, "Maximum")["default"], 24)
+        self.assertEqual(self.nodes._target_output_length(999, natural, "Clean"), 200)
+        self.assertGreaterEqual(
+            self.nodes._target_length_response_tokens(200, natural, "Clean"),
+            400,
+        )
+
+        rules = "\n".join(self.nodes._target_length_rule_lines(85, natural, "Maximum"))
+        self.assertIn("about 85 words", rules)
+        self.assertIn("replaces any earlier numeric length", rules)
+
     def test_prompt_studio_main_revision_and_clean_render_are_separate_modes(self):
+        additional_instructions = "Keep the language literal and resolve ambiguous pronouns from context."
         base_payload = {
             "kobold_url": "http://localhost:5001",
             "model_profile": "General Natural Language",
@@ -491,6 +681,7 @@ class RegressionTests(unittest.TestCase):
             "thinking_mode": "Disabled",
             "embellishment_level": "None",
             "revision": "Change the dress to green",
+            "additional_instructions": additional_instructions,
         }
         with mock.patch.object(self.routes, "_generate_kcpp", return_value="Final prompt: A woman in a green dress") as generate:
             main = self.routes._revise({
@@ -501,6 +692,8 @@ class RegressionTests(unittest.TestCase):
             })
         self.assertEqual(main, "A woman in a green dress")
         self.assertIn("model-neutral main prompt", generate.call_args.args[0])
+        self.assertIn("Additional user instructions", generate.call_args.args[0])
+        self.assertIn(additional_instructions, generate.call_args.args[0])
 
         with (
             mock.patch.object(self.routes, "_build_instruction_prompt", return_value="render request") as build_render,
@@ -513,7 +706,11 @@ class RegressionTests(unittest.TestCase):
                 "revision": "A woman in a green dress",
             })
         self.assertEqual(rendered, "A woman in a green dress")
-        self.assertEqual(build_render.call_args.args[-2:], ("A woman in a green dress", ""))
+        self.assertEqual(
+            build_render.call_args.args[-2:],
+            ("A woman in a green dress", additional_instructions),
+        )
+        self.assertEqual(build_render.call_args.kwargs["target_output_length"], 20)
 
     def test_prompt_studio_can_route_revisions_through_ollama(self):
         payload = {
@@ -1304,6 +1501,11 @@ class RegressionTests(unittest.TestCase):
         self.assertTrue(framing["instruction"])
         self.assertEqual(data["styles"], [item["name"] for item in data["style_templates"]])
         self.assertEqual(data["framings"], [item["name"] for item in data["framing_templates"]])
+        natural_lengths = data["output_length_profiles"]["General Natural Language"]
+        tag_lengths = data["output_length_profiles"]["Tag-Based Anime Model"]
+        self.assertEqual((natural_lengths["min"], natural_lengths["max"]), (20, 200))
+        self.assertEqual(tag_lengths["unit"], "tags")
+        self.assertEqual(tag_lengths["defaults"]["ultra maximum"], 32)
 
     def test_additional_presets_merge_and_disabled_examples_are_ignored(self):
         storage = Path(self.temp.name)

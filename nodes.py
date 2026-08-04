@@ -36,6 +36,8 @@ ADDITIONAL_FRAMING_TEMPLATES_EXAMPLE_PATH = os.path.join(
     PRESET_EXAMPLES_DIR,
     "framing_templates.additional.example.json",
 )
+PROTECTED_WORDS_PATH = os.path.join(BASE_DIR, "protected_words.txt")
+_PROTECTED_WORDS_CACHE = {"signature": None, "words": ()}
 DEFAULT_PROFILE = {
     "name": "Default",
     "style": "natural_language",
@@ -48,6 +50,37 @@ DEFAULT_PROFILE = {
     "notes": "",
     "final_prompt_prefix": "",
     "final_prompt_suffix": "",
+}
+
+OUTPUT_LENGTH_SPECS = {
+    "words": {
+        "min": 20,
+        "max": 200,
+        "step": 5,
+        "defaults": {
+            "none": 20,
+            "minimal": 25,
+            "clean": 35,
+            "detailed": 50,
+            "rich": 65,
+            "maximum": 70,
+            "ultra maximum": 140,
+        },
+    },
+    "tags": {
+        "min": 5,
+        "max": 40,
+        "step": 1,
+        "defaults": {
+            "none": 5,
+            "minimal": 7,
+            "clean": 10,
+            "detailed": 12,
+            "rich": 20,
+            "maximum": 24,
+            "ultra maximum": 32,
+        },
+    },
 }
 DEFAULT_STYLE_TEMPLATE = {
     "name": "None",
@@ -287,6 +320,87 @@ def _profile_notes(profile):
     if isinstance(notes, list):
         return "\n".join(str(note).strip() for note in notes if str(note).strip())
     return str(notes or "").strip()
+
+
+def _load_protected_words():
+    """Load user-owned protected literals, refreshing when the local file changes."""
+    try:
+        stat = os.stat(PROTECTED_WORDS_PATH)
+        signature = (PROTECTED_WORDS_PATH, stat.st_mtime_ns, stat.st_size)
+    except FileNotFoundError:
+        signature = (PROTECTED_WORDS_PATH, None, None)
+
+    if _PROTECTED_WORDS_CACHE["signature"] == signature:
+        return _PROTECTED_WORDS_CACHE["words"]
+
+    try:
+        with open(PROTECTED_WORDS_PATH, "r", encoding="utf-8-sig") as file:
+            lines = file.readlines()
+    except FileNotFoundError:
+        lines = []
+
+    words = []
+    seen = set()
+    for line in lines:
+        word = line.strip()
+        if not word or word == "#" or word.startswith("# "):
+            continue
+        key = word.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        words.append(word)
+
+    result = tuple(words)
+    _PROTECTED_WORDS_CACHE["signature"] = signature
+    _PROTECTED_WORDS_CACHE["words"] = result
+    return result
+
+
+def _protected_word_matches(text, word):
+    text = str(text or "")
+    if not text or not word:
+        return []
+
+    matches = []
+    word_starts_with_token = word[0].isalnum() or word[0] == "_"
+    word_ends_with_token = word[-1].isalnum() or word[-1] == "_"
+    for match in re.finditer(re.escape(word), text, flags=re.IGNORECASE):
+        start, end = match.span()
+        if word_starts_with_token and start > 0:
+            previous = text[start - 1]
+            if previous.isalnum() or previous == "_":
+                continue
+        if word_ends_with_token and end < len(text):
+            following = text[end]
+            if following.isalnum() or following == "_":
+                continue
+        matches.append(match.group(0))
+    return matches
+
+
+def _matched_protected_words(*source_texts):
+    matches = []
+    seen = set()
+    for word in _load_protected_words():
+        for source_text in source_texts:
+            for match in _protected_word_matches(source_text, word):
+                if match in seen:
+                    continue
+                seen.add(match)
+                matches.append(match)
+    return matches
+
+
+def _protected_word_instruction_lines(*source_texts):
+    matches = _matched_protected_words(*source_texts)
+    if not matches:
+        return []
+    return [
+        "Protected literals found in the source text:",
+        json.dumps(matches, ensure_ascii=False),
+        "Copy each listed literal exactly as shown whenever its referenced content remains in the output. Do not translate, rephrase, correct, re-capitalize, pluralize, split, or join it. An explicit request to remove the referenced content may remove its literal; otherwise do not omit it.",
+    ]
 
 
 def _load_template_file(path, collection_name, label, default_template):
@@ -1261,7 +1375,7 @@ def _thinking_instruction(thinking_mode):
     focus = {
         "minimal": "Briefly check the central subject and requested output format.",
         "low": "Check the subject, setting, composition, and requested output format.",
-        "medium": "Check the subject, setting, composition, concrete visible details, and active constraints.",
+        "medium": "Make one concise pass: check the central subject, active style or framing, and requested output format, then answer without starting a second review pass.",
         "high": "Carefully verify every preserved detail, active style and framing constraint, forbidden addition, and output-format requirement.",
     }.get(effort, "")
     if not focus:
@@ -1321,7 +1435,7 @@ def _revision_thinking_instruction(thinking_mode):
     focus = {
         "minimal": "Briefly identify the edit scope and protected content.",
         "low": "Identify the target, conflicting old details, and protected content.",
-        "medium": "Determine the smallest sufficient edit scope, every conflicting target reference, and all unrelated clauses or tags that must remain unchanged.",
+        "medium": "Make one concise pass: identify the edit target, replace its conflicting value, preserve everything else, then answer without starting a second review pass.",
         "high": "Carefully map the smallest sufficient edit scope, locate every obsolete or conflicting reference, preserve unrelated wording and tag order, and check for collateral changes.",
     }.get(effort, "")
     if not focus:
@@ -1330,6 +1444,87 @@ def _revision_thinking_instruction(thinking_mode):
         f"Use the model's private reasoning channel before answering. {focus} "
         "Do not repeat or summarize that reasoning in the final answer."
     )
+
+
+def _positive_output_rule_lines(target="final prompt"):
+    return [
+        f"- Write the {target} only as affirmative descriptions of visible content to generate.",
+        "- State each desired visual property directly and omit absent, rejected, removed, or superseded alternatives entirely.",
+        "- Keep instruction language out of the output: do not express constraints as negation, exclusion, correction, contrast, or comparison.",
+        "- Before responding, silently convert negative or comparative phrasing into the closest affirmative visual description, then omit any clause that only describes absence.",
+        "- Prefer direct phrases such as 'soft diffused lighting', 'an uncluttered background', and 'the subject gazes off-frame'.",
+    ]
+
+
+def _output_length_spec(profile, embellishment_level="Clean"):
+    style = str(profile.get("style") or "").lower()
+    unit = "tags" if "tag" in style else "words"
+    source = OUTPUT_LENGTH_SPECS[unit]
+    level = str(embellishment_level or "Clean").strip().lower()
+    defaults = dict(source["defaults"])
+    return {
+        "unit": unit,
+        "min": int(source["min"]),
+        "max": int(source["max"]),
+        "step": int(source["step"]),
+        "default": int(defaults.get(level, defaults["clean"])),
+        "defaults": defaults,
+    }
+
+
+def _target_output_length(value, profile, embellishment_level="Clean"):
+    spec = _output_length_spec(profile, embellishment_level)
+    try:
+        requested = int(value)
+    except (TypeError, ValueError):
+        requested = spec["default"]
+    return max(spec["min"], min(spec["max"], requested))
+
+
+def _target_length_response_tokens(target_output_length, profile, embellishment_level="Clean"):
+    target = _target_output_length(target_output_length, profile, embellishment_level)
+    spec = _output_length_spec(profile, embellishment_level)
+    if spec["unit"] == "tags":
+        return target * 6 + 32
+    return target * 2 + 64
+
+
+def _target_length_rule_lines(target_output_length, profile, embellishment_level="Clean", target="rewritten prompt"):
+    if not target_output_length:
+        return []
+    spec = _output_length_spec(profile, embellishment_level)
+    amount = _target_output_length(target_output_length, profile, embellishment_level)
+    unit = spec["unit"]
+    return [
+        f"- For this fresh rewrite, aim for about {amount} {unit} in the {target}.",
+        "- This target replaces any earlier numeric length or density guidance.",
+        "- Treat the target as approximate: preserve every required detail, and never pad, repeat, or omit important content merely to hit the number.",
+    ]
+
+
+def _combined_control_context(template, modifier, control_label):
+    preset_name = str(template.get("name") or f"{control_label} preset")
+    preset_instruction = str(template.get("instruction") or "").strip()
+    modifier = str(modifier or "").strip()
+    names = []
+    instruction_parts = []
+    if preset_instruction:
+        names.append(preset_name)
+        instruction_parts.extend(
+            [
+                f"Selected {control_label.casefold()} preset instruction:",
+                preset_instruction,
+            ]
+        )
+    if modifier:
+        names.append(f"{control_label} modifier")
+        instruction_parts.extend(
+            [
+                f"Additional {control_label.casefold()} modifier:",
+                modifier,
+            ]
+        )
+    return " + ".join(names), "\n".join(instruction_parts)
 
 
 def _expansion_requirement(embellishment_level, profile, fragment=False):
@@ -1484,6 +1679,7 @@ def _build_expansion_retry_prompt(
     original_text,
     rewritten_text,
     additional_instructions,
+    target_output_length=0,
 ):
     prompt_parts = [
         "You are correcting an image-generation prompt because the previous rewrite did not meet the selected embellishment level's output target.",
@@ -1500,35 +1696,48 @@ def _build_expansion_retry_prompt(
     if notes:
         prompt_parts.extend(["", "Model profile notes:", notes])
 
-    style_modifier = (style_modifier or "").strip()
-    style_instruction = style_modifier or str(style_template.get("instruction") or "").strip()
-    style_name = "Style modifier" if style_modifier else str(style_template.get("name") or "None")
+    style_name, style_instruction = _combined_control_context(
+        style_template,
+        style_modifier,
+        "Style",
+    )
     if style_instruction:
         prompt_parts.extend(
             [
                 "",
                 f"Active target style: {style_name}",
                 style_instruction,
+                "Apply the selected style preset and its modifier together. The modifier is an additional refinement and must not replace or discard the preset.",
                 "Keep all added detail inside this style.",
             ]
         )
 
-    framing_modifier = (framing_modifier or "").strip()
-    framing_instruction = framing_modifier or str(framing_template.get("instruction") or "").strip()
-    framing_name = "Framing modifier" if framing_modifier else str(framing_template.get("name") or "None")
+    framing_name, framing_instruction = _combined_control_context(
+        framing_template,
+        framing_modifier,
+        "Framing",
+    )
     if framing_instruction:
         prompt_parts.extend(
             [
                 "",
                 f"Active target framing: {framing_name}",
                 framing_instruction,
+                "Apply the selected framing preset and its modifier together. The modifier is an additional refinement and must not replace or discard the preset.",
                 "Keep all added detail inside this framing.",
             ]
         )
 
     additional_instructions = (additional_instructions or "").strip()
     if additional_instructions:
-        prompt_parts.extend(["", "Additional user instructions:", additional_instructions])
+        prompt_parts.extend(
+            [
+                "",
+                "Additional user instructions:",
+                additional_instructions,
+                "Treat these as general LLM guidance, not as a style or framing modifier. They supplement and must not replace the active style or framing.",
+            ]
+        )
 
     if _reasoning_effort(thinking_mode) == "none":
         prompt_parts.extend(
@@ -1540,6 +1749,10 @@ def _build_expansion_retry_prompt(
         )
     else:
         prompt_parts.extend(["", "Reasoning policy:", _thinking_instruction(thinking_mode)])
+
+    protected_word_lines = _protected_word_instruction_lines(original_text, rewritten_text)
+    if protected_word_lines:
+        prompt_parts.extend(["", *protected_word_lines])
 
     prompt_parts.extend(
         [
@@ -1555,6 +1768,8 @@ def _build_expansion_retry_prompt(
             "- Use visible details only. Do not add sounds, smells, emotions, mood labels, or invisible sensory details unless the user asks for them.",
             "- Follow any explicit, NSFW and similar content orders if asked for.",
             *_expansion_rule_lines(embellishment_level, profile),
+            *_target_length_rule_lines(target_output_length, profile, embellishment_level, "expanded prompt"),
+            *_positive_output_rule_lines("expanded prompt"),
             "- Do not explain your changes.",
             "- Do not include markdown.",
             f"- Start the final answer with exactly '{FINAL_PROMPT_MARKER}' followed by the expanded prompt.",
@@ -1571,37 +1786,24 @@ def _build_expansion_retry_prompt(
 
 
 def _append_framing_context(prompt_parts, framing_template, framing_modifier):
-    active_framing_name = ""
-    active_framing_instruction = ""
-    framing_modifier = (framing_modifier or "").strip()
-    if framing_modifier:
-        active_framing_name = "Framing modifier"
-        active_framing_instruction = framing_modifier
+    active_framing_name, active_framing_instruction = _combined_control_context(
+        framing_template,
+        framing_modifier,
+        "Framing",
+    )
+    if active_framing_instruction:
         prompt_parts.extend(
             [
                 "",
-                "Framing modifier:",
-                framing_modifier,
-                "Apply this as the target framing, composition, viewpoint, shot type, and subject placement for the rewritten prompt.",
+                f"Active target framing: {active_framing_name}",
+                active_framing_instruction,
+                "Apply the selected framing preset and its modifier together to the composition, viewpoint, shot type, and subject placement. The modifier is an additional refinement and must not replace or discard the preset.",
             ]
         )
-    else:
-        framing_instruction = str(framing_template.get("instruction") or "").strip()
-        if framing_instruction:
-            active_framing_name = str(framing_template.get("name") or "Framing template")
-            active_framing_instruction = framing_instruction
-            prompt_parts.extend(
-                [
-                    "",
-                    f"Framing template: {framing_template.get('name', '')}",
-                    framing_instruction,
-                    "Apply this as the target framing, composition, viewpoint, shot type, and subject placement for the rewritten prompt.",
-                ]
-            )
     return active_framing_name, active_framing_instruction
 
 
-def _build_instruction_prompt(profile, style_template, style_modifier, framing_template, framing_modifier, embellishment_level, thinking_mode, text, additional_instructions):
+def _build_instruction_prompt(profile, style_template, style_modifier, framing_template, framing_modifier, embellishment_level, thinking_mode, text, additional_instructions, target_output_length=0):
     prompt_parts = [
         "You rewrite prompts for image generation.",
         "",
@@ -1626,31 +1828,18 @@ def _build_instruction_prompt(profile, style_template, style_modifier, framing_t
             ]
         )
 
-    active_style_name = ""
-    active_style_instruction = ""
-    style_modifier = (style_modifier or "").strip()
-    if style_modifier:
-        active_style_name = "Style modifier"
-        active_style_instruction = style_modifier
+    active_style_name, active_style_instruction = _combined_control_context(
+        style_template,
+        style_modifier,
+        "Style",
+    )
+    if active_style_instruction:
         prompt_parts.extend(
             [
                 "",
-                "Style modifier:",
-                style_modifier,
-                "Apply this as the target style for the entire rewritten prompt. If the user's prompt contains conflicting style, medium, quality, camera, or rendering terms, replace them with this style while preserving the subject and concrete content.",
-            ]
-        )
-    else:
-        style_instruction = str(style_template.get("instruction") or "").strip()
-        if style_instruction:
-            active_style_name = str(style_template.get("name") or "Style template")
-            active_style_instruction = style_instruction
-            prompt_parts.extend(
-                [
-                "",
-                f"Style template: {style_template.get('name', '')}",
-                style_instruction,
-                "Apply this as the target style for the entire rewritten prompt. If the user's prompt contains conflicting style, medium, quality, camera, or rendering terms, replace them with this style while preserving the subject and concrete content.",
+                f"Active target style: {active_style_name}",
+                active_style_instruction,
+                "Apply the selected style preset and its modifier together to the entire rewritten prompt. The modifier is an additional refinement and must not replace or discard the preset. If the user's prompt contains conflicting style, medium, quality, camera, or rendering terms, replace them with this combined style while preserving the subject and concrete content.",
             ]
         )
 
@@ -1711,8 +1900,13 @@ def _build_instruction_prompt(profile, style_template, style_modifier, framing_t
                 "",
                 "Additional user instructions:",
                 additional_instructions,
+                "Treat these as general LLM guidance, not as a style or framing modifier. They supplement and must not replace the active style or framing.",
             ]
         )
+
+    protected_word_lines = _protected_word_instruction_lines(text)
+    if protected_word_lines:
+        prompt_parts.extend(["", *protected_word_lines])
 
     prompt_parts.extend(
         [
@@ -1736,6 +1930,8 @@ def _build_instruction_prompt(profile, style_template, style_modifier, framing_t
             "- Do not copy subjects, objects, settings, or details from the examples unless they are also present in the user's prompt.",
             "- Never use a model profile example as the final prompt; examples are format references only.",
             *_expansion_rule_lines(embellishment_level, profile),
+            *_target_length_rule_lines(target_output_length, profile, embellishment_level),
+            *_positive_output_rule_lines("rewritten prompt"),
             "- Do not explain your changes.",
             "- Do not include markdown.",
             f"- Start the final answer with exactly '{FINAL_PROMPT_MARKER}' followed by the rewritten prompt.",
@@ -1759,6 +1955,7 @@ def _build_revision_prompt(
     thinking_mode,
     current_prompt,
     revision,
+    additional_instructions="",
 ):
     """Build a stateless edit request for Prompt Studio."""
     prompt_parts = [
@@ -1784,29 +1981,35 @@ def _build_revision_prompt(
     if notes:
         prompt_parts.extend(["", "Model profile notes:", notes])
 
-    style_modifier = (style_modifier or "").strip()
-    style_instruction = style_modifier or str(style_template.get("instruction") or "").strip()
-    style_name = "Style modifier" if style_modifier else str(style_template.get("name") or "None")
+    style_name, style_instruction = _combined_control_context(
+        style_template,
+        style_modifier,
+        "Style",
+    )
     if style_instruction:
         prompt_parts.extend(
             [
                 "",
                 f"Active target style: {style_name}",
                 style_instruction,
+                "Apply the selected style preset and its modifier together. The modifier is an additional refinement and must not replace or discard the preset.",
                 "Keep the replacement prompt inside this style unless the requested revision explicitly changes the style.",
                 "For a targeted edit, use this style only to shape details inside the edit scope. Do not restyle protected content.",
             ]
         )
 
-    framing_modifier = (framing_modifier or "").strip()
-    framing_instruction = framing_modifier or str(framing_template.get("instruction") or "").strip()
-    framing_name = "Framing modifier" if framing_modifier else str(framing_template.get("name") or "None")
+    framing_name, framing_instruction = _combined_control_context(
+        framing_template,
+        framing_modifier,
+        "Framing",
+    )
     if framing_instruction:
         prompt_parts.extend(
             [
                 "",
                 f"Active target framing: {framing_name}",
                 framing_instruction,
+                "Apply the selected framing preset and its modifier together. The modifier is an additional refinement and must not replace or discard the preset.",
                 "Keep the replacement prompt inside this framing unless the requested revision explicitly changes the framing.",
                 "For a targeted edit, preserve the existing framing and composition unless they are inside the requested edit scope.",
             ]
@@ -1831,6 +2034,22 @@ def _build_revision_prompt(
         )
     else:
         prompt_parts.extend(["", "Reasoning policy:", _revision_thinking_instruction(thinking_mode)])
+
+    protected_word_lines = _protected_word_instruction_lines(current_prompt, revision)
+    if protected_word_lines:
+        prompt_parts.extend(["", *protected_word_lines])
+
+    additional_instructions = str(additional_instructions or "").strip()
+    if additional_instructions:
+        prompt_parts.extend(
+            [
+                "",
+                "Additional user instructions:",
+                additional_instructions,
+                "Treat these as general LLM guidance, not as a style or framing modifier. They supplement and must not replace the active style or framing.",
+                "Use these instructions to guide the edit, but do not copy instruction language into the replacement prompt unless it explicitly describes visible content the user wants generated.",
+            ]
+        )
 
     prompt_parts.extend(
         [
@@ -1857,6 +2076,7 @@ def _build_revision_prompt(
             "- The examples demonstrate edit boundaries only; never copy their subject matter or requested values into the response.",
             "- Resolve short contextual requests such as 'make it warmer' using the current prompt.",
             "- Before responding, silently check for contradictions, duplicated alternatives, obsolete target details, and any collateral change outside the edit scope.",
+            *_positive_output_rule_lines("replacement prompt"),
             "- Do not mention the editing process or describe what changed.",
             "- Do not include markdown.",
             f"- Start the final answer with exactly '{FINAL_PROMPT_MARKER}' followed by the complete replacement prompt.",
@@ -1872,7 +2092,13 @@ def _build_revision_prompt(
     return "\n".join(prompt_parts)
 
 
-def _build_main_revision_prompt(current_main_prompt, current_final_prompt, revision, thinking_mode):
+def _build_main_revision_prompt(
+    current_main_prompt,
+    current_final_prompt,
+    revision,
+    thinking_mode,
+    additional_instructions="",
+):
     """Build a model-neutral edit request for Prompt Studio's stored user intent."""
     prompt_parts = [
         "You are editing the model-neutral main prompt behind an image-generation prompt.",
@@ -1890,11 +2116,25 @@ def _build_main_revision_prompt(current_main_prompt, current_final_prompt, revis
         "- Never translate a removal into negative wording such as 'without', 'no', 'not', 'exclude', or 'avoid'.",
         "- Never add a removed auto-generated detail to the main prompt merely to record its removal.",
         "- Do not add prompt weights, model-specific syntax, quality tags, or automatic embellishment.",
+        *_positive_output_rule_lines("updated main prompt"),
         "- Do not mention the editing process or explain what changed.",
         "- Do not include markdown.",
         f"- Start the final answer with exactly '{FINAL_PROMPT_MARKER}' followed by the updated main prompt.",
         f"- Do not put anything after the updated main prompt following '{FINAL_PROMPT_MARKER}'.",
     ]
+    protected_word_lines = _protected_word_instruction_lines(current_main_prompt, revision)
+    if protected_word_lines:
+        prompt_parts.extend(["", *protected_word_lines])
+    additional_instructions = str(additional_instructions or "").strip()
+    if additional_instructions:
+        prompt_parts.extend(
+            [
+                "",
+                "Additional user instructions:",
+                additional_instructions,
+                "Use these instructions to interpret and update the durable user intent. Do not copy meta-instructions into the updated main prompt.",
+            ]
+        )
     if _reasoning_effort(thinking_mode) != "none":
         prompt_parts.extend(
             [
@@ -1944,33 +2184,20 @@ def _build_fragment_rewrite_prompt(profile, style_template, style_modifier, fram
             ]
         )
 
-    active_style_name = ""
-    active_style_instruction = ""
-    style_modifier = (style_modifier or "").strip()
-    if style_modifier:
-        active_style_name = "Style modifier"
-        active_style_instruction = style_modifier
+    active_style_name, active_style_instruction = _combined_control_context(
+        style_template,
+        style_modifier,
+        "Style",
+    )
+    if active_style_instruction:
         prompt_parts.extend(
             [
                 "",
-                "Style modifier:",
-                style_modifier,
-                "Apply this as the target style for this rewritten fragment. If the fragment contains conflicting style, medium, quality, camera, or rendering terms, replace them with this style while preserving the subject and concrete content.",
+                f"Active target style: {active_style_name}",
+                active_style_instruction,
+                "Apply the selected style preset and its modifier together to this rewritten fragment. The modifier is an additional refinement and must not replace or discard the preset. If the fragment contains conflicting style, medium, quality, camera, or rendering terms, replace them with this combined style while preserving the subject and concrete content.",
             ]
         )
-    else:
-        style_instruction = str(style_template.get("instruction") or "").strip()
-        if style_instruction:
-            active_style_name = str(style_template.get("name") or "Style template")
-            active_style_instruction = style_instruction
-            prompt_parts.extend(
-                [
-                    "",
-                    f"Style template: {style_template.get('name', '')}",
-                    style_instruction,
-                    "Apply this as the target style for this rewritten fragment. If the fragment contains conflicting style, medium, quality, camera, or rendering terms, replace them with this style while preserving the subject and concrete content.",
-                ]
-            )
 
     active_framing_name, active_framing_instruction = _append_framing_context(
         prompt_parts,
@@ -2029,8 +2256,13 @@ def _build_fragment_rewrite_prompt(profile, style_template, style_modifier, fram
                 "",
                 "Additional user instructions:",
                 additional_instructions,
+                "Treat these as general LLM guidance, not as a style or framing modifier. They supplement and must not replace the active style or framing.",
             ]
         )
+
+    protected_word_lines = _protected_word_instruction_lines(text)
+    if protected_word_lines:
+        prompt_parts.extend(["", *protected_word_lines])
 
     prompt_parts.extend(
         [
@@ -2055,6 +2287,7 @@ def _build_fragment_rewrite_prompt(profile, style_template, style_modifier, fram
             "- Do not copy subjects, objects, settings, or details from the examples unless they are also present in the fragment.",
             "- Never use a model profile example as the final fragment; examples are format references only.",
             *_expansion_rule_lines(embellishment_level, profile, fragment=True),
+            *_positive_output_rule_lines("rewritten fragment"),
             "- Do not explain your changes.",
             "- Do not include markdown.",
             f"- Start the final answer with exactly '{FINAL_PROMPT_MARKER}' followed by the rewritten fragment.",
@@ -2089,7 +2322,7 @@ class KCPP_PromptAmplify:
                     {
                         "default": "",
                         "multiline": True,
-                        "tooltip": "Optional aesthetic/style guidance for this run without editing preset files.",
+                        "tooltip": "Optional aesthetic/style guidance added to the selected style preset. Select None for modifier-only behavior.",
                     },
                 ),
                 "framing_preset": (_framing_template_names(),),
@@ -2098,7 +2331,7 @@ class KCPP_PromptAmplify:
                     {
                         "default": "",
                         "multiline": True,
-                        "tooltip": "Optional framing/composition guidance. Overrides the selected framing preset when non-empty.",
+                        "tooltip": "Optional framing/composition guidance added to the selected framing preset. Select None for modifier-only behavior.",
                     },
                 ),
                 "thinking_mode": (
@@ -2123,7 +2356,7 @@ class KCPP_PromptAmplify:
                     {
                         "default": "",
                         "multiline": True,
-                        "tooltip": "Optional text returned unchanged from the secondary_instructions output.",
+                        "tooltip": "Optional phrases returned unchanged through the secondary_instructions output, such as LoRA trigger words.",
                     },
                 ),
                 **_resolution_inputs(),
@@ -2270,7 +2503,7 @@ class KCPP_PromptSlot:
                     {
                         "default": "",
                         "multiline": True,
-                        "tooltip": "Optional text passed unchanged to the secondary_instructions output.",
+                        "tooltip": "Optional phrases returned unchanged through the secondary_instructions output, such as LoRA trigger words.",
                     },
                 ),
             },
@@ -2653,7 +2886,7 @@ class KCPP_PromptStudioUpscale:
                     {
                         "default": "",
                         "multiline": True,
-                        "tooltip": "Optional text passed unchanged to the secondary instructions output.",
+                        "tooltip": "Optional phrases returned unchanged through the secondary_instructions output, such as LoRA trigger words.",
                     },
                 ),
             },
@@ -2929,7 +3162,7 @@ class KCPP_Ideogram4:
                     {
                         "default": "",
                         "multiline": True,
-                        "tooltip": "Optional aesthetic/style guidance. Overrides the selected style preset when non-empty.",
+                        "tooltip": "Optional aesthetic/style guidance added to the selected style preset. Select None for modifier-only behavior.",
                     },
                 ),
                 "framing_preset": (_framing_template_names(),),
@@ -2938,7 +3171,7 @@ class KCPP_Ideogram4:
                     {
                         "default": "",
                         "multiline": True,
-                        "tooltip": "Optional framing/composition guidance. Overrides the selected framing preset when non-empty.",
+                        "tooltip": "Optional framing/composition guidance added to the selected framing preset. Select None for modifier-only behavior.",
                     },
                 ),
                 "thinking_mode": (

@@ -46,7 +46,9 @@ const RENDER_CONTROL_IDS = [
   "promptstudio-framing",
   "promptstudio-style-modifier",
   "promptstudio-framing-modifier",
+  "promptstudio-additional-instructions",
   "promptstudio-embellishment",
+  "promptstudio-output-length",
 ];
 const DISCONNECTED_CONTROL_SELECTOR = "input, textarea, select, button";
 const DISCONNECTED_ALLOWED_CONTROL_IDS = [
@@ -224,8 +226,10 @@ function getSettings() {
     framing_modifier: "",
     thinking_mode: "Disabled",
     embellishment_level: "Clean",
-    max_response_tokens: 0,
+    target_output_length: 35,
+    output_length_custom: false,
     temperature: 0.7,
+    additional_instructions: "",
     secondary_instructions: "",
     use_llm_amplification: true,
     use_prompt_upscaling: true,
@@ -264,8 +268,10 @@ function saveSettings() {
       framing_modifier: value("promptstudio-framing-modifier"),
       thinking_mode: value("promptstudio-thinking"),
       embellishment_level: value("promptstudio-embellishment"),
-      max_response_tokens: Number(value("promptstudio-max-tokens") || 0),
+      target_output_length: Number(value("promptstudio-output-length") || 35),
+      output_length_custom: state.panel.querySelector("#promptstudio-output-length")?.dataset.custom === "true",
       temperature: Number(value("promptstudio-temperature") || 0.7),
+      additional_instructions: value("promptstudio-additional-instructions"),
       secondary_instructions: value("promptstudio-secondary-instructions"),
       use_llm_amplification: checked("promptstudio-use-llm-amplification"),
       use_prompt_upscaling: checked("promptstudio-use-prompt-upscaling"),
@@ -2426,7 +2432,8 @@ function generationUiFingerprint() {
       + ".promptstudio-workflow-routing select, .promptstudio-settings input, "
       + ".promptstudio-settings select, .promptstudio-settings textarea, "
       + ".promptstudio-resolution-details input, .promptstudio-resolution-details select, "
-      + ".promptstudio-secondary-details textarea, .promptstudio-toggles input, #promptstudio-kobold-url",
+      + ".promptstudio-additional-details textarea, .promptstudio-secondary-details textarea, "
+      + ".promptstudio-toggles input, #promptstudio-kobold-url",
     ),
   ].map((control, index) => ({
     key: control.id || control.name || `${control.tagName}:${index}`,
@@ -2916,7 +2923,7 @@ function setBusy(busy) {
   state.panel?.querySelectorAll("button[data-disable-busy]").forEach((button) => {
     button.disabled = busy;
   });
-  state.panel?.querySelectorAll(".promptstudio-mode-control input, .promptstudio-generation-action input, .promptstudio-workflow-routing select, .promptstudio-settings input, .promptstudio-settings select, .promptstudio-settings textarea, .promptstudio-resolution-details input, .promptstudio-resolution-details select, .promptstudio-current-details textarea, .promptstudio-secondary-details textarea, #promptstudio-kobold-url")
+  state.panel?.querySelectorAll(".promptstudio-mode-control input, .promptstudio-generation-action input, .promptstudio-workflow-routing select, .promptstudio-settings input, .promptstudio-settings select, .promptstudio-settings textarea, .promptstudio-resolution-details input, .promptstudio-resolution-details select, .promptstudio-current-details textarea, .promptstudio-additional-details textarea, .promptstudio-secondary-details textarea, #promptstudio-kobold-url")
     .forEach((control) => {
       control.disabled = busy;
     });
@@ -3745,6 +3752,83 @@ function setOptions(selectId, values, selected) {
   if ([...select.options].some((option) => option.value === selected)) select.value = selected;
 }
 
+function outputLengthSpec() {
+  const profile = state.panel?.querySelector("#promptstudio-profile")?.value || "General Natural Language";
+  const configured = state.config?.output_length_profiles?.[profile];
+  if (configured) return configured;
+  if (profile.startsWith("Tag-Based ")) {
+    return {
+      unit: "tags",
+      min: 5,
+      max: 40,
+      step: 1,
+      defaults: {
+        none: 5,
+        minimal: 7,
+        clean: 10,
+        detailed: 12,
+        rich: 20,
+        maximum: 24,
+        "ultra maximum": 32,
+      },
+    };
+  }
+  return {
+    unit: "words",
+    min: 20,
+    max: 200,
+    step: 5,
+    defaults: {
+      none: 20,
+      minimal: 25,
+      clean: 35,
+      detailed: 50,
+      rich: 65,
+      maximum: 70,
+      "ultra maximum": 140,
+    },
+  };
+}
+
+function syncOutputLengthControl({ resetToDefault = false, storedSettings = null } = {}) {
+  const input = state.panel?.querySelector("#promptstudio-output-length");
+  if (!input) return;
+  const spec = outputLengthSpec();
+  const level = (state.panel.querySelector("#promptstudio-embellishment")?.value || "Clean").trim().toLowerCase();
+  const minimum = Number(spec.min) || 20;
+  const maximum = Number(spec.max) || 200;
+  const step = Math.max(1, Number(spec.step) || 1);
+  const defaultValue = Math.max(minimum, Math.min(maximum, Number(spec.defaults?.[level]) || minimum));
+  const wasCustom = storedSettings
+    ? Boolean(storedSettings.output_length_custom)
+    : input.dataset.custom === "true";
+  const custom = resetToDefault ? false : wasCustom;
+  const requested = storedSettings ? Number(storedSettings.target_output_length) : Number(input.value);
+  const unclamped = custom && Number.isFinite(requested) ? requested : defaultValue;
+  const value = Math.max(minimum, Math.min(maximum, minimum + Math.round((unclamped - minimum) / step) * step));
+  const unit = spec.unit === "tags" ? "tags" : "words";
+
+  input.min = String(minimum);
+  input.max = String(maximum);
+  input.step = String(step);
+  input.value = String(value);
+  input.dataset.custom = String(custom);
+  input.setAttribute("aria-valuetext", `About ${value} ${unit}`);
+
+  const valueLabel = state.panel.querySelector("#promptstudio-output-length-value");
+  if (valueLabel) valueLabel.textContent = `~${value} ${unit}`;
+  const help = state.panel.querySelector("#promptstudio-output-length-help");
+  if (help) help.textContent = custom
+    ? `Custom · default ${defaultValue} ${unit}`
+    : `Default for ${state.panel.querySelector("#promptstudio-embellishment")?.value || "Clean"}`;
+  const track = state.panel.querySelector("#promptstudio-output-length-track");
+  if (track) {
+    const position = maximum === minimum ? 0 : ((defaultValue - minimum) / (maximum - minimum)) * 100;
+    track.style.setProperty("--promptstudio-output-default-position", `${position}%`);
+    track.title = `Default for the current profile and embellishment: ${defaultValue} ${unit}`;
+  }
+}
+
 async function loadOllamaModels({ announce = false } = {}) {
   const select = state.panel?.querySelector("#promptstudio-ollama-model");
   const button = state.panel?.querySelector("#promptstudio-refresh-ollama-models");
@@ -3790,10 +3874,6 @@ function syncLlmProviderControls({ refreshModels = false } = {}) {
   if (thinking) thinking.title = provider === "ollama"
     ? "Controls Ollama thinking. Minimal and Low both request Ollama's low thinking level."
     : "Private-reasoning limits: Minimal 200 tokens, Low 500, Medium 1,000, and High uses the available context window.";
-  const tokens = state.panel?.querySelector("#promptstudio-token-control");
-  if (tokens) tokens.title = provider === "ollama"
-    ? "Final-answer allowance. Ollama receives an additional thinking allowance; 0 uses the selected profile default."
-    : "Final-answer allowance. KoboldCpp receives an additional native-reasoning budget; 0 uses the selected profile default.";
   if (refreshModels && provider === "ollama") loadOllamaModels({ announce: true });
 }
 
@@ -3807,6 +3887,7 @@ async function loadConfig() {
   setOptions("promptstudio-framing", state.config.framings, settings.framing_preset);
   setOptions("promptstudio-thinking", state.config.thinking_modes, settings.thinking_mode);
   setOptions("promptstudio-embellishment", state.config.embellishment_levels, settings.embellishment_level);
+  syncOutputLengthControl({ storedSettings: settings });
   if (selectedLlmProvider() === "ollama") await loadOllamaModels({ announce: false });
 }
 
@@ -3832,9 +3913,10 @@ function collectRevisionPayload(
     framing_preset: value("promptstudio-framing"),
     style_modifier: value("promptstudio-style-modifier"),
     framing_modifier: value("promptstudio-framing-modifier"),
+    additional_instructions: value("promptstudio-additional-instructions"),
     thinking_mode: value("promptstudio-thinking"),
     embellishment_level: value("promptstudio-embellishment"),
-    max_response_tokens: Number(value("promptstudio-max-tokens") || 0),
+    target_output_length: Number(value("promptstudio-output-length") || 35),
     temperature: Number(value("promptstudio-temperature") || 0.7),
   };
   const storedContextImage = storedImageReference(contextImage);
@@ -4949,6 +5031,7 @@ function consultCurrentGenerationSettings() {
     framing_preset_text: presetInstruction("framing_templates", framing),
     style_modifier: value("promptstudio-style-modifier"),
     framing_modifier: value("promptstudio-framing-modifier"),
+    additional_instructions: value("promptstudio-additional-instructions"),
     embellishment: value("promptstudio-embellishment"),
     resolution: action === "create" ? resolutionSettings() : "source image dimensions",
     randomize_seed: checked("promptstudio-randomize-seed"),
@@ -4959,7 +5042,8 @@ function consultCurrentGenerationSettings() {
       provider: llmProviderName(),
       model: selectedLlmProvider() === "ollama" ? value("promptstudio-ollama-model") : "KoboldCpp active model",
       thinking: value("promptstudio-thinking"),
-      final_answer_tokens: Number(value("promptstudio-max-tokens") || 0),
+      target_output_length: Number(value("promptstudio-output-length") || 35),
+      target_output_unit: outputLengthSpec().unit === "tags" ? "tags" : "words",
       temperature: Number(value("promptstudio-temperature") || 0.7),
     },
   };
@@ -7328,9 +7412,16 @@ function buildPanel() {
             <label>Framing<select id="promptstudio-framing"></select></label>
             <label>Embellishment<select id="promptstudio-embellishment"></select></label>
             <label id="promptstudio-thinking-control" title="Controls local-LLM reasoning effort.">Thinking<select id="promptstudio-thinking"></select></label>
-            <label class="promptstudio-control-wide">Style modifier<textarea id="promptstudio-style-modifier" rows="2"></textarea></label>
-            <label class="promptstudio-control-wide">Framing modifier<textarea id="promptstudio-framing-modifier" rows="2"></textarea></label>
-            <label id="promptstudio-token-control" title="Final-answer allowance; 0 uses the selected profile default.">Final-answer tokens<input id="promptstudio-max-tokens" type="number" min="0" max="8192" /></label>
+            <label class="promptstudio-control-wide" title="Additional guidance applied together with the selected style preset. Select None for modifier-only behavior.">Style modifier<textarea id="promptstudio-style-modifier" rows="2" placeholder="Further style guidance added to the selected preset"></textarea></label>
+            <label class="promptstudio-control-wide" title="Additional guidance applied together with the selected framing preset. Select None for modifier-only behavior.">Framing modifier<textarea id="promptstudio-framing-modifier" rows="2" placeholder="Further framing guidance added to the selected preset"></textarea></label>
+            <label id="promptstudio-output-length-control" class="promptstudio-control-wide">Target length
+              <span id="promptstudio-output-length-value" class="promptstudio-output-length-value">~35 words</span>
+              <span id="promptstudio-output-length-track" class="promptstudio-output-length-track">
+                <input id="promptstudio-output-length" type="range" min="20" max="200" step="5" value="35" aria-describedby="promptstudio-output-length-help" />
+                <span class="promptstudio-output-length-default-marker" aria-hidden="true"></span>
+              </span>
+              <small id="promptstudio-output-length-help">Default for Clean</small>
+            </label>
             <label>Temperature<input id="promptstudio-temperature" type="number" min="0" max="5" step="0.05" /></label>
           </div>
         </details>
@@ -7362,9 +7453,13 @@ function buildPanel() {
             <label>Multiple<input id="promptstudio-resolution-multiple" type="number" min="8" max="128" step="4" value="8" /></label>
           </div>
         </details>
+        <details class="promptstudio-secondary-details promptstudio-additional-details" data-promptstudio-sidebar-group="additional-instructions" open>
+          <summary><span>Additional instructions</span><small>Steering guidance for the LLM</small></summary>
+          <textarea id="promptstudio-additional-instructions" rows="3" placeholder="Explain intent or give rewrite guidance without changing the selected style or framing"></textarea>
+        </details>
         <details class="promptstudio-secondary-details" data-promptstudio-sidebar-group="secondary-instructions" open>
-          <summary><span>Secondary instructions</span><small>Optional pass-through output</small></summary>
-          <textarea id="promptstudio-secondary-instructions" rows="3" placeholder="Returned unchanged from the secondary output"></textarea>
+          <summary><span>Unmodified part</span><small>Text passed through unchanged</small></summary>
+          <textarea id="promptstudio-secondary-instructions" rows="3" placeholder="Phrases that must remain unchanged, such as LoRA trigger words"></textarea>
         </details>
       </section>
     </aside>
@@ -7653,10 +7748,12 @@ function buildPanel() {
     option.textContent = settings.ollama_model;
     panel.querySelector("#promptstudio-ollama-model").appendChild(option);
   }
-  panel.querySelector("#promptstudio-max-tokens").value = settings.max_response_tokens;
+  panel.querySelector("#promptstudio-output-length").value = settings.target_output_length;
+  panel.querySelector("#promptstudio-output-length").dataset.custom = String(Boolean(settings.output_length_custom));
   panel.querySelector("#promptstudio-temperature").value = settings.temperature;
   panel.querySelector("#promptstudio-style-modifier").value = settings.style_modifier;
   panel.querySelector("#promptstudio-framing-modifier").value = settings.framing_modifier;
+  panel.querySelector("#promptstudio-additional-instructions").value = settings.additional_instructions;
   panel.querySelector("#promptstudio-secondary-instructions").value = settings.secondary_instructions;
   panel.querySelector("#promptstudio-resolution-aspect-ratio").value = RESOLUTION_ASPECT_RATIOS.includes(settings.resolution_aspect_ratio)
     ? settings.resolution_aspect_ratio
@@ -7664,6 +7761,7 @@ function buildPanel() {
   panel.querySelector("#promptstudio-resolution-megapixels").value = String(Math.max(0.1, Math.min(16, Number(settings.resolution_megapixels) || 1)));
   panel.querySelector("#promptstudio-resolution-multiple").value = String(Math.max(8, Math.min(128, Math.round((Number(settings.resolution_multiple) || 8) / 4) * 4)));
   applyImageScale(settings.image_scale);
+  syncOutputLengthControl({ storedSettings: settings });
   syncLlmProviderControls();
   updateAmplificationMode({ announce: false, persist: false });
   panel.querySelector("#promptstudio-toggle-chats").addEventListener("click", () => setPanelDrawer("chats"));
@@ -7833,7 +7931,21 @@ function buildPanel() {
   panel.querySelector("#promptstudio-undo").addEventListener("click", undoPrompt);
   panel.querySelector("#promptstudio-stop").addEventListener("click", interrupt);
   panel.querySelector("#promptstudio-use-llm-amplification").addEventListener("change", () => updateAmplificationMode());
+  panel.querySelector("#promptstudio-output-length").addEventListener("input", (event) => {
+    event.target.dataset.custom = "true";
+    syncOutputLengthControl();
+  });
+  panel.querySelector("#promptstudio-output-length").addEventListener("change", (event) => {
+    event.target.dataset.custom = "true";
+    syncOutputLengthControl();
+  });
+  ["promptstudio-profile", "promptstudio-embellishment"].forEach((id) => {
+    panel.querySelector(`#${id}`).addEventListener("change", () => {
+      syncOutputLengthControl({ resetToDefault: true });
+    });
+  });
   panel.querySelector("#promptstudio-secondary-instructions").addEventListener("change", saveSettings);
+  panel.querySelector("#promptstudio-additional-instructions").addEventListener("change", markControlsChanged);
   panel.querySelector("#promptstudio-main-prompt").addEventListener("input", (event) => {
     syncMainPromptEditor(event.target.value, { userEdit: true });
   });

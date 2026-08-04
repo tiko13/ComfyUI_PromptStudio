@@ -62,7 +62,11 @@ With **Generate after revision** enabled, creating or revising a prompt immediat
 
 Prompt changes keep the current ComfyUI seed, making before-and-after comparisons easier. **New seed on reroll** randomizes widgets named `seed` or `noise_seed` only when **Reroll**, or an unchanged **Generate**, queues the same prompt and controls again. Turn it off to keep the current seed on rerolls too.
 
-If you change the model profile, style, framing, modifiers, or embellishment level, **Reroll** or an empty **Revise & Generate** rebuilds the final prompt from the main prompt. This clean render prevents details from an older control setting from leaking into the new result. Endpoint, thinking, token, and temperature changes do not mark the final prompt stale. A direct ComfyUI reroll is used when the prompt-shaping controls already match.
+If you change the model profile, style, framing, modifiers, embellishment level, or target length, **Reroll** or an empty **Revise & Generate** rebuilds the final prompt from the main prompt. This clean render prevents details from an older control setting from leaking into the new result. Endpoint, thinking, and temperature changes do not mark the final prompt stale. A direct ComfyUI reroll is used when the prompt-shaping controls already match.
+
+**Target length** is a user-facing approximate output goal. Natural-language profiles use a 20–200 word slider; tag-based profiles automatically switch to 5–40 tags. The highlighted mark shows the default for the current model profile and embellishment level. Dragging creates a custom value for that combination. Changing either the model profile or embellishment level clears the custom value and moves the slider to the new highlighted default. Fresh renders use the target, while precision revisions preserve the existing prompt outside the requested edit scope. Prompt Studio converts the target into a larger hidden final-answer token allowance so local-model output is not cut off.
+
+**Additional instructions** supplies general steering or explanatory context to the LLM without treating that text as a style or framing modifier. It participates in initial renders, control rebuilds, revisions, and expansion retries. **Unmodified part** is separate: it bypasses the LLM and passes phrases such as LoRA trigger words unchanged through the workflow's `secondary_instructions` output.
 
 ### Sessions and persistence
 
@@ -276,13 +280,13 @@ Its prompt controls are:
 
 - `model_profile`: selects the target prompt grammar, examples, token default, and optional exact prefix or suffix from `model_profiles.json`.
 - `style_preset`: selects reusable aesthetic guidance from the built-in and additional style presets.
-- `style_modifier`: supplies freeform style guidance for this run. When present, it becomes the target style and replaces conflicting medium, rendering, camera, or quality language.
+- `style_modifier`: supplements the selected style preset with freeform guidance. Select **None** to use the modifier by itself.
 - `framing_preset`: selects composition, viewpoint, shot type, angle, and placement guidance from the built-in and additional framing presets.
-- `framing_modifier`: supplies freeform framing guidance for this run and takes precedence over the preset when non-empty.
+- `framing_modifier`: supplements the selected framing preset with freeform guidance. Select **None** to use the modifier by itself.
 - `embellishment_level`: controls expansion after style conversion. **None** adds no new visible detail; **Minimal** stays short; **Clean** lightly polishes; **Detailed** produces two descriptive sentences; **Rich** produces denser prose; **Maximum** targets about 50–90 words; and **Ultra Maximum** targets about 120–160 words with no sentence-count requirement and prioritizes prompt adherence over padding. Tag-based profiles keep their existing tag-density targets instead of using prose length.
-- `additional_instructions`: adds one-run task guidance without changing the profile files.
+- `additional_instructions`: adds general LLM steering or explanatory context without replacing the active style or framing guidance.
 - `thinking_mode`: selects KoboldCpp native reasoning effort from **Disabled** through **High**. Native thinking is kept in Chat Completions' separate `reasoning_content` field; only the final `content` is used as the image prompt.
-- `secondary_instructions`: passes through unchanged to the second output and is not part of the LLM request.
+- `secondary_instructions`: the inspector's **Unmodified part**; passes phrases such as LoRA trigger words unchanged to the second output and does not include them in the LLM request.
 - `aspect_ratio`, `megapixels`, and `multiple`: calculate the optional `width` and `height` outputs using the same settings and rounding as ComfyUI's **Resolution Selector**.
 
 The remaining controls configure the KoboldCpp request: URL, final-answer token allowance, temperature, `top_p`, `top_k`, `min_p`, repetition penalty and range, sampler seed, stop sequences, and request timeout. Set `max_response_tokens` to `0` to use the selected profile's default. The backend adds a reasoning allowance, measures the fully Jinja-formatted prompt with `/api/extra/tokencount`, and caps the combined completion against `/api/extra/true_max_context_length` without treating KoboldCpp's unrelated Horde `config/max_length` value as a server limit. Use one custom stop sequence per line; when native thinking is enabled, the backend does not add legacy textual continuation stops because labels such as `Response:` may occur during the analysis-to-final transition. `sampler_seed: -1` lets KoboldCpp choose the seed.

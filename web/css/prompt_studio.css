@@ -2252,6 +2252,62 @@ body.promptstudio-popout-body .promptstudio-standalone-only {
   resize: vertical;
 }
 
+.promptstudio-output-length-value {
+  float: right;
+  color: var(--ps-accent-strong);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.promptstudio-output-length-track {
+  position: relative;
+  display: block;
+  clear: both;
+  margin-top: 7px;
+}
+
+#promptstudio-prompt-studio .promptstudio-settings-grid #promptstudio-output-length {
+  position: relative;
+  z-index: 1;
+  width: 100%;
+  height: 18px;
+  min-height: 18px;
+  margin: 0;
+  padding: 0;
+  background: transparent;
+  border: 0;
+  box-shadow: none;
+  accent-color: var(--ps-accent);
+  cursor: pointer;
+}
+
+.promptstudio-output-length-default-marker {
+  position: absolute;
+  z-index: 2;
+  top: 50%;
+  left: var(--promptstudio-output-default-position, 8.33%);
+  width: 3px;
+  height: 10px;
+  background: var(--ps-accent-strong);
+  border-radius: 999px;
+  box-shadow: 0 0 0 2px var(--ps-panel);
+  pointer-events: none;
+  transform: translate(-50%, -50%);
+}
+
+#promptstudio-output-length-help {
+  display: block;
+  margin-top: 2px;
+  color: var(--ps-muted);
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0;
+  line-height: 1.25;
+  text-transform: none;
+}
+
 .promptstudio-lora-summary-tools {
   display: inline-flex;
   align-items: center;
