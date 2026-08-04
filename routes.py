@@ -12,6 +12,7 @@ import os
 import re
 import secrets
 import shutil
+import threading
 import time
 import urllib.parse
 
@@ -54,8 +55,8 @@ from .nodes import (
 
 
 CHAT_STORE_PATH = os.path.join(BASE_DIR, "prompt_studio_chats.json")
+CHAT_STORE_DIR = os.path.join(BASE_DIR, "prompt_studio_chats")
 CHAT_STORE_LOCK = asyncio.Lock()
-MAX_CHAT_STORE_BYTES = 20 * 1024 * 1024
 CONSULT_RETENTION_SECONDS = 7 * 24 * 60 * 60
 WORKFLOW_STORE_PATH = os.path.join(BASE_DIR, "prompt_studio_workflows.json")
 WORKFLOW_STORE_LOCK = asyncio.Lock()
@@ -469,7 +470,7 @@ def _bounded_number(value, default, minimum, maximum, integer=False):
 
 
 def _empty_chat_store():
-    return {"version": 1, "revision": 0, "activeChatId": None, "chats": []}
+    return {"version": 2, "revision": 0, "activeChatId": None, "chats": []}
 
 
 def _empty_workflow_store():
@@ -624,18 +625,38 @@ def _remove_unreferenced_consult_images(candidates, retained_store):
                 logging.warning("Could not remove expired Prompt Studio consultation image: %s", exc)
 
 
-def _atomic_write_store(path, normalized, max_bytes, limit_message):
+def _atomic_write_store(
+    path,
+    normalized,
+    max_bytes=None,
+    limit_message="",
+    backup_path=None,
+    skip_unchanged=False,
+):
     encoded = json.dumps(normalized, ensure_ascii=False, indent=2).encode("utf-8")
-    if len(encoded) > max_bytes:
+    if max_bytes is not None and len(encoded) > max_bytes:
         raise ValueError(limit_message)
+    if skip_unchanged:
+        try:
+            with open(path, "rb") as file:
+                if file.read() == encoded:
+                    return normalized
+        except FileNotFoundError:
+            pass
+    directory = os.path.dirname(path)
+    if directory:
+        os.makedirs(directory, exist_ok=True)
     temporary_path = path + ".tmp"
-    backup_path = path + ".bak"
+    backup_path = backup_path or path + ".bak"
     try:
         with open(temporary_path, "wb") as file:
             file.write(encoded)
             file.flush()
             os.fsync(file.fileno())
         if os.path.isfile(path):
+            backup_directory = os.path.dirname(backup_path)
+            if backup_directory:
+                os.makedirs(backup_directory, exist_ok=True)
             shutil.copy2(path, backup_path)
         os.replace(temporary_path, path)
     finally:
@@ -646,31 +667,178 @@ def _atomic_write_store(path, normalized, max_bytes, limit_message):
     return normalized
 
 
-def _read_chat_store():
+def _chat_index_path():
+    return os.path.join(CHAT_STORE_DIR, "index.json")
+
+
+def _chat_backups_dir():
+    return os.path.join(CHAT_STORE_DIR, "_backups")
+
+
+def _chat_file_name(chat_id):
+    digest = hashlib.sha256(chat_id.encode("utf-8")).hexdigest()
+    return f"chat_{digest}.json"
+
+
+def _chat_file_path(chat_id):
+    return os.path.join(CHAT_STORE_DIR, _chat_file_name(chat_id))
+
+
+def _chat_backup_path(chat_id):
+    digest = hashlib.sha256(chat_id.encode("utf-8")).hexdigest()
+    return os.path.join(_chat_backups_dir(), f"chat_{digest}.bak")
+
+
+def _normalized_chat_entries(chats):
+    entries = []
+    seen_ids = set()
+    for index, chat in enumerate(chats):
+        if not isinstance(chat, dict):
+            raise ValueError(f"Chat {index + 1} must be an object")
+        chat_id = _text(chat.get("id")).strip()
+        if not chat_id:
+            raise ValueError(f"Chat {index + 1} must have an id")
+        if chat_id in seen_ids:
+            raise ValueError(f"Chat store contains duplicate id {chat_id!r}")
+        seen_ids.add(chat_id)
+        entries.append((chat_id, chat, _chat_file_name(chat_id)))
+    return entries
+
+
+def _read_chat_index():
+    try:
+        with open(_chat_index_path(), "r", encoding="utf-8") as file:
+            index = json.load(file)
+    except FileNotFoundError:
+        return None
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"Invalid Prompt Studio chat index: {exc}") from exc
+    if (
+        not isinstance(index, dict)
+        or index.get("version") != 2
+        or not isinstance(index.get("chatFiles"), list)
+    ):
+        raise RuntimeError("Prompt Studio chat index must contain a chatFiles list")
+    return index
+
+
+def _read_split_chat_store(index):
+    chats = []
+    seen_ids = set()
+    for position, entry in enumerate(index["chatFiles"]):
+        if not isinstance(entry, dict):
+            raise RuntimeError(f"Prompt Studio chat index entry {position + 1} must be an object")
+        chat_id = _text(entry.get("id")).strip()
+        expected_file = _chat_file_name(chat_id) if chat_id else ""
+        if not chat_id or entry.get("file") != expected_file or chat_id in seen_ids:
+            raise RuntimeError(f"Invalid Prompt Studio chat index entry {position + 1}")
+        seen_ids.add(chat_id)
+        path = os.path.join(CHAT_STORE_DIR, expected_file)
+        try:
+            with open(path, "r", encoding="utf-8") as file:
+                chat = json.load(file)
+        except FileNotFoundError as exc:
+            raise RuntimeError(f"Prompt Studio chat file is missing: {expected_file}") from exc
+        except json.JSONDecodeError as exc:
+            raise RuntimeError(f"Invalid Prompt Studio chat file {expected_file}: {exc}") from exc
+        if not isinstance(chat, dict) or _text(chat.get("id")).strip() != chat_id:
+            raise RuntimeError(f"Prompt Studio chat file does not match index id {chat_id!r}")
+        chats.append(chat)
+    return {
+        "version": 2,
+        "revision": _revision(index.get("revision")),
+        "activeChatId": index.get("activeChatId"),
+        "chats": chats,
+    }
+
+
+def _write_split_chat_store(data):
+    entries = _normalized_chat_entries(data["chats"])
+    previous_index = _read_chat_index()
+    previous_entries = previous_index.get("chatFiles", []) if previous_index else []
+    os.makedirs(CHAT_STORE_DIR, exist_ok=True)
+    for chat_id, chat, _filename in entries:
+        _atomic_write_store(
+            _chat_file_path(chat_id),
+            chat,
+            backup_path=_chat_backup_path(chat_id),
+            skip_unchanged=True,
+        )
+    index = {
+        "version": 2,
+        "revision": _revision(data.get("revision")),
+        "activeChatId": data.get("activeChatId"),
+        "chatFiles": [
+            {"id": chat_id, "file": filename}
+            for chat_id, _chat, filename in entries
+        ],
+    }
+    _atomic_write_store(
+        _chat_index_path(),
+        index,
+        backup_path=os.path.join(_chat_backups_dir(), "index.bak"),
+    )
+    retained_files = {filename for _chat_id, _chat, filename in entries}
+    for entry in previous_entries:
+        chat_id = _text(entry.get("id")).strip() if isinstance(entry, dict) else ""
+        filename = entry.get("file") if isinstance(entry, dict) else None
+        if not chat_id or filename != _chat_file_name(chat_id) or filename in retained_files:
+            continue
+        path = os.path.join(CHAT_STORE_DIR, filename)
+        if os.path.isfile(path):
+            os.makedirs(_chat_backups_dir(), exist_ok=True)
+            os.replace(path, _chat_backup_path(chat_id))
+    return data
+
+
+def _read_legacy_chat_store():
     try:
         with open(CHAT_STORE_PATH, "r", encoding="utf-8") as file:
             data = json.load(file)
     except FileNotFoundError:
-        return _empty_chat_store()
+        return None
     except json.JSONDecodeError as exc:
         raise RuntimeError(f"Invalid Prompt Studio chat store: {exc}") from exc
     if not isinstance(data, dict) or not isinstance(data.get("chats"), list):
         raise RuntimeError("Prompt Studio chat store must contain a chats list")
     data["revision"] = _revision(data.get("revision"))
+    return data
+
+
+def _archive_legacy_chat_store():
+    os.makedirs(_chat_backups_dir(), exist_ok=True)
+    if os.path.isfile(CHAT_STORE_PATH):
+        os.replace(CHAT_STORE_PATH, os.path.join(_chat_backups_dir(), "legacy_store.bak"))
+    legacy_backup = CHAT_STORE_PATH + ".bak"
+    if os.path.isfile(legacy_backup):
+        os.replace(legacy_backup, os.path.join(_chat_backups_dir(), "legacy_previous_store.bak"))
+
+
+def _read_chat_store():
+    index = _read_chat_index()
+    if index is None:
+        data = _read_legacy_chat_store()
+        if data is None:
+            return _empty_chat_store()
+        data = {
+            "version": 2,
+            "revision": data["revision"],
+            "activeChatId": data.get("activeChatId"),
+            "chats": data["chats"],
+        }
+        _write_split_chat_store(data)
+        _archive_legacy_chat_store()
+    else:
+        data = _read_split_chat_store(index)
     data, pruned, removed_images = _prune_consult_history(data)
     if pruned:
         data = {
-            "version": 1,
+            "version": 2,
             "revision": data["revision"] + 1,
             "activeChatId": data.get("activeChatId"),
             "chats": data["chats"],
         }
-        _atomic_write_store(
-            CHAT_STORE_PATH,
-            data,
-            MAX_CHAT_STORE_BYTES,
-            "Prompt Studio chat store exceeds the 20 MB limit",
-        )
+        _write_split_chat_store(data)
         _remove_unreferenced_consult_images(removed_images, data)
     return data
 
@@ -682,17 +850,12 @@ def _write_chat_store(data, current_revision=None):
         current_revision = _revision(data.get("revision"))
     data, _pruned, removed_images = _prune_consult_history(data)
     normalized = {
-        "version": 1,
+        "version": 2,
         "revision": current_revision + 1,
         "activeChatId": data.get("activeChatId"),
         "chats": data["chats"],
     }
-    saved = _atomic_write_store(
-        CHAT_STORE_PATH,
-        normalized,
-        MAX_CHAT_STORE_BYTES,
-        "Prompt Studio chat store exceeds the 20 MB limit",
-    )
+    saved = _write_split_chat_store(normalized)
     _remove_unreferenced_consult_images(removed_images, saved)
     return saved
 
@@ -2012,11 +2175,22 @@ async def prompt_studio_get_chats(request):
         return web.json_response({"error": str(exc)}, status=500)
 
 
+@PromptServer.instance.routes.get("/promptstudio/prompt-studio/runtime-health")
+async def prompt_studio_runtime_health(_request):
+    prompt_worker_alive = any(
+        thread.is_alive()
+        and (
+            "prompt_worker" in thread.name.casefold()
+            or getattr(getattr(thread, "_target", None), "__name__", "") == "prompt_worker"
+        )
+        for thread in threading.enumerate()
+    )
+    return web.json_response({"prompt_worker_alive": prompt_worker_alive})
+
+
 @PromptServer.instance.routes.put("/promptstudio/prompt-studio/chats")
 async def prompt_studio_save_chats(request):
     try:
-        if request.content_length is not None and request.content_length > MAX_CHAT_STORE_BYTES:
-            raise ValueError("Prompt Studio chat store exceeds the 20 MB limit")
         data = await request.json()
         async with CHAT_STORE_LOCK:
             saved = await asyncio.to_thread(_update_chat_store, data)

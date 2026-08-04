@@ -74,7 +74,7 @@ If you change the model profile, style, framing, modifiers, embellishment level,
 
 The **Sessions** sidebar creates, switches, and deletes independent prompt conversations. Each session remembers its main and final prompts, paired prompt versions, messages, selected creation and editing workflows, and the prompt-shaping controls last applied by the selected LLM provider.
 
-Chats are stored in `prompt_studio_chats.json` beside the extension's Python files. The file is excluded from Git and is shared by browsers connected to the same ComfyUI installation. Saves use revision checks so an older browser cannot silently overwrite a newer save. A conflicting client stops saving and asks for a reload. Before replacing a store, the backend keeps the previous valid copy as a `.bak` file.
+Chats are stored under `prompt_studio_chats/`, with an `index.json` for ordering and one JSON file per session. The directory is excluded from Git and is shared by browsers connected to the same ComfyUI installation. Saves use revision checks so an older browser cannot silently overwrite a newer save. A conflicting client merges with the latest store before retrying. Previous chat and index copies are kept under `prompt_studio_chats/_backups/`. Existing `prompt_studio_chats.json` stores are migrated automatically on first load and archived in that backup directory.
 
 The standalone page is available at the short URL:
 

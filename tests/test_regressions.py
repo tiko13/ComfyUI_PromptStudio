@@ -1795,20 +1795,75 @@ class RegressionTests(unittest.TestCase):
         _, mask = self.nodes.KCPP_ChatImageInput().load_image(reference)
         self.assertTrue(np.allclose(mask.array, 1.0))
 
-    def test_chat_store_detects_stale_writes_and_keeps_backup(self):
+    def test_chat_store_detects_stale_writes_and_keeps_index_backup(self):
         chat_path = str(Path(self.temp.name) / "chats.json")
-        with mock.patch.object(self.routes, "CHAT_STORE_PATH", chat_path):
+        chat_dir = str(Path(self.temp.name) / "chats")
+        with (
+            mock.patch.object(self.routes, "CHAT_STORE_PATH", chat_path),
+            mock.patch.object(self.routes, "CHAT_STORE_DIR", chat_dir),
+        ):
             first = self.routes._update_chat_store({"revision": 0, "activeChatId": None, "chats": []})
             self.assertEqual(first["revision"], 1)
             with self.assertRaises(self.routes.StoreConflictError):
                 self.routes._update_chat_store({"revision": 0, "activeChatId": None, "chats": []})
             second = self.routes._update_chat_store({"revision": 1, "activeChatId": None, "chats": []})
             self.assertEqual(second["revision"], 2)
-            backup = json.loads(Path(chat_path + ".bak").read_text(encoding="utf-8"))
+            backup = json.loads((Path(chat_dir) / "_backups" / "index.bak").read_text(encoding="utf-8"))
             self.assertEqual(backup["revision"], 1)
+
+    def test_chat_store_uses_one_json_file_per_chat_and_archives_deleted_chat(self):
+        chat_path = str(Path(self.temp.name) / "chats.json")
+        chat_dir = Path(self.temp.name) / "chats"
+        chats = [
+            {"id": "chat-one", "messages": [{"id": "one", "text": "First"}]},
+            {"id": "chat-two", "messages": [{"id": "two", "text": "Second"}]},
+        ]
+        with (
+            mock.patch.object(self.routes, "CHAT_STORE_PATH", chat_path),
+            mock.patch.object(self.routes, "CHAT_STORE_DIR", str(chat_dir)),
+        ):
+            self.routes._write_chat_store(
+                {"activeChatId": "chat-two", "chats": chats},
+                current_revision=0,
+            )
+            index = json.loads((chat_dir / "index.json").read_text(encoding="utf-8"))
+            self.assertEqual(len(list(chat_dir.glob("chat_*.json"))), 2)
+            self.assertEqual(len(index["chatFiles"]), 2)
+            self.assertEqual(self.routes._read_chat_store()["chats"], chats)
+
+            self.routes._write_chat_store(
+                {"activeChatId": "chat-one", "chats": [chats[0]]},
+                current_revision=1,
+            )
+            removed_backup = Path(self.routes._chat_backup_path("chat-two"))
+            self.assertEqual(len(list(chat_dir.glob("chat_*.json"))), 1)
+            self.assertTrue(removed_backup.is_file())
+
+    def test_chat_store_migrates_legacy_monolith_into_subfolder(self):
+        chat_path = Path(self.temp.name) / "prompt_studio_chats.json"
+        chat_dir = Path(self.temp.name) / "prompt_studio_chats"
+        legacy = {
+            "version": 1,
+            "revision": 9,
+            "activeChatId": "chat-1",
+            "chats": [{"id": "chat-1", "messages": []}],
+        }
+        chat_path.write_text(json.dumps(legacy), encoding="utf-8")
+        with (
+            mock.patch.object(self.routes, "CHAT_STORE_PATH", str(chat_path)),
+            mock.patch.object(self.routes, "CHAT_STORE_DIR", str(chat_dir)),
+        ):
+            stored = self.routes._read_chat_store()
+        self.assertEqual(stored["version"], 2)
+        self.assertEqual(stored["revision"], 9)
+        self.assertFalse(chat_path.exists())
+        self.assertTrue((chat_dir / "index.json").is_file())
+        self.assertEqual(len(list(chat_dir.glob("chat_*.json"))), 1)
+        self.assertTrue((chat_dir / "_backups" / "legacy_store.bak").is_file())
 
     def test_chat_store_preserves_generation_loader_state(self):
         chat_path = str(Path(self.temp.name) / "chats.json")
+        chat_dir = str(Path(self.temp.name) / "chats")
         message = {
             "id": "generation-1",
             "role": "assistant",
@@ -1842,7 +1897,10 @@ class RegressionTests(unittest.TestCase):
             },
         }
         chat = {"id": "chat-1", "messages": [message]}
-        with mock.patch.object(self.routes, "CHAT_STORE_PATH", chat_path):
+        with (
+            mock.patch.object(self.routes, "CHAT_STORE_PATH", chat_path),
+            mock.patch.object(self.routes, "CHAT_STORE_DIR", chat_dir),
+        ):
             self.routes._write_chat_store(
                 {"activeChatId": "chat-1", "chats": [chat]},
                 current_revision=0,
@@ -1934,6 +1992,7 @@ class RegressionTests(unittest.TestCase):
 
         with (
             mock.patch.object(self.routes, "CHAT_STORE_PATH", str(chat_path)),
+            mock.patch.object(self.routes, "CHAT_STORE_DIR", str(Path(self.temp.name) / "chats")),
             mock.patch.object(self.routes.time, "time", return_value=now_seconds),
         ):
             stored = self.routes._read_chat_store()
@@ -1986,7 +2045,11 @@ class RegressionTests(unittest.TestCase):
 
     def test_chat_get_skips_unchanged_store_payload(self):
         chat_path = str(Path(self.temp.name) / "chats.json")
-        with mock.patch.object(self.routes, "CHAT_STORE_PATH", chat_path):
+        chat_dir = str(Path(self.temp.name) / "chats")
+        with (
+            mock.patch.object(self.routes, "CHAT_STORE_PATH", chat_path),
+            mock.patch.object(self.routes, "CHAT_STORE_DIR", chat_dir),
+        ):
             self.routes._write_chat_store({"activeChatId": None, "chats": []}, current_revision=6)
             unchanged = asyncio.run(
                 self.routes.prompt_studio_get_chats(types.SimpleNamespace(query={"revision": "7"}))
@@ -1999,6 +2062,28 @@ class RegressionTests(unittest.TestCase):
             )
             self.assertEqual(status, 200)
             self.assertEqual(changed["revision"], 7)
+
+    def test_chat_save_does_not_reject_an_aggregate_store_over_twenty_megabytes(self):
+        chat_path = str(Path(self.temp.name) / "chats.json")
+        chat_dir = str(Path(self.temp.name) / "chats")
+
+        class Request:
+            content_length = 25 * 1024 * 1024
+
+            async def json(self):
+                return {
+                    "revision": 0,
+                    "activeChatId": "chat-1",
+                    "chats": [{"id": "chat-1", "messages": []}],
+                }
+
+        with (
+            mock.patch.object(self.routes, "CHAT_STORE_PATH", chat_path),
+            mock.patch.object(self.routes, "CHAT_STORE_DIR", chat_dir),
+        ):
+            response, status = asyncio.run(self.routes.prompt_studio_save_chats(Request()))
+        self.assertEqual(status, 200)
+        self.assertTrue(response["ok"])
 
     def test_workflow_store_validates_snapshots_and_detects_conflicts(self):
         workflow_path = str(Path(self.temp.name) / "workflows.json")

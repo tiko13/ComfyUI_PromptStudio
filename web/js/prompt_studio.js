@@ -61,6 +61,7 @@ const DISCONNECTED_ALLOWED_CONTROL_IDS = [
   "promptstudio-upscale-cancel",
   "promptstudio-generation-failure-cancel",
 ];
+const DISCONNECTED_GENERATION_GRACE_MS = 15 * 1000;
 const TYPE_ANYWHERE_WINDOWS = new WeakSet();
 
 const state = {
@@ -90,6 +91,10 @@ const state = {
   consultAgentRunToken: 0,
   generationProgress: new Map(),
   generationJobs: new Map(),
+  generationFailures: new Map(),
+  promptWorkerSeenAlive: false,
+  promptWorkerHealthCheckedAt: 0,
+  promptWorkerHealthRequest: null,
   studioPreparations: new Map(),
   latestStudioPreparationByChat: new Map(),
   chats: [],
@@ -137,6 +142,7 @@ const state = {
   activityOriginalFaviconType: null,
   activityCreatedFavicon: false,
   apiConnected: true,
+  disconnectedGenerationTimer: null,
   disconnectedControls: new Map(),
   disconnectedControlObserver: null,
 };
@@ -2886,6 +2892,12 @@ function setApiConnected(connected, { announce = true } = {}) {
   connected = Boolean(connected);
   if (state.apiConnected === connected && state.panel?.dataset.apiConnected) return;
   state.apiConnected = connected;
+  if (connected) {
+    if (state.disconnectedGenerationTimer) clearTimeout(state.disconnectedGenerationTimer);
+    state.disconnectedGenerationTimer = null;
+  } else {
+    scheduleDisconnectedGenerationFailure();
+  }
   const panel = state.panel;
   if (!panel) return;
   const banner = panel.querySelector("#promptstudio-api-connection");
@@ -4052,6 +4064,10 @@ function generationFailureMessage(historyItem) {
     break;
   }
 
+  return executionFailureMessage(eventName, details);
+}
+
+function executionFailureMessage(eventName, details = null) {
   const reason = compactErrorText(
     details?.exception_message || details?.error || details?.message || details?.exception_type,
   );
@@ -4062,6 +4078,122 @@ function generationFailureMessage(historyItem) {
     ? "ComfyUI interrupted execution."
     : "ComfyUI reported an execution error without further details.";
   return `Generation failed: ${reason || fallback}${node ? ` (${node})` : ""}`;
+}
+
+function activeTrackedGenerationPromptIds() {
+  const ids = new Set([...state.generationJobs.keys()].map(String));
+  for (const target of [state.consultGenerationTarget, state.consultAgentGenerationTarget]) {
+    if (target?.promptId) ids.add(String(target.promptId));
+  }
+  if (state.activeGenerationPromptId) ids.add(String(state.activeGenerationPromptId));
+  return [...ids].filter(Boolean);
+}
+
+function rememberGenerationFailure(promptId, message) {
+  const id = String(promptId || "");
+  if (!id) return;
+  state.generationFailures.set(id, message);
+  while (state.generationFailures.size > 50) {
+    state.generationFailures.delete(state.generationFailures.keys().next().value);
+  }
+}
+
+function failTrackedGeneration(promptId, message) {
+  const id = String(promptId || "");
+  if (!id) return false;
+  const failure = compactErrorText(message) || "Generation failed because ComfyUI stopped processing it.";
+  let handled = false;
+
+  const record = studioGenerationRecord(id);
+  if (record && ["queued", "generating"].includes(record.message.generationState)) {
+    updateStudioGenerationText(id, failure);
+    setStudioGenerationState(id, "error");
+    handled = true;
+  }
+
+  const consultTarget = state.consultGenerationTarget;
+  if (String(consultTarget?.promptId || "") === id) {
+    const chat = consultTarget.chatId
+      ? state.chats.find((entry) => entry.id === consultTarget.chatId)
+      : activeChat();
+    const consultMessage = chat?.consultMessages.find((entry) => entry.id === consultTarget.messageId);
+    const variant = consultMessage?.variants?.find((entry) => entry.id === consultTarget.variantId);
+    const generation = normalizeConsultExperimentGeneration(variant?.generation) || {};
+    setConsultExperimentGeneration(consultTarget.messageId, consultTarget.variantId, {
+      ...generation,
+      generationState: "error",
+      text: failure,
+      updatedAt: Date.now(),
+    }, consultTarget.chatId);
+    state.consultGenerationTarget = null;
+    state.generating = false;
+    setConsultBusy(false);
+    setConsultStatus(failure, "error");
+    handled = true;
+  }
+
+  const agentTarget = state.consultAgentGenerationTarget;
+  if (String(agentTarget?.promptId || "") === id) {
+    const agentChat = agentTarget.chatId
+      ? state.chats.find((entry) => entry.id === agentTarget.chatId)
+      : activeChat();
+    const agent = activeConsultAgent(agentChat);
+    const iteration = promptAgentIteration(agent, agentTarget.iterationId);
+    const generation = normalizeConsultExperimentGeneration(iteration?.generation) || {};
+    setConsultAgentGeneration(agentTarget.iterationId, {
+      ...generation,
+      generationState: "error",
+      text: failure,
+      updatedAt: Date.now(),
+    }, "error", agentTarget.chatId);
+    state.consultAgentGenerationTarget = null;
+    state.generating = false;
+    setConsultStatus(failure, "error");
+    handled = true;
+  }
+
+  rememberGenerationFailure(id, failure);
+  if (!handled) return false;
+  state.generationProgress.delete(id);
+  state.generationJobs.delete(id);
+  if (state.activeGenerationPromptId === id) state.activeGenerationPromptId = "";
+  setStatus(failure, "error");
+  queueMicrotask(syncBackgroundActivityIndicator);
+  return true;
+}
+
+function scheduleDisconnectedGenerationFailure() {
+  if (state.disconnectedGenerationTimer || !activeTrackedGenerationPromptIds().length) return;
+  state.disconnectedGenerationTimer = setTimeout(() => {
+    state.disconnectedGenerationTimer = null;
+    if (state.apiConnected) return;
+    const message = "Generation failed: ComfyUI disconnected while processing and did not reconnect. The prompt worker may have stopped, for example after a CUDA out-of-memory error.";
+    activeTrackedGenerationPromptIds().forEach((promptId) => failTrackedGeneration(promptId, message));
+  }, DISCONNECTED_GENERATION_GRACE_MS);
+}
+
+async function promptWorkerStopped() {
+  const now = Date.now();
+  if (state.promptWorkerHealthRequest) return state.promptWorkerHealthRequest;
+  if (now - state.promptWorkerHealthCheckedAt < 3000) return false;
+  state.promptWorkerHealthCheckedAt = now;
+  state.promptWorkerHealthRequest = (async () => {
+    try {
+      const response = await api.fetchApi("/promptstudio/prompt-studio/runtime-health", { cache: "no-store" });
+      if (!response.ok) return false;
+      const health = await response.json();
+      if (health?.prompt_worker_alive === true) {
+        state.promptWorkerSeenAlive = true;
+        return false;
+      }
+      return state.promptWorkerSeenAlive && health?.prompt_worker_alive === false;
+    } catch (_) {
+      return false;
+    } finally {
+      state.promptWorkerHealthRequest = null;
+    }
+  })();
+  return state.promptWorkerHealthRequest;
 }
 
 function updateMessageText(message, text) {
@@ -4181,6 +4313,12 @@ function setupGenerationProgressEvents() {
   api.addEventListener("execution_success", (event) => {
     updateGenerationProgress(eventPromptId(event), { phase: "finalizing" });
   });
+  for (const eventName of ["execution_error", "execution_interrupted"]) {
+    api.addEventListener(eventName, (event) => {
+      const promptId = eventPromptId(event);
+      failTrackedGeneration(promptId, executionFailureMessage(eventName, event?.detail));
+    });
+  }
 }
 
 function setMessageGenerationState(message, generationState) {
@@ -4300,8 +4438,16 @@ async function waitForConsultAgentResult(
   resultNodeIds = [],
   resultFields = ["images", "gifs"],
 ) {
+  const id = String(promptId);
   const started = Date.now();
   while (token === state.pollToken && Date.now() - started < 10 * 60 * 1000) {
+    const reportedFailure = state.generationFailures.get(id);
+    if (reportedFailure) {
+      state.generationFailures.delete(id);
+      failTrackedGeneration(id, reportedFailure);
+      state.generationFailures.delete(id);
+      throw new Error(reportedFailure);
+    }
     const response = await api.fetchApi(`/history/${encodeURIComponent(promptId)}`);
     if (token !== state.pollToken) return null;
     if (response.ok) {
@@ -4348,6 +4494,12 @@ async function waitForConsultAgentResult(
         }
       }
     }
+    if (await promptWorkerStopped()) {
+      const message = "Generation failed: ComfyUI's prompt worker stopped during processing, usually after an unrecovered execution or CUDA out-of-memory error.";
+      failTrackedGeneration(id, message);
+      state.generationFailures.delete(id);
+      throw new Error(message);
+    }
     await new Promise((resolve) => setTimeout(resolve, 900));
   }
   if (token !== state.pollToken) return null;
@@ -4361,8 +4513,16 @@ async function waitForConsultExperimentResult(
   resultNodeIds = [],
   resultFields = ["images", "gifs"],
 ) {
+  const id = String(promptId);
   const started = Date.now();
   while (token === state.pollToken && Date.now() - started < 10 * 60 * 1000) {
+    const reportedFailure = state.generationFailures.get(id);
+    if (reportedFailure) {
+      state.generationFailures.delete(id);
+      failTrackedGeneration(id, reportedFailure);
+      state.generationFailures.delete(id);
+      return;
+    }
     const response = await api.fetchApi(`/history/${encodeURIComponent(promptId)}`);
     if (token !== state.pollToken) return;
     if (response.ok) {
@@ -4408,6 +4568,12 @@ async function waitForConsultExperimentResult(
           return;
         }
       }
+    }
+    if (await promptWorkerStopped()) {
+      const message = "Generation failed: ComfyUI's prompt worker stopped during processing, usually after an unrecovered execution or CUDA out-of-memory error.";
+      failTrackedGeneration(id, message);
+      state.generationFailures.delete(id);
+      return;
     }
     await new Promise((resolve) => setTimeout(resolve, 900));
   }
@@ -4514,6 +4680,13 @@ async function waitForResult(
   const id = String(promptId);
   const started = Date.now();
   while (state.generationJobs.has(id) && Date.now() - started < 10 * 60 * 1000) {
+    const reportedFailure = state.generationFailures.get(id);
+    if (reportedFailure) {
+      state.generationFailures.delete(id);
+      failTrackedGeneration(id, reportedFailure);
+      state.generationFailures.delete(id);
+      return;
+    }
     const response = await api.fetchApi(`/history/${encodeURIComponent(promptId)}`);
     if (!state.generationJobs.has(id)) return;
     if (response.ok) {
@@ -4543,6 +4716,12 @@ async function waitForResult(
           return;
         }
       }
+    }
+    if (await promptWorkerStopped()) {
+      const message = "Generation failed: ComfyUI's prompt worker stopped during processing, usually after an unrecovered execution or CUDA out-of-memory error.";
+      failTrackedGeneration(id, message);
+      state.generationFailures.delete(id);
+      return;
     }
     await new Promise((resolve) => setTimeout(resolve, 900));
   }
