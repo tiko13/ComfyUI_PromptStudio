@@ -1692,8 +1692,9 @@ body.promptstudio-popout-body .promptstudio-standalone-only {
   padding: 12px;
 }
 
-.promptstudio-message.promptstudio-has-prompt {
-  padding-right: 48px;
+.promptstudio-message.promptstudio-has-prompt,
+.promptstudio-message.promptstudio-has-video-handoff {
+  padding-top: 48px;
 }
 
 .promptstudio-prompt-info {
@@ -1709,6 +1710,12 @@ body.promptstudio-popout-body .promptstudio-standalone-only {
   place-items: center;
   width: 28px;
   height: 28px;
+  min-width: 28px;
+  max-width: 28px;
+  min-height: 28px;
+  max-height: 28px;
+  box-sizing: border-box;
+  aspect-ratio: 1;
   color: var(--ps-accent-strong);
   background: rgba(137, 111, 232, 0.13);
   border: 1px solid rgba(169, 145, 255, 0.28);
@@ -1757,6 +1764,51 @@ body.promptstudio-popout-body .promptstudio-standalone-only {
 
 .promptstudio-prompt-info-panel button {
   justify-self: end;
+}
+
+#promptstudio-prompt-studio .promptstudio-video-handoff {
+  position: absolute;
+  top: 8px;
+  right: 42px;
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  min-width: 28px;
+  max-width: 28px;
+  min-height: 28px;
+  max-height: 28px;
+  box-sizing: border-box;
+  aspect-ratio: 1;
+  padding: 0;
+  color: var(--ps-accent-strong);
+  background: rgba(137, 111, 232, 0.13);
+  border: 1px solid rgba(169, 145, 255, 0.28);
+  border-radius: 999px;
+  cursor: pointer;
+}
+
+#promptstudio-prompt-studio .promptstudio-video-handoff[data-available="false"] {
+  color: var(--ps-muted);
+  background: rgba(255, 255, 255, 0.035);
+  border-color: rgba(255, 255, 255, 0.12);
+  cursor: help;
+  opacity: 0.7;
+}
+
+#promptstudio-prompt-studio .promptstudio-video-handoff[data-available="true"]:hover {
+  background: rgba(137, 111, 232, 0.24);
+  border-color: rgba(169, 145, 255, 0.48);
+}
+
+#promptstudio-prompt-studio .promptstudio-video-handoff[data-available="false"]:hover {
+  opacity: 0.92;
+}
+
+#promptstudio-prompt-studio .promptstudio-video-handoff svg {
+  width: 13px;
+  height: 13px;
+  fill: currentColor;
 }
 
 .promptstudio-generation-overview {
@@ -3325,6 +3377,25 @@ body.promptstudio-popout-body #promptstudio-prompt-studio.promptstudio-chats-ope
   #promptstudio-prompt-studio .promptstudio-prompt-info > summary {
     width: 40px;
     height: 40px;
+    min-width: 40px;
+    max-width: 40px;
+    min-height: 40px;
+    max-height: 40px;
+  }
+
+  #promptstudio-prompt-studio .promptstudio-video-handoff {
+    right: 56px;
+    width: 40px;
+    height: 40px;
+    min-width: 40px;
+    max-width: 40px;
+    min-height: 40px;
+    max-height: 40px;
+  }
+
+  .promptstudio-message.promptstudio-has-prompt,
+  .promptstudio-message.promptstudio-has-video-handoff {
+    padding-top: 60px;
   }
 
   .promptstudio-image-actions {

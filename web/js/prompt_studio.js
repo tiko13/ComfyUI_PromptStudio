@@ -16,6 +16,7 @@ const MODEL_STORAGE_KEY = "promptstudio.promptStudio.models.v1";
 const CONSULT_STORAGE_KEY = "promptstudio.promptStudio.consult.settings.v1";
 const SIDEBAR_GROUP_ORDER_STORAGE_KEY = "promptstudio.promptStudio.sidebarGroupOrder.v1";
 const STANDALONE_CHANNEL = "promptstudio.promptStudio.standalone.v1";
+const VIDEO_STUDIO_CHANNEL = "promptstudio.video.standalone.v1";
 const WORKFLOW_SYNC_CHANNEL = "promptstudio.promptStudio.workflows.v1";
 const CHAT_SYNC_CHANNEL = "promptstudio.promptStudio.chats.v1";
 const MAX_DROPPED_IMAGE_BYTES = 20 * 1024 * 1024;
@@ -62,6 +63,7 @@ const DISCONNECTED_ALLOWED_CONTROL_IDS = [
   "promptstudio-generation-failure-cancel",
 ];
 const DISCONNECTED_GENERATION_GRACE_MS = 15 * 1000;
+const VIDEO_STUDIO_PRESENCE_TIMEOUT_MS = 7000;
 const TYPE_ANYWHERE_WINDOWS = new WeakSet();
 
 const state = {
@@ -72,6 +74,13 @@ const state = {
   dockingPopup: false,
   returnToEmbedded: false,
   standaloneChannel: null,
+  videoStudioChannel: null,
+  videoStudioPresence: new Map(),
+  videoStudioServerPresence: new Map(),
+  videoStudioPresenceTimer: null,
+  videoStudioInstalled: null,
+  videoStudioCapabilityRequest: null,
+  videoHandoffRequests: new Map(),
   workflowSyncChannel: null,
   chatSyncChannel: null,
   config: null,
@@ -2912,8 +2921,10 @@ function setApiConnected(connected, { announce = true } = {}) {
     }
     setStatus("ComfyUI disconnected — Prompt Studio is frozen.", "error");
     setConsultStatus("ComfyUI disconnected — messages are paused.", "error");
+    refreshVideoHandoffActions();
     return;
   }
+  refreshVideoHandoffActions();
 
   for (const [control, wasDisabled] of state.disconnectedControls) {
     if (control.isConnected) control.disabled = wasDisabled;
@@ -2964,6 +2975,7 @@ function setBusy(busy) {
   state.panel?.querySelectorAll("button[data-disable-busy]").forEach((button) => {
     button.disabled = busy;
   });
+  refreshVideoHandoffActions();
   state.panel?.querySelectorAll(".promptstudio-mode-control input, .promptstudio-generation-action input, .promptstudio-workflow-routing select, .promptstudio-settings input, .promptstudio-settings select, .promptstudio-settings textarea, .promptstudio-resolution-details input, .promptstudio-resolution-details select, .promptstudio-current-details textarea, .promptstudio-additional-details textarea, .promptstudio-secondary-details textarea, #promptstudio-kobold-url")
     .forEach((control) => {
       control.disabled = busy;
@@ -3373,6 +3385,182 @@ function renderImageGallery(message, images, generationData = null) {
   message.appendChild(gallery);
 }
 
+function directVideoStudioTarget() {
+  try {
+    const host = globalThis.__promptstudioVideoStudioHost;
+    const status = host?.status?.();
+    if (host?.handoffImage && status?.open && status?.activeProjectId) {
+      return { direct: true, host, ...status };
+    }
+  } catch (_) {
+    // A detached same-origin host can disappear between availability checks.
+  }
+  return null;
+}
+
+function directVideoStudioStatus() {
+  try {
+    const host = globalThis.__promptstudioVideoStudioHost;
+    if (!host) return null;
+    state.videoStudioInstalled = true;
+    return host.status?.() || { open: false, activeProjectId: "" };
+  } catch (_) {
+    return null;
+  }
+}
+
+function activeVideoStudioTarget() {
+  const direct = directVideoStudioTarget();
+  if (direct) return direct;
+  const now = Date.now();
+  const broadcastTarget = [...state.videoStudioPresence.values()]
+    .filter(item => item.open && item.activeProjectId && now - item.seenAt < VIDEO_STUDIO_PRESENCE_TIMEOUT_MS)
+    .sort((left, right) => Number(right.openedAt || 0) - Number(left.openedAt || 0))[0];
+  if (broadcastTarget) return broadcastTarget;
+  const serverTarget = [...state.videoStudioServerPresence.values()]
+    .filter(item => item.open && item.activeProjectId && now - item.seenAt < VIDEO_STUDIO_PRESENCE_TIMEOUT_MS)
+    .sort((left, right) => Number(right.openedAt || 0) - Number(left.openedAt || 0))[0];
+  return serverTarget ? { ...serverTarget, serverRelay: true } : null;
+}
+
+function videoHandoffAvailability() {
+  const target = activeVideoStudioTarget();
+  const now = Date.now();
+  const directStatus = directVideoStudioStatus();
+  const recentPresence = [
+    ...state.videoStudioPresence.values(),
+    ...state.videoStudioServerPresence.values(),
+  ]
+    .filter(item => now - item.seenAt < VIDEO_STUDIO_PRESENCE_TIMEOUT_MS);
+  const installed = state.videoStudioInstalled === true || Boolean(directStatus) || recentPresence.length > 0;
+  const open = Boolean(directStatus?.open || recentPresence.some(item => item.open));
+  if (!installed) {
+    return {
+      available: false,
+      reason: state.videoStudioInstalled === null
+        ? "Checking whether Video Studio is installed…"
+        : "Video Studio is not installed or is unavailable.",
+    };
+  }
+  if (!open) return { available: false, reason: "Video Studio is installed, but it is not open." };
+  if (!target) return { available: false, reason: "Video Studio is open, but no project is selected." };
+  if (!state.apiConnected) return { available: false, reason: "ComfyUI is disconnected; reconnect before handing off the image." };
+  if (state.busy) return { available: false, reason: "Wait for the current Prompt Studio operation to finish." };
+  return {
+    available: true,
+    target,
+    reason: `Send this image to Video Studio project “${target.projectName || "Untitled video"}”.`,
+  };
+}
+
+function updateVideoHandoffAction(button, availability = videoHandoffAvailability()) {
+  button.hidden = false;
+  button.dataset.available = availability.available ? "true" : "false";
+  button.setAttribute("aria-disabled", availability.available ? "false" : "true");
+  button.title = availability.reason;
+  button.setAttribute("aria-label", availability.reason);
+  button.closest(".promptstudio-message")?.classList.add("promptstudio-has-video-handoff");
+}
+
+function refreshVideoHandoffActions() {
+  const availability = videoHandoffAvailability();
+  for (const button of state.panel?.querySelectorAll(".promptstudio-video-handoff") || []) {
+    updateVideoHandoffAction(button, availability);
+  }
+}
+
+async function handoffImageToVideoStudio(reference, button) {
+  const availability = videoHandoffAvailability();
+  if (!availability.available) {
+    refreshVideoHandoffActions();
+    return;
+  }
+  const target = availability.target;
+  const image = normalizeImageReference(reference);
+  if (!image) return;
+  const payload = {
+    filename: image.filename,
+    width: image.width || 0,
+    height: image.height || 0,
+    url: imageReferenceUrl(image),
+    targetProjectId: target.activeProjectId,
+  };
+  button.disabled = true;
+  try {
+    let result;
+    if (target.direct) {
+      result = await target.host.handoffImage(payload);
+    } else if (target.serverRelay) {
+      const requestId = makeId();
+      const response = await api.fetchApi("/promptstudio-video/studio-handoff", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          requestId,
+          targetInstanceId: target.instanceId,
+          image: payload,
+        }),
+      });
+      const queued = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(queued.error || `Video Studio handoff could not be queued (${response.status}).`);
+      const deadline = Date.now() + 20000;
+      while (Date.now() < deadline) {
+        await new Promise(resolve => window.setTimeout(resolve, 300));
+        const resultResponse = await api.fetchApi(`/promptstudio-video/studio-handoff/${encodeURIComponent(requestId)}`, {
+          cache: "no-store",
+        });
+        const resultData = await resultResponse.json().catch(() => ({}));
+        if (resultResponse.status === 202) continue;
+        if (!resultResponse.ok || !resultData.ok) {
+          throw new Error(resultData.error || `Video Studio handoff failed (${resultResponse.status}).`);
+        }
+        result = resultData.result || {};
+        break;
+      }
+      if (!result) throw new Error("Video Studio did not respond to the image handoff.");
+    } else {
+      const requestId = makeId();
+      result = await new Promise((resolve, reject) => {
+        const timeout = window.setTimeout(() => {
+          state.videoHandoffRequests.delete(requestId);
+          reject(new Error("Video Studio did not respond to the image handoff."));
+        }, 20000);
+        state.videoHandoffRequests.set(requestId, { resolve, reject, timeout });
+        state.videoStudioChannel?.postMessage({
+          type: "handoff-image",
+          requestId,
+          targetInstanceId: target.instanceId,
+          image: payload,
+        });
+      });
+    }
+    setStatus(
+      `${image.filename} was added to Video Studio project “${result?.projectName || target.projectName || "Untitled video"}”.`,
+      "ready",
+    );
+  } catch (error) {
+    setStatus(error.message || String(error), "error");
+  } finally {
+    button.disabled = false;
+    refreshVideoHandoffActions();
+  }
+}
+
+function renderVideoHandoffAction(message, data) {
+  if (!message || !data?.canonicalPrompt || !data.images?.length || message.querySelector(".promptstudio-video-handoff")) return;
+  const reference = normalizeImageReference(data.images[0]);
+  if (!reference) return;
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "promptstudio-video-handoff";
+  button.dataset.promptstudioAllowDisconnected = "true";
+  button.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14l11-7z" /></svg>';
+  button.addEventListener("click", () => handoffImageToVideoStudio(reference, button));
+  message.classList.add("promptstudio-has-video-handoff");
+  message.appendChild(button);
+  updateVideoHandoffAction(button);
+}
+
 function useStoredCanonicalPrompt(data, details) {
   if (state.busy) return setStatus("Wait for the current operation to finish.", "warning");
   if (!restoreStoredCanonicalPrompt(data)) return;
@@ -3631,6 +3819,7 @@ function renderMessage(data, { scroll = true } = {}) {
   renderGenerationProgress(message, data);
   renderImageGallery(message, data.images, data);
   renderPromptInfo(message, data);
+  renderVideoHandoffAction(message, data);
 
   history.appendChild(message);
   if (scroll) history.scrollTop = history.scrollHeight;
@@ -8690,6 +8879,79 @@ function setupStandaloneBridge() {
   });
 }
 
+function refreshVideoStudioServerPresence() {
+  if (state.videoStudioCapabilityRequest) return state.videoStudioCapabilityRequest;
+  state.videoStudioCapabilityRequest = api.fetchApi("/promptstudio-video/capabilities", { cache: "no-store" })
+    .then(async response => {
+      state.videoStudioInstalled = response.ok;
+      if (!response.ok) {
+        state.videoStudioServerPresence.clear();
+        return;
+      }
+      const data = await response.json().catch(() => ({}));
+      const seenAt = Date.now();
+      state.videoStudioServerPresence = new Map(
+        (Array.isArray(data.studio_instances) ? data.studio_instances : [])
+          .filter(item => item?.instanceId)
+          .map(item => [item.instanceId, { ...item, seenAt }]),
+      );
+    })
+    .catch(() => {
+      if (state.videoStudioInstalled === null) {
+        state.videoStudioInstalled = Boolean(globalThis.__promptstudioVideoStudioHost);
+      }
+      state.videoStudioServerPresence.clear();
+    })
+    .finally(() => {
+      state.videoStudioCapabilityRequest = null;
+      refreshVideoHandoffActions();
+    });
+  return state.videoStudioCapabilityRequest;
+}
+
+function setupVideoStudioBridge() {
+  refreshVideoStudioServerPresence();
+  if (state.videoStudioPresenceTimer) window.clearInterval(state.videoStudioPresenceTimer);
+  if (typeof BroadcastChannel !== "function") {
+    refreshVideoHandoffActions();
+    state.videoStudioPresenceTimer = window.setInterval(() => {
+      refreshVideoStudioServerPresence();
+      refreshVideoHandoffActions();
+    }, 3000);
+    return;
+  }
+  state.videoStudioChannel?.close();
+  const channel = new BroadcastChannel(VIDEO_STUDIO_CHANNEL);
+  state.videoStudioChannel = channel;
+  channel.addEventListener("message", (event) => {
+    const data = event.data;
+    if (data?.type === "studio-presence" && data.instanceId) {
+      state.videoStudioInstalled = true;
+      state.videoStudioPresence.set(data.instanceId, { ...data, seenAt: Date.now() });
+      refreshVideoHandoffActions();
+      return;
+    }
+    if (data?.type !== "handoff-result" || !data.requestId) return;
+    const pending = state.videoHandoffRequests.get(data.requestId);
+    if (!pending) return;
+    window.clearTimeout(pending.timeout);
+    state.videoHandoffRequests.delete(data.requestId);
+    if (data.ok) pending.resolve(data.result || {});
+    else pending.reject(new Error(data.error || "Video Studio could not import the image."));
+  });
+  const probe = () => {
+    const now = Date.now();
+    for (const [instanceId, presence] of state.videoStudioPresence) {
+      if (now - presence.seenAt >= VIDEO_STUDIO_PRESENCE_TIMEOUT_MS) state.videoStudioPresence.delete(instanceId);
+    }
+    channel.postMessage({ type: "studio-probe" });
+    refreshVideoStudioServerPresence();
+    refreshVideoHandoffActions();
+  };
+  probe();
+  state.videoStudioPresenceTimer = window.setInterval(probe, 3000);
+}
+
 function togglePopout({ returnToEmbedded = false } = {}) {
   if (state.popup && !state.popup.closed) {
     dockPanel();
@@ -8777,5 +9039,6 @@ app.registerExtension({
     buildLauncher();
     refreshWorkflowControls();
     setupStandaloneBridge();
+    setupVideoStudioBridge();
   },
 });
