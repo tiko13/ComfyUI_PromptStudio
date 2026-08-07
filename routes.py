@@ -15,6 +15,7 @@ import shutil
 import threading
 import time
 import urllib.parse
+import uuid
 
 from aiohttp import web
 from server import PromptServer
@@ -29,10 +30,12 @@ from .nodes import (
     _build_revision_prompt,
     _chat_image_vision_payload,
     _chat_image_dimensions,
+    _clean_base_url,
     _density_count,
     _diffusion_model_names_for_type,
     _generate_kcpp,
     _generate_ollama,
+    _get_json,
     _get_framing_template,
     _get_profile,
     _get_style_template,
@@ -45,6 +48,7 @@ from .nodes import (
     _needs_expansion_retry,
     _output_length_spec,
     _parse_chat_image_reference,
+    _post_json,
     _remove_known_profile_wrappers,
     _retry_seed,
     _sanitize_prompt_studio_image,
@@ -77,6 +81,9 @@ LLM_PRIORITY_CONSULT = 10
 _LLM_QUEUE_SEQUENCE = itertools.count()
 _LLM_QUEUES = {}
 _LLM_QUEUE_WORKERS = {}
+CONSULT_JOBS = {}
+CONSULT_TASKS = set()
+MAX_CONSULT_JOBS = 32
 
 
 def _llm_queue_key(data):
@@ -121,6 +128,105 @@ async def _run_llm_request(data, priority, operation):
     future = asyncio.get_running_loop().create_future()
     await queue.put((priority, next(_LLM_QUEUE_SEQUENCE), future, operation, data))
     return await future
+
+
+def _kobold_generation_status(data):
+    """Return a small progress snapshot for the configured KoboldCpp server."""
+    base_url = _clean_base_url(data.get("kobold_url"))
+    perf = _get_json(urllib.parse.urljoin(base_url + "/", "api/extra/perf"), 3)
+    if not isinstance(perf, dict):
+        return {"provider": "koboldcpp", "reachable": False, "busy": None}
+    busy = perf.get("idle") == 0
+    try:
+        queue = max(0, int(perf.get("queue") or 0))
+    except (TypeError, ValueError):
+        queue = 0
+    status = {
+        "provider": "koboldcpp",
+        "reachable": True,
+        "busy": busy,
+        "queue": queue,
+    }
+    if busy:
+        try:
+            partial = _post_json(
+                urllib.parse.urljoin(base_url + "/", "api/extra/generate/check"),
+                {},
+                3,
+                "KoboldCpp status check",
+            )
+            results = partial.get("results") if isinstance(partial, dict) else None
+            first = results[0] if isinstance(results, list) and results else None
+            text = str(first.get("text") or "") if isinstance(first, dict) else ""
+            status["generated_characters"] = len(text) if isinstance(first, dict) else None
+        except (RuntimeError, AttributeError, IndexError, KeyError, TypeError):
+            status["generated_characters"] = None
+    return status
+
+
+def _abort_kobold_generation(data):
+    """Ask KoboldCpp to stop only its active text generation."""
+    base_url = _clean_base_url(data.get("kobold_url"))
+    result = _post_json(
+        urllib.parse.urljoin(base_url + "/", "api/extra/abort"),
+        {},
+        10,
+        "KoboldCpp abort",
+    )
+    return {
+        "provider": "koboldcpp",
+        "success": isinstance(result, dict) and result.get("success") is True,
+    }
+
+
+def _prune_consult_jobs():
+    if len(CONSULT_JOBS) < MAX_CONSULT_JOBS:
+        return
+    finished = sorted(
+        (
+            (job_id, job)
+            for job_id, job in CONSULT_JOBS.items()
+            if job["status"] in {"complete", "failed"}
+        ),
+        key=lambda item: item[1].get("finished_at", item[1]["created_at"]),
+    )
+    for job_id, _job in finished[:max(1, len(CONSULT_JOBS) - MAX_CONSULT_JOBS + 1)]:
+        CONSULT_JOBS.pop(job_id, None)
+
+
+async def _run_consult_job(job_id, data):
+    job = CONSULT_JOBS[job_id]
+
+    def run_consult(value):
+        job["status"] = "running"
+        job["started_at"] = time.time()
+        return _consult(value)
+
+    try:
+        job["result"] = await _run_llm_request(data, LLM_PRIORITY_CONSULT, run_consult)
+        job["status"] = "complete"
+    except Exception as exc:
+        job["status"] = "failed"
+        job["error"] = str(exc) or exc.__class__.__name__
+    finally:
+        job["finished_at"] = time.time()
+
+
+def _start_consult_job(data):
+    _prune_consult_jobs()
+    job_id = str(uuid.uuid4())
+    CONSULT_JOBS[job_id] = {
+        "status": "queued",
+        "created_at": time.time(),
+        "provider_settings": {
+            "llm_provider": data.get("llm_provider"),
+            "kobold_url": data.get("kobold_url"),
+        },
+    }
+    task = asyncio.create_task(_run_consult_job(job_id, data))
+    CONSULT_TASKS.add(task)
+    task.add_done_callback(CONSULT_TASKS.discard)
+    return job_id
 
 LAN_PASSWORD_ENV = "PROMPT_STUDIO_LAN_PASSWORD"
 LAN_PASSWORD_BASE64_ENV = "PROMPT_STUDIO_LAN_PASSWORD_B64"
@@ -2254,9 +2360,75 @@ async def prompt_studio_chat(request):
         data = await request.json()
         if not isinstance(data, dict):
             raise ValueError("JSON body must be an object")
+        if data.get("async") is True:
+            job_id = _start_consult_job(data)
+            return web.json_response({"job_id": job_id, "status": "queued"}, status=202)
         response = await _run_llm_request(data, LLM_PRIORITY_CONSULT, _consult)
         return web.json_response({"message": response})
     except (ValueError, json.JSONDecodeError, OSError) as exc:
+        return web.json_response({"error": str(exc)}, status=400)
+    except Exception as exc:
+        return web.json_response({"error": str(exc)}, status=502)
+
+
+@PromptServer.instance.routes.get("/promptstudio/prompt-studio/chat/{job_id}")
+async def prompt_studio_chat_status(request):
+    job = CONSULT_JOBS.get(request.match_info.get("job_id", ""))
+    if job is None:
+        return web.json_response({"error": "Consultation job was not found"}, status=404)
+    response = {"status": job["status"]}
+    if job["status"] == "running":
+        provider = _text(job["provider_settings"].get("llm_provider"), "koboldcpp").strip().casefold()
+        if provider == "koboldcpp":
+            try:
+                response["provider_status"] = await asyncio.to_thread(
+                    _kobold_generation_status,
+                    job["provider_settings"],
+                )
+            except Exception:
+                response["provider_status"] = {
+                    "provider": "koboldcpp",
+                    "reachable": False,
+                    "busy": None,
+                }
+        else:
+            response["provider_status"] = {
+                "provider": provider,
+                "reachable": None,
+                "busy": None,
+            }
+    elif job["status"] == "complete":
+        response["result"] = {"message": job.get("result")}
+    elif job["status"] == "failed":
+        response["error"] = job.get("error") or "Consultation request failed"
+    return web.json_response(response)
+
+
+@PromptServer.instance.routes.post("/promptstudio/prompt-studio/kobold/status")
+async def prompt_studio_kobold_status(request):
+    try:
+        if request.content_length is not None and request.content_length > MAX_LLM_CONFIG_REQUEST_BYTES:
+            raise ValueError("KoboldCpp status request is too large")
+        data = await request.json()
+        if not isinstance(data, dict):
+            raise ValueError("JSON body must be an object")
+        return web.json_response(await asyncio.to_thread(_kobold_generation_status, data))
+    except (ValueError, json.JSONDecodeError) as exc:
+        return web.json_response({"error": str(exc)}, status=400)
+    except Exception as exc:
+        return web.json_response({"error": str(exc)}, status=502)
+
+
+@PromptServer.instance.routes.post("/promptstudio/prompt-studio/kobold/abort")
+async def prompt_studio_kobold_abort(request):
+    try:
+        if request.content_length is not None and request.content_length > MAX_LLM_CONFIG_REQUEST_BYTES:
+            raise ValueError("KoboldCpp abort request is too large")
+        data = await request.json()
+        if not isinstance(data, dict):
+            raise ValueError("JSON body must be an object")
+        return web.json_response(await asyncio.to_thread(_abort_kobold_generation, data))
+    except (ValueError, json.JSONDecodeError) as exc:
         return web.json_response({"error": str(exc)}, status=400)
     except Exception as exc:
         return web.json_response({"error": str(exc)}, status=502)

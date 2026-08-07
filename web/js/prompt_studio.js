@@ -19,6 +19,12 @@ const STANDALONE_CHANNEL = "promptstudio.promptStudio.standalone.v1";
 const VIDEO_STUDIO_CHANNEL = "promptstudio.video.standalone.v1";
 const WORKFLOW_SYNC_CHANNEL = "promptstudio.promptStudio.workflows.v1";
 const CHAT_SYNC_CHANNEL = "promptstudio.promptStudio.chats.v1";
+const CONSULT_CHAT_ENDPOINT = "/promptstudio/prompt-studio/chat";
+const KOBOLD_STATUS_ENDPOINT = "/promptstudio/prompt-studio/kobold/status";
+const KOBOLD_ABORT_ENDPOINT = "/promptstudio/prompt-studio/kobold/abort";
+const CONSULT_JOB_POLL_MS = 1000;
+const CONSULT_STATUS_RETRY_LIMIT = 3;
+const KOBOLD_STATUS_POLL_MS = 3000;
 const MAX_DROPPED_IMAGE_BYTES = 20 * 1024 * 1024;
 const CONSULT_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 const CONSULT_EXPERIMENT_MARKER = "PROMPT_STUDIO_EXPERIMENT";
@@ -41,6 +47,34 @@ const RESOLUTION_ASPECT_RATIOS = [
   "16:9 (Widescreen)",
   "21:9 (Ultrawide)",
 ];
+const SETTINGS_DEFAULTS = Object.freeze({
+  llm_provider: "koboldcpp",
+  kobold_url: "http://localhost:5001",
+  ollama_url: "http://localhost:11434",
+  ollama_model: "",
+  model_profile: "General Natural Language",
+  style_preset: "None",
+  framing_preset: "None",
+  style_modifier: "",
+  framing_modifier: "",
+  thinking_mode: "Disabled",
+  embellishment_level: "Clean",
+  target_output_length: 35,
+  output_length_custom: false,
+  temperature: 0.7,
+  additional_instructions: "",
+  secondary_instructions: "",
+  use_llm_amplification: true,
+  use_prompt_upscaling: true,
+  randomize_seed: true,
+  auto_generate: true,
+  auto_advance_source: true,
+  use_latest_image_context: false,
+  image_scale: 100,
+  resolution_aspect_ratio: "1:1 (Square)",
+  resolution_megapixels: 1.0,
+  resolution_multiple: 8,
+});
 const RENDER_CONTROL_IDS = [
   "promptstudio-profile",
   "promptstudio-style",
@@ -116,6 +150,10 @@ const state = {
   chatSyncInFlight: false,
   chatSyncTimer: null,
   consultBusy: false,
+  consultPendingText: "",
+  koboldStatusRequest: null,
+  koboldStatusTimer: null,
+  koboldAbortBusy: false,
   consultVisionAvailable: null,
   consultVisionReason: "",
   consultSelectedImages: new Map(),
@@ -243,38 +281,10 @@ function loadCss() {
 }
 
 function getSettings() {
-  const defaults = {
-    llm_provider: "koboldcpp",
-    kobold_url: "http://localhost:5001",
-    ollama_url: "http://localhost:11434",
-    ollama_model: "",
-    model_profile: "General Natural Language",
-    style_preset: "None",
-    framing_preset: "None",
-    style_modifier: "",
-    framing_modifier: "",
-    thinking_mode: "Disabled",
-    embellishment_level: "Clean",
-    target_output_length: 35,
-    output_length_custom: false,
-    temperature: 0.7,
-    additional_instructions: "",
-    secondary_instructions: "",
-    use_llm_amplification: true,
-    use_prompt_upscaling: true,
-    randomize_seed: true,
-    auto_generate: true,
-    auto_advance_source: true,
-    use_latest_image_context: false,
-    image_scale: 100,
-    resolution_aspect_ratio: "1:1 (Square)",
-    resolution_megapixels: 1.0,
-    resolution_multiple: 8,
-  };
   try {
-    return { ...defaults, ...JSON.parse(localStorage.getItem(STORAGE_KEY) || "{}") };
+    return { ...SETTINGS_DEFAULTS, ...JSON.parse(localStorage.getItem(STORAGE_KEY) || "{}") };
   } catch (_) {
-    return defaults;
+    return { ...SETTINGS_DEFAULTS };
   }
 }
 
@@ -317,6 +327,7 @@ function saveSettings() {
   } catch (error) {
     setStatus(error.message || "Prompt Studio settings could not be saved.", "warning");
   }
+  syncActiveChatSettings();
 }
 
 function applyImageScale(value) {
@@ -1130,6 +1141,7 @@ function normalizeConsultMessage(message) {
       ? message.images.map(normalizeImageReference).filter(Boolean).slice(0, 4)
       : [],
     experimentId: String(message?.experimentId || ""),
+    requestFailed: message?.requestFailed === true,
     createdAt: normalizedCreatedAt,
     updatedAt: normalizedUpdatedAt,
   };
@@ -1143,6 +1155,7 @@ function normalizeConsultMessage(message) {
           text: String(variant.text || ""),
           proposal: normalizeConsultExperimentProposal(variant.proposal),
           generation: normalizeConsultExperimentGeneration(variant.generation),
+          requestFailed: variant.requestFailed === true,
           createdAt: Number.isFinite(Number(variant.createdAt))
             ? Number(variant.createdAt)
             : normalizedCreatedAt,
@@ -1155,6 +1168,7 @@ function normalizeConsultMessage(message) {
       text: normalized.text,
       proposal: normalizeConsultExperimentProposal(message?.proposal),
       generation: normalizeConsultExperimentGeneration(message?.generation),
+      requestFailed: normalized.requestFailed,
       createdAt: normalizedCreatedAt,
     });
   }
@@ -1167,6 +1181,7 @@ function normalizeConsultMessage(message) {
     text: variants[variantIndex]?.text || normalized.text,
     proposal: variants[variantIndex]?.proposal || null,
     generation: variants[variantIndex]?.generation || null,
+    requestFailed: variants[variantIndex]?.requestFailed === true,
     variants,
     variantIndex,
   };
@@ -1218,6 +1233,125 @@ function pruneExpiredConsultMessages(now = Date.now()) {
     }
   }
   return changed;
+}
+
+function normalizeSessionLoraSelections(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  return Object.fromEntries(
+    Object.entries(value)
+      .map(([key, selections]) => [String(key), normalizeLoraStack(selections)])
+      .filter(([key, selections]) => key && selections.length),
+  );
+}
+
+function normalizeSessionModelSelections(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  return Object.fromEntries(
+    Object.entries(value)
+      .map(([key, modelName]) => [String(key), cleanModelName(modelName)])
+      .filter(([key, modelName]) => key && modelName),
+  );
+}
+
+function normalizeStudioSettings(value, fallback = getSettings()) {
+  const source = value && typeof value === "object" && !Array.isArray(value) ? value : {};
+  const base = { ...SETTINGS_DEFAULTS, ...(fallback || {}) };
+  const text = (key) => String(source[key] ?? base[key] ?? "");
+  const checked = (key) => source[key] == null ? Boolean(base[key]) : Boolean(source[key]);
+  const numeric = (key, minimum, maximum) => {
+    const requested = Number(source[key] ?? base[key]);
+    const fallbackValue = Number(SETTINGS_DEFAULTS[key]);
+    return Math.max(minimum, Math.min(maximum, Number.isFinite(requested) ? requested : fallbackValue));
+  };
+  return {
+    version: 1,
+    llm_provider: text("llm_provider") === "ollama" ? "ollama" : "koboldcpp",
+    kobold_url: text("kobold_url"),
+    ollama_url: text("ollama_url"),
+    ollama_model: text("ollama_model"),
+    model_profile: text("model_profile"),
+    style_preset: text("style_preset"),
+    framing_preset: text("framing_preset"),
+    style_modifier: text("style_modifier"),
+    framing_modifier: text("framing_modifier"),
+    thinking_mode: text("thinking_mode"),
+    embellishment_level: text("embellishment_level"),
+    target_output_length: numeric("target_output_length", 1, 10000),
+    output_length_custom: checked("output_length_custom"),
+    temperature: numeric("temperature", 0, 5),
+    additional_instructions: text("additional_instructions"),
+    secondary_instructions: text("secondary_instructions"),
+    use_llm_amplification: checked("use_llm_amplification"),
+    use_prompt_upscaling: checked("use_prompt_upscaling"),
+    randomize_seed: checked("randomize_seed"),
+    auto_generate: checked("auto_generate"),
+    auto_advance_source: checked("auto_advance_source"),
+    use_latest_image_context: checked("use_latest_image_context"),
+    image_scale: numeric("image_scale", 10, 100),
+    resolution_aspect_ratio: RESOLUTION_ASPECT_RATIOS.includes(text("resolution_aspect_ratio"))
+      ? text("resolution_aspect_ratio")
+      : SETTINGS_DEFAULTS.resolution_aspect_ratio,
+    resolution_megapixels: numeric("resolution_megapixels", 0.1, 16),
+    resolution_multiple: numeric("resolution_multiple", 8, 128),
+    generation_action: source.generation_action === "edit" ? "edit" : "create",
+    lora_selections: normalizeSessionLoraSelections(source.lora_selections),
+    model_selections: normalizeSessionModelSelections(source.model_selections),
+  };
+}
+
+function migratedStudioSettings(chat, messages) {
+  const hasStoredSettings = chat?.studioSettings && typeof chat.studioSettings === "object"
+    && !Array.isArray(chat.studioSettings);
+  const source = hasStoredSettings ? structuredClone(chat.studioSettings) : {};
+  const latestGeneration = [...messages].reverse().find((message) => message.canonicalPrompt.trim());
+  if (!hasStoredSettings) {
+    let fingerprint;
+    try {
+      fingerprint = JSON.parse(String(chat?.controlsFingerprint || latestGeneration?.controlsFingerprint || ""));
+    } catch (_) {
+      fingerprint = null;
+    }
+    if (Array.isArray(fingerprint)) {
+      const keys = [
+        "model_profile", "style_preset", "framing_preset", "style_modifier",
+        "framing_modifier", "additional_instructions", "embellishment_level", "target_output_length",
+      ];
+      keys.forEach((key, index) => {
+        if (fingerprint[index] != null) source[key] = fingerprint[index];
+      });
+      source.output_length_custom = true;
+    }
+    if (latestGeneration) {
+      source.generation_action = latestGeneration.generationAction;
+      source.use_llm_amplification = latestGeneration.llmAmplified;
+      const promptNode = Object.values(latestGeneration.generationSnapshot?.output || {})
+        .find((node) => [SLOT_TYPE, AMPLIFY_TYPE].includes(node?.class_type));
+      if (typeof promptNode?.inputs?.secondary_instructions === "string") {
+        source.secondary_instructions = promptNode.inputs.secondary_instructions;
+      }
+    }
+    const loraSelections = {};
+    const modelSelections = {};
+    for (const message of messages) {
+      const profileId = String(message.workflowProfileId || "");
+      if (!profileId) continue;
+      for (const entry of message.loraState || []) {
+        const key = loraSelectionKey(profileId, entry.nodeId);
+        if (entry.selections.length) loraSelections[key] = entry.selections;
+        else delete loraSelections[key];
+      }
+      for (const entry of message.modelState || []) {
+        if (entry.modelName) modelSelections[modelSelectionKey(profileId, entry.nodeId)] = entry.modelName;
+      }
+    }
+    source.lora_selections = Object.keys(loraSelections).length
+      ? loraSelections
+      : (messages.length ? {} : state.loraSelections);
+    source.model_selections = Object.keys(modelSelections).length
+      ? modelSelections
+      : (messages.length ? {} : state.modelSelections);
+  }
+  return normalizeStudioSettings(source);
 }
 
 function normalizeChat(chat) {
@@ -1301,7 +1435,7 @@ function normalizeChat(chat) {
     currentPrompt: finalPrompt,
     versions,
     versionIndex,
-    controlsFingerprint: String(chat?.controlsFingerprint || ""),
+    controlsFingerprint: String(chat?.controlsFingerprint || latestGeneration?.controlsFingerprint || ""),
     createWorkflowId: String(chat?.createWorkflowId || ""),
     editWorkflowId: String(chat?.editWorkflowId || ""),
     upscaleWorkflowId: String(chat?.upscaleWorkflowId || ""),
@@ -1309,6 +1443,7 @@ function normalizeChat(chat) {
     selectedSource: normalizeImageReference(chat?.selectedSource),
     lastGeneration: normalizeLastGeneration(chat?.lastGeneration),
     pendingGeneration: normalizePendingGeneration(chat?.pendingGeneration),
+    studioSettings: migratedStudioSettings(chat, messages),
     messages,
     consultClearedAt,
     consultMessages,
@@ -1626,6 +1761,7 @@ async function loadChats() {
         (!String(storedChat?.currentPrompt || "").trim() && Boolean(chat.currentPrompt.trim()))
         || typeof storedChat?.mainPrompt !== "string"
         || typeof storedChat?.finalPrompt !== "string"
+        || !storedChat?.studioSettings
         || (Array.isArray(storedChat?.versions) && storedChat.versions.some((version) => typeof version !== "object"))
       );
     });
@@ -1663,6 +1799,130 @@ function restoreChatState(chat) {
   state.versions = [...chat.versions];
   state.versionIndex = chat.versionIndex;
   updatePromptEditors(chat.mainPrompt, chat.finalPrompt);
+  applyStudioSettings(chat);
+}
+
+function captureStudioSettings(chat = activeChat()) {
+  const fallback = normalizeStudioSettings(chat?.studioSettings || getSettings());
+  if (!state.panel) return fallback;
+  const value = (key, id) => {
+    const control = state.panel.querySelector(`#${id}`);
+    return control ? control.value : fallback[key];
+  };
+  const checked = (key, id) => {
+    const control = state.panel.querySelector(`#${id}`);
+    return control ? Boolean(control.checked) : fallback[key];
+  };
+  return normalizeStudioSettings({
+    llm_provider: value("llm_provider", "promptstudio-llm-provider"),
+    kobold_url: value("kobold_url", "promptstudio-kobold-url"),
+    ollama_url: value("ollama_url", "promptstudio-ollama-url"),
+    ollama_model: value("ollama_model", "promptstudio-ollama-model"),
+    model_profile: value("model_profile", "promptstudio-profile"),
+    style_preset: value("style_preset", "promptstudio-style"),
+    framing_preset: value("framing_preset", "promptstudio-framing"),
+    style_modifier: value("style_modifier", "promptstudio-style-modifier"),
+    framing_modifier: value("framing_modifier", "promptstudio-framing-modifier"),
+    thinking_mode: value("thinking_mode", "promptstudio-thinking"),
+    embellishment_level: value("embellishment_level", "promptstudio-embellishment"),
+    target_output_length: value("target_output_length", "promptstudio-output-length"),
+    output_length_custom: state.panel.querySelector("#promptstudio-output-length")?.dataset.custom === "true",
+    temperature: value("temperature", "promptstudio-temperature"),
+    additional_instructions: value("additional_instructions", "promptstudio-additional-instructions"),
+    secondary_instructions: value("secondary_instructions", "promptstudio-secondary-instructions"),
+    use_llm_amplification: checked("use_llm_amplification", "promptstudio-use-llm-amplification"),
+    use_prompt_upscaling: checked("use_prompt_upscaling", "promptstudio-use-prompt-upscaling"),
+    randomize_seed: checked("randomize_seed", "promptstudio-randomize-seed"),
+    auto_generate: checked("auto_generate", "promptstudio-auto-generate"),
+    auto_advance_source: checked("auto_advance_source", "promptstudio-auto-advance-source"),
+    use_latest_image_context: checked("use_latest_image_context", "promptstudio-use-latest-image-context"),
+    image_scale: value("image_scale", "promptstudio-image-scale"),
+    resolution_aspect_ratio: value("resolution_aspect_ratio", "promptstudio-resolution-aspect-ratio"),
+    resolution_megapixels: value("resolution_megapixels", "promptstudio-resolution-megapixels"),
+    resolution_multiple: value("resolution_multiple", "promptstudio-resolution-multiple"),
+    generation_action: selectedAction(),
+    lora_selections: structuredClone(state.loraSelections),
+    model_selections: structuredClone(state.modelSelections),
+  }, fallback);
+}
+
+function applyStudioSettings(chat) {
+  if (!chat) return;
+  const settings = normalizeStudioSettings(chat.studioSettings || getSettings());
+  chat.studioSettings = settings;
+  state.loraSelections = structuredClone(settings.lora_selections);
+  state.modelSelections = structuredClone(settings.model_selections);
+  if (!state.panel) return;
+
+  const setValue = (id, value) => {
+    const control = state.panel.querySelector(`#${id}`);
+    if (!control) return;
+    if (control.tagName === "SELECT" && control.options.length
+        && ![...control.options].some((option) => option.value === String(value))) return;
+    control.value = String(value ?? "");
+  };
+  const setChecked = (id, value) => {
+    const control = state.panel.querySelector(`#${id}`);
+    if (control) control.checked = Boolean(value);
+  };
+  [
+    ["promptstudio-llm-provider", settings.llm_provider],
+    ["promptstudio-kobold-url", settings.kobold_url],
+    ["promptstudio-ollama-url", settings.ollama_url],
+    ["promptstudio-profile", settings.model_profile],
+    ["promptstudio-style", settings.style_preset],
+    ["promptstudio-framing", settings.framing_preset],
+    ["promptstudio-style-modifier", settings.style_modifier],
+    ["promptstudio-framing-modifier", settings.framing_modifier],
+    ["promptstudio-thinking", settings.thinking_mode],
+    ["promptstudio-embellishment", settings.embellishment_level],
+    ["promptstudio-output-length", settings.target_output_length],
+    ["promptstudio-temperature", settings.temperature],
+    ["promptstudio-additional-instructions", settings.additional_instructions],
+    ["promptstudio-secondary-instructions", settings.secondary_instructions],
+    ["promptstudio-image-scale", settings.image_scale],
+    ["promptstudio-resolution-aspect-ratio", settings.resolution_aspect_ratio],
+    ["promptstudio-resolution-megapixels", settings.resolution_megapixels],
+    ["promptstudio-resolution-multiple", settings.resolution_multiple],
+  ].forEach(([id, setting]) => setValue(id, setting));
+  const ollamaModel = state.panel.querySelector("#promptstudio-ollama-model");
+  if (ollamaModel && settings.ollama_model
+      && ![...ollamaModel.options].some((option) => option.value === settings.ollama_model)) {
+    const option = document.createElement("option");
+    option.value = settings.ollama_model;
+    option.textContent = settings.ollama_model;
+    ollamaModel.appendChild(option);
+  }
+  setValue("promptstudio-ollama-model", settings.ollama_model);
+  [
+    ["promptstudio-use-llm-amplification", settings.use_llm_amplification],
+    ["promptstudio-use-prompt-upscaling", settings.use_prompt_upscaling],
+    ["promptstudio-randomize-seed", settings.randomize_seed],
+    ["promptstudio-auto-generate", settings.auto_generate],
+    ["promptstudio-auto-advance-source", settings.auto_advance_source],
+    ["promptstudio-use-latest-image-context", settings.use_latest_image_context],
+  ].forEach(([id, setting]) => setChecked(id, setting));
+  const action = state.panel.querySelector(
+    `input[name="promptstudio-generation-action"][value="${settings.generation_action}"]`,
+  );
+  if (action) action.checked = true;
+  const outputLength = state.panel.querySelector("#promptstudio-output-length");
+  if (outputLength) outputLength.dataset.custom = String(settings.output_length_custom);
+  applyImageScale(settings.image_scale);
+  syncOutputLengthControl({ storedSettings: settings });
+  syncLlmProviderControls();
+  updateAmplificationMode({ announce: false, persist: false });
+}
+
+function syncActiveChatSettings({ persist = true } = {}) {
+  const chat = activeChat();
+  if (!chat || !state.chatStoreLoaded) return false;
+  const settings = captureStudioSettings(chat);
+  if (JSON.stringify(settings) === JSON.stringify(chat.studioSettings)) return false;
+  chat.studioSettings = settings;
+  chat.updatedAt = Date.now();
+  if (persist) saveChats();
+  return true;
 }
 
 function syncActiveChat() {
@@ -1678,6 +1938,7 @@ function syncActiveChat() {
   chat.editWorkflowId = state.panel?.querySelector("#promptstudio-edit-workflow")?.value || "";
   chat.upscaleWorkflowId = state.panel?.querySelector("#promptstudio-upscale-workflow")?.value || "";
   chat.editPromptMode = selectedEditPromptMode();
+  syncActiveChatSettings({ persist: false });
   chat.updatedAt = Date.now();
   saveChats();
   renderChatList();
@@ -2291,6 +2552,7 @@ function createChat() {
     selectedSource: null,
     lastGeneration: null,
     pendingGeneration: null,
+    studioSettings: captureStudioSettings(),
     messages: [],
     consultMessages: [],
   });
@@ -2428,6 +2690,7 @@ function setSelectionForModelNode(profileId, nodeId, modelName) {
   if (normalized) state.modelSelections[key] = normalized;
   else delete state.modelSelections[key];
   saveModelSelections();
+  syncActiveChatSettings();
 }
 
 function generationModelState(profile, descriptors = profile?.modelNodes) {
@@ -2455,6 +2718,7 @@ function setSelectionsForLoraNode(profileId, nodeId, selections) {
   if (selections.length) state.loraSelections[key] = selections;
   else delete state.loraSelections[key];
   saveLoraSelections();
+  syncActiveChatSettings();
 }
 
 function generationLoraState(profile, descriptors = profile?.loraNodes) {
@@ -2851,6 +3115,7 @@ function refreshWorkflowControls() {
   updateComposeMode();
   renderWorkflowStatus();
   refreshLoraSection();
+  refreshModelSection();
 }
 
 function renderWorkflowStatus() {
@@ -3197,7 +3462,10 @@ function restoreStoredLoraState(data) {
     if (entry.selections.length) state.loraSelections[key] = entry.selections;
     else delete state.loraSelections[key];
   }
-  if (changed) saveLoraSelections();
+  if (changed) {
+    saveLoraSelections();
+    syncActiveChatSettings();
+  }
   if (selectedWorkflowProfileId() === profileId) refreshLoraSection();
   return true;
 }
@@ -3221,7 +3489,10 @@ function restoreStoredModelState(data) {
     state.modelSelections[key] = entry.modelName;
     changed = true;
   }
-  if (changed) saveModelSelections();
+  if (changed) {
+    saveModelSelections();
+    syncActiveChatSettings();
+  }
   if (selectedWorkflowProfileId() === profileId) refreshModelSection();
   return true;
 }
@@ -4135,13 +4406,14 @@ async function loadConfig() {
   const response = await api.fetchApi("/promptstudio/prompt-studio/config");
   if (!response.ok) throw new Error(`Could not load Prompt Studio configuration (${response.status}).`);
   state.config = await response.json();
-  const settings = getSettings();
+  const settings = normalizeStudioSettings(activeChat()?.studioSettings || getSettings());
   setOptions("promptstudio-profile", state.config.profiles, settings.model_profile);
   setOptions("promptstudio-style", state.config.styles, settings.style_preset);
   setOptions("promptstudio-framing", state.config.framings, settings.framing_preset);
   setOptions("promptstudio-thinking", state.config.thinking_modes, settings.thinking_mode);
   setOptions("promptstudio-embellishment", state.config.embellishment_levels, settings.embellishment_level);
   syncOutputLengthControl({ storedSettings: settings });
+  applyStudioSettings(activeChat());
   if (selectedLlmProvider() === "ollama") await loadOllamaModels({ announce: false });
 }
 
@@ -5424,6 +5696,81 @@ function llmConnectionPayload() {
   };
 }
 
+function renderKoboldStatus(status = {}) {
+  const control = state.panel?.querySelector("#promptstudio-kobold-control");
+  const label = control?.querySelector("#promptstudio-kobold-status-label");
+  const detail = control?.querySelector("#promptstudio-kobold-status-detail");
+  const stop = control?.querySelector("#promptstudio-kobold-stop");
+  if (!control || !label || !detail || !stop) return;
+  const reachable = status.reachable === true;
+  const busy = reachable && status.busy === true;
+  const stateName = busy ? "busy" : (reachable ? "idle" : (status.checking ? "checking" : "offline"));
+  control.dataset.state = stateName;
+  label.textContent = busy ? "Kobold busy" : (reachable ? "Kobold idle" : (status.checking ? "Kobold…" : "Kobold offline"));
+  const characters = Number(status.generated_characters);
+  detail.textContent = status.message || (busy
+    ? `Generation active${Number.isFinite(characters) && characters > 0 ? ` · ${characters.toLocaleString()} characters` : ""}`
+    : (reachable ? "Ready for local requests." : "KoboldCpp could not be reached."));
+  stop.disabled = !busy || state.koboldAbortBusy;
+  stop.textContent = state.koboldAbortBusy ? "Stopping…" : "Force stop generation";
+}
+
+async function refreshKoboldStatus() {
+  if (state.koboldStatusRequest) return state.koboldStatusRequest;
+  const control = state.panel?.querySelector("#promptstudio-kobold-control");
+  if (!control || control.dataset.state === "checking") renderKoboldStatus({ checking: true });
+  state.koboldStatusRequest = (async () => {
+    try {
+      const response = await api.fetchApi(KOBOLD_STATUS_ENDPOINT, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ kobold_url: llmConnectionPayload().kobold_url }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.error || `KoboldCpp status failed (${response.status}).`);
+      renderKoboldStatus(data);
+      return data;
+    } catch (error) {
+      renderKoboldStatus({ reachable: false, message: error.message || String(error) });
+      return null;
+    } finally {
+      state.koboldStatusRequest = null;
+    }
+  })();
+  return state.koboldStatusRequest;
+}
+
+async function stopKoboldGeneration() {
+  if (state.koboldAbortBusy) return;
+  state.koboldAbortBusy = true;
+  renderKoboldStatus({ reachable: true, busy: true, message: "Sending force-stop signal…" });
+  try {
+    const response = await api.fetchApi(KOBOLD_ABORT_ENDPOINT, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ kobold_url: llmConnectionPayload().kobold_url }),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.error || `KoboldCpp stop failed (${response.status}).`);
+    renderKoboldStatus({
+      reachable: true,
+      busy: data.success !== true,
+      message: data.success ? "Stop signal accepted." : "KoboldCpp reported no abortable generation.",
+    });
+  } catch (error) {
+    renderKoboldStatus({ reachable: false, message: error.message || String(error) });
+  } finally {
+    state.koboldAbortBusy = false;
+    window.setTimeout(refreshKoboldStatus, 500);
+  }
+}
+
+function startKoboldStatusMonitor() {
+  if (state.koboldStatusTimer) return;
+  refreshKoboldStatus();
+  state.koboldStatusTimer = window.setInterval(refreshKoboldStatus, KOBOLD_STATUS_POLL_MS);
+}
+
 async function requireVisionCapability(connectionPayload = llmConnectionPayload()) {
   const response = await api.fetchApi("/promptstudio/prompt-studio/vision-capability", {
     method: "POST",
@@ -6685,6 +7032,10 @@ function setConsultStatus(text, kind = "") {
 
 function setConsultBusy(busy) {
   state.consultBusy = busy;
+  if (!busy) {
+    state.consultPendingText = "";
+    state.panel?.querySelector("[data-consult-pending]")?.closest(".promptstudio-consult-message")?.remove();
+  }
   queueMicrotask(syncBackgroundActivityIndicator);
   state.panel?.querySelectorAll(".promptstudio-consult button, .promptstudio-consult input, .promptstudio-consult select, .promptstudio-consult textarea")
     .forEach((control) => {
@@ -6695,12 +7046,22 @@ function setConsultBusy(busy) {
   updateConsultExperimentUi();
 }
 
+function setConsultProgress(text) {
+  state.consultPendingText = String(text || "");
+  setConsultStatus(state.consultPendingText, "working");
+  const pending = state.panel?.querySelector("[data-consult-pending]");
+  if (pending) pending.textContent = state.consultPendingText;
+  else if (state.consultBusy) renderConsultHistory();
+}
+
 function consultRequestMessages(messages) {
   const experimentId = activeConsultExperiment()?.id || "";
   const scopedMessages = messages.filter((message) => (
-    experimentId
-      ? String(message.experimentId || "") === experimentId
-      : !String(message.experimentId || "")
+    !message.requestFailed && (
+      experimentId
+        ? String(message.experimentId || "") === experimentId
+        : !String(message.experimentId || "")
+    )
   ));
   const selected = scopedMessages.slice(-60).map((message) => ({
     role: message.role,
@@ -7248,8 +7609,9 @@ function renderConsultHistory() {
       next.type = "button";
       next.className = "promptstudio-consult-response-arrow";
       const hasNewer = selectedIndex < variants.length - 1;
-      next.setAttribute("aria-label", hasNewer ? "Show next answer" : "Regenerate answer");
-      next.title = hasNewer ? "Show next answer" : "Regenerate answer";
+      const nextLabel = hasNewer ? "Show next answer" : (message.requestFailed ? "Retry request" : "Regenerate answer");
+      next.setAttribute("aria-label", nextLabel);
+      next.title = nextLabel;
       next.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9.5 6 6 6-6 6"/></svg>';
       next.addEventListener("click", () => {
         if (hasNewer) selectConsultResponse(message.id, selectedIndex + 1);
@@ -7259,6 +7621,18 @@ function renderConsultHistory() {
       bubble.appendChild(controls);
     }
     history.appendChild(bubble);
+  }
+  if (state.consultBusy && state.consultPendingText) {
+    const pendingBubble = document.createElement("article");
+    pendingBubble.className = "promptstudio-consult-message promptstudio-consult-message-assistant promptstudio-consult-message-pending";
+    const pendingText = document.createElement("div");
+    pendingText.className = "promptstudio-consult-message-text";
+    pendingText.dataset.consultPending = "true";
+    pendingText.setAttribute("role", "status");
+    pendingText.setAttribute("aria-live", "polite");
+    pendingText.textContent = state.consultPendingText;
+    pendingBubble.appendChild(pendingText);
+    history.appendChild(pendingBubble);
   }
   history.scrollTop = history.scrollHeight;
   updateConsultExperimentUi();
@@ -7274,6 +7648,7 @@ function selectConsultResponse(messageId, variantIndex) {
   message.text = message.variants[variantIndex].text;
   message.proposal = message.variants[variantIndex].proposal || null;
   message.generation = message.variants[variantIndex].generation || null;
+  message.requestFailed = message.variants[variantIndex].requestFailed === true;
   updateActiveConsultExperiment(message);
   message.updatedAt = selectedAt;
   chat.updatedAt = selectedAt;
@@ -7286,21 +7661,58 @@ async function requestConsultResponse(messages) {
   if (!state.apiConnected) throw new Error("ComfyUI is disconnected. Wait for it to reconnect before sending.");
   const generationSettings = collectConsultGenerationSettings();
   const experimentMode = Boolean(activeConsultExperiment());
-  const response = await api.fetchApi("/promptstudio/prompt-studio/chat", {
+  const response = await api.fetchApi(CONSULT_CHAT_ENDPOINT, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       ...llmConnectionPayload(),
       ...generationSettings,
+      async: true,
       experiment_mode: experimentMode,
       messages: consultRequestMessages(messages),
     }),
   });
-  const data = await response.json().catch(() => ({}));
+  let data = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(data.error || `Consultation failed (${response.status}).`);
+  if (response.status === 202 && data.job_id) data = await pollConsultJob(data.job_id);
   const answer = String(data.message || "").trim();
   if (!answer) throw new Error(`${llmProviderName()} returned an empty response.`);
   return parseConsultExperimentAnswer(answer, experimentMode);
+}
+
+function consultJobStatusText(job) {
+  if (job.status === "queued") return "Consultation request is queued…";
+  const provider = job.provider_status || {};
+  if (provider.provider !== "koboldcpp") return `${llmProviderName()} is still working…`;
+  if (provider.reachable === false) return "Consultation is running; KoboldCpp status is temporarily unavailable…";
+  if (provider.busy) {
+    const characters = Number(provider.generated_characters);
+    return Number.isFinite(characters) && characters > 0
+      ? `KoboldCpp is still generating · ${characters.toLocaleString()} characters received…`
+      : "KoboldCpp is still processing the prompt…";
+  }
+  return "KoboldCpp finished generating; Prompt Studio is processing the response…";
+}
+
+async function pollConsultJob(jobId) {
+  let statusFailures = 0;
+  while (true) {
+    await new Promise((resolve) => window.setTimeout(resolve, CONSULT_JOB_POLL_MS));
+    const response = await api.fetchApi(`${CONSULT_CHAT_ENDPOINT}/${encodeURIComponent(jobId)}`);
+    const job = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      if (response.status >= 500 && statusFailures < CONSULT_STATUS_RETRY_LIMIT) {
+        statusFailures += 1;
+        setConsultProgress("Consultation status was temporarily unavailable; retrying…");
+        continue;
+      }
+      throw new Error(job.error || `Consultation status check failed (${response.status}).`);
+    }
+    statusFailures = 0;
+    if (job.status === "complete") return job.result || {};
+    if (job.status === "failed") throw new Error(job.error || "Consultation request failed.");
+    setConsultProgress(consultJobStatusText(job));
+  }
 }
 
 async function regenerateConsultResponse(messageId) {
@@ -7316,7 +7728,7 @@ async function regenerateConsultResponse(messageId) {
   ) return;
 
   setConsultBusy(true);
-  setConsultStatus(`Waiting for ${llmProviderName()} to regenerate the answer…`, "working");
+  setConsultProgress(`Waiting for ${llmProviderName()} to regenerate the answer…`);
   try {
     const answer = await requestConsultResponse(chat.consultMessages.slice(0, messageIndex));
     const answeredAt = Date.now();
@@ -7325,12 +7737,14 @@ async function regenerateConsultResponse(messageId) {
       text: answer.text,
       proposal: answer.proposal,
       generation: null,
+      requestFailed: false,
       createdAt: answeredAt,
     });
     message.variantIndex = message.variants.length - 1;
     message.text = answer.text;
     message.proposal = answer.proposal;
     message.generation = null;
+    message.requestFailed = false;
     updateActiveConsultExperiment(message, chat);
     message.updatedAt = answeredAt;
     chat.updatedAt = answeredAt;
@@ -7404,7 +7818,7 @@ async function sendConsultMessage() {
   renderConsultHistory();
   renderConsultAttachments();
   setConsultBusy(true);
-  setConsultStatus(`Waiting for ${llmProviderName()}…`, "working");
+  setConsultProgress(`Waiting for ${llmProviderName()}…`);
   try {
     const answer = await requestConsultResponse(chat.consultMessages);
     const answeredAt = Date.now();
@@ -7425,7 +7839,22 @@ async function sendConsultMessage() {
     renderConsultHistory();
     setConsultStatus("Ready", "ready");
   } catch (error) {
-    setConsultStatus(error.message || String(error), "error");
+    const failedAt = Date.now();
+    const message = error.message || String(error);
+    chat.consultMessages.push(normalizeConsultMessage({
+      id: makeId(),
+      role: "assistant",
+      text: `Consultation request failed: ${message}`,
+      requestFailed: true,
+      experimentId: activeConsultExperiment(chat)?.id || "",
+      createdAt: failedAt,
+      updatedAt: failedAt,
+    }));
+    chat.consultMessages = chat.consultMessages.slice(-100);
+    chat.updatedAt = failedAt;
+    saveChats();
+    renderConsultHistory();
+    setConsultStatus(`${message} Use the regenerate arrow on the failed answer to retry.`, "error");
   } finally {
     setConsultBusy(false);
   }
@@ -8167,6 +8596,15 @@ function buildPanel() {
           <div><strong>Prompt Studio</strong><span>by tiko13</span></div>
         </div>
         <div class="promptstudio-header-actions">
+          <details id="promptstudio-kobold-control" class="promptstudio-kobold-control" data-state="checking">
+            <summary title="KoboldCpp status and emergency stop"><span class="promptstudio-kobold-dot" aria-hidden="true"></span><span id="promptstudio-kobold-status-label">Kobold…</span></summary>
+            <div class="promptstudio-kobold-popover">
+              <strong>KoboldCpp</strong>
+              <span id="promptstudio-kobold-status-detail" role="status" aria-live="polite">Checking local status…</span>
+              <button id="promptstudio-kobold-stop" type="button" disabled>Force stop generation</button>
+              <small>Stops text generation only. KoboldCpp stays loaded.</small>
+            </div>
+          </details>
           <button id="promptstudio-toggle-chats" class="promptstudio-chats-button" type="button" title="Show chats" aria-label="Show chats" data-promptstudio-drawer="chats" aria-expanded="false">Sessions</button>
           <button id="promptstudio-toggle-consult" class="promptstudio-consult-toggle promptstudio-standalone-only" type="button" title="Talk with the local model" aria-label="Talk with the local model" aria-expanded="false">
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 5h14v10H9l-4 4V5Z" /></svg>
@@ -8664,6 +9102,7 @@ function buildPanel() {
     retry();
   });
   panel.querySelector("#promptstudio-new-chat").addEventListener("click", createChat);
+  panel.querySelector("#promptstudio-kobold-stop").addEventListener("click", stopKoboldGeneration);
   panel.querySelector("#promptstudio-popout").addEventListener("click", () => togglePopout({ returnToEmbedded: true }));
   panel.querySelector("#promptstudio-close").addEventListener("click", () => togglePanel(false));
   panel.querySelector("#promptstudio-mobile-close").addEventListener("click", () => togglePanel(false));
@@ -8761,6 +9200,7 @@ function buildPanel() {
     .forEach((element) => element.addEventListener("change", markControlsChanged));
   panel.querySelector("#promptstudio-kobold-url").addEventListener("change", () => {
     markControlsChanged();
+    refreshKoboldStatus();
     if (!panel.querySelector("#promptstudio-consult").hidden) refreshConsultVisionCapability();
   });
   panel.querySelectorAll(".promptstudio-resolution-details input, .promptstudio-resolution-details select")
@@ -9023,6 +9463,7 @@ app.registerExtension({
     state.modelSelections = loadModelSelections();
     loadCss();
     buildPanel();
+    startKoboldStatusMonitor();
     setupApiConnectionState();
     setupGenerationProgressEvents();
     setupWorkflowSync();
