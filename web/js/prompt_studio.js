@@ -4208,12 +4208,6 @@ async function appendGenerationImages(promptId, images) {
   if (chat.id === state.activeChatId) renderChatHistory();
 }
 
-async function appendImages(message, images) {
-  if (!message || !images.length) return;
-  const stored = activeChat()?.messages.find((item) => item.id === message.dataset.messageId);
-  if (stored?.promptId) await appendGenerationImages(stored.promptId, images);
-}
-
 function updateMainPromptEditor(prompt) {
   state.mainPrompt = prompt;
   const editor = state.panel?.querySelector("#promptstudio-main-prompt");
@@ -4685,40 +4679,9 @@ async function promptWorkerStopped() {
   return state.promptWorkerHealthRequest;
 }
 
-function updateMessageText(message, text) {
-  if (!message) return;
-  const value = String(text || "");
-  const body = message.querySelector(".promptstudio-message-text");
-  if (body && value) body.textContent = value;
-  else if (body) body.remove();
-  else if (value) {
-    const nextBody = document.createElement("div");
-    nextBody.className = "promptstudio-message-text";
-    nextBody.textContent = value;
-    const gallery = message.querySelector(".promptstudio-image-grid");
-    message.insertBefore(nextBody, gallery);
-  }
-  const chat = activeChat();
-  const stored = chat?.messages.find((item) => item.id === message.dataset.messageId);
-  if (!stored) return;
-  stored.text = value;
-  stored.updatedAt = Date.now();
-  chat.updatedAt = stored.updatedAt;
-  saveChats();
-  renderChatList();
-  if (!message.isConnected) renderChatHistory();
-}
-
 function messageElement(messageId) {
   return [...(state.panel?.querySelectorAll(".promptstudio-message") || [])]
     .find((message) => message.dataset.messageId === messageId) || null;
-}
-
-function pendingGenerationMessage(promptId) {
-  const record = studioGenerationRecord(promptId);
-  return record && ["queued", "generating"].includes(record.message.generationState)
-    ? record.message
-    : null;
 }
 
 function updateGenerationProgress(promptId, progress = {}) {
@@ -4808,29 +4771,6 @@ function setupGenerationProgressEvents() {
       failTrackedGeneration(promptId, executionFailureMessage(eventName, event?.detail));
     });
   }
-}
-
-function setMessageGenerationState(message, generationState) {
-  const chat = activeChat();
-  const stored = chat?.messages.find((item) => item.id === message?.dataset.messageId);
-  if (!stored) return;
-  stored.generationState = generationState;
-  if (!["queued", "generating"].includes(generationState)) {
-    state.generationProgress.delete(stored.promptId);
-    if (state.activeGenerationPromptId === stored.promptId) state.activeGenerationPromptId = "";
-  }
-  if (message?.isConnected) renderGenerationProgress(message, stored);
-  stored.updatedAt = Date.now();
-  chat.updatedAt = stored.updatedAt;
-  saveChats();
-  renderChatList();
-  refreshLatestImageContextControl();
-  if (!message?.isConnected) renderChatHistory();
-}
-
-function markGenerationAttemptFailed(message, text) {
-  updateMessageText(message, text);
-  setMessageGenerationState(message, "error");
 }
 
 function setConsultExperimentGeneration(messageId, variantId, generation, chatId = null) {
