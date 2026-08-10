@@ -19,6 +19,9 @@ const STANDALONE_CHANNEL = "promptstudio.promptStudio.standalone.v1";
 const VIDEO_STUDIO_CHANNEL = "promptstudio.video.standalone.v1";
 const WORKFLOW_SYNC_CHANNEL = "promptstudio.promptStudio.workflows.v1";
 const CHAT_SYNC_CHANNEL = "promptstudio.promptStudio.chats.v1";
+const STUDIO_SETTINGS_VERSION = 2;
+const STUDIO_ROUTE_ENDPOINT = "/promptstudio/prompt-studio/route-turn";
+const STUDIO_DISCUSS_ENDPOINT = "/promptstudio/prompt-studio/discuss";
 const CONSULT_CHAT_ENDPOINT = "/promptstudio/prompt-studio/chat";
 const PROMPT_AGENT_ENDPOINT = "/promptstudio/prompt-studio/agent";
 const PROMPT_AGENT_CANCEL_ENDPOINT = "/promptstudio/prompt-studio/agent/cancel";
@@ -146,6 +149,7 @@ const state = {
   promptWorkerHealthRequest: null,
   studioPreparations: new Map(),
   latestStudioPreparationByChat: new Map(),
+  studioTurnBusyChatIds: new Set(),
   chats: [],
   activeChatId: null,
   chatRevision: 0,
@@ -1285,6 +1289,11 @@ function normalizeStudioSettings(value, fallback = getSettings()) {
   const source = value && typeof value === "object" && !Array.isArray(value) ? value : {};
   const base = { ...SETTINGS_DEFAULTS, ...(fallback || {}) };
   const text = (key) => String(source[key] ?? base[key] ?? "");
+  const requiredText = (key) => (
+    String(source[key] ?? "").trim()
+    || String(base[key] ?? "").trim()
+    || String(SETTINGS_DEFAULTS[key] ?? "")
+  );
   const checked = (key) => source[key] == null ? Boolean(base[key]) : Boolean(source[key]);
   const numeric = (key, minimum, maximum) => {
     const requested = Number(source[key] ?? base[key]);
@@ -1292,18 +1301,18 @@ function normalizeStudioSettings(value, fallback = getSettings()) {
     return Math.max(minimum, Math.min(maximum, Number.isFinite(requested) ? requested : fallbackValue));
   };
   return {
-    version: 1,
+    version: STUDIO_SETTINGS_VERSION,
     llm_provider: text("llm_provider") === "ollama" ? "ollama" : "koboldcpp",
     kobold_url: text("kobold_url"),
     ollama_url: text("ollama_url"),
     ollama_model: text("ollama_model"),
-    model_profile: text("model_profile"),
-    style_preset: text("style_preset"),
-    framing_preset: text("framing_preset"),
+    model_profile: requiredText("model_profile"),
+    style_preset: requiredText("style_preset"),
+    framing_preset: requiredText("framing_preset"),
     style_modifier: text("style_modifier"),
     framing_modifier: text("framing_modifier"),
-    thinking_mode: text("thinking_mode"),
-    embellishment_level: text("embellishment_level"),
+    thinking_mode: requiredText("thinking_mode"),
+    embellishment_level: requiredText("embellishment_level"),
     target_output_length: numeric("target_output_length", 1, 10000),
     output_length_custom: checked("output_length_custom"),
     temperature: numeric("temperature", 0, 5),
@@ -1327,26 +1336,71 @@ function normalizeStudioSettings(value, fallback = getSettings()) {
   };
 }
 
+function studioSettingsFromControlsFingerprint(value) {
+  let fingerprint;
+  try {
+    fingerprint = JSON.parse(String(value || ""));
+  } catch (_) {
+    return { schema: "", values: {} };
+  }
+  if (!Array.isArray(fingerprint)) return { schema: "", values: {} };
+
+  const values = {};
+  const copyText = (key, index) => {
+    if (fingerprint[index] != null) values[key] = String(fingerprint[index]);
+  };
+  const copyNumber = (key, index) => {
+    const number = Number(fingerprint[index]);
+    if (Number.isFinite(number) && number > 0) values[key] = number;
+  };
+  const legacy = fingerprint.length >= 10 && /^https?:\/\//i.test(String(fingerprint[0] || ""));
+  if (legacy) {
+    copyText("kobold_url", 0);
+    copyText("model_profile", 1);
+    copyText("style_preset", 2);
+    copyText("framing_preset", 3);
+    copyText("style_modifier", 4);
+    copyText("framing_modifier", 5);
+    copyText("thinking_mode", 6);
+    copyText("embellishment_level", 7);
+    copyNumber("temperature", 9);
+    return { schema: "legacy-10", values };
+  }
+
+  copyText("model_profile", 0);
+  copyText("style_preset", 1);
+  copyText("framing_preset", 2);
+  copyText("style_modifier", 3);
+  copyText("framing_modifier", 4);
+  if (fingerprint.length >= 8) {
+    copyText("additional_instructions", 5);
+    copyText("embellishment_level", 6);
+    copyNumber("target_output_length", 7);
+    return { schema: "current-8", values };
+  }
+  if (fingerprint.length === 7) {
+    copyText("embellishment_level", 5);
+    copyNumber("target_output_length", 6);
+    return { schema: "transitional-7", values };
+  }
+  if (fingerprint.length >= 6) {
+    copyText("embellishment_level", 5);
+    return { schema: "pre-length-6", values };
+  }
+  return { schema: "", values: {} };
+}
+
 function migratedStudioSettings(chat, messages) {
   const hasStoredSettings = chat?.studioSettings && typeof chat.studioSettings === "object"
     && !Array.isArray(chat.studioSettings);
   const source = hasStoredSettings ? structuredClone(chat.studioSettings) : {};
   const latestGeneration = [...messages].reverse().find((message) => message.canonicalPrompt.trim());
+  const fingerprint = studioSettingsFromControlsFingerprint(
+    chat?.controlsFingerprint || latestGeneration?.controlsFingerprint || "",
+  );
   if (!hasStoredSettings) {
-    let fingerprint;
-    try {
-      fingerprint = JSON.parse(String(chat?.controlsFingerprint || latestGeneration?.controlsFingerprint || ""));
-    } catch (_) {
-      fingerprint = null;
-    }
-    if (Array.isArray(fingerprint)) {
-      const keys = [
-        "model_profile", "style_preset", "framing_preset", "style_modifier",
-        "framing_modifier", "additional_instructions", "embellishment_level", "target_output_length",
-      ];
-      keys.forEach((key, index) => {
-        if (fingerprint[index] != null) source[key] = fingerprint[index];
-      });
+    if (fingerprint.schema) {
+      Object.assign(source, fingerprint.values);
       source.output_length_custom = true;
     }
     if (latestGeneration) {
@@ -1378,8 +1432,94 @@ function migratedStudioSettings(chat, messages) {
     source.model_selections = Object.keys(modelSelections).length
       ? modelSelections
       : (messages.length ? {} : state.modelSelections);
+  } else {
+    const storedVersion = Number(chat.studioSettings?.version || 0);
+    const legacyShifted = storedVersion < STUDIO_SETTINGS_VERSION
+      && fingerprint.schema === "legacy-10"
+      && /^https?:\/\//i.test(String(source.model_profile || ""));
+    const oldLengthShifted = storedVersion < STUDIO_SETTINGS_VERSION
+      && ["pre-length-6", "transitional-7"].includes(fingerprint.schema)
+      && String(source.additional_instructions || "") === String(fingerprint.values.embellishment_level || "");
+    const configControlsLost = [
+      "model_profile", "style_preset", "framing_preset", "thinking_mode", "embellishment_level",
+    ].filter((key) => !String(source[key] || "").trim()).length >= 3;
+    if (legacyShifted || oldLengthShifted || configControlsLost) {
+      Object.assign(source, fingerprint.values);
+      if (oldLengthShifted) source.additional_instructions = "";
+      if (Object.hasOwn(fingerprint.values, "target_output_length")) source.output_length_custom = true;
+    } else {
+      for (const key of ["model_profile", "style_preset", "framing_preset", "embellishment_level"]) {
+        if (!String(source[key] || "").trim() && String(fingerprint.values[key] || "").trim()) {
+          source[key] = fingerprint.values[key];
+        }
+      }
+    }
   }
   return normalizeStudioSettings(source);
+}
+
+function normalizeStudioControlChanges(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  const textFields = new Set([
+    "model_profile", "style_preset", "framing_preset", "style_modifier", "framing_modifier",
+    "additional_instructions", "secondary_instructions", "embellishment_level", "resolution_aspect_ratio",
+  ]);
+  const normalized = {};
+  for (const [key, raw] of Object.entries(value)) {
+    if (textFields.has(key)) {
+      normalized[key] = String(raw ?? "").slice(0, 16 * 1024);
+    } else if (key === "target_output_length" && Number.isFinite(Number(raw))) {
+      normalized[key] = Math.max(1, Math.min(10000, Number(raw)));
+    } else if (key === "resolution_megapixels" && Number.isFinite(Number(raw))) {
+      normalized[key] = Math.max(0.1, Math.min(16, Number(raw)));
+    } else if (key === "resolution_multiple" && Number.isFinite(Number(raw))) {
+      normalized[key] = Math.max(8, Math.min(128, Math.round(Number(raw) / 4) * 4));
+    } else if (key === "randomize_seed" && typeof raw === "boolean") {
+      normalized[key] = raw;
+    }
+  }
+  return normalized;
+}
+
+function normalizeStudioProposal(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const status = value.status === "ready" ? "ready" : value.status === "needs_choice" ? "needs_choice" : "";
+  const summary = String(value.summary || "").trim().slice(0, 4000);
+  const revisionInstruction = String(value.revision_instruction || value.revisionInstruction || "").trim().slice(0, 8000);
+  const controlChanges = normalizeStudioControlChanges(value.control_changes || value.controlChanges);
+  if (!status || !summary || (!revisionInstruction && !Object.keys(controlChanges).length)) return null;
+  return {
+    id: String(value.id || makeId()),
+    status,
+    summary,
+    revision_instruction: revisionInstruction,
+    control_changes: controlChanges,
+    createdAt: Number.isFinite(Number(value.createdAt)) ? Number(value.createdAt) : Date.now(),
+  };
+}
+
+function normalizeStudioDiscussion(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const status = ["active", "applied", "cancelled", "stale"].includes(value.status)
+    ? value.status
+    : "active";
+  const createdAt = Number.isFinite(Number(value.createdAt)) ? Number(value.createdAt) : Date.now();
+  return {
+    id: String(value.id || makeId()),
+    status,
+    targetImage: normalizeImageReference(value.targetImage),
+    targetMessageId: String(value.targetMessageId || ""),
+    anchorMainPrompt: String(value.anchorMainPrompt || ""),
+    anchorFinalPrompt: String(value.anchorFinalPrompt || ""),
+    anchorControlsFingerprint: String(value.anchorControlsFingerprint || ""),
+    anchorApplicableControls: normalizeStudioControlChanges(value.anchorApplicableControls),
+    references: Array.isArray(value.references)
+      ? value.references.map(normalizeImageReference).filter(Boolean).slice(0, 3)
+      : [],
+    pendingProposal: normalizeStudioProposal(value.pendingProposal),
+    createdAt,
+    updatedAt: Number.isFinite(Number(value.updatedAt)) ? Number(value.updatedAt) : createdAt,
+  };
 }
 
 function normalizeChat(chat) {
@@ -1416,6 +1556,11 @@ function normalizeChat(chat) {
         resultFields: Array.isArray(message?.resultFields) && message.resultFields.length ? message.resultFields.map(String) : ["images", "gifs"],
         promptId: String(message?.promptId || ""),
         generationState: ["queued", "generating", "complete", "error"].includes(message?.generationState) ? message.generationState : "",
+        studioMessageKind: ["discussion", "revision"].includes(message?.studioMessageKind)
+          ? message.studioMessageKind
+          : "",
+        studioDiscussionId: String(message?.studioDiscussionId || ""),
+        studioProposal: normalizeStudioProposal(message?.studioProposal),
         createdAt: normalizedAt(message?.createdAt, updatedAt),
         updatedAt: normalizedAt(message?.updatedAt, normalizedAt(message?.createdAt, updatedAt)),
       }))
@@ -1478,6 +1623,7 @@ function normalizeChat(chat) {
     consultExperiment,
     consultAgent,
     consultAgentMode,
+    studioDiscussion: normalizeStudioDiscussion(chat?.studioDiscussion),
   };
 }
 
@@ -1790,6 +1936,7 @@ async function loadChats() {
         || typeof storedChat?.mainPrompt !== "string"
         || typeof storedChat?.finalPrompt !== "string"
         || !storedChat?.studioSettings
+        || JSON.stringify(storedChat?.studioSettings) !== JSON.stringify(chat.studioSettings)
         || (Array.isArray(storedChat?.versions) && storedChat.versions.some((version) => typeof version !== "object"))
       );
     });
@@ -1828,6 +1975,7 @@ function restoreChatState(chat) {
   state.versionIndex = chat.versionIndex;
   updatePromptEditors(chat.mainPrompt, chat.finalPrompt);
   applyStudioSettings(chat);
+  renderStudioDiscussionContext();
 }
 
 function captureStudioSettings(chat = activeChat()) {
@@ -1835,7 +1983,8 @@ function captureStudioSettings(chat = activeChat()) {
   if (!state.panel) return fallback;
   const value = (key, id) => {
     const control = state.panel.querySelector(`#${id}`);
-    return control ? control.value : fallback[key];
+    if (!control || (control.tagName === "SELECT" && !control.options.length)) return fallback[key];
+    return control.value;
   };
   const checked = (key, id) => {
     const control = state.panel.querySelector(`#${id}`);
@@ -1886,7 +2035,13 @@ function applyStudioSettings(chat) {
     const control = state.panel.querySelector(`#${id}`);
     if (!control) return;
     if (control.tagName === "SELECT" && control.options.length
-        && ![...control.options].some((option) => option.value === String(value))) return;
+        && ![...control.options].some((option) => option.value === String(value))) {
+      const unavailable = document.createElement("option");
+      unavailable.value = String(value ?? "");
+      unavailable.textContent = `${String(value || "Saved value")} · unavailable`;
+      unavailable.dataset.promptstudioUnavailable = "true";
+      control.appendChild(unavailable);
+    }
     control.value = String(value ?? "");
   };
   const setChecked = (id, value) => {
@@ -1949,7 +2104,7 @@ function syncActiveChatSettings({ persist = true } = {}) {
   if (JSON.stringify(settings) === JSON.stringify(chat.studioSettings)) return false;
   chat.studioSettings = settings;
   chat.updatedAt = Date.now();
-  if (persist) saveChats();
+  if (persist) saveChats({ immediate: true });
   return true;
 }
 
@@ -2473,6 +2628,7 @@ function renderChatHistory() {
   history.replaceChildren();
   for (const message of activeChat()?.messages || []) renderMessage(message, { scroll: false });
   refreshEmptyImageDropZone();
+  renderStudioDiscussionContext();
   scrollHistoryToEnd({ instant: true });
   updateComposeMode();
 }
@@ -2498,6 +2654,7 @@ function updateComposeMode() {
   const action = selectedAction();
   const autoGenerate = state.panel.querySelector("#promptstudio-auto-generate")?.checked !== false;
   const queueingGeneration = hasPendingStudioGenerations();
+  const turnBusy = state.studioTurnBusyChatIds.has(state.activeChatId);
   const reroll = state.panel.querySelector("#promptstudio-reroll");
   if (reroll) reroll.textContent = queueingGeneration ? "Queue reroll" : "Reroll";
   const hasRevision = Boolean(input?.value.trim());
@@ -2513,24 +2670,33 @@ function updateComposeMode() {
     if (send) send.textContent = queueingGeneration
       ? (action === "edit" ? "Queue edit" : "Queue create new")
       : (action === "edit" ? "Edit selected image" : "Create new image");
+    if (send) send.disabled = state.busy || turnBusy;
     if (editor) editor.readOnly = false;
     return;
   }
-  if (heading) heading.textContent = creating ? "Describe the image" : "Describe the next change";
-  if (hint) hint.textContent = creating
-    ? `${llmProviderName()} will create the initial prompt`
-    : "Leave empty to create from the current prompt";
-  if (input) input.placeholder = creating ? "A portrait of an astronaut in a greenhouse…" : "Make the background more varied…";
+  const discussion = activeStudioDiscussion();
+  if (heading) heading.textContent = creating ? "Describe or ask" : "Ask about the image or describe a change";
+  if (hint) hint.textContent = discussion
+    ? "Continue discussing, accept the suggestion, or request a direct change"
+    : creating
+      ? `${llmProviderName()} will decide whether to answer or create`
+      : "Leave empty to create from the current prompt";
+  if (input) input.placeholder = creating
+    ? "A portrait of an astronaut… or ask for prompt advice"
+    : "Make the dress casual… or ask what would work better";
   if (send) {
-    if (!autoGenerate) send.textContent = creating ? "Create prompt" : "Revise prompt";
+    if (hasRevision) send.textContent = turnBusy ? "Thinking…" : "Send";
+    else if (!autoGenerate) send.textContent = creating ? "Create prompt" : "Revise prompt";
     else {
       const label = action === "edit"
         ? (hasRevision ? "Revise & edit selected" : "Edit selected")
         : (hasRevision ? "Revise & create new" : "Create new");
       send.textContent = queueingGeneration ? `Queue ${label.toLowerCase()}` : label;
     }
+    send.disabled = state.busy || turnBusy;
   }
   if (editor) editor.readOnly = creating;
+  renderStudioDiscussionContext();
   refreshEmptyImageDropZone();
 }
 
@@ -2618,7 +2784,10 @@ function deleteChat(chatId) {
 function activateChat(chatId) {
   if (state.busy && chatId !== state.activeChatId) return;
   const switchingChats = chatId !== state.activeChatId;
-  if (switchingChats) commitPromptEditorVersion();
+  if (switchingChats) {
+    commitPromptEditorVersion();
+    syncActiveChat();
+  }
   const chat = state.chats.find((item) => item.id === chatId);
   if (!chat) return;
   state.activeChatId = chat.id;
@@ -2647,7 +2816,7 @@ function activateChat(chatId) {
   const undo = state.panel?.querySelector("#promptstudio-undo");
   if (undo) undo.disabled = state.versionIndex <= 0 || state.busy;
   setPanelDrawer("chats", false);
-  saveChats();
+  saveChats({ immediate: switchingChats });
   resumeSyncedGeneration();
 }
 
@@ -3121,11 +3290,20 @@ function fillWorkflowSelect(select, kind, remembered) {
   }
   if (!select.options.length) {
     const unavailable = document.createElement("option");
-    unavailable.value = "";
-    unavailable.textContent = `No compatible ${kind === "upscale" ? "upscaling" : kind === "edit" ? "editing" : "creation"} workflows`;
+    unavailable.value = remembered;
+    unavailable.textContent = remembered
+      ? `${workflowNameFromPath(remembered)} · unavailable`
+      : `No compatible ${kind === "upscale" ? "upscaling" : kind === "edit" ? "editing" : "creation"} workflows`;
     select.appendChild(unavailable);
     select.disabled = true;
     return;
+  }
+  if (remembered && ![...select.options].some((option) => option.value === remembered)) {
+    const unavailable = document.createElement("option");
+    unavailable.value = remembered;
+    unavailable.textContent = `${workflowNameFromPath(remembered)} · unavailable`;
+    unavailable.dataset.promptstudioUnavailable = "true";
+    select.appendChild(unavailable);
   }
   select.disabled = state.busy || state.workflowBusy;
   if ([...select.options].some((option) => option.value === remembered)) select.value = remembered;
@@ -3282,6 +3460,7 @@ function setBusy(busy) {
   });
   refreshWorkflowControls();
   refreshLatestImageContextControl();
+  updateComposeMode();
 }
 
 function closeImageLightbox() {
@@ -3418,6 +3597,10 @@ function latestConversationImage(chat = activeChat()) {
 }
 
 function latestGeneratedImage(chat = activeChat()) {
+  return latestGeneratedContext(chat)?.image || null;
+}
+
+function latestGeneratedContext(chat = activeChat()) {
   const messages = Array.isArray(chat?.messages) ? chat.messages : [];
   for (let messageIndex = messages.length - 1; messageIndex >= 0; messageIndex -= 1) {
     const message = messages[messageIndex];
@@ -3425,7 +3608,7 @@ function latestGeneratedImage(chat = activeChat()) {
     const images = Array.isArray(message.images) ? message.images : [];
     for (let imageIndex = images.length - 1; imageIndex >= 0; imageIndex -= 1) {
       const reference = normalizeImageReference(images[imageIndex]);
-      if (reference) return reference;
+      if (reference) return { message, image: reference };
     }
   }
   return null;
@@ -4084,11 +4267,70 @@ function renderGenerationProgress(message, data) {
   message.appendChild(container);
 }
 
+function studioControlChangeLabels(changes) {
+  const labels = {
+    model_profile: "Model profile",
+    style_preset: "Style preset",
+    framing_preset: "Framing preset",
+    style_modifier: "Style modifier",
+    framing_modifier: "Framing modifier",
+    additional_instructions: "Additional instructions",
+    secondary_instructions: "Secondary instructions",
+    embellishment_level: "Embellishment",
+    target_output_length: "Target length",
+    resolution_aspect_ratio: "Aspect ratio",
+    resolution_megapixels: "Resolution",
+    resolution_multiple: "Resolution multiple",
+    randomize_seed: "Seed behavior",
+  };
+  return Object.keys(normalizeStudioControlChanges(changes)).map((key) => labels[key] || key);
+}
+
+function renderStudioProposalCard(message, data) {
+  const proposal = normalizeStudioProposal(data?.studioProposal);
+  if (!proposal) return;
+  const card = document.createElement("div");
+  card.className = "promptstudio-studio-proposal";
+  card.dataset.status = proposal.status;
+  const controlLabels = studioControlChangeLabels(proposal.control_changes);
+  const hasPromptChange = Boolean(proposal.revision_instruction);
+  const heading = document.createElement("strong");
+  heading.textContent = proposal.status !== "ready"
+    ? "Choice needed"
+    : hasPromptChange && controlLabels.length
+      ? "Suggested prompt & control changes"
+      : controlLabels.length ? "Suggested control changes" : "Suggested prompt change";
+  const summary = document.createElement("span");
+  summary.textContent = proposal.summary;
+  card.append(heading, summary);
+  if (controlLabels.length) {
+    const controls = document.createElement("small");
+    controls.textContent = `Controls: ${controlLabels.join(", ")}`;
+    card.appendChild(controls);
+  }
+  if (proposal.status === "ready") {
+    const activeDiscussion = activeStudioDiscussion();
+    const storedDiscussion = normalizeStudioDiscussion(activeChat()?.studioDiscussion);
+    const canApply = activeDiscussion?.id === data.studioDiscussionId
+      && activeDiscussion.pendingProposal?.id === proposal.id;
+    const apply = document.createElement("button");
+    apply.type = "button";
+    apply.textContent = storedDiscussion?.id === data.studioDiscussionId && storedDiscussion.status === "applied"
+      ? "Applied"
+      : selectedAction() === "edit" ? "Apply & edit" : "Apply suggestion";
+    apply.disabled = !canApply || state.busy || state.studioTurnBusyChatIds.has(state.activeChatId);
+    apply.addEventListener("click", () => applyStudioProposalFromMessage(data.id));
+    card.appendChild(apply);
+  }
+  message.appendChild(card);
+}
+
 function renderMessage(data, { scroll = true } = {}) {
   const history = state.panel?.querySelector("#promptstudio-history");
   if (!history) return null;
   const message = document.createElement("div");
   message.className = `promptstudio-message promptstudio-${data.role}`;
+  if (data.studioMessageKind === "discussion") message.classList.add("promptstudio-studio-discussion-message");
   message.dataset.messageId = data.id;
 
   if (data.label) {
@@ -4099,6 +4341,7 @@ function renderMessage(data, { scroll = true } = {}) {
   }
 
   if (data.canonicalPrompt && data.workflowName) {
+    message.classList.add("promptstudio-has-generation-provenance");
     const provenance = document.createElement("div");
     provenance.className = "promptstudio-generation-provenance";
     provenance.textContent = data.generationAction === "upscale"
@@ -4119,6 +4362,7 @@ function renderMessage(data, { scroll = true } = {}) {
   renderImageGallery(message, data.images, data);
   renderPromptInfo(message, data);
   renderVideoHandoffAction(message, data);
+  renderStudioProposalCard(message, data);
 
   history.appendChild(message);
   if (scroll) history.scrollTop = history.scrollHeight;
@@ -4152,6 +4396,11 @@ function appendMessage(role, text, options = {}) {
     resultFields: Array.isArray(options.resultFields) && options.resultFields.length ? options.resultFields.map(String) : ["images", "gifs"],
     promptId: String(options.promptId || ""),
     generationState: ["queued", "generating", "complete", "error"].includes(options.generationState) ? options.generationState : "",
+    studioMessageKind: ["discussion", "revision"].includes(options.studioMessageKind)
+      ? options.studioMessageKind
+      : "",
+    studioDiscussionId: String(options.studioDiscussionId || ""),
+    studioProposal: normalizeStudioProposal(options.studioProposal),
     createdAt: now,
     updatedAt: now,
   };
@@ -5764,8 +6013,10 @@ function renderKoboldStatus(status = {}) {
   const control = state.panel?.querySelector("#promptstudio-kobold-control");
   const label = control?.querySelector("#promptstudio-kobold-status-label");
   const detail = control?.querySelector("#promptstudio-kobold-status-detail");
+  const model = control?.querySelector("#promptstudio-kobold-model");
+  const vision = control?.querySelector("#promptstudio-kobold-vision");
   const stop = control?.querySelector("#promptstudio-kobold-stop");
-  if (!control || !label || !detail || !stop) return;
+  if (!control || !label || !detail || !model || !vision || !stop) return;
   const reachable = status.reachable === true;
   const busy = reachable && status.busy === true;
   const stateName = busy ? "busy" : (reachable ? "idle" : (status.checking ? "checking" : "offline"));
@@ -5775,6 +6026,11 @@ function renderKoboldStatus(status = {}) {
   detail.textContent = status.message || (busy
     ? `Generation active${Number.isFinite(characters) && characters > 0 ? ` · ${characters.toLocaleString()} characters` : ""}`
     : (reachable ? "Ready for local requests." : "KoboldCpp could not be reached."));
+  const modelName = typeof status.model === "string" ? status.model.trim() : "";
+  model.textContent = modelName || (reachable ? "Unavailable" : "—");
+  model.title = modelName;
+  vision.textContent = status.vision === true ? "Yes" : (status.vision === false ? "No" : (reachable ? "Unknown" : "—"));
+  vision.dataset.state = status.vision === true ? "available" : (status.vision === false ? "unavailable" : "unknown");
   stop.disabled = !busy || state.koboldAbortBusy;
   stop.textContent = state.koboldAbortBusy ? "Stopping…" : "Force stop generation";
 }
@@ -5896,6 +6152,52 @@ function renderMainPastedImage() {
   image.alt = reference.filename || "Pasted reference image";
   const name = attachment.querySelector("small");
   if (name) name.textContent = reference.filename || "Attached to the next LLM request";
+}
+
+function activeStudioDiscussion(chat = activeChat()) {
+  const discussion = normalizeStudioDiscussion(chat?.studioDiscussion);
+  return discussion?.status === "active" ? discussion : null;
+}
+
+function renderStudioDiscussionContext() {
+  const context = state.panel?.querySelector("#promptstudio-discussion-context");
+  if (!context) return;
+  const discussion = activeStudioDiscussion();
+  context.hidden = !discussion;
+  if (!discussion) {
+    context.querySelector("img")?.removeAttribute("src");
+    return;
+  }
+  const image = context.querySelector("img");
+  if (discussion.targetImage) {
+    image.src = imageReferenceUrl(discussion.targetImage);
+    image.alt = discussion.targetImage.filename || "Discussion target image";
+  } else {
+    image.removeAttribute("src");
+    image.alt = "";
+  }
+  const detail = context.querySelector("small");
+  const end = context.querySelector("button");
+  if (end) end.disabled = state.studioTurnBusyChatIds.has(state.activeChatId);
+  const parts = [];
+  if (discussion.targetImage?.filename) parts.push(discussion.targetImage.filename);
+  if (discussion.references.length) {
+    parts.push(`${discussion.references.length} pinned reference${discussion.references.length === 1 ? "" : "s"}`);
+  }
+  if (discussion.pendingProposal?.status === "ready") parts.push("suggestion ready");
+  if (detail) detail.textContent = parts.join(" · ") || "Prompt and generation context";
+}
+
+function cancelStudioDiscussion({ announce = true } = {}) {
+  const chat = activeChat();
+  const discussion = activeStudioDiscussion(chat);
+  if (!chat || !discussion || state.studioTurnBusyChatIds.has(chat.id)) return;
+  chat.studioDiscussion = { ...discussion, status: "cancelled", pendingProposal: null, updatedAt: Date.now() };
+  chat.updatedAt = Date.now();
+  saveChats();
+  renderStudioDiscussionContext();
+  renderChatHistory();
+  if (announce) setStatus("Image discussion ended without changing the prompt.", "ready");
 }
 
 function clearMainPastedImage() {
@@ -8172,6 +8474,562 @@ function importSelectedImageFiles(fileList) {
   importDroppedImage(files[0]);
 }
 
+function studioDiscussionHistory(chat, discussionId) {
+  return (chat?.messages || [])
+    .filter((message) => (
+      message.studioMessageKind === "discussion"
+      && message.studioDiscussionId === discussionId
+      && ["user", "assistant"].includes(message.role)
+      && message.text.trim()
+    ))
+    .slice(-20)
+    .map((message) => ({ role: message.role, text: message.text }));
+}
+
+function compactGenerationContextValue(value, depth = 0) {
+  if (depth > 3) return "[nested value]";
+  if (typeof value === "string") return value.length > 1200 ? `${value.slice(0, 1200)}…` : value;
+  if (typeof value === "number" || typeof value === "boolean" || value == null) return value;
+  if (Array.isArray(value)) return value.slice(0, 24).map((item) => compactGenerationContextValue(item, depth + 1));
+  if (typeof value !== "object") return String(value);
+  return Object.fromEntries(
+    Object.entries(value).slice(0, 40).map(([key, item]) => [key, compactGenerationContextValue(item, depth + 1)]),
+  );
+}
+
+function storedGenerationDiscussionContext(message) {
+  if (!message) return null;
+  const snapshot = normalizeGenerationSnapshot(message.generationSnapshot);
+  const workflowInputs = Object.entries(snapshot?.output || {}).slice(0, 48).map(([nodeId, node]) => ({
+    node_id: nodeId,
+    title: String(node?._meta?.title || ""),
+    class_type: String(node?.class_type || ""),
+    inputs: compactGenerationContextValue(node?.inputs || {}),
+  }));
+  while (workflowInputs.length > 1 && JSON.stringify(workflowInputs).length > 64 * 1024) workflowInputs.pop();
+  return {
+    action: message.generationAction || "create",
+    workflow: message.workflowName || message.workflowProfileId || "",
+    source_image: message.sourceImage?.filename || "",
+    outputs: (message.images || []).map((image) => ({
+      filename: image.filename,
+      width: image.width || null,
+      height: image.height || null,
+    })),
+    models: message.modelState || [],
+    loras: message.loraState || [],
+    workflow_inputs: workflowInputs,
+  };
+}
+
+function applicableStudioControlValues(chat = activeChat()) {
+  const settings = captureStudioSettings(chat);
+  return {
+    model_profile: settings.model_profile,
+    style_preset: settings.style_preset,
+    framing_preset: settings.framing_preset,
+    style_modifier: settings.style_modifier,
+    framing_modifier: settings.framing_modifier,
+    additional_instructions: settings.additional_instructions,
+    secondary_instructions: settings.secondary_instructions,
+    embellishment_level: settings.embellishment_level,
+    target_output_length: settings.target_output_length,
+    resolution_aspect_ratio: settings.resolution_aspect_ratio,
+    resolution_megapixels: settings.resolution_megapixels,
+    resolution_multiple: settings.resolution_multiple,
+    randomize_seed: settings.randomize_seed,
+  };
+}
+
+function studioDiscussionTarget(chat, discussion = activeStudioDiscussion(chat)) {
+  if (discussion?.targetMessageId) {
+    const message = chat?.messages.find((item) => item.id === discussion.targetMessageId);
+    const image = normalizeImageReference(discussion.targetImage);
+    if (message && image) return { message, image };
+  }
+  return latestGeneratedContext(chat);
+}
+
+function discussionIsStale(chat, discussion) {
+  if (!discussion) return false;
+  const latest = latestGeneratedContext(chat);
+  const targetChanged = Boolean(
+    latest
+    && (
+      latest.message.id !== discussion.targetMessageId
+      || imageReferenceKey(latest.image) !== imageReferenceKey(discussion.targetImage)
+    )
+  );
+  const anchoredControls = discussion.anchorApplicableControls || {};
+  const applicableControlsChanged = Object.keys(anchoredControls).length > 0
+    && JSON.stringify(applicableStudioControlValues(chat)) !== JSON.stringify(anchoredControls);
+  return targetChanged
+    || chat.mainPrompt !== discussion.anchorMainPrompt
+    || chat.finalPrompt !== discussion.anchorFinalPrompt
+    || chat.controlsFingerprint !== discussion.anchorControlsFingerprint
+    || applicableControlsChanged;
+}
+
+function beginOrContinueStudioDiscussion(chat, reference = null) {
+  let discussion = activeStudioDiscussion(chat);
+  if (discussion && discussionIsStale(chat, discussion)) {
+    chat.studioDiscussion = { ...discussion, status: "stale", updatedAt: Date.now() };
+    discussion = null;
+  }
+  const latest = latestGeneratedContext(chat);
+  if (!discussion) {
+    const now = Date.now();
+    discussion = normalizeStudioDiscussion({
+      id: makeId(),
+      status: "active",
+      targetImage: latest?.image || null,
+      targetMessageId: latest?.message?.id || "",
+      anchorMainPrompt: chat.mainPrompt,
+      anchorFinalPrompt: chat.finalPrompt,
+      anchorControlsFingerprint: chat.controlsFingerprint,
+      anchorApplicableControls: applicableStudioControlValues(chat),
+      references: [],
+      pendingProposal: null,
+      createdAt: now,
+      updatedAt: now,
+    });
+  }
+  const attached = normalizeImageReference(reference);
+  if (attached) {
+    const references = new Map(discussion.references.map((item) => [imageReferenceKey(item), item]));
+    references.set(imageReferenceKey(attached), attached);
+    discussion.references = [...references.values()].slice(-3);
+  }
+  discussion.updatedAt = Date.now();
+  chat.studioDiscussion = discussion;
+  chat.updatedAt = discussion.updatedAt;
+  return discussion;
+}
+
+async function requestStudioTurnRoute(chat, text, reference) {
+  const discussion = activeStudioDiscussion(chat);
+  const response = await api.fetchApi(STUDIO_ROUTE_ENDPOINT, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      ...llmConnectionPayload(),
+      user_text: text,
+      chat_initialized: chat.initialized === true,
+      has_latest_image: Boolean(latestGeneratedImage(chat)),
+      has_reference_image: Boolean(reference),
+      discussion_active: Boolean(discussion),
+      pending_proposal: discussion?.pendingProposal || null,
+      discussion_history: discussion ? studioDiscussionHistory(chat, discussion.id) : [],
+    }),
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(data.error || `Turn routing failed (${response.status}).`);
+  return {
+    route: String(data.route || "clarify"),
+    confidence: Number(data.confidence || 0),
+    resolvedInstruction: String(data.resolved_instruction || "").trim(),
+  };
+}
+
+function studioDiscussionRequestMessages(chat, discussion) {
+  const target = studioDiscussionTarget(chat, discussion);
+  const history = studioDiscussionHistory(chat, discussion.id);
+  const images = [target?.image, ...discussion.references]
+    .map(storedImageReference)
+    .filter(Boolean)
+    .slice(0, 4);
+  const attachedImages = [];
+  if (target?.image) {
+    attachedImages.push({ label: "Image A", purpose: "current generated target", filename: target.image.filename });
+  }
+  discussion.references.slice(0, Math.max(0, 4 - attachedImages.length)).forEach((image) => {
+    attachedImages.push({
+      label: `Image ${String.fromCharCode(65 + attachedImages.length)}`,
+      purpose: "user-supplied visual reference",
+      filename: image.filename,
+    });
+  });
+  return history.map((message, index) => {
+    if (index !== history.length - 1 || message.role !== "user") return message;
+    return {
+      ...message,
+      images,
+      context: {
+        main_prompt: target?.message?.mainPrompt || chat.mainPrompt,
+        final_prompt: target?.message?.canonicalPrompt || chat.finalPrompt,
+        current_generation_settings: {
+          target_generation: storedGenerationDiscussionContext(target?.message),
+          current_studio_controls: consultCurrentGenerationSettings(),
+          applicable_control_values: applicableStudioControlValues(chat),
+          current_main_prompt: chat.mainPrompt,
+          current_final_prompt: chat.finalPrompt,
+        },
+        attached_images: attachedImages,
+      },
+    };
+  });
+}
+
+async function requestStudioDiscussion(chat, discussion) {
+  const messages = studioDiscussionRequestMessages(chat, discussion);
+  const connection = llmConnectionPayload();
+  const settings = collectRevisionPayload("Discuss the current image", "render", "", "");
+  const hasImages = messages.some((message) => Array.isArray(message.images) && message.images.length);
+  if (hasImages) await requireVisionCapability(connection);
+  const response = await api.fetchApi(STUDIO_DISCUSS_ENDPOINT, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      ...connection,
+      thinking_mode: settings.thinking_mode,
+      max_response_tokens: 1200,
+      temperature: settings.temperature,
+      messages,
+    }),
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(data.error || `Image discussion failed (${response.status}).`);
+  return {
+    message: String(data.message || "").trim(),
+    proposal: normalizeStudioProposal(data.proposal ? { ...data.proposal, id: makeId(), createdAt: Date.now() } : null),
+  };
+}
+
+async function runStudioDiscussion(chat, text, reference = null) {
+  const discussion = beginOrContinueStudioDiscussion(chat, reference);
+  const now = Date.now();
+  discussion.pendingProposal = null;
+  appendMessage("user", text, {
+    chatId: chat.id,
+    label: "Image discussion",
+    images: reference ? [reference] : [],
+    studioMessageKind: "discussion",
+    studioDiscussionId: discussion.id,
+  });
+  const input = state.panel?.querySelector("#promptstudio-revision");
+  if (chat.id === state.activeChatId && input) input.value = "";
+  if (reference && chat.id === state.activeChatId) clearMainPastedImage();
+  discussion.updatedAt = now;
+  chat.updatedAt = now;
+  saveChats();
+  if (chat.id === state.activeChatId) {
+    renderStudioDiscussionContext();
+    updateComposeMode();
+  }
+  setStatus(`Looking at the image with ${llmProviderName()}…`, "working");
+  const answer = await requestStudioDiscussion(chat, discussion);
+  discussion.pendingProposal = answer.proposal;
+  discussion.updatedAt = Date.now();
+  chat.studioDiscussion = discussion;
+  chat.updatedAt = discussion.updatedAt;
+  appendMessage("assistant", answer.message, {
+    chatId: chat.id,
+    label: "Prompt Studio assistant",
+    studioMessageKind: "discussion",
+    studioDiscussionId: discussion.id,
+    studioProposal: answer.proposal,
+  });
+  saveChats();
+  if (chat.id === state.activeChatId) {
+    renderStudioDiscussionContext();
+    renderChatHistory();
+    setStatus(answer.proposal?.status === "ready" ? "Suggestion ready to apply." : "Ready to keep discussing.", "ready");
+  }
+}
+
+function applyStudioProposalControlChanges(chat, value) {
+  const changes = normalizeStudioControlChanges(value);
+  const keys = Object.keys(changes);
+  const previousSettings = structuredClone(captureStudioSettings(chat));
+  const previousDraft = state.panel?.querySelector("#promptstudio-revision")?.value || "";
+  if (!keys.length) {
+    return { changedKeys: [], promptShapingChanged: false, generationChanged: false, previousSettings, previousDraft };
+  }
+
+  const selectControls = {
+    model_profile: "promptstudio-profile",
+    style_preset: "promptstudio-style",
+    framing_preset: "promptstudio-framing",
+    embellishment_level: "promptstudio-embellishment",
+  };
+  for (const [key, id] of Object.entries(selectControls)) {
+    if (!Object.hasOwn(changes, key)) continue;
+    const select = state.panel?.querySelector(`#${id}`);
+    if (!select || ![...select.options].some((option) => option.value === changes[key])) {
+      throw new Error(`The suggested ${studioControlChangeLabels({ [key]: changes[key] })[0]} value is not available.`);
+    }
+  }
+  if (
+    Object.hasOwn(changes, "resolution_aspect_ratio")
+    && !RESOLUTION_ASPECT_RATIOS.includes(changes.resolution_aspect_ratio)
+  ) {
+    throw new Error("The suggested aspect ratio is not available.");
+  }
+
+  for (const [key, id] of Object.entries(selectControls)) {
+    if (Object.hasOwn(changes, key)) state.panel.querySelector(`#${id}`).value = changes[key];
+  }
+  const textControls = {
+    style_modifier: "promptstudio-style-modifier",
+    framing_modifier: "promptstudio-framing-modifier",
+    additional_instructions: "promptstudio-additional-instructions",
+    secondary_instructions: "promptstudio-secondary-instructions",
+  };
+  for (const [key, id] of Object.entries(textControls)) {
+    if (Object.hasOwn(changes, key)) state.panel.querySelector(`#${id}`).value = changes[key];
+  }
+  const directControls = {
+    resolution_aspect_ratio: "promptstudio-resolution-aspect-ratio",
+    resolution_megapixels: "promptstudio-resolution-megapixels",
+    resolution_multiple: "promptstudio-resolution-multiple",
+  };
+  for (const [key, id] of Object.entries(directControls)) {
+    if (Object.hasOwn(changes, key)) state.panel.querySelector(`#${id}`).value = String(changes[key]);
+  }
+  if (Object.hasOwn(changes, "randomize_seed")) {
+    state.panel.querySelector("#promptstudio-randomize-seed").checked = changes.randomize_seed;
+  }
+
+  const shapingSelectionChanged = ["model_profile", "embellishment_level"].some((key) => Object.hasOwn(changes, key));
+  if (shapingSelectionChanged && !Object.hasOwn(changes, "target_output_length")) {
+    syncOutputLengthControl({ resetToDefault: true });
+  }
+  if (Object.hasOwn(changes, "target_output_length")) {
+    syncOutputLengthControl({
+      storedSettings: {
+        target_output_length: changes.target_output_length,
+        output_length_custom: true,
+      },
+    });
+  }
+
+  saveSettings();
+  refreshSecondaryInstructionsControl();
+  updateComposeMode();
+  const promptShapingKeys = new Set([
+    "model_profile", "style_preset", "framing_preset", "style_modifier", "framing_modifier",
+    "additional_instructions", "embellishment_level", "target_output_length",
+  ]);
+  const promptShapingChanged = keys.some((key) => promptShapingKeys.has(key));
+  return {
+    changedKeys: keys,
+    promptShapingChanged,
+    generationChanged: keys.some((key) => !promptShapingKeys.has(key)),
+    previousSettings,
+    previousDraft,
+  };
+}
+
+function restoreStudioProposalControlChanges(chat, previousSettings, previousDraft = "") {
+  if (!chat || !previousSettings) return;
+  chat.studioSettings = structuredClone(previousSettings);
+  applyStudioSettings(chat);
+  const input = state.panel?.querySelector("#promptstudio-revision");
+  if (input) input.value = previousDraft;
+  saveSettings();
+  refreshSecondaryInstructionsControl();
+  updateComposeMode();
+}
+
+async function applyStudioDiscussionProposal(chat, discussion, proposal, { userText = "" } = {}) {
+  if (!chat || !discussion || !proposal || proposal.status !== "ready") return false;
+  if (discussionIsStale(chat, discussion)) {
+    chat.studioDiscussion = { ...discussion, status: "stale", updatedAt: Date.now() };
+    chat.updatedAt = Date.now();
+    saveChats();
+    renderStudioDiscussionContext();
+    setStatus("The prompt or target image changed. Ask again so the suggestion can be grounded in the current result.", "warning");
+    return false;
+  }
+  if (chat.id !== state.activeChatId) {
+    appendMessage("system", "The discussed change is ready, but this session must be active before it can be applied.", { chatId: chat.id });
+    return false;
+  }
+  if (userText) {
+    appendMessage("user", userText, {
+      chatId: chat.id,
+      label: "Image discussion",
+      studioMessageKind: "discussion",
+      studioDiscussionId: discussion.id,
+    });
+  }
+  let controlApplication;
+  try {
+    controlApplication = applyStudioProposalControlChanges(chat, proposal.control_changes);
+  } catch (error) {
+    setStatus(error.message || String(error), "error");
+    return false;
+  }
+  let applied = true;
+  if (proposal.revision_instruction) {
+    applied = await reviseAndMaybeGenerate({
+      revisionOverride: proposal.revision_instruction,
+      recordRevision: false,
+      contextImageOverride: null,
+    });
+  } else if (chat.initialized && controlApplication.promptShapingChanged) {
+    applied = await reviseAndMaybeGenerate({
+      controlsOnly: true,
+      revisionOverride: "",
+      recordRevision: false,
+      contextImageOverride: null,
+    });
+  } else if (
+    chat.initialized
+    && controlApplication.generationChanged
+    && state.panel.querySelector("#promptstudio-auto-generate")?.checked === true
+  ) {
+    applied = await createNewFromCurrentPrompt({ applyControls: false });
+  }
+  if (!applied) {
+    const promptOrShapingApplied = chat.mainPrompt !== discussion.anchorMainPrompt
+      || chat.finalPrompt !== discussion.anchorFinalPrompt
+      || chat.controlsFingerprint !== discussion.anchorControlsFingerprint;
+    const controlsOnlyApplied = !proposal.revision_instruction && !controlApplication.promptShapingChanged;
+    if (!promptOrShapingApplied && !controlsOnlyApplied) {
+      restoreStudioProposalControlChanges(chat, controlApplication.previousSettings, controlApplication.previousDraft);
+      return false;
+    }
+  }
+  discussion.status = "applied";
+  discussion.updatedAt = Date.now();
+  chat.studioDiscussion = discussion;
+  chat.updatedAt = discussion.updatedAt;
+  const controlLabels = studioControlChangeLabels(proposal.control_changes);
+  appendMessage("system", `${controlLabels.length ? "Applied controls and discussed change" : "Applied discussed change"}: ${proposal.summary}`, { chatId: chat.id });
+  saveChats();
+  renderStudioDiscussionContext();
+  renderChatHistory();
+  return true;
+}
+
+async function applyStudioProposalFromMessage(messageId) {
+  if (state.busy) return;
+  const chat = activeChat();
+  const message = chat?.messages.find((item) => item.id === messageId);
+  const discussion = activeStudioDiscussion(chat);
+  const proposal = normalizeStudioProposal(message?.studioProposal);
+  if (
+    !chat
+    || !discussion
+    || message?.studioDiscussionId !== discussion.id
+    || !proposal
+    || discussion.pendingProposal?.id !== proposal.id
+  ) return;
+  state.studioTurnBusyChatIds.add(chat.id);
+  updateComposeMode();
+  try {
+    await applyStudioDiscussionProposal(chat, discussion, proposal);
+  } finally {
+    state.studioTurnBusyChatIds.delete(chat.id);
+    updateComposeMode();
+    renderChatHistory();
+  }
+}
+
+async function handleStudioTurn() {
+  if (!useLlmAmplification()) return reviseAndMaybeGenerate();
+  const chat = activeChat();
+  const input = state.panel?.querySelector("#promptstudio-revision");
+  if (!chat || !input) return;
+  const text = input.value.trim();
+  const reference = normalizeImageReference(state.mainPastedImage);
+  if (!text) {
+    if (reference) return setStatus("Add a question or change instruction for the attached reference.", "warning");
+    return reviseAndMaybeGenerate();
+  }
+  if (state.studioTurnBusyChatIds.has(chat.id)) return;
+  state.studioTurnBusyChatIds.add(chat.id);
+  updateComposeMode();
+  setStatus(`Understanding your request with ${llmProviderName()}…`, "working");
+  try {
+    const routed = await requestStudioTurnRoute(chat, text, reference);
+    if (chat.id !== state.activeChatId) {
+      throw new Error("Return to the originating session and send the message again.");
+    }
+    const unsafeLowConfidence = routed.confidence < 0.55
+      && ["mutate_now", "commit_pending"].includes(routed.route);
+    const route = unsafeLowConfidence ? "clarify" : routed.route;
+    const discussion = activeStudioDiscussion(chat);
+    if (route === "discuss") {
+      await runStudioDiscussion(chat, text, reference);
+    } else if (route === "commit_pending") {
+      input.value = "";
+      await applyStudioDiscussionProposal(chat, discussion, discussion?.pendingProposal, { userText: text });
+    } else if (route === "cancel_pending") {
+      if (discussion) {
+        appendMessage("user", text, {
+          chatId: chat.id,
+          label: "Image discussion",
+          studioMessageKind: "discussion",
+          studioDiscussionId: discussion.id,
+        });
+        discussion.status = "cancelled";
+        discussion.pendingProposal = null;
+        discussion.updatedAt = Date.now();
+        chat.studioDiscussion = discussion;
+      }
+      input.value = "";
+      if (reference) clearMainPastedImage();
+      chat.updatedAt = Date.now();
+      saveChats();
+      renderChatHistory();
+      setStatus("Suggestion cancelled without changing the prompt.", "ready");
+    } else if (route === "mutate_now") {
+      if (chat.id !== state.activeChatId) throw new Error("Return to the originating session and send the change again.");
+      const instruction = routed.resolvedInstruction || text;
+      const needsResolvedRecord = instruction !== text;
+      if (needsResolvedRecord) {
+        appendMessage("user", text, {
+          chatId: chat.id,
+          images: reference ? [reference] : [],
+          studioMessageKind: discussion ? "discussion" : "revision",
+          studioDiscussionId: discussion?.id || "",
+        });
+        input.value = "";
+      }
+      const applied = await reviseAndMaybeGenerate({
+        revisionOverride: instruction,
+        recordRevision: !needsResolvedRecord,
+      });
+      if (applied && discussion) {
+        discussion.status = "applied";
+        discussion.updatedAt = Date.now();
+        chat.studioDiscussion = discussion;
+        saveChats();
+      }
+    } else {
+      const active = beginOrContinueStudioDiscussion(chat, reference);
+      active.pendingProposal = null;
+      chat.studioDiscussion = active;
+      appendMessage("user", text, {
+        chatId: chat.id,
+        label: "Image discussion",
+        images: reference ? [reference] : [],
+        studioMessageKind: "discussion",
+        studioDiscussionId: active.id,
+      });
+      appendMessage("assistant", "I’m not sure whether you want advice or want me to change the prompt now. Please say “What would work?” to discuss it, or “Change it to…” to apply an edit.", {
+        chatId: chat.id,
+        label: "Prompt Studio assistant",
+        studioMessageKind: "discussion",
+        studioDiscussionId: active.id,
+      });
+      input.value = "";
+      if (reference) clearMainPastedImage();
+      saveChats();
+      renderChatHistory();
+      setStatus("Waiting for clarification.", "warning");
+    }
+  } catch (error) {
+    setStatus(error.message || String(error), "error");
+  } finally {
+    state.studioTurnBusyChatIds.delete(chat.id);
+    updateComposeMode();
+    renderChatHistory();
+  }
+}
+
 async function reviseAndMaybeGenerate({
   controlsOnly = false,
   forceGenerate = false,
@@ -8179,6 +9037,7 @@ async function reviseAndMaybeGenerate({
   generationAction = selectedAction(),
   revisionOverride = null,
   recordRevision = true,
+  contextImageOverride = undefined,
 } = {}) {
   if (!state.apiConnected) return setStatus("ComfyUI is disconnected. Prompt Studio is frozen.", "error");
   if (!useLlmAmplification()) return generateDirectPrompt(generationAction);
@@ -8203,11 +9062,14 @@ async function reviseAndMaybeGenerate({
   if (creating && !revision) return setStatus("Describe an image to create the first prompt.", "warning");
   if (!creating && !state.currentPrompt.trim()) return setStatus("The final prompt is empty.", "warning");
   if (!creating && !state.mainPrompt.trim()) return setStatus("The main prompt is empty.", "warning");
-  const contextImage = pastedContextImage || (
-    state.panel.querySelector("#promptstudio-use-latest-image-context")?.checked
-      ? latestGeneratedImage(chat)
-      : null
-  );
+  const contextImage = contextImageOverride !== undefined
+    ? normalizeImageReference(contextImageOverride)
+    : pastedContextImage || (
+      state.panel.querySelector("#promptstudio-use-latest-image-context")?.checked
+        ? latestGeneratedImage(chat)
+        : null
+    );
+  const usesPastedContextImage = contextImageOverride === undefined && Boolean(pastedContextImage);
 
   const promptNeedsRebuild = !creating && promptNeedsRender();
   controlsOnly = !creating && (controlsOnly || (!revision && promptNeedsRebuild));
@@ -8322,7 +9184,7 @@ async function reviseAndMaybeGenerate({
       { ...queueSettings, controlsFingerprintOverride: requestedControlsFingerprint },
     );
     if (
-      pastedContextImage
+      usesPastedContextImage
       && imageReferenceKey(state.mainPastedImage) === imageReferenceKey(pastedContextImage)
     ) {
       if (targetChat.id === state.activeChatId) clearMainPastedImage();
@@ -8349,10 +9211,12 @@ async function reviseAndMaybeGenerate({
         releaseBusy: false,
       });
     }
+    return true;
   } catch (error) {
     const message = error.message || String(error);
     appendMessage("system", message, { chatId: chat.id });
     setStatus(message, "error");
+    return false;
   } finally {
     state.studioPreparations.delete(preparationId);
     if (state.latestStudioPreparationByChat.get(chat.id) === preparationId) {
@@ -8428,9 +9292,11 @@ async function createNewFromCurrentPrompt({ applyControls = true, generationActi
   };
   try {
     await queueGeneration(generationOptions);
+    return true;
   } catch (error) {
     const message = error.message || String(error);
     showGenerationFailure(message, () => retryGeneration(generationOptions));
+    return false;
   }
 }
 
@@ -8688,6 +9554,11 @@ function buildPanel() {
           <span id="promptstudio-compose-hint">Leave empty to create from the current prompt</span>
         </div>
         <textarea id="promptstudio-revision" rows="3" placeholder="Make the background more varied…" title="Paste with Ctrl+V or drop an image into the chat to attach it as a visual reference."></textarea>
+        <div id="promptstudio-discussion-context" class="promptstudio-discussion-context" hidden>
+          <img alt="" />
+          <span><strong>Discussing generated image</strong><small></small></span>
+          <button type="button" title="End this image discussion" aria-label="End this image discussion">End</button>
+        </div>
         <div id="promptstudio-pasted-image" class="promptstudio-pasted-image" hidden>
           <img alt="" />
           <span><strong>Pasted reference</strong><small></small></span>
@@ -8732,6 +9603,10 @@ function buildPanel() {
             <div class="promptstudio-kobold-popover">
               <strong>KoboldCpp</strong>
               <span id="promptstudio-kobold-status-detail" role="status" aria-live="polite">Checking local status…</span>
+              <dl class="promptstudio-kobold-metadata">
+                <div><dt>Model</dt><dd id="promptstudio-kobold-model">Checking…</dd></div>
+                <div><dt>Vision</dt><dd id="promptstudio-kobold-vision" data-state="unknown">Checking…</dd></div>
+              </dl>
               <button id="promptstudio-kobold-stop" type="button" disabled>Force stop generation</button>
               <small>Stops text generation only. KoboldCpp stays loaded.</small>
             </div>
@@ -9284,7 +10159,7 @@ function buildPanel() {
   panel.querySelectorAll('input[name="promptstudio-edit-prompt-mode"]').forEach((control) => {
     control.addEventListener("change", () => syncActiveChat());
   });
-  panel.querySelector("#promptstudio-send").addEventListener("click", () => reviseAndMaybeGenerate());
+  panel.querySelector("#promptstudio-send").addEventListener("click", () => handleStudioTurn());
   panel.querySelector("#promptstudio-reroll").addEventListener("click", () => reroll());
   panel.querySelector("#promptstudio-undo").addEventListener("click", undoPrompt);
   panel.querySelector("#promptstudio-stop").addEventListener("click", interrupt);
@@ -9320,12 +10195,15 @@ function buildPanel() {
   panel.querySelector("#promptstudio-revision").addEventListener("keydown", (event) => {
     if (event.key === "Enter" && !event.shiftKey) {
       event.preventDefault();
-      reviseAndMaybeGenerate();
+      handleStudioTurn();
     }
   });
   panel.querySelector("#promptstudio-pasted-image button").addEventListener("click", () => {
     clearMainPastedImage();
     setStatus("Pasted reference removed.", "ready");
+  });
+  panel.querySelector("#promptstudio-discussion-context button").addEventListener("click", () => {
+    cancelStudioDiscussion();
   });
   panel.querySelectorAll(".promptstudio-settings input, .promptstudio-settings select, .promptstudio-settings textarea")
     .forEach((element) => element.addEventListener("change", markControlsChanged));

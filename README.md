@@ -71,9 +71,13 @@ With Ollama selected, Prompt Studio uses Ollama's native, non-streaming `/api/ch
 
 ### Create, revise, and inspect
 
-The first message becomes the main prompt and is rendered into a complete final prompt. Later messages are treated as revisions rather than as a transcript for the model. Prompt Studio precision-revises the model-neutral main prompt and the existing detailed final prompt separately, preserving unrelated established detail.
+The first creation instruction becomes the main prompt and is rendered into a complete final prompt. Later change instructions are treated as revisions rather than as a transcript for the prompt editor. Prompt Studio precision-revises the model-neutral main prompt and the existing detailed final prompt separately, preserving unrelated established detail.
 
 Revisions use the smallest edit scope implied by the request. References that conflict with the requested change are replaced, while unrelated clauses and tags are preserved where possible. Removing an automatic detail that is absent from the main prompt changes only the final prompt; Prompt Studio does not add negative wording to the main prompt.
+
+The main composer can also discuss the latest completed generated image. A short intent-routing pass distinguishes direct creation or revision requests from questions, exploration, confirmations, and cancellations. Questions open a session-persistent image discussion grounded in the generated pixels, the prompts and saved workflow inputs that produced them, and any pasted visual reference. The assistant may offer one structured **Suggested prompt change**; applying it, or replying with a clear confirmation such as “Okay, let’s do it,” sends that model-neutral change through the normal paired main/final precision-revision pipeline. Discussion alone never changes prompts or generation controls.
+
+Pasted references remain pinned while that image discussion is active. Prompt Studio sends the generated result as the target and uploaded images as separately labelled visual references, so the model can compare relevant traits without guessing which image should be changed. If the target generation, prompts, or prompt-shaping controls change before a suggestion is applied, the suggestion is marked stale and must be discussed again against the current result. Suggested changes may update the prompt and allow-listed Studio controls such as Secondary instructions, style and framing controls, embellishment, target length, resolution, and seed behavior. The proposal card names every control that Apply will change. Workflows, diffusion models, LoRAs, samplers, schedulers, steps, CFG, and arbitrary workflow-node inputs are never changed automatically.
 
 After a generation completes, the main composer offers an optional **Use latest image for LLM**
 toggle. It sends the newest completed generated image alongside prompt rendering and revision

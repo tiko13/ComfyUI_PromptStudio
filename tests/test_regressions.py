@@ -116,6 +116,24 @@ class RegressionTests(unittest.TestCase):
     def tearDown(self):
         self.temp.cleanup()
 
+    def test_kobold_status_reports_loaded_model_and_vision(self):
+        def get_json(url, _timeout):
+            if url.endswith("/api/extra/perf"):
+                return {"idle": 1, "queue": 0}
+            if url.endswith("/api/v1/model"):
+                return {"result": "koboldcpp/Qwen2.5-VL-7B-Q4_K_M"}
+            if url.endswith("/api/extra/version"):
+                return {"vision": True}
+            return None
+
+        with mock.patch.object(self.routes, "_get_json", side_effect=get_json):
+            status = self.routes._kobold_generation_status(
+                {"kobold_url": "http://localhost:5001"}
+            )
+
+        self.assertEqual(status["model"], "koboldcpp/Qwen2.5-VL-7B-Q4_K_M")
+        self.assertIs(status["vision"], True)
+
     def test_random_seed_invalidates_llm_nodes(self):
         self.assertTrue(math.isnan(self.nodes.KCPP_PromptAmplify.IS_CHANGED(sampler_seed=-1)))
         self.assertTrue(math.isnan(self.nodes.KCPP_Apply.IS_CHANGED(sampler_seed=-1)))
