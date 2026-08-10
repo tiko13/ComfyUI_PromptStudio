@@ -1045,6 +1045,32 @@ class RegressionTests(unittest.TestCase):
         self.assertNotIn("seed", payload["options"])
         self.assertEqual(post.call_args.kwargs["service_name"], "Ollama")
 
+    def test_ollama_generation_does_not_start_after_setup_is_cancelled(self):
+        checks = iter([False, True])
+        with (
+            mock.patch.object(self.nodes, "_post_json") as post,
+            self.assertRaisesRegex(RuntimeError, "cancelled"),
+        ):
+            self.nodes._generate_ollama(
+                "Rewrite this prompt",
+                "http://localhost:11434",
+                "qwen3:8b",
+                0,
+                300,
+                0.25,
+                0.8,
+                40,
+                0.0,
+                1.05,
+                360,
+                -1,
+                "Disabled",
+                "",
+                120,
+                cancellation_check=lambda: next(checks),
+            )
+        post.assert_not_called()
+
     def test_vision_capability_uses_provider_runtime_signals(self):
         with mock.patch.object(self.nodes, "_server_capabilities", return_value={"vision": False}):
             kobold = self.nodes._llm_vision_capability(
@@ -1296,6 +1322,11 @@ class RegressionTests(unittest.TestCase):
         payload = {
             "phase": "compile",
             "goal": "Create a quiet teal product photograph.",
+            "conversation_context": [
+                {"role": "user", "text": "The product should be a glass perfume bottle."},
+                {"role": "assistant", "text": "We discussed keeping the bottle centered."},
+                {"role": "user", "text": "Use the quiet treatment from the attached image."},
+            ],
             "references": [{
                 "purpose": "style reference",
                 "image": {"filename": path.name, "subfolder": "", "type": "output"},
@@ -1316,8 +1347,65 @@ class RegressionTests(unittest.TestCase):
         self.assertIn("brief compiler", messages[0]["content"])
         self.assertIsInstance(messages[1]["content"], list)
         self.assertIn("style reference", messages[1]["content"][0]["text"])
+        compile_payload = json.loads(messages[1]["content"][0]["text"])
+        self.assertEqual(len(compile_payload["conversation_context"]), 3)
+        self.assertIn("glass perfume bottle", compile_payload["conversation_context"][0]["text"])
+        self.assertEqual(compile_payload["immutable_goal"], payload["goal"])
         self.assertEqual(messages[1]["content"][1]["type"], "image_url")
         self.assertLessEqual(generate.call_args.args[4], 0.2)
+
+    def test_prompt_agent_cancel_tombstone_prevents_late_request_execution(self):
+        request_id = "cancel-before-register"
+        cancellation = self.routes._cancel_prompt_agent_request({"request_id": request_id})
+        self.assertTrue(cancellation["cancelled"])
+
+        payload = {
+            "phase": "compile",
+            "goal": "A quiet still life.",
+            "llm_provider": "koboldcpp",
+            "kobold_url": "http://localhost:5001",
+        }
+        self.routes._register_prompt_agent_request(request_id, payload)
+        with mock.patch.object(self.routes, "_prompt_agent") as operation:
+            with self.assertRaisesRegex(RuntimeError, "cancelled"):
+                self.routes._execute_prompt_agent_request(request_id, payload)
+        operation.assert_not_called()
+
+    def test_prompt_agent_cancel_aborts_only_registered_running_kobold_request(self):
+        request_id = "running-agent-request"
+        payload = {
+            "llm_provider": "koboldcpp",
+            "kobold_url": "http://agent-kobold.test:5001",
+        }
+        record = self.routes._register_prompt_agent_request(request_id, payload)
+        record["status"] = "running"
+        with mock.patch.object(
+            self.routes,
+            "_abort_kobold_generation",
+            return_value={"provider": "koboldcpp", "success": True},
+        ) as abort:
+            result = self.routes._cancel_prompt_agent_request({"request_id": request_id})
+
+        self.assertTrue(result["cancelled"])
+        self.assertTrue(result["provider_aborted"])
+        abort.assert_called_once_with({"kobold_url": "http://agent-kobold.test:5001"})
+
+    def test_prompt_agent_cancel_closes_registered_running_ollama_connection(self):
+        request_id = "running-ollama-agent-request"
+        record = self.routes._register_prompt_agent_request(request_id, {
+            "llm_provider": "ollama",
+            "ollama_url": "http://agent-ollama.test:11434",
+        })
+        response = mock.Mock()
+        record["status"] = "running"
+        record["response"] = response
+
+        result = self.routes._cancel_prompt_agent_request({"request_id": request_id})
+
+        self.assertTrue(result["cancelled"])
+        self.assertTrue(result["connection_closed"])
+        self.assertFalse(result["provider_aborted"])
+        response.close.assert_called_once_with()
 
     def test_prompt_agent_architect_retries_reference_placeholder_before_generation(self):
         path = Path(self.temp.name) / "agent-reference.png"

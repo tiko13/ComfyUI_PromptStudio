@@ -84,6 +84,9 @@ _LLM_QUEUE_WORKERS = {}
 CONSULT_JOBS = {}
 CONSULT_TASKS = set()
 MAX_CONSULT_JOBS = 32
+PROMPT_AGENT_REQUESTS = {}
+PROMPT_AGENT_REQUESTS_LOCK = threading.Lock()
+MAX_PROMPT_AGENT_REQUESTS = 64
 
 
 def _llm_queue_key(data):
@@ -179,6 +182,137 @@ def _abort_kobold_generation(data):
     }
 
 
+def _prune_prompt_agent_requests():
+    if len(PROMPT_AGENT_REQUESTS) < MAX_PROMPT_AGENT_REQUESTS:
+        return
+    finished = sorted(
+        (
+            (request_id, record)
+            for request_id, record in PROMPT_AGENT_REQUESTS.items()
+            if record.get("status") in {"complete", "failed", "cancelled"}
+        ),
+        key=lambda item: item[1].get("finished_at", item[1].get("created_at", 0)),
+    )
+    for request_id, _record in finished[
+        :max(1, len(PROMPT_AGENT_REQUESTS) - MAX_PROMPT_AGENT_REQUESTS + 1)
+    ]:
+        PROMPT_AGENT_REQUESTS.pop(request_id, None)
+
+
+def _prompt_agent_request_id(value, required=True):
+    request_id = _text(value).strip()
+    if not request_id and required:
+        raise ValueError("Prompt Agent request_id must not be empty")
+    if len(request_id) > 128:
+        raise ValueError("Prompt Agent request_id is too large")
+    return request_id
+
+
+def _register_prompt_agent_request(request_id, data):
+    now = time.time()
+    provider = _text(data.get("llm_provider"), "koboldcpp").strip().casefold()
+    with PROMPT_AGENT_REQUESTS_LOCK:
+        _prune_prompt_agent_requests()
+        record = PROMPT_AGENT_REQUESTS.get(request_id)
+        if record is None:
+            record = {
+                "status": "queued",
+                "cancelled": False,
+                "created_at": now,
+            }
+            PROMPT_AGENT_REQUESTS[request_id] = record
+        record["provider"] = provider
+        record["kobold_url"] = data.get("kobold_url")
+        record["ollama_url"] = data.get("ollama_url")
+        return record
+
+
+def _execute_prompt_agent_request(request_id, data):
+    with PROMPT_AGENT_REQUESTS_LOCK:
+        record = PROMPT_AGENT_REQUESTS[request_id]
+        if record.get("cancelled"):
+            record["status"] = "cancelled"
+            record["finished_at"] = time.time()
+            raise RuntimeError("Prompt Agent request was cancelled")
+        record["status"] = "running"
+        record["started_at"] = time.time()
+
+    def response_hook(response):
+        with PROMPT_AGENT_REQUESTS_LOCK:
+            active = PROMPT_AGENT_REQUESTS.get(request_id)
+            if active is not None:
+                active["response"] = response
+
+    def cancellation_check():
+        with PROMPT_AGENT_REQUESTS_LOCK:
+            active = PROMPT_AGENT_REQUESTS.get(request_id)
+            return active is None or active.get("cancelled") is True
+
+    try:
+        result = _prompt_agent(
+            data,
+            response_hook=response_hook,
+            cancellation_check=cancellation_check,
+        )
+    except Exception:
+        with PROMPT_AGENT_REQUESTS_LOCK:
+            record = PROMPT_AGENT_REQUESTS.get(request_id)
+            if record is not None:
+                record["status"] = "cancelled" if record.get("cancelled") else "failed"
+                record["finished_at"] = time.time()
+        raise
+    with PROMPT_AGENT_REQUESTS_LOCK:
+        record = PROMPT_AGENT_REQUESTS.get(request_id)
+        if record is not None:
+            if record.get("cancelled"):
+                record["status"] = "cancelled"
+                record["finished_at"] = time.time()
+                raise RuntimeError("Prompt Agent request was cancelled")
+            record["status"] = "complete"
+            record["finished_at"] = time.time()
+    return result
+
+
+def _cancel_prompt_agent_request(data):
+    request_id = _prompt_agent_request_id(data.get("request_id"))
+    with PROMPT_AGENT_REQUESTS_LOCK:
+        record = PROMPT_AGENT_REQUESTS.get(request_id)
+        if record is None:
+            record = {
+                "status": "cancelled",
+                "cancelled": True,
+                "created_at": time.time(),
+                "finished_at": time.time(),
+                "provider": "",
+            }
+            PROMPT_AGENT_REQUESTS[request_id] = record
+        previous_status = record.get("status")
+        record["cancelled"] = True
+        if previous_status != "running":
+            record["status"] = "cancelled"
+            record["finished_at"] = time.time()
+        provider = record.get("provider")
+        kobold_url = record.get("kobold_url")
+        response = record.get("response")
+    provider_aborted = False
+    if previous_status == "running" and provider == "koboldcpp":
+        provider_aborted = _abort_kobold_generation({"kobold_url": kobold_url}).get("success") is True
+    connection_closed = False
+    if previous_status == "running" and response is not None:
+        try:
+            response.close()
+            connection_closed = True
+        except Exception:
+            pass
+    return {
+        "request_id": request_id,
+        "cancelled": True,
+        "status": previous_status or "cancelled",
+        "provider_aborted": provider_aborted,
+        "connection_closed": connection_closed,
+    }
+
+
 def _prune_consult_jobs():
     if len(CONSULT_JOBS) < MAX_CONSULT_JOBS:
         return
@@ -258,7 +392,9 @@ When the user asks you to draft, revise, apply, try, or generate an experimental
 The prompt must be complete and directly usable by the active image-generation workflow. Write it only as affirmative descriptions of visible content; state desired properties directly and omit absent, rejected, removed, or superseded alternatives rather than naming them. Preserve the experiment's base subject and durable intent unless the user explicitly changes them. Use action "generate" when the user explicitly asks to generate the candidate, and action "promote" only when the user explicitly asks to move the chosen candidate into the main Studio window. Omit the block for unrelated conversation, analysis, questions, or advice that does not produce or act on a candidate prompt. Never claim that the block was executed; Prompt Studio validates it and asks the user to confirm consequential actions."""
 PROMPT_AGENT_COMPILE_SYSTEM_MESSAGE = """You are the brief compiler for an autonomous image-prompt agent.
 
-Inspect every labelled reference image and convert the user's current goal, including any later corrections, into a compact, self-contained visual acceptance rubric. For each reference, write a concrete visual note describing the visible subject, composition, viewpoint, palette, lighting, medium or rendering style, and other traits relevant to its labelled purpose. When the user asks for an image "like this" or otherwise relies on a reference instead of describing the target, those visible traits must become explicit requirements. Preserve explicit requirements and uncertainty. Do not add creative requirements the user did not request. A hard criterion is required for success; preferences are not hard. Weights must be positive and total approximately 100.
+The payload may contain a frozen conversation_context alongside immutable_goal. Read the conversation as background needed to resolve references such as "it", "that image", or "what we discussed". The immutable_goal is the user's latest and authoritative instruction; later statements override earlier conversation details when they conflict.
+
+Inspect every labelled reference image and convert the resolved current goal, including any later corrections, into a compact, self-contained visual acceptance rubric. For each reference, write a concrete visual note describing the visible subject, composition, viewpoint, palette, lighting, medium or rendering style, and other traits relevant to its labelled purpose. When the user asks for an image "like this" or otherwise relies on a reference instead of describing the target, those visible traits must become explicit requirements. Preserve explicit requirements and uncertainty. Do not add creative requirements the user did not request. A hard criterion is required for success; preferences are not hard. Weights must be positive and total approximately 100.
 
 Return only JSON:
 {"summary":"concise self-contained visual target","reference_notes":[{"label":"Reference 1","purpose":"general reference","visible_content":"concrete pixel-grounded description","apply":"which visible traits the requested result should preserve"}],"criteria":[{"id":"short_id","description":"self-contained visually testable requirement","weight":25,"hard":true}],"forbidden":["visually testable forbidden outcome"]}
@@ -289,6 +425,8 @@ MAX_CONSULT_TEXT_CHARS = 256 * 1024
 MAX_CONSULT_CONTEXT_CHARS = 128 * 1024
 MAX_PROMPT_AGENT_IMAGES = 8
 MAX_PROMPT_AGENT_GOAL_CHARS = 32 * 1024
+MAX_PROMPT_AGENT_CONTEXT_MESSAGES = 40
+MAX_PROMPT_AGENT_CONTEXT_CHARS = 24 * 1024
 MAX_PROMPT_AGENT_PROMPT_CHARS = 64 * 1024
 MAX_PROMPT_AGENT_GUIDANCE_CHARS = 16 * 1024
 
@@ -1503,6 +1641,34 @@ def _prompt_agent_string(value, field, maximum, required=False):
     return text
 
 
+def _normalize_prompt_agent_conversation_context(value):
+    if value in (None, []):
+        return []
+    if not isinstance(value, list):
+        raise ValueError("Prompt Agent conversation_context must be a list")
+    if len(value) > MAX_PROMPT_AGENT_CONTEXT_MESSAGES:
+        raise ValueError(
+            f"Prompt Agent conversation_context exceeds {MAX_PROMPT_AGENT_CONTEXT_MESSAGES} messages"
+        )
+    normalized = []
+    total_chars = 0
+    for index, message in enumerate(value):
+        if not isinstance(message, dict):
+            raise ValueError(f"Prompt Agent conversation_context[{index}] must be an object")
+        role = _text(message.get("role")).strip().casefold()
+        if role not in {"user", "assistant"}:
+            raise ValueError("Prompt Agent conversation context roles must be user or assistant")
+        if role == "assistant" and message.get("context"):
+            raise ValueError("Assistant Prompt Agent context messages cannot attach Studio context")
+        text = _consult_message_text(message)
+        total_chars += len(text)
+        if total_chars > MAX_PROMPT_AGENT_CONTEXT_CHARS:
+            raise ValueError("Prompt Agent conversation_context is too large")
+        if text:
+            normalized.append({"role": role, "text": text})
+    return normalized
+
+
 def _normalize_prompt_agent_rubric(value):
     if not isinstance(value, dict):
         raise ValueError("Prompt Agent rubric must be an object")
@@ -1797,7 +1963,7 @@ def _prompt_agent_provider_messages(system_message, payload, image_records, prov
     ]
 
 
-def _prompt_agent(data):
+def _prompt_agent(data, response_hook=None, cancellation_check=None):
     phase = _text(data.get("phase")).strip().casefold()
     if phase not in {"compile", "architect", "evaluate"}:
         raise ValueError("Prompt Agent phase must be compile, architect, or evaluate")
@@ -1813,6 +1979,9 @@ def _prompt_agent(data):
         MAX_PROMPT_AGENT_GOAL_CHARS,
         required=True,
     )
+    conversation_context = _normalize_prompt_agent_conversation_context(
+        data.get("conversation_context", [])
+    )
     image_records = _prompt_agent_images(data, phase)
     target_score = _bounded_number(data.get("target_score"), 85, 1, 100)
     min_confidence = _bounded_number(data.get("min_confidence"), 0.7, 0, 1)
@@ -1823,6 +1992,8 @@ def _prompt_agent(data):
     if phase == "compile":
         system_message = PROMPT_AGENT_COMPILE_SYSTEM_MESSAGE
         payload = {"immutable_goal": goal}
+        if conversation_context:
+            payload["conversation_context"] = conversation_context
     elif phase == "architect":
         system_message = PROMPT_AGENT_ARCHITECT_SYSTEM_MESSAGE
         previous_candidate = data.get("previous_candidate")
@@ -1902,6 +2073,8 @@ def _prompt_agent(data):
                 "",
                 request_timeout,
                 messages_override=messages,
+                response_hook=response_hook,
+                cancellation_check=cancellation_check,
             )
         return _generate_kcpp(
             "",
@@ -1919,6 +2092,8 @@ def _prompt_agent(data):
             "",
             request_timeout,
             messages_override=messages,
+            response_hook=response_hook,
+            cancellation_check=cancellation_check,
         )
 
     parsed = _prompt_agent_json_object(generate_with_system(system_message))
@@ -2442,9 +2617,30 @@ async def prompt_studio_agent(request):
         data = await request.json()
         if not isinstance(data, dict):
             raise ValueError("JSON body must be an object")
-        response = await _run_llm_request(data, LLM_PRIORITY_STUDIO, _prompt_agent)
+        request_id = _prompt_agent_request_id(data.get("request_id"), required=False) or str(uuid.uuid4())
+        _register_prompt_agent_request(request_id, data)
+        response = await _run_llm_request(
+            data,
+            LLM_PRIORITY_STUDIO,
+            lambda value: _execute_prompt_agent_request(request_id, value),
+        )
         return web.json_response(response)
     except (ValueError, json.JSONDecodeError, OSError) as exc:
+        return web.json_response({"error": str(exc)}, status=400)
+    except Exception as exc:
+        return web.json_response({"error": str(exc)}, status=502)
+
+
+@PromptServer.instance.routes.post("/promptstudio/prompt-studio/agent/cancel")
+async def prompt_studio_agent_cancel(request):
+    try:
+        if request.content_length is not None and request.content_length > MAX_LLM_CONFIG_REQUEST_BYTES:
+            raise ValueError("Prompt Agent cancellation request is too large")
+        data = await request.json()
+        if not isinstance(data, dict):
+            raise ValueError("JSON body must be an object")
+        return web.json_response(await asyncio.to_thread(_cancel_prompt_agent_request, data))
+    except (ValueError, json.JSONDecodeError) as exc:
         return web.json_response({"error": str(exc)}, status=400)
     except Exception as exc:
         return web.json_response({"error": str(exc)}, status=502)

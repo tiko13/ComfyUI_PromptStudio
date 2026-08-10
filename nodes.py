@@ -580,7 +580,7 @@ def _ollama_api_url(base_url, endpoint):
     return f"{base}/api/{endpoint}"
 
 
-def _post_json(url, payload, timeout, service_name="KoboldCpp"):
+def _post_json(url, payload, timeout, service_name="KoboldCpp", response_hook=None):
     data = json.dumps(payload).encode("utf-8")
     request = urllib.request.Request(
         url,
@@ -590,7 +590,13 @@ def _post_json(url, payload, timeout, service_name="KoboldCpp"):
     )
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
-            body = response.read().decode("utf-8")
+            if response_hook is not None:
+                response_hook(response)
+            try:
+                body = response.read().decode("utf-8")
+            finally:
+                if response_hook is not None:
+                    response_hook(None)
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="replace")
         raise RuntimeError(f"{service_name} request failed with HTTP {exc.code}: {detail}") from exc
@@ -951,7 +957,14 @@ def _generate_kcpp(
     include_default_continuation_stops=False,
     image_data_uri=None,
     messages_override=None,
+    response_hook=None,
+    cancellation_check=None,
 ):
+    def ensure_active():
+        if cancellation_check is not None and cancellation_check():
+            raise RuntimeError("KoboldCpp request was cancelled")
+
+    ensure_active()
     base_url = _clean_base_url(kobold_url)
     timeout = int(request_timeout)
     capabilities = _server_capabilities(base_url, timeout)
@@ -1000,6 +1013,7 @@ def _generate_kcpp(
         stop_sequences = _with_default_continuation_stops(stop_sequences)
 
     def generate_once(request_thinking_mode):
+        ensure_active()
         effort = _reasoning_effort(request_thinking_mode)
         enable_thinking = effort != "none"
         prompt_tokens = _kobold_token_count(
@@ -1054,10 +1068,12 @@ def _generate_kcpp(
         if thinking_budget is not None:
             payload["thinking_budget_tokens"] = thinking_budget
 
+        ensure_active()
         result = _post_json(
             urllib.parse.urljoin(base_url + "/", "v1/chat/completions"),
             payload,
             timeout,
+            response_hook=response_hook,
         )
         try:
             choice = result["choices"][0]
@@ -1114,7 +1130,14 @@ def _generate_ollama(
     include_default_continuation_stops=False,
     image_base64=None,
     messages_override=None,
+    response_hook=None,
+    cancellation_check=None,
 ):
+    def ensure_active():
+        if cancellation_check is not None and cancellation_check():
+            raise RuntimeError("Ollama request was cancelled")
+
+    ensure_active()
     base_url = _clean_ollama_base_url(ollama_url)
     model = str(ollama_model or "").strip()
     if not model:
@@ -1131,6 +1154,7 @@ def _generate_ollama(
         vision_reason = _ollama_vision_unavailable_reason(capabilities, model)
         if vision_reason:
             raise RuntimeError(vision_reason)
+    ensure_active()
 
     stop_sequences = _split_stop_sequences(stop_sequence)
     if include_default_continuation_stops and _reasoning_effort(thinking_mode) == "none":
@@ -1164,11 +1188,13 @@ def _generate_ollama(
         "think": _ollama_thinking_value(thinking_mode),
         "stream": False,
     }
+    ensure_active()
     result = _post_json(
         _ollama_api_url(base_url, "chat"),
         payload,
         int(request_timeout),
         service_name="Ollama",
+        response_hook=response_hook,
     )
     if not isinstance(result, dict):
         raise RuntimeError(f"Unexpected Ollama response: {result}")

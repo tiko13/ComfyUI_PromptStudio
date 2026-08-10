@@ -20,6 +20,8 @@ const VIDEO_STUDIO_CHANNEL = "promptstudio.video.standalone.v1";
 const WORKFLOW_SYNC_CHANNEL = "promptstudio.promptStudio.workflows.v1";
 const CHAT_SYNC_CHANNEL = "promptstudio.promptStudio.chats.v1";
 const CONSULT_CHAT_ENDPOINT = "/promptstudio/prompt-studio/chat";
+const PROMPT_AGENT_ENDPOINT = "/promptstudio/prompt-studio/agent";
+const PROMPT_AGENT_CANCEL_ENDPOINT = "/promptstudio/prompt-studio/agent/cancel";
 const KOBOLD_STATUS_ENDPOINT = "/promptstudio/prompt-studio/kobold/status";
 const KOBOLD_ABORT_ENDPOINT = "/promptstudio/prompt-studio/kobold/abort";
 const CONSULT_JOB_POLL_MS = 1000;
@@ -34,6 +36,8 @@ const PROMPT_AGENT_DEFAULT_MAX_ITERATIONS = 5;
 const PROMPT_AGENT_MAX_ITERATIONS = 10;
 const PROMPT_AGENT_MAX_SAVED_ITERATIONS = 50;
 const PROMPT_AGENT_MAX_GOAL_CHARS = 32 * 1024;
+const PROMPT_AGENT_MAX_CONTEXT_MESSAGES = 40;
+const PROMPT_AGENT_MAX_CONTEXT_CHARS = 24 * 1024;
 const PROMPT_AGENT_TARGET_SCORE = 85;
 const PROMPT_AGENT_MIN_CONFIDENCE = 0.7;
 const WORKFLOW_OBSERVER_KEY = Symbol.for("ComfyUI_PromptStudio.PromptStudio.WorkflowObserver");
@@ -132,6 +136,8 @@ const state = {
   consultAgentGenerationTarget: null,
   consultAgentRunning: false,
   consultAgentRunToken: 0,
+  consultAgentAbortController: null,
+  consultAgentRequestId: "",
   generationProgress: new Map(),
   generationJobs: new Map(),
   generationFailures: new Map(),
@@ -1066,6 +1072,27 @@ function normalizePromptAgentIteration(value, fallbackIndex = 0) {
   };
 }
 
+function normalizePromptAgentConversationContext(value) {
+  if (!Array.isArray(value)) return [];
+  const normalized = value.slice(-PROMPT_AGENT_MAX_CONTEXT_MESSAGES).map((message) => ({
+    role: message?.role === "assistant" ? "assistant" : "user",
+    text: String(message?.text || "").trim().slice(0, 8000),
+    context: normalizeConsultContext(message?.context),
+  })).filter((message) => message.text || message.context);
+  const selected = [];
+  let remaining = PROMPT_AGENT_MAX_CONTEXT_CHARS;
+  for (let index = normalized.length - 1; index >= 0 && remaining > 0; index -= 1) {
+    const message = normalized[index];
+    const contextText = message.context ? JSON.stringify(message.context) : "";
+    const fixedCost = contextText.length + 32;
+    if (fixedCost >= remaining) continue;
+    const text = message.text.slice(-Math.max(0, remaining - fixedCost));
+    selected.unshift({ ...message, text });
+    remaining -= fixedCost + text.length;
+  }
+  return selected;
+}
+
 function normalizeConsultAgent(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const goal = String(value.goal || "").trim();
@@ -1085,6 +1112,7 @@ function normalizeConsultAgent(value) {
       "compiling", "architecting", "generating", "evaluating", "validating",
     ].includes(value.resumeStatus) ? value.resumeStatus : "",
     goal,
+    conversationContext: normalizePromptAgentConversationContext(value.conversationContext),
     references: Array.isArray(value.references)
       ? value.references.slice(0, 4).map((item) => ({
           image: normalizeImageReference(item?.image),
@@ -4606,7 +4634,7 @@ function failTrackedGeneration(promptId, message) {
       generationState: "error",
       text: failure,
       updatedAt: Date.now(),
-    }, "error", agentTarget.chatId);
+    }, "error", agentTarget.chatId, agentTarget.agentId);
     state.consultAgentGenerationTarget = null;
     state.generating = false;
     setConsultStatus(failure, "error");
@@ -4840,6 +4868,48 @@ function requestedPromptAgentIterations() {
   );
 }
 
+function promptAgentConversationSnapshot(chat) {
+  return normalizePromptAgentConversationContext(
+    (chat?.consultMessages || [])
+      .filter((message) => !message.requestFailed && !String(message.experimentId || ""))
+      .map((message) => ({
+        role: message.role,
+        text: message.text,
+        context: message.context,
+      })),
+  );
+}
+
+function promptAgentStartReferences(chat) {
+  const references = [];
+  const seen = new Set();
+  const add = (image, purpose) => {
+    const normalized = normalizeImageReference(image);
+    if (!normalized) return;
+    const key = imageReferenceKey(normalized);
+    if (!key || seen.has(key) || references.length >= 4) return;
+    seen.add(key);
+    references.push({
+      image: normalized,
+      purpose: String(purpose || "general reference").slice(0, 200),
+    });
+  };
+  for (const item of state.consultSelectedImages.values()) {
+    add(item.reference, item.purpose);
+  }
+  const messages = [...(chat?.consultMessages || []).slice(-PROMPT_AGENT_MAX_CONTEXT_MESSAGES)].reverse();
+  for (const message of messages) {
+    if (references.length >= 4) break;
+    if (message.role !== "user" || message.requestFailed || String(message.experimentId || "")) continue;
+    const description = String(message.text || "").trim().replace(/\s+/g, " ");
+    const purpose = description
+      ? `conversation image discussed with: ${description.slice(0, 150)}`
+      : "image from the recent conversation";
+    for (const image of [...(message.images || [])].reverse()) add(image, purpose);
+  }
+  return references;
+}
+
 function promptAgentEffectiveGoal(agent) {
   const base = String(agent?.goal || "").trim();
   const feedback = (agent?.feedback || [])
@@ -4880,7 +4950,20 @@ function updateConsultAgent(mutator, { immediate = false, chatId = null, agentId
   return chat.consultAgent;
 }
 
-function setConsultAgentGeneration(iterationId, generation, status = "generating", chatId = null) {
+function setConsultAgentGeneration(
+  iterationId,
+  generation,
+  status = "generating",
+  chatId = null,
+  agentId = null,
+) {
+  const chat = chatId ? state.chats.find((item) => item.id === chatId) : activeChat();
+  const activeAgent = activeConsultAgent(chat);
+  if (
+    !activeAgent?.active
+    || (agentId && activeAgent.id !== String(agentId))
+    || !promptAgentIteration(activeAgent, iterationId)
+  ) return null;
   return updateConsultAgent((agent) => {
     const iteration = promptAgentIteration(agent, iterationId);
     if (!iteration) return;
@@ -4931,6 +5014,7 @@ async function waitForConsultAgentResult(
             ? state.chats.find((item) => item.id === agentTarget.chatId)
             : activeChat();
           const agent = activeConsultAgent(agentChat);
+          if (!agent?.active || agent.id !== String(agentTarget.agentId || "")) return null;
           const iteration = promptAgentIteration(agent, agentTarget.iterationId);
           const current = normalizeConsultExperimentGeneration(iteration?.generation) || {};
           const generation = normalizeConsultExperimentGeneration({
@@ -4945,6 +5029,7 @@ async function waitForConsultAgentResult(
             generation,
             generation.generationState === "complete" ? "evaluating" : "error",
             agentTarget.chatId,
+            agentTarget.agentId,
           );
           state.generationProgress.delete(String(promptId));
           if (state.activeGenerationPromptId === String(promptId)) state.activeGenerationPromptId = "";
@@ -5229,6 +5314,32 @@ async function workflowQueueContext(action, profileId = null) {
   };
 }
 
+async function cancelComfyPrompt(promptId) {
+  const id = String(promptId || "");
+  if (!id) return;
+  try {
+    await api.fetchApi("/queue", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ delete: [id] }),
+    });
+  } catch (_) {
+    // It may already be running rather than pending; check that separately below.
+  }
+  try {
+    const response = await api.fetchApi("/queue");
+    if (!response.ok) return;
+    const queue = await response.json();
+    const running = Array.isArray(queue?.queue_running)
+      && queue.queue_running.some((item) => String(item?.[1] || "") === id);
+    if (!running) return;
+    if (typeof api.interrupt === "function") await api.interrupt();
+    else await api.fetchApi("/interrupt", { method: "POST" });
+  } catch (_) {
+    // The stopped agent state remains authoritative if ComfyUI is already finishing.
+  }
+}
+
 async function queueGeneration({
   action = selectedAction(),
   executionPrompt = state.currentPrompt,
@@ -5258,6 +5369,7 @@ async function queueGeneration({
   independent = false,
   releaseBusy = true,
   preserveUiSelections = false,
+  cancellationCheck = null,
 } = {}) {
   if (!state.apiConnected) throw new Error("ComfyUI is disconnected. Wait for it to reconnect before generating.");
   const chat = originChatId
@@ -5265,7 +5377,10 @@ async function queueGeneration({
     : activeChat();
   if (!chat && !consultTarget && !agentTarget) throw new Error("The originating chat no longer exists.");
   const operationToken = independent ? null : state.operationToken;
-  const operationCancelled = () => operationToken !== null && operationToken !== state.operationToken;
+  const operationCancelled = () => (
+    (operationToken !== null && operationToken !== state.operationToken)
+    || (typeof cancellationCheck === "function" && cancellationCheck())
+  );
   let source = action === "create" ? null : editingSource(sourceImage, chat);
   if (action !== "create" && !source) throw new Error(`There is no image in this conversation to ${action}.`);
   const context = await workflowQueueContext(action, workflowProfileId);
@@ -5447,8 +5562,7 @@ async function queueGeneration({
   const promptId = queued?.prompt_id;
   if (!promptId) throw new Error("ComfyUI did not return a prompt ID.");
   if (operationCancelled()) {
-    if (typeof api.interrupt === "function") await api.interrupt();
-    else await api.fetchApi("/interrupt", { method: "POST" });
+    await cancelComfyPrompt(promptId);
     return false;
   }
   if (agentTarget?.agentId && agentTarget?.iterationId) {
@@ -5470,7 +5584,17 @@ async function queueGeneration({
       createdAt: Date.now(),
       updatedAt: Date.now(),
     });
-    setConsultAgentGeneration(agentTarget.iterationId, generation, "generating", agentTarget.chatId);
+    const storedAgent = setConsultAgentGeneration(
+      agentTarget.iterationId,
+      generation,
+      "generating",
+      agentTarget.chatId,
+      agentTarget.agentId,
+    );
+    if (!storedAgent) {
+      await cancelComfyPrompt(promptId);
+      return false;
+    }
     state.activeGenerationPromptId = promptId;
     state.consultAgentGenerationTarget = { ...agentTarget, promptId };
     state.generating = true;
@@ -6113,28 +6237,51 @@ function promptAgentReferencesPayload(agent) {
   })).filter((item) => item.image);
 }
 
-async function requestPromptAgentPhase(phase, agent, extra = {}, requestSettings = null) {
+async function requestPromptAgentPhase(phase, agent, extra = {}, requestSettings = null, signal = null) {
   const generationSettings = requestSettings?.generationSettings || collectConsultGenerationSettings();
   const connectionPayload = requestSettings?.connectionPayload || llmConnectionPayload();
-  const response = await api.fetchApi("/promptstudio/prompt-studio/agent", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      ...connectionPayload,
-      ...generationSettings,
-      max_response_tokens: Math.max(1200, Number(generationSettings.max_response_tokens) || 0),
-      phase,
-      goal: promptAgentEffectiveGoal(agent),
-      references: promptAgentReferencesPayload(agent),
-      rubric: agent.rubric,
-      target_score: agent.targetScore,
-      min_confidence: agent.minConfidence,
-      ...extra,
-    }),
-  });
-  const data = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(data.error || `Prompt Agent ${phase} failed (${response.status}).`);
-  return data;
+  const requestId = makeId();
+  state.consultAgentRequestId = requestId;
+  try {
+    const response = await api.fetchApi(PROMPT_AGENT_ENDPOINT, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      signal,
+      body: JSON.stringify({
+        ...connectionPayload,
+        ...generationSettings,
+        request_id: requestId,
+        max_response_tokens: Math.max(1200, Number(generationSettings.max_response_tokens) || 0),
+        phase,
+        goal: promptAgentEffectiveGoal(agent),
+        conversation_context: phase === "compile" ? agent.conversationContext : [],
+        references: promptAgentReferencesPayload(agent),
+        rubric: agent.rubric,
+        target_score: agent.targetScore,
+        min_confidence: agent.minConfidence,
+        ...extra,
+      }),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.error || `Prompt Agent ${phase} failed (${response.status}).`);
+    return data;
+  } finally {
+    if (state.consultAgentRequestId === requestId) state.consultAgentRequestId = "";
+  }
+}
+
+async function cancelPromptAgentLlmRequest(requestId = state.consultAgentRequestId) {
+  const id = String(requestId || "");
+  if (!id) return;
+  try {
+    await api.fetchApi(PROMPT_AGENT_CANCEL_ENDPOINT, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ request_id: id }),
+    });
+  } catch (_) {
+    // Run-token checks still prevent a cancelled response from advancing the agent.
+  }
 }
 
 function promptAgentCompletedIterations(agent, { includeValidation = false } = {}) {
@@ -6197,6 +6344,8 @@ function finishPromptAgent(status, message = "", chatId = null) {
     agent.error = status === "error" ? message : "";
   }, { immediate: true, chatId });
   state.consultAgentRunning = false;
+  state.consultAgentAbortController = null;
+  state.consultAgentRequestId = "";
   state.consultAgentGenerationTarget = null;
   state.activeGenerationPromptId = "";
   state.generating = false;
@@ -6228,6 +6377,13 @@ async function runConsultAgent(agentId = activeConsultAgent()?.id, runtimeSettin
   }
   state.consultAgentRunning = true;
   const runToken = ++state.consultAgentRunToken;
+  const abortController = new AbortController();
+  state.consultAgentAbortController = abortController;
+  const runCancelled = () => (
+    abortController.signal.aborted
+    || runToken !== state.consultAgentRunToken
+    || !activeConsultAgent(agentChat)?.active
+  );
   setConsultBusy(true);
   try {
     while (runToken === state.consultAgentRunToken) {
@@ -6239,7 +6395,13 @@ async function runConsultAgent(agentId = activeConsultAgent()?.id, runtimeSettin
           current.status = "compiling";
         }, { immediate: true });
         setConsultStatus("Prompt Agent is compiling the acceptance rubric…", "working");
-        const compiled = await requestPromptAgentPhase("compile", agent, {}, requestSettings);
+        const compiled = await requestPromptAgentPhase(
+          "compile",
+          agent,
+          {},
+          requestSettings,
+          abortController.signal,
+        );
         if (runToken !== state.consultAgentRunToken) return;
         const rubric = normalizePromptAgentRubric(compiled.rubric);
         if (!rubric) throw new Error("Prompt Agent returned an invalid acceptance rubric.");
@@ -6297,7 +6459,7 @@ async function runConsultAgent(agentId = activeConsultAgent()?.id, runtimeSettin
           previous_evaluation: previous?.index >= (agent.cycleStartIndex || 1)
             ? promptAgentEvaluationPayload(previous.evaluation)
             : null,
-        }, requestSettings);
+        }, requestSettings, abortController.signal);
         if (runToken !== state.consultAgentRunToken) return;
         const candidate = normalizePromptAgentCandidate(designed.candidate);
         if (!candidate) throw new Error("Prompt Agent returned an invalid prompt candidate.");
@@ -6354,6 +6516,7 @@ async function runConsultAgent(agentId = activeConsultAgent()?.id, runtimeSettin
             },
             independent: true,
             releaseBusy: false,
+            cancellationCheck: runCancelled,
           });
         }
         if (runToken !== state.consultAgentRunToken || !generation) return;
@@ -6377,7 +6540,7 @@ async function runConsultAgent(agentId = activeConsultAgent()?.id, runtimeSettin
         );
         const judged = await requestPromptAgentPhase("evaluate", agent, {
           generated_images: generation.images.map(storedImageReference).filter(Boolean),
-        }, requestSettings);
+        }, requestSettings, abortController.signal);
         if (runToken !== state.consultAgentRunToken) return;
         const evaluation = normalizePromptAgentEvaluation(judged.evaluation);
         if (!evaluation) throw new Error("Prompt Agent returned an invalid visual evaluation.");
@@ -6413,6 +6576,9 @@ async function runConsultAgent(agentId = activeConsultAgent()?.id, runtimeSettin
     if (runToken === state.consultAgentRunToken) {
       state.consultAgentRunning = false;
     }
+    if (state.consultAgentAbortController === abortController) {
+      state.consultAgentAbortController = null;
+    }
     const current = activeConsultAgent(agentChat);
     if (current?.active && current.status === "paused" && !state.generating) {
       setConsultBusy(false);
@@ -6435,10 +6601,8 @@ async function startConsultAgent() {
     setConsultStatus("Select a compatible [PS] creation workflow before starting Prompt Agent.", "warning");
     return;
   }
-  const references = [...state.consultSelectedImages.values()].slice(0, 4).map((item) => ({
-    image: item.reference,
-    purpose: item.purpose,
-  }));
+  const conversationContext = promptAgentConversationSnapshot(chat);
+  const references = promptAgentStartReferences(chat);
   const attachGenerationSettings = Boolean(
     state.panel?.querySelector("#promptstudio-consult-attach-settings")?.checked,
   );
@@ -6468,6 +6632,7 @@ async function startConsultAgent() {
     active: true,
     status: "compiling",
     goal,
+    conversationContext,
     references,
     rubric: null,
     initialStyle: {
@@ -6527,6 +6692,7 @@ async function continueConsultAgent() {
     image: item.reference,
     purpose: item.purpose,
   }));
+  const recentConversationReferences = promptAgentStartReferences(chat);
   const requestSettings = {
     connectionPayload: llmConnectionPayload(),
     generationSettings: collectConsultGenerationSettings(),
@@ -6541,10 +6707,21 @@ async function continueConsultAgent() {
     return;
   }
 
-  const selectedKeys = new Set(selectedReferences.map((item) => imageReferenceKey(item.image)));
+  const existingKeys = new Set(selectedReferences.map((item) => imageReferenceKey(item.image)));
   const references = [
     ...selectedReferences,
-    ...agent.references.filter((item) => !selectedKeys.has(imageReferenceKey(item.image))),
+    ...agent.references.filter((item) => {
+      const key = imageReferenceKey(item.image);
+      if (!key || existingKeys.has(key)) return false;
+      existingKeys.add(key);
+      return true;
+    }),
+    ...recentConversationReferences.filter((item) => {
+      const key = imageReferenceKey(item.image);
+      if (!key || existingKeys.has(key)) return false;
+      existingKeys.add(key);
+      return true;
+    }),
   ].slice(0, 4);
   const cycleStartIndex = agent.iterations.reduce(
     (highest, iteration) => Math.max(highest, iteration.index),
@@ -6556,6 +6733,7 @@ async function continueConsultAgent() {
     active: true,
     status: "compiling",
     resumeStatus: "",
+    conversationContext: promptAgentConversationSnapshot(chat),
     references,
     rubric: null,
     feedback: [...agent.feedback, { text: feedback, createdAt: now }],
@@ -6585,7 +6763,10 @@ async function continueConsultAgent() {
 
 function pauseConsultAgent() {
   if (!activeConsultAgent()?.active || !state.consultAgentRunning) return;
+  const requestId = state.consultAgentRequestId;
   state.consultAgentRunToken += 1;
+  state.consultAgentAbortController?.abort();
+  if (requestId) cancelPromptAgentLlmRequest(requestId);
   updateConsultAgent((agent) => {
     agent.resumeStatus = agent.status;
     agent.status = "paused";
@@ -6625,18 +6806,21 @@ function retryConsultAgent() {
 async function stopConsultAgent() {
   const agent = activeConsultAgent();
   if (!agent?.active) return;
+  const requestId = state.consultAgentRequestId;
+  const promptId = String(
+    state.consultAgentGenerationTarget?.agentId === agent.id
+      ? state.consultAgentGenerationTarget.promptId
+      : "",
+  );
   state.operationToken += 1;
   state.consultAgentRunToken += 1;
   state.pollToken += 1;
-  if (state.generating || state.queueing) {
-    try {
-      if (typeof api.interrupt === "function") await api.interrupt();
-      else await api.fetchApi("/interrupt", { method: "POST" });
-    } catch (_) {
-      // The persisted stopped state remains authoritative even if ComfyUI already finished.
-    }
-  }
+  state.consultAgentAbortController?.abort();
   finishPromptAgent("stopped", "Prompt Agent stopped. The best completed result remains available.");
+  await Promise.allSettled([
+    requestId ? cancelPromptAgentLlmRequest(requestId) : Promise.resolve(),
+    promptId ? cancelComfyPrompt(promptId) : Promise.resolve(),
+  ]);
 }
 
 function promotePromptAgentBest() {
@@ -7334,6 +7518,13 @@ function renderConsultAgentCard(history, agent) {
   goal.className = "promptstudio-agent-goal";
   goal.textContent = agent.goal;
   card.appendChild(goal);
+
+  if (agent.conversationContext.length) {
+    const context = document.createElement("p");
+    context.className = "promptstudio-agent-context";
+    context.textContent = `Using ${agent.conversationContext.length} earlier conversation message${agent.conversationContext.length === 1 ? "" : "s"} as background context.`;
+    card.appendChild(context);
+  }
 
   if (agent.references.length) {
     const references = document.createElement("section");

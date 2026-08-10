@@ -829,6 +829,12 @@ body.promptstudio-popout-body .promptstudio-standalone-only {
   overflow-wrap: anywhere;
 }
 
+.promptstudio-agent-context {
+  margin: 0;
+  color: var(--ps-muted);
+  font-size: 11px;
+}
+
 .promptstudio-agent-references {
   display: grid;
   gap: 7px;

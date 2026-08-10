@@ -1,22 +1,50 @@
 # ComfyUI_PromptStudio
 
-![ComfyUI Prompt Studio](docs/images/example1.png)
+Create, refine, edit, and upscale ComfyUI images in a chat-first studio powered by your local KoboldCpp or Ollama model.
 
-Chat-first image generation for ComfyUI, powered by a local KoboldCpp or Ollama model.
+## Create and revise images through conversation
 
-ComfyUI_PromptStudio adds **Prompt Studio**, an interactive workspace where you can describe an image, generate it with a selected `[PS]` workflow saved in ComfyUI, and refine it conversationally:
+Describe what you want, generate it through any compatible saved ComfyUI workflow, then ask for focused changes in plain language. Prompt Studio preserves established details while updating the image and prompt together.
 
-```text
-"A rain-soaked market at night"
-        ↓
-Create & Generate
-        ↓
-"Move the camera lower and make the signs less prominent"
-        ↓
-Revise & Generate
-```
+![Create and revise an image in Prompt Studio](docs/images/example1.png)
 
-The extension keeps a model-neutral **main prompt** alongside the detailed **final prompt** sent to the selected workflow. Ordinary revision messages precision-edit both representations, while prompt-shaping control changes rebuild the final prompt from the stable main prompt. The selected local LLM service is called by the ComfyUI backend, not by the browser.
+## Let Prompt Agent iterate for you
+
+Give the vision-capable Prompt Agent a goal and optional reference images. It writes a prompt, generates, judges the actual pixels, refines weak points, and keeps the best result for you to promote into Studio.
+
+<!-- Screenshot slot: autonomous Prompt Agent iterations and scores.
+Suggested file: docs/images/prompt-agent.png
+![Prompt Agent iterating toward an image goal](docs/images/prompt-agent.png)
+-->
+
+## Bring your own ComfyUI workflows
+
+Turn saved `[PS]` workflows into creation, image-editing, and upscaling templates. Prompt Studio can expose workflow-owned models, LoRAs, resolution controls, and source images without replacing the graph you already use.
+
+<!-- Screenshot slot: workflow, model, LoRA, and resolution controls.
+Suggested file: docs/images/workflow-controls.png
+![ComfyUI workflow controls inside Prompt Studio](docs/images/workflow-controls.png)
+-->
+
+## Keep every experiment reproducible and local
+
+Independent sessions retain prompts, images, controls, and complete executable workflow snapshots. Restore an earlier result, rerun its saved inputs, or consult your local model without sending the conversation to a hosted service.
+
+<!-- Screenshot slot: sessions plus a generated image's saved-input inspector.
+Suggested file: docs/images/sessions-and-replay.png
+![Prompt Studio sessions and generation inspector](docs/images/sessions-and-replay.png)
+-->
+
+## Continue in Video Studio
+
+When the companion `PromptStudio_Video` extension is installed, send a generated image directly into an open video project as a MiniMax reference or frame and continue building on the same visual idea.
+
+<!-- Screenshot slot: Send to Video Studio action and completed handoff.
+Suggested file: docs/images/video-studio-handoff.png
+![Sending a Prompt Studio image to Video Studio](docs/images/video-studio-handoff.png)
+-->
+
+The sections below cover setup, everyday use, workflow contracts, nodes, presets, security, and APIs in depth.
 
 ## Quick start: generate images through chat
 
