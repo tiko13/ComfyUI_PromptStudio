@@ -23,8 +23,10 @@ const STUDIO_SETTINGS_VERSION = 2;
 const STUDIO_ROUTE_ENDPOINT = "/promptstudio/prompt-studio/route-turn";
 const STUDIO_DISCUSS_ENDPOINT = "/promptstudio/prompt-studio/discuss";
 const CONSULT_CHAT_ENDPOINT = "/promptstudio/prompt-studio/chat";
+const OLLAMA_UNLOAD_ENDPOINT = "/promptstudio/prompt-studio/ollama/unload";
 const PROMPT_AGENT_ENDPOINT = "/promptstudio/prompt-studio/agent";
 const PROMPT_AGENT_CANCEL_ENDPOINT = "/promptstudio/prompt-studio/agent/cancel";
+const LLM_STATUS_ENDPOINT = "/promptstudio/prompt-studio/llm/status";
 const KOBOLD_STATUS_ENDPOINT = "/promptstudio/prompt-studio/kobold/status";
 const KOBOLD_ABORT_ENDPOINT = "/promptstudio/prompt-studio/kobold/abort";
 const CONSULT_JOB_POLL_MS = 1000;
@@ -161,8 +163,9 @@ const state = {
   chatSyncTimer: null,
   consultBusy: false,
   consultPendingText: "",
-  koboldStatusRequest: null,
-  koboldStatusTimer: null,
+  llmStatusRequest: null,
+  llmStatusRequestProvider: "",
+  llmStatusTimer: null,
   koboldAbortBusy: false,
   consultVisionAvailable: null,
   consultVisionReason: "",
@@ -290,12 +293,65 @@ function loadCss() {
   document.head.appendChild(link);
 }
 
+function consumeInstallerSettings() {
+  const params = new URLSearchParams(window.location.search);
+  if (params.get("promptstudio_setup") !== "1") return;
+  let stored = {};
+  try {
+    stored = JSON.parse(localStorage.getItem(STORAGE_KEY) || "{}");
+  } catch (_) {
+    stored = {};
+  }
+  const provider = params.get("provider");
+  const next = { ...stored };
+  if (provider === "ollama") {
+    next.llm_provider = "ollama";
+    next.ollama_url = "http://127.0.0.1:11434";
+    next.ollama_model = params.get("model") || next.ollama_model || "";
+    next.use_llm_amplification = true;
+  } else if (provider === "koboldcpp") {
+    next.llm_provider = "koboldcpp";
+    next.kobold_url = params.get("kobold_url") || "http://127.0.0.1:5001";
+    next.use_llm_amplification = true;
+  } else if (provider === "none") {
+    next.use_llm_amplification = false;
+  }
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
+  } catch (_) {
+    // Prompt Studio still opens with normal defaults when browser storage is disabled.
+  }
+  for (const key of ["promptstudio_setup", "provider", "model", "kobold_url"]) params.delete(key);
+  const query = params.toString();
+  window.history.replaceState({}, "", `${window.location.pathname}${query ? `?${query}` : ""}${window.location.hash}`);
+}
+
+consumeInstallerSettings();
+
 function getSettings() {
   try {
     return { ...SETTINGS_DEFAULTS, ...JSON.parse(localStorage.getItem(STORAGE_KEY) || "{}") };
   } catch (_) {
     return { ...SETTINGS_DEFAULTS };
   }
+}
+
+function applyRememberedLlmConnection(settings) {
+  let remembered = {};
+  try {
+    remembered = JSON.parse(localStorage.getItem(STORAGE_KEY) || "{}");
+  } catch (_) {
+    return settings;
+  }
+  if (!remembered || typeof remembered !== "object" || Array.isArray(remembered)
+      || !Object.hasOwn(remembered, "llm_provider")) return settings;
+  return {
+    ...settings,
+    llm_provider: remembered.llm_provider === "ollama" ? "ollama" : "koboldcpp",
+    kobold_url: String(remembered.kobold_url ?? settings.kobold_url ?? SETTINGS_DEFAULTS.kobold_url),
+    ollama_url: String(remembered.ollama_url ?? settings.ollama_url ?? SETTINGS_DEFAULTS.ollama_url),
+    ollama_model: String(remembered.ollama_model ?? settings.ollama_model ?? ""),
+  };
 }
 
 function saveSettings() {
@@ -1064,7 +1120,7 @@ function normalizePromptAgentIteration(value, fallbackIndex = 0) {
   return {
     id: String(value.id || makeId()),
     index: Math.max(1, Math.trunc(Number(value.index) || fallbackIndex + 1)),
-    status: ["architecting", "generating", "evaluating", "complete", "error"].includes(value.status)
+    status: ["architecting", "generating", "evaluating", "complete", "stopped", "error"].includes(value.status)
       ? value.status
       : "architecting",
     candidate: normalizePromptAgentCandidate(value.candidate),
@@ -1334,6 +1390,32 @@ function normalizeStudioSettings(value, fallback = getSettings()) {
     lora_selections: normalizeSessionLoraSelections(source.lora_selections),
     model_selections: normalizeSessionModelSelections(source.model_selections),
   };
+}
+
+function newChatStudioSettings(value = getSettings()) {
+  const previous = normalizeStudioSettings(value);
+  return normalizeStudioSettings({
+    ...SETTINGS_DEFAULTS,
+    // Keep application-level preferences across chats, but start prompt and
+    // generation shaping from a clean slate. Thinking and embellishment are
+    // the only generation controls intentionally carried into a new chat.
+    llm_provider: previous.llm_provider,
+    kobold_url: previous.kobold_url,
+    ollama_url: previous.ollama_url,
+    ollama_model: previous.ollama_model,
+    thinking_mode: previous.thinking_mode,
+    embellishment_level: previous.embellishment_level,
+    use_llm_amplification: previous.use_llm_amplification,
+    use_prompt_upscaling: previous.use_prompt_upscaling,
+    randomize_seed: previous.randomize_seed,
+    auto_generate: previous.auto_generate,
+    auto_advance_source: previous.auto_advance_source,
+    use_latest_image_context: previous.use_latest_image_context,
+    image_scale: previous.image_scale,
+    generation_action: "create",
+    lora_selections: previous.lora_selections,
+    model_selections: previous.model_selections,
+  }, SETTINGS_DEFAULTS);
 }
 
 function studioSettingsFromControlsFingerprint(value) {
@@ -1954,7 +2036,7 @@ async function loadChats() {
     setStatus(error.message || "Chat history could not be loaded.", "warning");
   }
   if (!state.chats.length) {
-    const chat = normalizeChat({});
+    const chat = normalizeChat({ studioSettings: newChatStudioSettings() });
     state.chats.push(chat);
     state.activeChatId = chat.id;
     if (state.chatStoreLoaded) saveChats({ immediate: true });
@@ -2025,7 +2107,12 @@ function captureStudioSettings(chat = activeChat()) {
 
 function applyStudioSettings(chat) {
   if (!chat) return;
-  const settings = normalizeStudioSettings(chat.studioSettings || getSettings());
+  // Provider connection details are application preferences, not session state.
+  // Keep the synchronous localStorage copy authoritative when a restored or
+  // remotely synchronized chat still contains an older provider selection.
+  const settings = normalizeStudioSettings(applyRememberedLlmConnection(
+    chat.studioSettings || getSettings(),
+  ));
   chat.studioSettings = settings;
   state.loraSelections = structuredClone(settings.lora_selections);
   state.modelSelections = structuredClone(settings.model_selections);
@@ -2512,10 +2599,20 @@ function chatTitle(timestamp) {
 }
 
 function chatActivityAt(chat) {
-  if (!chat.messages.length) return chat.createdAt;
-  return chat.messages.reduce(
+  const studioActivity = chat.messages.reduce(
     (newest, message) => Math.max(newest, message.updatedAt || message.createdAt),
-    Number.NEGATIVE_INFINITY,
+    chat.createdAt,
+  );
+  const consultActivity = (chat.consultMessages || []).reduce(
+    (newest, message) => Math.max(newest, message.updatedAt || message.createdAt),
+    chat.createdAt,
+  );
+  return Math.max(
+    chat.createdAt,
+    Number(chat.updatedAt) || 0,
+    Number(chat.consultAgent?.updatedAt) || 0,
+    studioActivity,
+    consultActivity,
   );
 }
 
@@ -2531,6 +2628,7 @@ function renderChatList() {
   list.replaceChildren();
   const ordered = [...state.chats].sort(compareChatsNewestFirst);
   for (const chat of ordered) {
+    const agent = activeConsultAgent(chat);
     const generationCount = chat.messages.filter((message) => (
       message.promptId && ["queued", "generating"].includes(message.generationState)
     )).length;
@@ -2550,17 +2648,18 @@ function renderChatList() {
     date.className = "promptstudio-chat-date";
     date.textContent = `${chat.messages.length} message${chat.messages.length === 1 ? "" : "s"}`
       + (preparationCount ? ` · ${preparationCount} preparing` : "")
-      + (generationCount ? ` · ${generationCount} in queue` : "");
+      + (generationCount ? ` · ${generationCount} in queue` : "")
+      + (agent ? ` · Agent: ${promptAgentStatusLabel(agent)}` : "");
     button.append(title, date);
     button.addEventListener("click", () => activateChat(chat.id));
     const remove = document.createElement("button");
     remove.type = "button";
     remove.className = "promptstudio-chat-delete";
     remove.dataset.disableBusy = "";
-    remove.disabled = state.busy || preparationCount > 0 || generationCount > 0;
+    remove.disabled = state.busy || preparationCount > 0 || generationCount > 0 || agent?.active;
     remove.textContent = "Delete";
-    remove.title = preparationCount || generationCount
-      ? "Wait for this chat's pending Studio work to finish before deleting it."
+    remove.title = preparationCount || generationCount || agent?.active
+      ? "Wait for this chat's pending Studio or Prompt Agent work to finish before deleting it."
       : `Delete chat from ${chatTitle(chat.createdAt)}`;
     remove.setAttribute("aria-label", remove.title);
     remove.addEventListener("click", () => deleteChat(chat.id));
@@ -2746,9 +2845,11 @@ function createChat() {
     selectedSource: null,
     lastGeneration: null,
     pendingGeneration: null,
-    studioSettings: captureStudioSettings(),
+    studioSettings: newChatStudioSettings(captureStudioSettings()),
     messages: [],
     consultMessages: [],
+    consultAgent: null,
+    consultAgentMode: false,
   });
   state.chats.push(chat);
   state.activeChatId = chat.id;
@@ -2767,7 +2868,7 @@ function deleteChat(chatId) {
   const wasActive = chat.id === state.activeChatId;
   state.chats.splice(index, 1);
   if (!state.chats.length) {
-    const replacement = normalizeChat({});
+    const replacement = normalizeChat({ studioSettings: newChatStudioSettings(captureStudioSettings()) });
     state.chats.push(replacement);
   }
   if (wasActive) {
@@ -4671,6 +4772,7 @@ function syncLlmProviderControls({ refreshModels = false } = {}) {
     ? "Controls Ollama thinking. Minimal and Low both request Ollama's low thinking level."
     : "Private-reasoning limits: Minimal 200 tokens, Low 500, Medium 1,000, and High uses the available context window.";
   if (refreshModels && provider === "ollama") loadOllamaModels({ announce: true });
+  if (state.llmStatusTimer) refreshLlmStatus();
 }
 
 async function loadConfig() {
@@ -5132,6 +5234,7 @@ function updateConsultAgent(mutator, { immediate = false, chatId = null, agentId
   chat.consultAgent = normalizeConsultAgent(agent);
   chat.updatedAt = agent.updatedAt;
   saveChats({ immediate });
+  renderChatList();
   if (chat.id === state.activeChatId) {
     renderConsultHistory();
     updateConsultExperimentUi();
@@ -5744,6 +5847,8 @@ async function queueGeneration({
   let queued;
   state.queueing = true;
   try {
+    await unloadOllamaBeforeGeneration();
+    if (operationCancelled()) return false;
     queued = await api.queuePrompt(-1, context.snapshot);
   } finally {
     state.queueing = false;
@@ -5985,7 +6090,7 @@ async function generateDirectPrompt(action = selectedAction()) {
   }
 }
 
-async function requestPromptRevision(payload, actionLabel) {
+async function requestPromptRevision(payload, actionLabel, warningSink = null) {
   if (!state.apiConnected) throw new Error("ComfyUI is disconnected. Wait for it to reconnect before sending.");
   const response = await api.fetchApi("/promptstudio/prompt-studio/revise", {
     method: "POST",
@@ -5996,7 +6101,25 @@ async function requestPromptRevision(payload, actionLabel) {
   if (!response.ok) throw new Error(data.error || `${actionLabel} failed (${response.status}).`);
   const prompt = String(data.prompt || "").trim();
   if (!prompt) throw new Error(`${llmProviderName()} returned an empty prompt.`);
+  const warning = String(data.warning || "").trim();
+  if (warning && Array.isArray(warningSink) && !warningSink.includes(warning)) {
+    warningSink.push(warning);
+  }
   return prompt;
+}
+
+async function unloadOllamaBeforeGeneration() {
+  const connection = llmConnectionPayload();
+  if (connection.llm_provider !== "ollama" || !connection.ollama_model) return;
+  const response = await api.fetchApi(OLLAMA_UNLOAD_ENDPOINT, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(connection),
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(data.error || `Ollama could not release the model (${response.status}).`);
+  }
 }
 
 function llmConnectionPayload() {
@@ -6009,61 +6132,86 @@ function llmConnectionPayload() {
   };
 }
 
-function renderKoboldStatus(status = {}) {
+function renderLlmStatus(status = {}) {
   const control = state.panel?.querySelector("#promptstudio-kobold-control");
   const label = control?.querySelector("#promptstudio-kobold-status-label");
   const detail = control?.querySelector("#promptstudio-kobold-status-detail");
   const model = control?.querySelector("#promptstudio-kobold-model");
   const vision = control?.querySelector("#promptstudio-kobold-vision");
+  const heading = control?.querySelector("#promptstudio-llm-status-heading");
   const stop = control?.querySelector("#promptstudio-kobold-stop");
-  if (!control || !label || !detail || !model || !vision || !stop) return;
+  const stopHelp = control?.querySelector("#promptstudio-kobold-stop-help");
+  if (!control || !label || !detail || !model || !vision || !heading || !stop || !stopHelp) return;
+  const provider = status.provider === "ollama" ? "ollama" : selectedLlmProvider();
+  const isOllama = provider === "ollama";
+  const providerName = isOllama ? "Ollama" : "KoboldCpp";
+  const shortName = isOllama ? "Ollama" : "Kobold";
   const reachable = status.reachable === true;
-  const busy = reachable && status.busy === true;
+  const busy = !isOllama && reachable && status.busy === true;
   const stateName = busy ? "busy" : (reachable ? "idle" : (status.checking ? "checking" : "offline"));
+  control.dataset.provider = provider;
   control.dataset.state = stateName;
-  label.textContent = busy ? "Kobold busy" : (reachable ? "Kobold idle" : (status.checking ? "Kobold…" : "Kobold offline"));
+  control.querySelector("summary").title = `${providerName} status${isOllama ? "" : " and emergency stop"}`;
+  heading.textContent = providerName;
+  label.textContent = busy
+    ? "Kobold busy"
+    : (reachable ? `${shortName} ${isOllama ? "online" : "idle"}` : (status.checking ? `${shortName}…` : `${shortName} offline`));
   const characters = Number(status.generated_characters);
   detail.textContent = status.message || (busy
     ? `Generation active${Number.isFinite(characters) && characters > 0 ? ` · ${characters.toLocaleString()} characters` : ""}`
-    : (reachable ? "Ready for local requests." : "KoboldCpp could not be reached."));
+    : (reachable ? "Ready for local requests." : `${providerName} could not be reached.`));
   const modelName = typeof status.model === "string" ? status.model.trim() : "";
   model.textContent = modelName || (reachable ? "Unavailable" : "—");
   model.title = modelName;
   vision.textContent = status.vision === true ? "Yes" : (status.vision === false ? "No" : (reachable ? "Unknown" : "—"));
   vision.dataset.state = status.vision === true ? "available" : (status.vision === false ? "unavailable" : "unknown");
+  stop.hidden = isOllama;
+  stopHelp.hidden = isOllama;
   stop.disabled = !busy || state.koboldAbortBusy;
   stop.textContent = state.koboldAbortBusy ? "Stopping…" : "Force stop generation";
 }
 
-async function refreshKoboldStatus() {
-  if (state.koboldStatusRequest) return state.koboldStatusRequest;
+async function refreshLlmStatus() {
+  const payload = llmConnectionPayload();
+  const provider = payload.llm_provider === "ollama" ? "ollama" : "koboldcpp";
+  if (state.llmStatusRequest && state.llmStatusRequestProvider === provider) return state.llmStatusRequest;
   const control = state.panel?.querySelector("#promptstudio-kobold-control");
-  if (!control || control.dataset.state === "checking") renderKoboldStatus({ checking: true });
-  state.koboldStatusRequest = (async () => {
+  if (!control) return null;
+  if (control.dataset.provider !== provider || control.dataset.state === "checking") {
+    renderLlmStatus({ provider, checking: true });
+  }
+  const request = (async () => {
     try {
-      const response = await api.fetchApi(KOBOLD_STATUS_ENDPOINT, {
+      const response = await api.fetchApi(LLM_STATUS_ENDPOINT, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ kobold_url: llmConnectionPayload().kobold_url }),
+        body: JSON.stringify(payload),
       });
       const data = await response.json().catch(() => ({}));
-      if (!response.ok) throw new Error(data.error || `KoboldCpp status failed (${response.status}).`);
-      renderKoboldStatus(data);
+      if (!response.ok) throw new Error(data.error || `${provider === "ollama" ? "Ollama" : "KoboldCpp"} status failed (${response.status}).`);
+      if (selectedLlmProvider() === provider) renderLlmStatus(data);
       return data;
     } catch (error) {
-      renderKoboldStatus({ reachable: false, message: error.message || String(error) });
+      if (selectedLlmProvider() === provider) {
+        renderLlmStatus({ provider, reachable: false, message: error.message || String(error) });
+      }
       return null;
     } finally {
-      state.koboldStatusRequest = null;
+      if (state.llmStatusRequest === request) {
+        state.llmStatusRequest = null;
+        state.llmStatusRequestProvider = "";
+      }
     }
   })();
-  return state.koboldStatusRequest;
+  state.llmStatusRequest = request;
+  state.llmStatusRequestProvider = provider;
+  return request;
 }
 
 async function stopKoboldGeneration() {
-  if (state.koboldAbortBusy) return;
+  if (selectedLlmProvider() !== "koboldcpp" || state.koboldAbortBusy) return;
   state.koboldAbortBusy = true;
-  renderKoboldStatus({ reachable: true, busy: true, message: "Sending force-stop signal…" });
+  renderLlmStatus({ provider: "koboldcpp", reachable: true, busy: true, message: "Sending force-stop signal…" });
   try {
     const response = await api.fetchApi(KOBOLD_ABORT_ENDPOINT, {
       method: "POST",
@@ -6072,23 +6220,24 @@ async function stopKoboldGeneration() {
     });
     const data = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(data.error || `KoboldCpp stop failed (${response.status}).`);
-    renderKoboldStatus({
+    renderLlmStatus({
+      provider: "koboldcpp",
       reachable: true,
       busy: data.success !== true,
       message: data.success ? "Stop signal accepted." : "KoboldCpp reported no abortable generation.",
     });
   } catch (error) {
-    renderKoboldStatus({ reachable: false, message: error.message || String(error) });
+    renderLlmStatus({ provider: "koboldcpp", reachable: false, message: error.message || String(error) });
   } finally {
     state.koboldAbortBusy = false;
-    window.setTimeout(refreshKoboldStatus, 500);
+    window.setTimeout(refreshLlmStatus, 500);
   }
 }
 
-function startKoboldStatusMonitor() {
-  if (state.koboldStatusTimer) return;
-  refreshKoboldStatus();
-  state.koboldStatusTimer = window.setInterval(refreshKoboldStatus, KOBOLD_STATUS_POLL_MS);
+function startLlmStatusMonitor() {
+  if (state.llmStatusTimer) return;
+  refreshLlmStatus();
+  state.llmStatusTimer = window.setInterval(refreshLlmStatus, KOBOLD_STATUS_POLL_MS);
 }
 
 async function requireVisionCapability(connectionPayload = llmConnectionPayload()) {
@@ -6479,11 +6628,65 @@ function promptAgentReferencesPayload(agent) {
   })).filter((item) => item.image);
 }
 
+async function monitorPromptAgentPhase(agentId, phase, connectionPayload, requestId, signal) {
+  const phaseLabel = {
+    compile: "Compiling acceptance rubric",
+    architect: "Designing candidate prompt",
+    evaluate: "Judging generated pixels",
+  }[phase] || "Running Prompt Agent";
+  const startedAt = Date.now();
+  while (state.consultAgentRequestId === requestId && !signal?.aborted) {
+    await new Promise((resolve) => window.setTimeout(resolve, KOBOLD_STATUS_POLL_MS));
+    if (state.consultAgentRequestId !== requestId || signal?.aborted) return;
+    const chat = consultAgentChat(agentId);
+    if (chat?.id !== state.activeChatId) continue;
+    if (connectionPayload.llm_provider !== "koboldcpp") {
+      setConsultStatus(
+        `${phaseLabel} · ${Math.max(1, Math.round((Date.now() - startedAt) / 1000))}s elapsed…`,
+        "working",
+      );
+      continue;
+    }
+    try {
+      const response = await api.fetchApi(KOBOLD_STATUS_ENDPOINT, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ kobold_url: connectionPayload.kobold_url }),
+      });
+      const status = await response.json().catch(() => ({}));
+      if (
+        state.consultAgentRequestId !== requestId
+        || signal?.aborted
+        || chat.id !== state.activeChatId
+      ) return;
+      const characters = Number(status.generated_characters);
+      const progress = Number.isFinite(characters) && characters > 0
+        ? ` · ${characters.toLocaleString()} characters generated`
+        : "";
+      setConsultStatus(
+        status.busy
+          ? `${phaseLabel}${progress}…`
+          : `${phaseLabel} · waiting for KoboldCpp…`,
+        "working",
+      );
+    } catch (_) {
+      setConsultStatus(`${phaseLabel} · KoboldCpp is still working…`, "working");
+    }
+  }
+}
+
 async function requestPromptAgentPhase(phase, agent, extra = {}, requestSettings = null, signal = null) {
   const generationSettings = requestSettings?.generationSettings || collectConsultGenerationSettings();
   const connectionPayload = requestSettings?.connectionPayload || llmConnectionPayload();
   const requestId = makeId();
   state.consultAgentRequestId = requestId;
+  const progressMonitor = monitorPromptAgentPhase(
+    agent.id,
+    phase,
+    connectionPayload,
+    requestId,
+    signal,
+  );
   try {
     const response = await api.fetchApi(PROMPT_AGENT_ENDPOINT, {
       method: "POST",
@@ -6493,7 +6696,7 @@ async function requestPromptAgentPhase(phase, agent, extra = {}, requestSettings
         ...connectionPayload,
         ...generationSettings,
         request_id: requestId,
-        max_response_tokens: Math.max(1200, Number(generationSettings.max_response_tokens) || 0),
+        max_response_tokens: Math.max(1400, Number(generationSettings.max_response_tokens) || 0),
         phase,
         goal: promptAgentEffectiveGoal(agent),
         conversation_context: phase === "compile" ? agent.conversationContext : [],
@@ -6509,6 +6712,7 @@ async function requestPromptAgentPhase(phase, agent, extra = {}, requestSettings
     return data;
   } finally {
     if (state.consultAgentRequestId === requestId) state.consultAgentRequestId = "";
+    void progressMonitor;
   }
 }
 
@@ -6580,6 +6784,11 @@ function createPromptAgentIteration({ validation = false, candidate = null } = {
 
 function finishPromptAgent(status, message = "", chatId = null) {
   updateConsultAgent((agent) => {
+    const iteration = promptAgentIteration(agent, agent.currentIterationId);
+    if (iteration && !["complete", "error", "stopped"].includes(iteration.status)) {
+      iteration.status = status === "error" ? "error" : "stopped";
+      iteration.updatedAt = Date.now();
+    }
     agent.active = false;
     agent.status = status;
     agent.resumeStatus = "";
@@ -7065,24 +7274,82 @@ async function stopConsultAgent() {
   ]);
 }
 
-function promotePromptAgentBest() {
+function promotePromptAgentIteration(iterationId) {
   if (state.busy || state.consultBusy) return;
   const agent = activeConsultAgent();
-  const best = promptAgentBestIteration(agent);
-  if (!agent || !best?.candidate) return;
+  const iteration = promptAgentIteration(agent, iterationId);
+  if (!agent || !iteration?.candidate) return;
   const effectiveGoal = promptAgentEffectiveGoal(agent);
+  const exportedControlsFingerprint = controlsFingerprint();
   const previousVersion = promptVersion();
-  state.mainPrompt = effectiveGoal;
-  syncCanonicalEditor(best.candidate.prompt, { userEdit: best.candidate.prompt !== state.currentPrompt });
-  if (!promptVersionsEqual(previousVersion, promptVersion())) pushVersion(best.candidate.prompt, effectiveGoal);
-  const generation = normalizeConsultExperimentGeneration(best.generation);
+  updateMainPromptEditor(effectiveGoal);
+  syncCanonicalEditor(iteration.candidate.prompt, { userEdit: iteration.candidate.prompt !== state.currentPrompt });
+  const chat = activeChat();
+  if (chat) {
+    chat.mainPromptDirty = false;
+    chat.controlsFingerprint = exportedControlsFingerprint;
+    chat.pendingGeneration = null;
+  }
+  if (!promptVersionsEqual(previousVersion, promptVersion())) pushVersion(iteration.candidate.prompt, effectiveGoal);
+  const generation = normalizeConsultExperimentGeneration(iteration.generation);
   if (generation?.images.length) {
     appendMessage("assistant", "", {
-      label: "Promoted Prompt Agent result",
+      label: `Exported Prompt Agent iteration ${iteration.index}`,
       images: generation.images,
       mainPrompt: effectiveGoal,
-      canonicalPrompt: best.candidate.prompt,
-      executionPrompt: generation.executionPrompt || best.candidate.prompt,
+      canonicalPrompt: iteration.candidate.prompt,
+      executionPrompt: generation.executionPrompt || iteration.candidate.prompt,
+      generationAction: "create",
+      workflowProfileId: generation.workflowProfileId,
+      workflowName: generation.workflowName,
+      loraState: generation.loraState,
+      modelState: generation.modelState,
+      generationSnapshot: generation.generationSnapshot,
+      resultNodeIds: generation.resultNodeIds,
+      resultFields: generation.resultFields,
+      generationState: "complete",
+      controlsFingerprint: exportedControlsFingerprint,
+      llmAmplified: true,
+    });
+  }
+  syncActiveChat();
+  saveChats();
+  setStatus(`Prompt Agent iteration ${iteration.index} exported to the main Studio window. Presets and controls were not changed.`, "ready");
+  setConsultStatus(`Prompt Agent iteration ${iteration.index} exported to the main Studio window.`, "ready");
+}
+
+function exportPromptAgentIterationToNewSession(iterationId) {
+  if (state.busy || state.consultBusy) return;
+  const agent = activeConsultAgent();
+  const iteration = promptAgentIteration(agent, iterationId);
+  if (!agent || !iteration?.candidate) return;
+  const effectiveGoal = promptAgentEffectiveGoal(agent);
+  const generation = normalizeConsultExperimentGeneration(iteration.generation);
+  const images = generation?.images || [];
+  const chat = normalizeChat({
+    initialized: true,
+    mainPrompt: effectiveGoal,
+    finalPrompt: iteration.candidate.prompt,
+    currentPrompt: iteration.candidate.prompt,
+    versions: [promptVersion(effectiveGoal, iteration.candidate.prompt)],
+    versionIndex: 0,
+    controlsFingerprint: controlsFingerprint(),
+    createWorkflowId: state.panel?.querySelector("#promptstudio-create-workflow")?.value || "",
+    editWorkflowId: state.panel?.querySelector("#promptstudio-edit-workflow")?.value || "",
+    upscaleWorkflowId: state.panel?.querySelector("#promptstudio-upscale-workflow")?.value || "",
+    editPromptMode: selectedEditPromptMode(),
+    selectedSource: images[0] || null,
+    lastGeneration: null,
+    pendingGeneration: null,
+    studioSettings: captureStudioSettings(),
+    messages: images.length ? [{
+      role: "assistant",
+      text: "",
+      label: `Exported Prompt Agent iteration ${iteration.index}`,
+      images,
+      mainPrompt: effectiveGoal,
+      canonicalPrompt: iteration.candidate.prompt,
+      executionPrompt: generation.executionPrompt || iteration.candidate.prompt,
       generationAction: "create",
       workflowProfileId: generation.workflowProfileId,
       workflowName: generation.workflowName,
@@ -7094,12 +7361,22 @@ function promotePromptAgentBest() {
       generationState: "complete",
       controlsFingerprint: controlsFingerprint(),
       llmAmplified: true,
-    });
-  }
-  syncActiveChat();
-  saveChats();
-  setStatus("Prompt Agent best result promoted to Studio. Presets and controls were not changed.", "ready");
-  setConsultStatus("Best Prompt Agent result promoted to Studio.", "ready");
+    }] : [],
+    consultMessages: [],
+    consultAgent: null,
+    consultAgentMode: false,
+  });
+  state.chats.push(chat);
+  const createAction = state.panel?.querySelector('input[name="promptstudio-generation-action"][value="create"]');
+  if (createAction) createAction.checked = true;
+  activateChat(chat.id);
+  setStatus(`Prompt Agent iteration ${iteration.index} exported to a new Studio session. Presets and controls were not changed.`, "ready");
+}
+
+function promotePromptAgentBest() {
+  const best = promptAgentBestIteration(activeConsultAgent());
+  if (!best) return;
+  promotePromptAgentIteration(best.id);
 }
 
 function consultExperimentContext(experiment = activeConsultExperiment()) {
@@ -7911,6 +8188,22 @@ function renderConsultAgentCard(history, agent) {
       }
       item.appendChild(verdict);
     }
+    const iterationActions = document.createElement("div");
+    iterationActions.className = "promptstudio-agent-actions";
+    const exportButton = document.createElement("button");
+    exportButton.type = "button";
+    exportButton.textContent = "Export to main window";
+    exportButton.disabled = !iteration.candidate || state.busy || state.consultBusy;
+    if (!iteration.candidate) exportButton.title = "This iteration does not have a candidate prompt yet.";
+    exportButton.addEventListener("click", () => promotePromptAgentIteration(iteration.id));
+    const exportNewButton = document.createElement("button");
+    exportNewButton.type = "button";
+    exportNewButton.textContent = "Export to new main window";
+    exportNewButton.disabled = !iteration.candidate || state.busy || state.consultBusy;
+    if (!iteration.candidate) exportNewButton.title = "This iteration does not have a candidate prompt yet.";
+    exportNewButton.addEventListener("click", () => exportPromptAgentIterationToNewSession(iteration.id));
+    iterationActions.append(exportButton, exportNewButton);
+    item.appendChild(iterationActions);
     iterations.appendChild(item);
   }
   card.appendChild(iterations);
@@ -7968,6 +8261,7 @@ function renderConsultHistory() {
   history.replaceChildren();
   const messages = activeChat()?.consultMessages || [];
   const agent = activeConsultAgent();
+  updateConsultExperimentUi();
   if (agent) renderConsultAgentCard(history, agent);
   if (!messages.length && !agent) {
     const empty = document.createElement("div");
@@ -8068,7 +8362,6 @@ function renderConsultHistory() {
     history.appendChild(pendingBubble);
   }
   history.scrollTop = history.scrollHeight;
-  updateConsultExperimentUi();
 }
 
 function selectConsultResponse(messageId, variantIndex) {
@@ -8110,7 +8403,10 @@ async function requestConsultResponse(messages) {
   if (response.status === 202 && data.job_id) data = await pollConsultJob(data.job_id);
   const answer = String(data.message || "").trim();
   if (!answer) throw new Error(`${llmProviderName()} returned an empty response.`);
-  return parseConsultExperimentAnswer(answer, experimentMode);
+  return {
+    ...parseConsultExperimentAnswer(answer, experimentMode),
+    warning: String(data.warning || "").trim(),
+  };
 }
 
 function consultJobStatusText(job) {
@@ -8183,7 +8479,7 @@ async function regenerateConsultResponse(messageId) {
     chat.updatedAt = answeredAt;
     saveChats();
     renderConsultHistory();
-    setConsultStatus("Ready", "ready");
+    setConsultStatus(answer.warning || "Ready", answer.warning ? "warning" : "ready");
   } catch (error) {
     setConsultStatus(error.message || String(error), "error");
   } finally {
@@ -8270,7 +8566,7 @@ async function sendConsultMessage() {
     chat.updatedAt = answeredAt;
     saveChats();
     renderConsultHistory();
-    setConsultStatus("Ready", "ready");
+    setConsultStatus(answer.warning || "Ready", answer.warning ? "warning" : "ready");
   } catch (error) {
     const failedAt = Date.now();
     const message = error.message || String(error);
@@ -8628,6 +8924,7 @@ async function requestStudioTurnRoute(chat, text, reference) {
     route: String(data.route || "clarify"),
     confidence: Number(data.confidence || 0),
     resolvedInstruction: String(data.resolved_instruction || "").trim(),
+    warning: String(data.warning || "").trim(),
   };
 }
 
@@ -8692,6 +8989,7 @@ async function requestStudioDiscussion(chat, discussion) {
   return {
     message: String(data.message || "").trim(),
     proposal: normalizeStudioProposal(data.proposal ? { ...data.proposal, id: makeId(), createdAt: Date.now() } : null),
+    warning: String(data.warning || "").trim(),
   };
 }
 
@@ -8729,11 +9027,17 @@ async function runStudioDiscussion(chat, text, reference = null) {
     studioDiscussionId: discussion.id,
     studioProposal: answer.proposal,
   });
+  if (answer.warning) {
+    appendMessage("system", answer.warning, { chatId: chat.id });
+  }
   saveChats();
   if (chat.id === state.activeChatId) {
     renderStudioDiscussionContext();
     renderChatHistory();
-    setStatus(answer.proposal?.status === "ready" ? "Suggestion ready to apply." : "Ready to keep discussing.", "ready");
+    setStatus(
+      answer.warning || (answer.proposal?.status === "ready" ? "Suggestion ready to apply." : "Ready to keep discussing."),
+      answer.warning ? "warning" : "ready",
+    );
   }
 }
 
@@ -8947,6 +9251,11 @@ async function handleStudioTurn() {
     if (chat.id !== state.activeChatId) {
       throw new Error("Return to the originating session and send the message again.");
     }
+    if (routed.warning) {
+      appendMessage("system", routed.warning, { chatId: chat.id });
+      saveChats();
+      renderChatHistory();
+    }
     const unsafeLowConfidence = routed.confidence < 0.55
       && ["mutate_now", "commit_pending"].includes(routed.route);
     const route = unsafeLowConfidence ? "clarify" : routed.route;
@@ -9124,6 +9433,7 @@ async function reviseAndMaybeGenerate({
     contextImage ? `${providerName} is checking image support...` : revisionStatus,
     "working",
   );
+  const llmWarnings = [];
 
   try {
     if (contextImage) {
@@ -9137,31 +9447,37 @@ async function reviseAndMaybeGenerate({
       finalPrompt = await requestPromptRevision(
         payloadFor(mainPrompt, "render", "", ""),
         "Prompt rendering",
+        llmWarnings,
       );
     } else if (controlsOnly) {
       mainPrompt = previousMainPrompt;
       finalPrompt = await requestPromptRevision(
         payloadFor(mainPrompt, "render", "", previousFinalPrompt),
         "Control update",
+        llmWarnings,
       );
     } else if (promptNeedsRebuild) {
       mainPrompt = await requestPromptRevision(
         payloadFor(revision, "revise_main", previousMainPrompt, previousFinalPrompt),
         "Main-prompt revision",
+        llmWarnings,
       );
       finalPrompt = await requestPromptRevision(
         payloadFor(mainPrompt, "render", "", previousFinalPrompt),
         "Final-prompt rendering",
+        llmWarnings,
       );
     } else {
       [mainPrompt, finalPrompt] = await Promise.all([
         requestPromptRevision(
           payloadFor(revision, "revise_main", previousMainPrompt, previousFinalPrompt),
           "Main-prompt revision",
+          llmWarnings,
         ),
         requestPromptRevision(
           payloadFor(revision, "revise", previousFinalPrompt, previousFinalPrompt),
           "Final-prompt revision",
+          llmWarnings,
         ),
       ]);
     }
@@ -9189,13 +9505,20 @@ async function reviseAndMaybeGenerate({
     ) {
       if (targetChat.id === state.activeChatId) clearMainPastedImage();
     }
+    if (llmWarnings.length) {
+      appendMessage("system", llmWarnings.join(" "), { chatId: targetChat.id });
+      saveChats();
+      renderChatHistory();
+    }
     setStatus(
-      creating
+      llmWarnings.length
+        ? llmWarnings.join(" ")
+        : creating
         ? "Initial main and final prompts created."
         : regenerateFinal
           ? "Final prompt regenerated."
           : "Main and final prompts updated.",
-      "ready",
+      llmWarnings.length ? "warning" : "ready",
     );
     if (autoGenerate) {
       await queueGeneration({
@@ -9599,16 +9922,16 @@ function buildPanel() {
         </div>
         <div class="promptstudio-header-actions">
           <details id="promptstudio-kobold-control" class="promptstudio-kobold-control" data-state="checking">
-            <summary title="KoboldCpp status and emergency stop"><span class="promptstudio-kobold-dot" aria-hidden="true"></span><span id="promptstudio-kobold-status-label">Kobold…</span></summary>
+            <summary title="${settings.llm_provider === "ollama" ? "Ollama status" : "KoboldCpp status and emergency stop"}"><span class="promptstudio-kobold-dot" aria-hidden="true"></span><span id="promptstudio-kobold-status-label">${settings.llm_provider === "ollama" ? "Ollama…" : "Kobold…"}</span></summary>
             <div class="promptstudio-kobold-popover">
-              <strong>KoboldCpp</strong>
+              <strong id="promptstudio-llm-status-heading">${settings.llm_provider === "ollama" ? "Ollama" : "KoboldCpp"}</strong>
               <span id="promptstudio-kobold-status-detail" role="status" aria-live="polite">Checking local status…</span>
               <dl class="promptstudio-kobold-metadata">
                 <div><dt>Model</dt><dd id="promptstudio-kobold-model">Checking…</dd></div>
                 <div><dt>Vision</dt><dd id="promptstudio-kobold-vision" data-state="unknown">Checking…</dd></div>
               </dl>
-              <button id="promptstudio-kobold-stop" type="button" disabled>Force stop generation</button>
-              <small>Stops text generation only. KoboldCpp stays loaded.</small>
+              <button id="promptstudio-kobold-stop" type="button" disabled ${settings.llm_provider === "ollama" ? "hidden" : ""}>Force stop generation</button>
+              <small id="promptstudio-kobold-stop-help" ${settings.llm_provider === "ollama" ? "hidden" : ""}>Stops text generation only. KoboldCpp stays loaded.</small>
             </div>
           </details>
           <button id="promptstudio-toggle-chats" class="promptstudio-chats-button" type="button" title="Show chats" aria-label="Show chats" data-promptstudio-drawer="chats" aria-expanded="false">Sessions</button>
@@ -10133,10 +10456,12 @@ function buildPanel() {
   panel.querySelector("#promptstudio-ollama-url").addEventListener("change", () => {
     saveSettings();
     if (selectedLlmProvider() === "ollama") loadOllamaModels({ announce: true });
+    refreshLlmStatus();
     if (!panel.querySelector("#promptstudio-consult").hidden) refreshConsultVisionCapability();
   });
   panel.querySelector("#promptstudio-ollama-model").addEventListener("change", () => {
     markControlsChanged();
+    refreshLlmStatus();
     if (!panel.querySelector("#promptstudio-consult").hidden) refreshConsultVisionCapability();
   });
   panel.querySelector("#promptstudio-create-workflow").addEventListener("change", () => {
@@ -10209,7 +10534,7 @@ function buildPanel() {
     .forEach((element) => element.addEventListener("change", markControlsChanged));
   panel.querySelector("#promptstudio-kobold-url").addEventListener("change", () => {
     markControlsChanged();
-    refreshKoboldStatus();
+    refreshLlmStatus();
     if (!panel.querySelector("#promptstudio-consult").hidden) refreshConsultVisionCapability();
   });
   panel.querySelectorAll(".promptstudio-resolution-details input, .promptstudio-resolution-details select")
@@ -10472,7 +10797,7 @@ app.registerExtension({
     state.modelSelections = loadModelSelections();
     loadCss();
     buildPanel();
-    startKoboldStatusMonitor();
+    startLlmStatusMonitor();
     setupApiConnectionState();
     setupGenerationProgressEvents();
     setupWorkflowSync();

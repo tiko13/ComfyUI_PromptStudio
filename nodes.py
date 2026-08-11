@@ -1111,6 +1111,55 @@ def _ollama_thinking_value(thinking_mode):
     return effort
 
 
+class _GenerationText(str):
+    """A generated string with a non-fatal warning for interactive callers."""
+
+    def __new__(cls, value, warning=""):
+        instance = super().__new__(cls, str(value or ""))
+        instance.warning = str(warning or "").strip()
+        return instance
+
+
+def _ollama_completion_warning(max_length, retried_without_thinking=False, partial=False):
+    if retried_without_thinking:
+        return (
+            f"Ollama did not finish its first attempt within the {max_length}-token response "
+            "budget, so Prompt Studio retried once with Thinking disabled. Review the result; "
+            "increase Max response tokens if it looks incomplete."
+        )
+    if partial:
+        return (
+            f"Ollama reached the {max_length}-token response limit. Prompt Studio kept the partial "
+            "result instead of failing, so it may be incomplete. Increase Max response tokens or "
+            "lower/disable Thinking for this model."
+        )
+    return ""
+
+
+def _unload_ollama_model(ollama_url, ollama_model, request_timeout=15):
+    """Release a loaded Ollama model before ComfyUI starts diffusion work."""
+    base_url = _clean_ollama_base_url(ollama_url)
+    model = str(ollama_model or "").strip()
+    if not model:
+        raise ValueError("Select an Ollama model in Prompt Studio settings")
+    result = _post_json(
+        _ollama_api_url(base_url, "chat"),
+        {
+            "model": model,
+            "messages": [],
+            "stream": False,
+            "keep_alive": 0,
+        },
+        int(request_timeout),
+        service_name="Ollama",
+    )
+    if not isinstance(result, dict):
+        raise RuntimeError(f"Unexpected Ollama unload response: {result}")
+    if result.get("error"):
+        raise RuntimeError(f"Ollama reported an unload error: {result['error']}")
+    return result
+
+
 def _generate_ollama(
     prompt,
     ollama_url,
@@ -1132,6 +1181,8 @@ def _generate_ollama(
     messages_override=None,
     response_hook=None,
     cancellation_check=None,
+    allow_partial=True,
+    keep_alive=30,
 ):
     def ensure_active():
         if cancellation_check is not None and cancellation_check():
@@ -1161,19 +1212,6 @@ def _generate_ollama(
         stop_sequences = _with_default_continuation_stops(stop_sequences)
     response_tokens = _requested_response_tokens(max_response_tokens, default_max_response_tokens)
     max_length, _thinking_budget = _chat_generation_budget(response_tokens, thinking_mode)
-    options = {
-        "num_predict": max_length,
-        "temperature": float(temperature),
-        "top_p": float(top_p),
-        "top_k": int(top_k),
-        "min_p": float(min_p),
-        "repeat_penalty": float(rep_pen),
-        "repeat_last_n": int(rep_pen_range),
-        "stop": stop_sequences,
-    }
-    if int(sampler_seed) >= 0:
-        options["seed"] = int(sampler_seed)
-
     user_message = {"role": "user", "content": str(prompt or "")}
     if image_base64:
         user_message["images"] = [str(image_base64)]
@@ -1181,41 +1219,88 @@ def _generate_ollama(
         {"role": "system", "content": CHAT_SYSTEM_MESSAGE},
         user_message,
     ]
-    payload = {
-        "model": model,
-        "messages": messages,
-        "options": options,
-        "think": _ollama_thinking_value(thinking_mode),
-        "stream": False,
-    }
-    ensure_active()
-    result = _post_json(
-        _ollama_api_url(base_url, "chat"),
-        payload,
-        int(request_timeout),
-        service_name="Ollama",
-        response_hook=response_hook,
-    )
-    if not isinstance(result, dict):
-        raise RuntimeError(f"Unexpected Ollama response: {result}")
-    if result.get("error"):
-        raise RuntimeError(f"Ollama reported an error: {result['error']}")
-    try:
-        message = result["message"]
-        content = message.get("content") or ""
-    except (KeyError, TypeError) as exc:
-        raise RuntimeError(f"Unexpected Ollama response: {result}") from exc
+    def generate_once(request_thinking_mode, prediction_limit):
+        options = {
+            "num_predict": int(prediction_limit),
+            "temperature": float(temperature),
+            "top_p": float(top_p),
+            "top_k": int(top_k),
+            "min_p": float(min_p),
+            "repeat_penalty": float(rep_pen),
+            "repeat_last_n": int(rep_pen_range),
+            "stop": stop_sequences,
+        }
+        if int(sampler_seed) >= 0:
+            options["seed"] = int(sampler_seed)
+        payload = {
+            "model": model,
+            "messages": messages,
+            "options": options,
+            "think": _ollama_thinking_value(request_thinking_mode),
+            "stream": False,
+            # Reuse the runner across Prompt Studio's routing and rewrite stages. The
+            # frontend explicitly unloads it immediately before queueing ComfyUI.
+            "keep_alive": keep_alive,
+        }
+        ensure_active()
+        result = _post_json(
+            _ollama_api_url(base_url, "chat"),
+            payload,
+            int(request_timeout),
+            service_name="Ollama",
+            response_hook=response_hook,
+        )
+        if not isinstance(result, dict):
+            raise RuntimeError(f"Unexpected Ollama response: {result}")
+        if result.get("error"):
+            raise RuntimeError(f"Ollama reported an error: {result['error']}")
+        try:
+            message = result["message"]
+            content = str(message.get("content") or "")
+        except (KeyError, TypeError) as exc:
+            raise RuntimeError(f"Unexpected Ollama response: {result}") from exc
+        return content, message, result.get("done_reason"), result
 
-    if result.get("done_reason") == "length":
+    content, message, done_reason, result = generate_once(thinking_mode, max_length)
+    if done_reason == "length" and content.strip() and allow_partial:
+        return _GenerationText(
+            content,
+            _ollama_completion_warning(max_length, partial=True),
+        )
+
+    effort = _reasoning_effort(thinking_mode)
+    retry_without_thinking = effort != "none" and (
+        done_reason == "length" or not content.strip()
+    )
+    if retry_without_thinking:
+        content, message, done_reason, result = generate_once("Disabled", max_length)
+        warning = _ollama_completion_warning(
+            max_length,
+            retried_without_thinking=True,
+        )
+        if done_reason == "length":
+            if content.strip() and allow_partial:
+                return _GenerationText(
+                    content,
+                    f"{warning} {_ollama_completion_warning(max_length, partial=True)}",
+                )
+            raise RuntimeError(
+                f"Ollama exhausted the {max_length}-token completion budget twice, including "
+                "a retry with Thinking disabled. Increase max_response_tokens."
+            )
+        if content.strip():
+            return _GenerationText(content, warning)
+
+    if done_reason == "length":
         raise RuntimeError(
             f"Ollama exhausted the {max_length}-token completion budget before finishing. "
-            "Increase max_response_tokens or the model context size."
+            "Increase max_response_tokens."
         )
-    if not str(content).strip():
+    if not content.strip():
         if message.get("thinking"):
             raise RuntimeError(
-                "Ollama returned reasoning but no final answer. Increase max_response_tokens "
-                "or the model context size."
+                "Ollama returned reasoning but no final answer, including after a retry with "
+                "Thinking disabled. Increase max_response_tokens."
             )
         raise RuntimeError(f"Ollama returned an empty chat completion: {result}")
     return str(content)
@@ -1990,7 +2075,7 @@ def _build_revision_prompt(
         "First infer the edit scope: the specific object, attribute, relationship, action, or visual category named or implied by the revision.",
         "Everything outside that scope is protected content and must remain semantically unchanged and as close to the original wording and order as the target prompt syntax permits.",
         "The requested revision has priority over conflicting details in the current prompt.",
-        "Within the edit scope, a changed attribute replaces every previous conflicting value; it is never appended as an alternative or a second object.",
+        "Within the edit scope, replace the complete old attribute value, including qualifiers that belong to it; do not splice the new value into the old phrase or retain an omitted old qualifier.",
         "Return one coherent complete replacement prompt, never a patch or list of changes.",
         "",
         f"Target profile: {profile.get('name', '')}",
@@ -2093,7 +2178,8 @@ def _build_revision_prompt(
             "- Treat the profile, active style, active framing, and embellishment level as constraints on the edit, not as permission to revise unrelated content. Reapply them globally only when the revision explicitly requests an active-control update.",
             "- In tag output, retain unaffected tags verbatim and in the same order whenever possible. In natural-language output, retain unaffected clauses verbatim whenever possible.",
             "- Treat remove, replace, reduce, simplify, and change requests as explicit permission to alter those details.",
-            "- When an attribute changes, find and replace every conflicting reference to the old value throughout the prompt.",
+            "- When an attribute changes, replace its complete old value phrase throughout the prompt, including old qualifiers such as color tone, intensity, size, or age. Preserve neighboring attributes that describe a different property.",
+            "- Example: 'dark wavy hair' revised with 'make her hair blonde' becomes 'blonde wavy hair', not 'dark blonde wavy hair'. 'Wavy' stays because it describes texture; 'dark' goes because it qualifies the replaced color.",
             "- Never keep both the old and new values for the same attribute, object, garment, person, action, pose, expression, location, lighting, or composition.",
             "- Do not satisfy a replacement by appending a new object. Preserve the existing object type unless the user asks to replace the object itself.",
             "- Clothing example: 'make her clothes blue' means locate all of her existing garment descriptions, remove conflicting clothing colors, make those same garments blue, and leave her body, face, pose, scene, lighting, and camera unchanged. Do not add a separate blue shirt.",
@@ -2137,7 +2223,8 @@ def _build_main_revision_prompt(
         "",
         "Main-prompt rules:",
         "- Add or replace positive content when the user explicitly requests that content.",
-        "- A requested attribute replacement must remove the old conflicting value from the main prompt.",
+        "- A requested attribute replacement must replace the complete old value phrase, including omitted old qualifiers, while preserving neighboring attributes that describe a different property.",
+        "- Example: 'dark wavy hair' revised with 'make her hair blonde' becomes 'blonde wavy hair', not 'dark blonde wavy hair'.",
         "- If the user removes, deletes, reduces, or omits something that exists only in the rendered final prompt and not in the main prompt, leave the main prompt unchanged.",
         "- Never translate a removal into negative wording such as 'without', 'no', 'not', 'exclude', or 'avoid'.",
         "- Never add a removed auto-generated detail to the main prompt merely to record its removal.",

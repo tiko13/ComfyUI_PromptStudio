@@ -55,6 +55,7 @@ from .nodes import (
     _strip_response,
     _target_length_response_tokens,
     _target_output_length,
+    _unload_ollama_model,
 )
 
 
@@ -88,6 +89,10 @@ MAX_CONSULT_JOBS = 32
 PROMPT_AGENT_REQUESTS = {}
 PROMPT_AGENT_REQUESTS_LOCK = threading.Lock()
 MAX_PROMPT_AGENT_REQUESTS = 64
+PROMPT_AGENT_PHASE_DEADLINE_SECONDS = 30 * 60
+PROMPT_AGENT_DEFAULT_RESPONSE_TOKENS = 1400
+PROMPT_AGENT_MAX_RESPONSE_TOKENS = 8192
+PROMPT_AGENT_RETRY_TOKEN_INCREMENT = 400
 
 
 def _llm_queue_key(data):
@@ -178,6 +183,47 @@ def _kobold_generation_status(data):
         except (RuntimeError, AttributeError, IndexError, KeyError, TypeError):
             status["generated_characters"] = None
     return status
+
+
+def _ollama_generation_status(data):
+    """Return a small availability snapshot for the configured Ollama server."""
+    ollama_url = _text(data.get("ollama_url"), "http://localhost:11434").strip()
+    selected_model = _text(data.get("ollama_model")).strip()
+    models = _list_ollama_models(ollama_url, request_timeout=3)
+    status = {
+        "provider": "ollama",
+        "reachable": True,
+        # Ollama exposes running models, but not whether a model is actively generating.
+        "busy": None,
+        "model": selected_model or None,
+        "model_installed": selected_model in models if selected_model else None,
+        "vision": None,
+    }
+    if selected_model and selected_model in models:
+        try:
+            capability = _llm_vision_capability(
+                "ollama",
+                ollama_url=ollama_url,
+                ollama_model=selected_model,
+                request_timeout=3,
+            )
+            status["vision"] = capability.get("available") is True
+        except (RuntimeError, ValueError):
+            pass
+    if not selected_model:
+        status["message"] = "Ollama is online. Select a model to use it."
+    elif selected_model not in models:
+        status["message"] = f"Ollama is online, but '{selected_model}' is not installed."
+    return status
+
+
+def _llm_generation_status(data):
+    provider = _text(data.get("llm_provider"), "koboldcpp").strip().casefold()
+    if provider == "koboldcpp":
+        return _kobold_generation_status(data)
+    if provider == "ollama":
+        return _ollama_generation_status(data)
+    raise ValueError("llm_provider must be koboldcpp or ollama")
 
 
 def _abort_kobold_generation(data):
@@ -741,6 +787,18 @@ def _text(value, default=""):
     if value is None:
         return default
     return str(value)
+
+
+def _generation_warning(value):
+    return _text(getattr(value, "warning", "")).strip()
+
+
+def _record_generation_warning(data, value):
+    warning = _generation_warning(value)
+    warnings = data.get("_promptstudio_warnings") if isinstance(data, dict) else None
+    if warning and isinstance(warnings, list) and warning not in warnings:
+        warnings.append(warning)
+    return warning
 
 
 def _bounded_number(value, default, minimum, maximum, integer=False):
@@ -1395,7 +1453,7 @@ def _revise(data):
 
     def generate(request_prompt, seed):
         if llm_provider == "ollama":
-            return _generate_ollama(
+            generated = _generate_ollama(
                 request_prompt,
                 ollama_url,
                 ollama_model,
@@ -1414,6 +1472,8 @@ def _revise(data):
                 include_default_continuation_stops=True,
                 image_base64=image_base64,
             )
+            _record_generation_warning(data, generated)
+            return generated
         return _generate_kcpp(
             request_prompt,
             kobold_url,
@@ -1591,7 +1651,7 @@ def _consult_provider_messages(data, provider, system_message=None):
     return messages
 
 
-def _consult(data, system_message=None):
+def _consult(data, system_message=None, allow_partial=True):
     llm_provider = _text(data.get("llm_provider"), "koboldcpp").strip().casefold()
     if llm_provider not in {"koboldcpp", "ollama"}:
         raise ValueError("llm_provider must be koboldcpp or ollama")
@@ -1603,7 +1663,7 @@ def _consult(data, system_message=None):
         data.get("max_response_tokens"),
         0,
         0,
-        8192,
+        PROMPT_AGENT_MAX_RESPONSE_TOKENS,
         integer=True,
     )
     temperature = _bounded_number(data.get("temperature"), 0.7, 0.0, 5.0)
@@ -1634,6 +1694,7 @@ def _consult(data, system_message=None):
             "",
             request_timeout,
             messages_override=messages,
+            allow_partial=allow_partial,
         )
     return _generate_kcpp(
         "",
@@ -1765,9 +1826,13 @@ def _studio_turn_route(data):
         "sampler_seed": 0,
         "messages": [{"role": "user", "text": json.dumps(payload, ensure_ascii=False)}],
     }
-    parsed = _prompt_agent_json_object(
-        _consult(request_data, STUDIO_TURN_ROUTER_SYSTEM_MESSAGE)
+    raw = _consult(
+        request_data,
+        STUDIO_TURN_ROUTER_SYSTEM_MESSAGE,
+        allow_partial=False,
     )
+    warning = _generation_warning(raw)
+    parsed = _prompt_agent_json_object(raw)
     route = _text(parsed.get("route")).strip().casefold()
     allowed = {"mutate_now", "discuss", "commit_pending", "cancel_pending", "clarify"}
     if route not in allowed:
@@ -1785,16 +1850,20 @@ def _studio_turn_route(data):
         )
     ):
         route = "clarify"
-    return {
+    result = {
         "route": route,
         "confidence": confidence,
         "resolved_instruction": resolved_instruction,
         "reason": _text(parsed.get("reason")).strip()[:1000],
     }
+    if warning:
+        result["warning"] = warning
+    return result
 
 
 def _studio_discuss(data):
-    raw = _consult(data, STUDIO_DISCUSSION_SYSTEM_MESSAGE)
+    raw = _consult(data, STUDIO_DISCUSSION_SYSTEM_MESSAGE, allow_partial=False)
+    warning = _generation_warning(raw)
     parsed = _prompt_agent_json_object(raw)
     message = _text(parsed.get("message")).strip()
     if not message:
@@ -1823,7 +1892,10 @@ def _studio_discuss(data):
             "revision_instruction": revision_instruction,
             "control_changes": control_changes,
         }
-    return {"message": message, "proposal": normalized_proposal}
+    result = {"message": message, "proposal": normalized_proposal}
+    if warning:
+        result["warning"] = warning
+    return result
 
 
 def _prompt_agent_string(value, field, maximum, required=False):
@@ -2157,6 +2229,20 @@ def _prompt_agent_provider_messages(system_message, payload, image_records, prov
     ]
 
 
+PROMPT_AGENT_TOKEN_EXHAUSTION_RE = re.compile(
+    r"exhausted the \d+-token completion budget",
+    re.IGNORECASE,
+)
+
+
+def _prompt_agent_retry_token_limit(value):
+    current = max(PROMPT_AGENT_DEFAULT_RESPONSE_TOKENS, int(value or 0))
+    return min(
+        PROMPT_AGENT_MAX_RESPONSE_TOKENS,
+        max(PROMPT_AGENT_RETRY_TOKEN_INCREMENT + current, math.ceil(current * 1.25)),
+    )
+
+
 def _prompt_agent(data, response_hook=None, cancellation_check=None):
     phase = _text(data.get("phase")).strip().casefold()
     if phase not in {"compile", "architect", "evaluate"}:
@@ -2242,7 +2328,7 @@ def _prompt_agent(data, response_hook=None, cancellation_check=None):
     sampler_seed = _bounded_number(data.get("sampler_seed"), -1, -1, 999999, integer=True)
     request_timeout = _bounded_number(data.get("request_timeout"), 120, 5, 600, integer=True)
 
-    def generate_with_system(active_system_message):
+    def generate_with_system(active_system_message, response_tokens=max_response_tokens):
         messages = _prompt_agent_provider_messages(
             active_system_message,
             payload,
@@ -2254,8 +2340,8 @@ def _prompt_agent(data, response_hook=None, cancellation_check=None):
                 "",
                 _text(data.get("ollama_url"), "http://localhost:11434"),
                 _text(data.get("ollama_model")).strip(),
-                max_response_tokens,
-                1200,
+                response_tokens,
+                PROMPT_AGENT_DEFAULT_RESPONSE_TOKENS,
                 temperature,
                 top_p,
                 top_k,
@@ -2269,12 +2355,13 @@ def _prompt_agent(data, response_hook=None, cancellation_check=None):
                 messages_override=messages,
                 response_hook=response_hook,
                 cancellation_check=cancellation_check,
+                allow_partial=False,
             )
         return _generate_kcpp(
             "",
             _text(data.get("kobold_url"), "http://localhost:5001"),
-            max_response_tokens,
-            1200,
+            response_tokens,
+            PROMPT_AGENT_DEFAULT_RESPONSE_TOKENS,
             temperature,
             top_p,
             top_k,
@@ -2290,7 +2377,38 @@ def _prompt_agent(data, response_hook=None, cancellation_check=None):
             cancellation_check=cancellation_check,
         )
 
-    parsed = _prompt_agent_json_object(generate_with_system(system_message))
+    token_retry_used = False
+
+    def generate_json(active_system_message):
+        nonlocal token_retry_used
+        try:
+            return _prompt_agent_json_object(generate_with_system(active_system_message))
+        except RuntimeError as exc:
+            if token_retry_used or not PROMPT_AGENT_TOKEN_EXHAUSTION_RE.search(str(exc)):
+                raise
+            retry_tokens = _prompt_agent_retry_token_limit(max_response_tokens)
+            effective_tokens = max(
+                PROMPT_AGENT_DEFAULT_RESPONSE_TOKENS,
+                int(max_response_tokens or 0),
+            )
+            if retry_tokens <= effective_tokens:
+                raise
+            token_retry_used = True
+            logging.warning(
+                "Prompt Agent %s exhausted %s tokens; retrying once with %s tokens",
+                phase,
+                effective_tokens,
+                retry_tokens,
+            )
+            retry_instruction = (
+                "\n\nThe previous response exhausted its completion budget. Retry once using "
+                "compact JSON only: no preamble, markdown, commentary, or repeated requirements."
+            )
+            return _prompt_agent_json_object(
+                generate_with_system(active_system_message + retry_instruction, retry_tokens)
+            )
+
+    parsed = generate_json(system_message)
     normalized = (
         _normalize_prompt_agent_rubric(parsed)
         if phase == "compile"
@@ -2309,7 +2427,7 @@ def _prompt_agent(data, response_hook=None, cancellation_check=None):
             "Inspect the supplied pixels again and return corrected JSON. Describe all "
             "necessary visual content in words; do not rely on an image label or placeholder."
         )
-        parsed = _prompt_agent_json_object(generate_with_system(system_message + correction))
+        parsed = generate_json(system_message + correction)
         normalized = (
             _normalize_prompt_agent_rubric(parsed)
             if phase == "compile"
@@ -2713,8 +2831,13 @@ async def prompt_studio_revise(request):
         data = await request.json()
         if not isinstance(data, dict):
             raise ValueError("JSON body must be an object")
+        warnings = []
+        data["_promptstudio_warnings"] = warnings
         revised = await _run_llm_request(data, LLM_PRIORITY_STUDIO, _revise)
-        return web.json_response({"prompt": revised})
+        response = {"prompt": revised}
+        if warnings:
+            response["warning"] = " ".join(warnings)
+        return web.json_response(response)
     except ValueError as exc:
         return web.json_response({"error": str(exc)}, status=400)
     except Exception as exc:
@@ -2765,7 +2888,11 @@ async def prompt_studio_chat(request):
             job_id = _start_consult_job(data)
             return web.json_response({"job_id": job_id, "status": "queued"}, status=202)
         response = await _run_llm_request(data, LLM_PRIORITY_CONSULT, _consult)
-        return web.json_response({"message": response})
+        payload = {"message": response}
+        warning = _generation_warning(response)
+        if warning:
+            payload["warning"] = warning
+        return web.json_response(payload)
     except (ValueError, json.JSONDecodeError, OSError) as exc:
         return web.json_response({"error": str(exc)}, status=400)
     except Exception as exc:
@@ -2799,10 +2926,38 @@ async def prompt_studio_chat_status(request):
                 "busy": None,
             }
     elif job["status"] == "complete":
-        response["result"] = {"message": job.get("result")}
+        result = job.get("result")
+        response["result"] = {"message": result}
+        warning = _generation_warning(result)
+        if warning:
+            response["result"]["warning"] = warning
     elif job["status"] == "failed":
         response["error"] = job.get("error") or "Consultation request failed"
     return web.json_response(response)
+
+
+@PromptServer.instance.routes.post("/promptstudio/prompt-studio/ollama/unload")
+async def prompt_studio_ollama_unload(request):
+    try:
+        if request.content_length is not None and request.content_length > MAX_LLM_CONFIG_REQUEST_BYTES:
+            raise ValueError("Ollama unload request is too large")
+        data = await request.json()
+        if not isinstance(data, dict):
+            raise ValueError("JSON body must be an object")
+
+        def unload(value):
+            _unload_ollama_model(
+                _text(value.get("ollama_url"), "http://localhost:11434"),
+                _text(value.get("ollama_model")).strip(),
+            )
+            return {"unloaded": True}
+
+        result = await _run_llm_request(data, LLM_PRIORITY_STUDIO, unload)
+        return web.json_response(result)
+    except (ValueError, json.JSONDecodeError, OSError) as exc:
+        return web.json_response({"error": str(exc)}, status=400)
+    except Exception as exc:
+        return web.json_response({"error": str(exc)}, status=502)
 
 
 @PromptServer.instance.routes.post("/promptstudio/prompt-studio/kobold/status")
@@ -2814,6 +2969,21 @@ async def prompt_studio_kobold_status(request):
         if not isinstance(data, dict):
             raise ValueError("JSON body must be an object")
         return web.json_response(await asyncio.to_thread(_kobold_generation_status, data))
+    except (ValueError, json.JSONDecodeError) as exc:
+        return web.json_response({"error": str(exc)}, status=400)
+    except Exception as exc:
+        return web.json_response({"error": str(exc)}, status=502)
+
+
+@PromptServer.instance.routes.post("/promptstudio/prompt-studio/llm/status")
+async def prompt_studio_llm_status(request):
+    try:
+        if request.content_length is not None and request.content_length > MAX_LLM_CONFIG_REQUEST_BYTES:
+            raise ValueError("LLM status request is too large")
+        data = await request.json()
+        if not isinstance(data, dict):
+            raise ValueError("JSON body must be an object")
+        return web.json_response(await asyncio.to_thread(_llm_generation_status, data))
     except (ValueError, json.JSONDecodeError) as exc:
         return web.json_response({"error": str(exc)}, status=400)
     except Exception as exc:
@@ -2845,11 +3015,30 @@ async def prompt_studio_agent(request):
             raise ValueError("JSON body must be an object")
         request_id = _prompt_agent_request_id(data.get("request_id"), required=False) or str(uuid.uuid4())
         _register_prompt_agent_request(request_id, data)
-        response = await _run_llm_request(
-            data,
-            LLM_PRIORITY_STUDIO,
-            lambda value: _execute_prompt_agent_request(request_id, value),
-        )
+        try:
+            response = await asyncio.wait_for(
+                _run_llm_request(
+                    data,
+                    LLM_PRIORITY_STUDIO,
+                    lambda value: _execute_prompt_agent_request(request_id, value),
+                ),
+                timeout=PROMPT_AGENT_PHASE_DEADLINE_SECONDS,
+            )
+        except asyncio.TimeoutError:
+            await asyncio.to_thread(
+                _cancel_prompt_agent_request,
+                {"request_id": request_id},
+            )
+            phase = _text(data.get("phase"), "request").strip().casefold() or "request"
+            return web.json_response(
+                {
+                    "error": (
+                        f"Prompt Agent {phase} timed out and was cancelled. "
+                        "Retry after KoboldCpp is idle, or lower the thinking and token settings."
+                    )
+                },
+                status=504,
+            )
         return web.json_response(response)
     except (ValueError, json.JSONDecodeError, OSError) as exc:
         return web.json_response({"error": str(exc)}, status=400)

@@ -721,8 +721,10 @@ body.promptstudio-popout-body .promptstudio-standalone-only {
 }
 
 .promptstudio-consult-message-images {
+  --promptstudio-chat-image-max-size: 180px;
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 180px));
+  grid-template-columns: repeat(2, minmax(0, var(--promptstudio-chat-image-max-size)));
+  align-items: start;
   gap: 8px;
   margin-top: 10px;
 }
@@ -737,9 +739,12 @@ body.promptstudio-popout-body .promptstudio-standalone-only {
 
 .promptstudio-consult-message-images img {
   display: block;
-  width: 100%;
-  max-height: 180px;
-  object-fit: cover;
+  width: auto;
+  height: auto;
+  max-width: 100%;
+  max-height: var(--promptstudio-chat-image-max-size);
+  margin-inline: auto;
+  object-fit: contain;
 }
 
 .promptstudio-consult-message-images figcaption {
@@ -1187,9 +1192,12 @@ body.promptstudio-popout-body .promptstudio-standalone-only {
 }
 
 .promptstudio-consult-image-choice > img {
-  width: 58px;
-  height: 58px;
-  object-fit: cover;
+  width: auto;
+  height: auto;
+  max-width: 58px;
+  max-height: 58px;
+  place-self: center;
+  object-fit: contain;
   background: var(--ps-panel-soft);
   border-radius: 7px;
 }
@@ -2764,9 +2772,12 @@ body.promptstudio-popout-body .promptstudio-standalone-only {
 
 .promptstudio-pasted-image img,
 .promptstudio-discussion-context img {
-  width: 42px;
-  height: 42px;
-  object-fit: cover;
+  width: auto;
+  height: auto;
+  max-width: 42px;
+  max-height: 42px;
+  place-self: center;
+  object-fit: contain;
   background: var(--ps-panel-soft);
   border-radius: 7px;
 }

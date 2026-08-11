@@ -134,6 +134,28 @@ class RegressionTests(unittest.TestCase):
         self.assertEqual(status["model"], "koboldcpp/Qwen2.5-VL-7B-Q4_K_M")
         self.assertIs(status["vision"], True)
 
+    def test_llm_status_uses_selected_ollama_backend(self):
+        with (
+            mock.patch.object(self.routes, "_list_ollama_models", return_value=["gemma3:4b"]),
+            mock.patch.object(
+                self.routes,
+                "_llm_vision_capability",
+                return_value={"available": True, "provider": "Ollama"},
+            ),
+            mock.patch.object(self.routes, "_kobold_generation_status") as kobold_status,
+        ):
+            status = self.routes._llm_generation_status({
+                "llm_provider": "ollama",
+                "ollama_url": "http://localhost:11434",
+                "ollama_model": "gemma3:4b",
+            })
+
+        kobold_status.assert_not_called()
+        self.assertEqual(status["provider"], "ollama")
+        self.assertEqual(status["model"], "gemma3:4b")
+        self.assertIs(status["reachable"], True)
+        self.assertIs(status["vision"], True)
+
     def test_random_seed_invalidates_llm_nodes(self):
         self.assertTrue(math.isnan(self.nodes.KCPP_PromptAmplify.IS_CHANGED(sampler_seed=-1)))
         self.assertTrue(math.isnan(self.nodes.KCPP_Apply.IS_CHANGED(sampler_seed=-1)))
@@ -564,6 +586,31 @@ class RegressionTests(unittest.TestCase):
         self.assertIn("Never translate a removal into negative wording", request)
         self.assertIn("Current rendered final prompt (reference only)", request)
         self.assertIn("Remove the necklace", request)
+
+    def test_revision_prompts_replace_complete_attribute_values(self):
+        revision = self.nodes._build_revision_prompt(
+            self.nodes.DEFAULT_PROFILE,
+            self.nodes.DEFAULT_STYLE_TEMPLATE,
+            "",
+            self.nodes.DEFAULT_FRAMING_TEMPLATE,
+            "",
+            "Clean",
+            "Disabled",
+            "A woman with dark wavy hair",
+            "Make her hair blonde",
+        )
+        main_revision = self.nodes._build_main_revision_prompt(
+            "A woman with dark wavy hair",
+            "A woman with dark wavy hair in soft studio lighting",
+            "Make her hair blonde",
+            "Disabled",
+        )
+
+        for request in (revision, main_revision):
+            with self.subTest(builder=request.splitlines()[0]):
+                self.assertIn("complete old", request)
+                self.assertIn("omitted old qualifier", request)
+                self.assertIn("'blonde wavy hair', not 'dark blonde wavy hair'", request)
 
     def test_medium_thinking_instructions_require_one_bounded_pass(self):
         rewrite = self.nodes._thinking_instruction("Medium")
@@ -1057,11 +1104,119 @@ class RegressionTests(unittest.TestCase):
         self.assertEqual(payload["model"], "qwen3:8b")
         self.assertEqual(payload["think"], "medium")
         self.assertFalse(payload["stream"])
+        self.assertEqual(payload["keep_alive"], 30)
         self.assertEqual(payload["options"]["num_predict"], 750)
         self.assertEqual(payload["options"]["repeat_penalty"], 1.05)
         self.assertEqual(payload["options"]["repeat_last_n"], 360)
         self.assertNotIn("seed", payload["options"])
         self.assertEqual(post.call_args.kwargs["service_name"], "Ollama")
+
+    def test_ollama_small_model_decision_retries_without_thinking(self):
+        exhausted = {
+            "message": {"role": "assistant", "content": "", "thinking": "unfinished"},
+            "done": True,
+            "done_reason": "length",
+        }
+        completed = {
+            "message": {
+                "role": "assistant",
+                "content": '{"route":"mutate_now","confidence":0.9}',
+            },
+            "done": True,
+            "done_reason": "stop",
+        }
+        with mock.patch.object(
+            self.nodes,
+            "_post_json",
+            side_effect=[exhausted, completed],
+        ) as post:
+            result = self.nodes._generate_ollama(
+                "Classify this Studio turn",
+                "http://localhost:11434",
+                "qwen3-vl:2b",
+                320,
+                300,
+                0.0,
+                1.0,
+                40,
+                0.0,
+                1.05,
+                360,
+                0,
+                "Minimal",
+                "",
+                120,
+                allow_partial=False,
+            )
+
+        self.assertEqual(result, completed["message"]["content"])
+        self.assertIn("retried once with Thinking disabled", result.warning)
+        self.assertEqual(post.call_count, 2)
+        self.assertEqual(post.call_args_list[0].args[1]["options"]["num_predict"], 356)
+        self.assertEqual(post.call_args_list[1].args[1]["options"]["num_predict"], 356)
+        self.assertEqual(post.call_args_list[0].args[1]["think"], "low")
+        self.assertFalse(post.call_args_list[1].args[1]["think"])
+
+    def test_ollama_partial_completion_is_returned_with_warning(self):
+        response = {
+            "message": {"role": "assistant", "content": "Final prompt: A partial forest"},
+            "done": True,
+            "done_reason": "length",
+        }
+        with mock.patch.object(self.nodes, "_post_json", return_value=response) as post:
+            result = self.nodes._generate_ollama(
+                "Rewrite this prompt",
+                "http://localhost:11434",
+                "qwen3-vl:2b",
+                300,
+                300,
+                0.25,
+                0.8,
+                40,
+                0.0,
+                1.05,
+                360,
+                -1,
+                "Disabled",
+                "",
+                120,
+            )
+
+        self.assertEqual(result, "Final prompt: A partial forest")
+        self.assertIn("kept the partial result", result.warning)
+        self.assertEqual(post.call_count, 1)
+
+    def test_ollama_unload_uses_empty_chat_request(self):
+        response = {
+            "message": {"role": "assistant", "content": ""},
+            "done": True,
+            "done_reason": "unload",
+        }
+        with mock.patch.object(self.nodes, "_post_json", return_value=response) as post:
+            self.nodes._unload_ollama_model(
+                "http://localhost:11434",
+                "qwen3-vl:2b",
+            )
+
+        payload = post.call_args.args[1]
+        self.assertEqual(payload["model"], "qwen3-vl:2b")
+        self.assertEqual(payload["messages"], [])
+        self.assertEqual(payload["keep_alive"], 0)
+
+    def test_initial_turn_router_exposes_ollama_fallback_warning(self):
+        routed_json = self.nodes._GenerationText(
+            '{"route":"mutate_now","confidence":0.9,"resolved_instruction":"make it blue"}',
+            "Ollama retried with Thinking disabled.",
+        )
+        with mock.patch.object(self.routes, "_consult", return_value=routed_json) as consult:
+            result = self.routes._studio_turn_route({
+                "user_text": "make it blue",
+                "chat_initialized": True,
+            })
+
+        self.assertEqual(result["route"], "mutate_now")
+        self.assertEqual(result["warning"], routed_json.warning)
+        self.assertFalse(consult.call_args.kwargs["allow_partial"])
 
     def test_ollama_generation_does_not_start_after_setup_is_cancelled(self):
         checks = iter([False, True])
@@ -1372,6 +1527,44 @@ class RegressionTests(unittest.TestCase):
         self.assertEqual(messages[1]["content"][1]["type"], "image_url")
         self.assertLessEqual(generate.call_args.args[4], 0.2)
 
+    def test_prompt_agent_retries_token_exhaustion_once_with_a_larger_budget(self):
+        payload = {
+            "phase": "compile",
+            "goal": "Create a quiet product photograph.",
+            "llm_provider": "koboldcpp",
+            "kobold_url": "http://localhost:5001",
+            "thinking_mode": "Disabled",
+            "max_response_tokens": 1400,
+        }
+        response = json.dumps({
+            "summary": "A quiet product photograph",
+            "reference_notes": [],
+            "criteria": [{
+                "id": "subject",
+                "description": "One clearly readable product",
+                "weight": 100,
+                "hard": True,
+            }],
+            "forbidden": [],
+        })
+        exhausted = RuntimeError(
+            "KoboldCpp exhausted the 1400-token completion budget before finishing."
+        )
+
+        with mock.patch.object(
+            self.routes,
+            "_generate_kcpp",
+            side_effect=[exhausted, response],
+        ) as generate:
+            result = self.routes._prompt_agent(payload)
+
+        self.assertEqual(result["rubric"]["criteria"][0]["id"], "subject")
+        self.assertEqual(generate.call_count, 2)
+        self.assertEqual(generate.call_args_list[0].args[2], 1400)
+        self.assertEqual(generate.call_args_list[1].args[2], 1800)
+        retry_system = generate.call_args_list[1].kwargs["messages_override"][0]["content"]
+        self.assertIn("compact JSON only", retry_system)
+
     def test_prompt_agent_cancel_tombstone_prevents_late_request_execution(self):
         request_id = "cancel-before-register"
         cancellation = self.routes._cancel_prompt_agent_request({"request_id": request_id})
@@ -1388,6 +1581,37 @@ class RegressionTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "cancelled"):
                 self.routes._execute_prompt_agent_request(request_id, payload)
         operation.assert_not_called()
+
+    def test_prompt_agent_endpoint_cancels_a_phase_that_exceeds_its_deadline(self):
+        class Request:
+            content_length = None
+
+            async def json(self):
+                return {
+                    "request_id": "timed-agent-request",
+                    "phase": "compile",
+                    "goal": "A quiet still life.",
+                    "llm_provider": "koboldcpp",
+                    "kobold_url": "http://localhost:5001",
+                }
+
+        async def never_finishes(*_args, **_kwargs):
+            await asyncio.sleep(60)
+
+        with (
+            mock.patch.object(self.routes, "PROMPT_AGENT_PHASE_DEADLINE_SECONDS", 0.01),
+            mock.patch.object(self.routes, "_run_llm_request", side_effect=never_finishes),
+            mock.patch.object(
+                self.routes,
+                "_cancel_prompt_agent_request",
+                return_value={"cancelled": True},
+            ) as cancel,
+        ):
+            data, status = asyncio.run(self.routes.prompt_studio_agent(Request()))
+
+        self.assertEqual(status, 504)
+        self.assertIn("timed out and was cancelled", data["error"])
+        cancel.assert_called_once_with({"request_id": "timed-agent-request"})
 
     def test_prompt_agent_cancel_aborts_only_registered_running_kobold_request(self):
         request_id = "running-agent-request"

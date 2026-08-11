@@ -2,6 +2,29 @@
 
 Create, refine, edit, and upscale ComfyUI images in a chat-first studio powered by your local KoboldCpp or Ollama model.
 
+## Browser setup wizard
+
+The source-readable Windows setup wizard is under `installer/`. Double-click
+`Start Prompt Studio Setup.vbs`; it opens a private loopback browser wizard with no terminal
+window. The wizard can use an existing ComfyUI or install an official portable NVIDIA, AMD,
+or Intel build, install or safely update Prompt Studio, add the bundled `[PS] - Krea2 Turbo`
+workflow, and acquire every missing model with resumable SHA-256-verified downloads. Existing
+workflows and Prompt Studio installs receive rollback backups before replacement.
+
+For fresh Windows environments, the review also includes the Microsoft Visual C++ v14 x64
+runtime when its required DLLs are absent. Setup downloads the current Microsoft permalink,
+requires a valid Microsoft Authenticode signature, requests Windows elevation, and installs the
+runtime before ComfyUI starts. The official portable archive already bundles Python, PyTorch,
+ComfyUI's Python packages, and its frontend; a compatible GPU driver remains the only
+hardware-specific system prerequisite.
+
+The same flow detects KoboldCpp and Ollama, or installs the official standalone Ollama runtime
+and a hardware-appropriate Qwen3-VL model. On a single GPU, Ollama unloads the LLM immediately
+after prompt work so ComfyUI can reclaim VRAM; on multi-GPU systems, the wizard recommends the
+second GPU for the LLM. A source-readable `Start Prompt Studio.vbs` launcher keeps background
+services hidden, starts ComfyUI in a normal visible terminal, waits for it to become ready, and
+opens the finished Studio with the chosen provider and model already selected.
+
 ## Create and revise images through conversation
 
 Describe what you want, generate it through any compatible saved ComfyUI workflow, then ask for focused changes in plain language. Prompt Studio preserves established details while updating the image and prompt together.
@@ -63,7 +86,7 @@ Prompt Studio uses KoboldCpp at `http://localhost:5001` by default. Open Prompt 
 
 Prompt rewriting uses KoboldCpp's OpenAI-compatible Chat Completions endpoint and the model's native GGUF chat template. Enable **Use Jinja** in KoboldCpp and restart its server after changing that setting. The backend checks this capability and stops with a clear error instead of silently using generic chat formatting. KoboldCpp 1.117.1 or newer is recommended and is the version used for integration testing.
 
-With Ollama selected, Prompt Studio uses Ollama's native, non-streaming `/api/chat` endpoint. Sampling controls are translated to Ollama options, and the Thinking control uses Ollama's separate `think` response channel. **Minimal** and **Low** both request Ollama's `low` thinking level. The ComfyUI canvas nodes remain named KoboldCpp Prompt Slot/Amplify for workflow compatibility; in interactive Prompt Studio, they act as prompt handoff nodes and the provider selected in settings performs the rewrite.
+With Ollama selected, Prompt Studio uses Ollama's native, non-streaming `/api/chat` endpoint. Sampling controls are translated to Ollama options, and the Thinking control uses Ollama's separate `think` response channel. **Minimal** and **Low** both request Ollama's `low` thinking level. If a constrained model spends the initial routing budget on reasoning, Prompt Studio retries that decision once with Thinking disabled and displays a warning instead of failing the Studio turn. A non-structured response that reaches its limit but contains usable text is retained with an incomplete-result warning. Ollama stays loaded briefly across the routing and rewrite stages, then Prompt Studio sends an explicit unload request immediately before queueing ComfyUI so the same runner is not repeatedly restarted and diffusion can reclaim VRAM. The ComfyUI canvas nodes remain named KoboldCpp Prompt Slot/Amplify for workflow compatibility; in interactive Prompt Studio, they act as prompt handoff nodes and the provider selected in settings performs the rewrite.
 
 > Want to use the chat UI without an LLM? Turn off **Use LLM amplification**. The composer becomes a direct-prompt editor, the main and final prompts stay identical, and **Generate** sends that text straight to ComfyUI.
 
@@ -104,7 +127,7 @@ If you change the model profile, style, framing, modifiers, embellishment level,
 
 ### Sessions and persistence
 
-The **Sessions** sidebar creates, switches, and deletes independent prompt conversations. Each session remembers its main and final prompts, paired prompt versions, messages, selected creation and editing workflows, and the prompt-shaping controls last applied by the selected LLM provider.
+The **Sessions** sidebar creates, switches, and deletes independent prompt conversations. Each session remembers its main and final prompts, paired prompt versions, messages, selected creation and editing workflows, and the prompt-shaping controls last applied by the selected LLM provider. A new session starts with clean prompt-shaping controls: style and framing return to **None**, free-text instructions and modifiers are cleared, and other prompt-shaping controls return to their defaults. Thinking and embellishment levels carry over, as do the selected LoRAs and models.
 
 Chats are stored under `prompt_studio_chats/`, with an `index.json` for ordering and one JSON file per session. The directory is excluded from Git and is shared by browsers connected to the same ComfyUI installation. Saves use revision checks so an older browser cannot silently overwrite a newer save. A conflicting client merges with the latest store before retrying. Previous chat and index copies are kept under `prompt_studio_chats/_backups/`. Existing `prompt_studio_chats.json` stores are migrated automatically on first load and archived in that backup directory.
 
