@@ -480,6 +480,30 @@ installation still loads the built-in presets. Do not manually add the local fil
 tracked, `.gitignore` can no longer provide this protection. Restart ComfyUI after changing either
 file.
 
+### Additional instruction templates
+
+The tracked `presets/examples/additional_instruction_templates.example.json` file seeds the ignored
+local `additional_instruction_templates.json` file. Each enabled entry maps an exact,
+case-insensitive `name` entered as the complete Additional instructions value to the reusable
+`instruction` sent to the LLM:
+
+```json
+{
+  "additional_instruction_templates": [
+    {
+      "name": "My instruction phrase",
+      "instruction": "Reusable highest-priority guidance for the LLM.",
+      "enabled": true
+    }
+  ]
+}
+```
+
+Leading and trailing whitespace around the entered phrase is ignored. Any value that does not
+exactly match an enabled template name is sent unchanged. Additional instructions take priority
+over conflicting main-prompt, style, style-modifier, framing, and framing-modifier guidance.
+Restart ComfyUI after changing the file.
+
 ## Backend API
 
 Prompt Studio revisions are served by ComfyUI at:

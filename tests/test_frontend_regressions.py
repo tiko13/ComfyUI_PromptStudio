@@ -88,16 +88,21 @@ class FrontendRegressionTests(unittest.TestCase):
         self.assertIn('"stopped", "error"', normalizer)
         self.assertIn('iteration.status = status === "error" ? "error" : "stopped";', finish)
 
-    def test_background_prompt_agent_is_visible_and_owns_its_session(self):
+    def test_chat_order_uses_proper_message_creation_time_only(self):
         activity = self.function_source("chatActivityAt", "compareChatsNewestFirst")
+        self.assertIn('["user", "assistant"].includes(message?.role)', activity)
+        self.assertIn("Number(message.createdAt)", activity)
+        self.assertNotIn("message.updatedAt", activity)
+        self.assertNotIn("chat.updatedAt", activity)
+        self.assertNotIn("chat.consultAgent?.updatedAt", activity)
+
+    def test_background_prompt_agent_is_visible_and_owns_its_session(self):
         chat_list = self.function_source("renderChatList", "scrollHistoryToEnd")
         updater = self.function_source("updateConsultAgent", "setConsultAgentGeneration")
         monitor = self.source[
             self.source.index("async function monitorPromptAgentPhase"):
             self.source.index("async function cancelPromptAgentLlmRequest")
         ]
-        self.assertIn("chat.consultAgent?.updatedAt", activity)
-        self.assertIn("chat.consultMessages", activity)
         self.assertIn("Agent: ${promptAgentStatusLabel(agent)}", chat_list)
         self.assertIn("agent?.active", chat_list)
         self.assertIn("renderChatList();", updater)
@@ -111,6 +116,61 @@ class FrontendRegressionTests(unittest.TestCase):
         ]
         self.assertIn("Math.max(1400", request)
         self.assertNotIn("Math.max(1200", request)
+
+    def test_prompt_agent_stop_survives_a_page_refresh(self):
+        normalizer = self.function_source(
+            "normalizeConsultAgent",
+            "normalizeConsultMessage",
+        )
+        request = self.source[
+            self.source.index("async function requestPromptAgentPhase"):
+            self.source.index("async function cancelPromptAgentLlmRequest")
+        ]
+        cancel = self.source[
+            self.source.index("async function cancelPromptAgentLlmRequest"):
+            self.source.index("function promptAgentCompletedIterations")
+        ]
+        stop = self.function_source("stopConsultAgent", "promotePromptAgentIteration")
+
+        self.assertIn('requestId: String(value.requestId || "")', normalizer)
+        self.assertIn("current.requestId = requestId;", request)
+        self.assertIn("agent_id: agent.id", request)
+        self.assertIn("agent_id: ownerId", cancel)
+        self.assertIn("state.consultAgentRequestId || agent.requestId", stop)
+        self.assertIn("promptAgentGenerationPromptId(agent)", stop)
+
+    def test_prompt_agent_rereads_chat_state_after_sync_replaces_it(self):
+        run = self.source[
+            self.source.index("async function runConsultAgent"):
+            self.source.index("async function startConsultAgent")
+        ]
+
+        self.assertIn("const currentAgent = () =>", run)
+        self.assertIn("state.chats.find((item) => item.id === agentChatId)", run)
+        self.assertIn("|| !currentAgent()?.active", run)
+        self.assertIn("agent = currentAgent();", run)
+        self.assertNotIn("agent = activeConsultAgent(agentChat)", run)
+        self.assertNotIn("const current = activeConsultAgent(agentChat)", run)
+
+    def test_chat_sync_cannot_overwrite_a_generation_started_during_fetch(self):
+        sync = self.function_source("refreshChatsFromServer", "setupChatSync")
+        self.assertIn("const syncMutationVersion = state.chatMutationVersion;", sync)
+        self.assertIn("if (state.chatMutationVersion !== syncMutationVersion) return;", sync)
+        self.assertLess(
+            sync.index("const syncMutationVersion = state.chatMutationVersion;"),
+            sync.index("await api.fetchApi"),
+        )
+        self.assertGreater(
+            sync.index("if (state.chatMutationVersion !== syncMutationVersion) return;"),
+            sync.index("await response.json"),
+        )
+
+    def test_generation_images_update_the_live_message_after_async_enrichment(self):
+        append = self.function_source("appendGenerationImages", "updateMainPromptEditor")
+        self.assertGreater(
+            append.index("const record = studioGenerationRecord(promptId);"),
+            append.index("await Promise.all"),
+        )
 
     def test_chat_images_preserve_their_aspect_ratio(self):
         self.assertNotIn("object-fit: cover", self.styles)

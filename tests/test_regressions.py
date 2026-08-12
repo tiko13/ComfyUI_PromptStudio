@@ -1030,6 +1030,41 @@ class RegressionTests(unittest.TestCase):
         self.assertNotIn("thinking_budget_tokens", post.call_args.args[1])
         self.assertEqual(post.call_args.args[1]["stop"], [])
 
+    def test_kobold_abort_is_recognized_before_length_retry(self):
+        response = {
+            "choices": [{
+                "message": {"content": "partial"},
+                "finish_reason": "length",
+            }],
+        }
+        checks = iter([False, False, False, True])
+        with (
+            mock.patch.object(self.nodes, "_server_capabilities", return_value={"jinja": True}),
+            mock.patch.object(self.nodes, "_server_context_length", return_value=8192),
+            mock.patch.object(self.nodes, "_kobold_token_count", return_value=250),
+            mock.patch.object(self.nodes, "_post_json", return_value=response) as post,
+            self.assertRaisesRegex(RuntimeError, "cancelled"),
+        ):
+            self.nodes._generate_kcpp(
+                "Rewrite this prompt",
+                "http://localhost:5001",
+                1400,
+                300,
+                0.2,
+                0.9,
+                100,
+                0.0,
+                1.05,
+                360,
+                -1,
+                "Disabled",
+                "",
+                120,
+                cancellation_check=lambda: next(checks),
+            )
+
+        self.assertEqual(post.call_count, 1)
+
     def test_chat_generation_uses_profile_default_as_final_answer_allowance(self):
         response = {
             "choices": [
@@ -1649,6 +1684,40 @@ class RegressionTests(unittest.TestCase):
         self.assertFalse(result["provider_aborted"])
         response.close.assert_called_once_with()
 
+    def test_prompt_agent_cancel_by_agent_id_reaches_requests_after_refresh(self):
+        agent_id = "refresh-survivor"
+        running = self.routes._register_prompt_agent_request("running-phase", {
+            "agent_id": agent_id,
+            "llm_provider": "koboldcpp",
+            "kobold_url": "http://agent-kobold.test:5001",
+        })
+        queued = self.routes._register_prompt_agent_request("queued-phase", {
+            "agent_id": agent_id,
+            "llm_provider": "koboldcpp",
+            "kobold_url": "http://agent-kobold.test:5001",
+        })
+        unrelated = self.routes._register_prompt_agent_request("other-agent-phase", {
+            "agent_id": "other-agent",
+            "llm_provider": "koboldcpp",
+            "kobold_url": "http://agent-kobold.test:5001",
+        })
+        running["status"] = "running"
+        queued["status"] = "queued"
+        unrelated["status"] = "queued"
+
+        with mock.patch.object(
+            self.routes,
+            "_abort_kobold_generation",
+            return_value={"provider": "koboldcpp", "success": True},
+        ) as abort:
+            result = self.routes._cancel_prompt_agent_request({"agent_id": agent_id})
+
+        self.assertEqual(set(result["request_ids"]), {"running-phase", "queued-phase"})
+        self.assertTrue(running["cancelled"])
+        self.assertTrue(queued["cancelled"])
+        self.assertFalse(unrelated["cancelled"])
+        abort.assert_called_once_with({"kobold_url": "http://agent-kobold.test:5001"})
+
     def test_prompt_agent_architect_retries_reference_placeholder_before_generation(self):
         path = Path(self.temp.name) / "agent-reference.png"
         Image.new("RGB", (64, 64), color="teal").save(path)
@@ -1896,6 +1965,7 @@ class RegressionTests(unittest.TestCase):
         self.assertTrue(framing["instruction"])
         self.assertEqual(data["styles"], [item["name"] for item in data["style_templates"]])
         self.assertEqual(data["framings"], [item["name"] for item in data["framing_templates"]])
+        self.assertNotIn("additional_instruction_templates", data)
         natural_lengths = data["output_length_profiles"]["General Natural Language"]
         tag_lengths = data["output_length_profiles"]["Tag-Based Anime Model"]
         self.assertEqual((natural_lengths["min"], natural_lengths["max"]), (20, 200))
@@ -1980,6 +2050,96 @@ class RegressionTests(unittest.TestCase):
         ):
             self.assertTrue(self.nodes._load_style_templates())
             self.assertTrue(self.nodes._load_framing_templates())
+
+    def test_additional_instruction_template_expands_an_exact_case_insensitive_phrase(self):
+        storage = Path(self.temp.name)
+        templates = storage / "additional-instructions.json"
+        templates.write_text(
+            json.dumps(
+                {
+                    "additional_instruction_templates": [
+                        {
+                            "name": "Use private guidance",
+                            "instruction": "Prefer the explicit instruction over every conflicting visual direction.",
+                        },
+                        {
+                            "name": "Disabled phrase",
+                            "instruction": "unused",
+                            "enabled": False,
+                        },
+                    ]
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        with mock.patch.object(
+            self.nodes,
+            "ADDITIONAL_INSTRUCTION_TEMPLATES_PATH",
+            str(templates),
+        ):
+            self.assertEqual(
+                self.nodes._expand_additional_instructions("  USE PRIVATE GUIDANCE  "),
+                "Prefer the explicit instruction over every conflicting visual direction.",
+            )
+            self.assertEqual(
+                self.nodes._expand_additional_instructions("Use private guidance plus more"),
+                "Use private guidance plus more",
+            )
+            self.assertEqual(
+                self.nodes._expand_additional_instructions("Disabled phrase"),
+                "Disabled phrase",
+            )
+
+    def test_additional_instructions_are_highest_priority_in_all_prompt_builders(self):
+        storage = Path(self.temp.name)
+        templates = storage / "additional-instructions.json"
+        trigger = "Override scene rules"
+        expansion = "Use monochrome line art even if any other prompt instruction requests color photography."
+        templates.write_text(
+            json.dumps(
+                {
+                    "additional_instruction_templates": [
+                        {"name": trigger, "instruction": expansion}
+                    ]
+                }
+            ),
+            encoding="utf-8",
+        )
+        profile = self.nodes.DEFAULT_PROFILE
+        style = {"name": "Color Photo", "instruction": "Use saturated color photography."}
+        framing = {"name": "Close-up", "instruction": "Use a tight close-up."}
+
+        with mock.patch.object(
+            self.nodes,
+            "ADDITIONAL_INSTRUCTION_TEMPLATES_PATH",
+            str(templates),
+        ):
+            requests = [
+                self.nodes._build_instruction_prompt(
+                    profile, style, "", framing, "", "Clean", "Disabled", "A colorful portrait", trigger
+                ),
+                self.nodes._build_revision_prompt(
+                    profile, style, "", framing, "", "Clean", "Disabled", "A colorful portrait", "Refine it", trigger
+                ),
+                self.nodes._build_main_revision_prompt(
+                    "A colorful portrait", "A saturated close-up color photo", "Refine it", "Disabled", trigger
+                ),
+                self.nodes._build_expansion_retry_prompt(
+                    profile, style, "", framing, "", "Clean", "Disabled", "A colorful portrait", "A portrait", trigger
+                ),
+                self.nodes._build_fragment_rewrite_prompt(
+                    profile, style, "", framing, "", "Clean", "Disabled", "A colorful portrait", trigger
+                ),
+            ]
+
+        for request in requests:
+            with self.subTest(builder=request.splitlines()[0]):
+                self.assertIn(expansion, request)
+                self.assertNotIn(trigger, request)
+                self.assertIn("Additional user instructions (highest priority)", request)
+                self.assertIn("main/user/current prompt", request)
+                self.assertIn("Replace or omit conflicting lower-priority content", request)
 
     def test_missing_additional_preset_file_is_created_from_tracked_example(self):
         storage = Path(self.temp.name)
@@ -2128,18 +2288,93 @@ class RegressionTests(unittest.TestCase):
     def test_chat_store_detects_stale_writes_and_keeps_index_backup(self):
         chat_path = str(Path(self.temp.name) / "chats.json")
         chat_dir = str(Path(self.temp.name) / "chats")
+        first_chat = {"id": "chat-1", "messages": []}
+        second_chat = {"id": "chat-1", "messages": [{"id": "message-1", "text": "Changed"}]}
         with (
             mock.patch.object(self.routes, "CHAT_STORE_PATH", chat_path),
             mock.patch.object(self.routes, "CHAT_STORE_DIR", chat_dir),
         ):
-            first = self.routes._update_chat_store({"revision": 0, "activeChatId": None, "chats": []})
+            first = self.routes._update_chat_store({
+                "revision": 0,
+                "activeChatId": "chat-1",
+                "chats": [first_chat],
+            })
             self.assertEqual(first["revision"], 1)
             with self.assertRaises(self.routes.StoreConflictError):
-                self.routes._update_chat_store({"revision": 0, "activeChatId": None, "chats": []})
-            second = self.routes._update_chat_store({"revision": 1, "activeChatId": None, "chats": []})
+                self.routes._update_chat_store({
+                    "revision": 0,
+                    "activeChatId": "chat-1",
+                    "chats": [second_chat],
+                })
+            second = self.routes._update_chat_store({
+                "revision": 1,
+                "activeChatId": "chat-1",
+                "chats": [second_chat],
+            })
             self.assertEqual(second["revision"], 2)
             backup = json.loads((Path(chat_dir) / "_backups" / "index.bak").read_text(encoding="utf-8"))
             self.assertEqual(backup["revision"], 1)
+
+    def test_chat_store_unchanged_writes_reuse_the_current_revision(self):
+        chat_path = str(Path(self.temp.name) / "chats.json")
+        chat_dir = str(Path(self.temp.name) / "chats")
+        chat = {"id": "chat-1", "messages": [], "consultMessages": []}
+        with (
+            mock.patch.object(self.routes, "CHAT_STORE_PATH", chat_path),
+            mock.patch.object(self.routes, "CHAT_STORE_DIR", chat_dir),
+        ):
+            first = self.routes._update_chat_store({
+                "revision": 0,
+                "activeChatId": "chat-1",
+                "chats": [chat],
+            })
+            unchanged = self.routes._update_chat_store({
+                "revision": first["revision"],
+                "activeChatId": "chat-1",
+                "chats": [chat],
+            })
+            stale_unchanged = self.routes._update_chat_store({
+                "revision": 0,
+                "activeChatId": "chat-1",
+                "chats": [chat],
+            })
+
+            self.assertEqual(first["revision"], 1)
+            self.assertEqual(unchanged["revision"], 1)
+            self.assertEqual(stale_unchanged["revision"], 1)
+            index = json.loads((Path(chat_dir) / "index.json").read_text(encoding="utf-8"))
+            self.assertEqual(index["revision"], 1)
+
+    def test_chat_store_prunes_a_stale_noop_before_comparing_revisions(self):
+        chat_path = str(Path(self.temp.name) / "chats.json")
+        chat_dir = str(Path(self.temp.name) / "chats")
+        chat = {"id": "chat-1", "messages": [], "consultMessages": []}
+        with (
+            mock.patch.object(self.routes, "CHAT_STORE_PATH", chat_path),
+            mock.patch.object(self.routes, "CHAT_STORE_DIR", chat_dir),
+        ):
+            first = self.routes._update_chat_store({
+                "revision": 0,
+                "activeChatId": "chat-1",
+                "chats": [chat],
+            })
+            stale = self.routes._update_chat_store({
+                "revision": 0,
+                "activeChatId": "chat-1",
+                "chats": [{
+                    **chat,
+                    "consultMessages": [{
+                        "id": "expired",
+                        "role": "assistant",
+                        "text": "Expired",
+                        "createdAt": 1,
+                    }],
+                }],
+            })
+
+            self.assertEqual(first["revision"], 1)
+            self.assertEqual(stale["revision"], 1)
+            self.assertEqual(self.routes._read_chat_store()["chats"], [chat])
 
     def test_chat_store_uses_one_json_file_per_chat_and_archives_deleted_chat(self):
         chat_path = str(Path(self.temp.name) / "chats.json")

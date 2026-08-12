@@ -1,0 +1,9 @@
+{
+  "additional_instruction_templates": [
+    {
+      "name": "Example instruction phrase",
+      "instruction": "Describe the reusable highest-priority guidance to send to the LLM when the exact phrase is entered.",
+      "enabled": false
+    }
+  ]
+}

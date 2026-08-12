@@ -36,6 +36,14 @@ ADDITIONAL_FRAMING_TEMPLATES_EXAMPLE_PATH = os.path.join(
     PRESET_EXAMPLES_DIR,
     "framing_templates.additional.example.json",
 )
+ADDITIONAL_INSTRUCTION_TEMPLATES_PATH = os.path.join(
+    BASE_DIR,
+    "additional_instruction_templates.json",
+)
+ADDITIONAL_INSTRUCTION_TEMPLATES_EXAMPLE_PATH = os.path.join(
+    PRESET_EXAMPLES_DIR,
+    "additional_instruction_templates.example.json",
+)
 PROTECTED_WORDS_PATH = os.path.join(BASE_DIR, "protected_words.txt")
 _PROTECTED_WORDS_CACHE = {"signature": None, "words": ()}
 DEFAULT_PROFILE = {
@@ -88,6 +96,10 @@ DEFAULT_STYLE_TEMPLATE = {
 }
 DEFAULT_FRAMING_TEMPLATE = {
     "name": "None",
+    "instruction": "",
+}
+DEFAULT_ADDITIONAL_INSTRUCTION_TEMPLATE = {
+    "name": "",
     "instruction": "",
 }
 LEGACY_FRAMING_ALIASES = {
@@ -478,6 +490,52 @@ def _load_framing_templates():
     )
     _validate_unique_names(normalized, "framing template")
     return normalized
+
+
+def _load_additional_instruction_templates():
+    _ensure_additional_template_file(
+        ADDITIONAL_INSTRUCTION_TEMPLATES_PATH,
+        ADDITIONAL_INSTRUCTION_TEMPLATES_EXAMPLE_PATH,
+    )
+    normalized = _load_template_file(
+        ADDITIONAL_INSTRUCTION_TEMPLATES_PATH,
+        "additional_instruction_templates",
+        "Additional instruction template",
+        DEFAULT_ADDITIONAL_INSTRUCTION_TEMPLATE,
+    )
+    normalized = [
+        template
+        for template in normalized
+        if str(template.get("name") or "").strip()
+        and str(template.get("instruction") or "").strip()
+    ]
+    _validate_unique_names(normalized, "additional instruction template")
+    return normalized
+
+
+def _expand_additional_instructions(value):
+    """Resolve an exact, case-insensitive shortcut without exposing it as a selector."""
+    instruction = str(value or "").strip()
+    if not instruction:
+        return ""
+    key = instruction.casefold()
+    for template in _load_additional_instruction_templates():
+        if str(template.get("name") or "").strip().casefold() == key:
+            return str(template.get("instruction") or "").strip()
+    return instruction
+
+
+def _additional_instruction_prompt_lines(value):
+    instruction = _expand_additional_instructions(value)
+    if not instruction:
+        return []
+    return [
+        "",
+        "Additional user instructions (highest priority):",
+        instruction,
+        "Follow these instructions whenever they conflict with the selected style, style modifier, selected framing, framing modifier, or the main/user/current prompt. Replace or omit conflicting lower-priority content.",
+        "Treat non-conflicting style, framing, and prompt content as supporting context. Do not copy meta-instruction language into the output unless it explicitly describes content the user wants generated.",
+    ]
 
 
 def _get_profile(profile_name):
@@ -1075,6 +1133,7 @@ def _generate_kcpp(
             timeout,
             response_hook=response_hook,
         )
+        ensure_active()
         try:
             choice = result["choices"][0]
             message = choice["message"]
@@ -1839,16 +1898,7 @@ def _build_expansion_retry_prompt(
             ]
         )
 
-    additional_instructions = (additional_instructions or "").strip()
-    if additional_instructions:
-        prompt_parts.extend(
-            [
-                "",
-                "Additional user instructions:",
-                additional_instructions,
-                "Treat these as general LLM guidance, not as a style or framing modifier. They supplement and must not replace the active style or framing.",
-            ]
-        )
+    prompt_parts.extend(_additional_instruction_prompt_lines(additional_instructions))
 
     if _reasoning_effort(thinking_mode) == "none":
         prompt_parts.extend(
@@ -2004,16 +2054,7 @@ def _build_instruction_prompt(profile, style_template, style_modifier, framing_t
             ]
         )
 
-    additional_instructions = (additional_instructions or "").strip()
-    if additional_instructions:
-        prompt_parts.extend(
-            [
-                "",
-                "Additional user instructions:",
-                additional_instructions,
-                "Treat these as general LLM guidance, not as a style or framing modifier. They supplement and must not replace the active style or framing.",
-            ]
-        )
+    prompt_parts.extend(_additional_instruction_prompt_lines(additional_instructions))
 
     protected_word_lines = _protected_word_instruction_lines(text)
     if protected_word_lines:
@@ -2150,17 +2191,7 @@ def _build_revision_prompt(
     if protected_word_lines:
         prompt_parts.extend(["", *protected_word_lines])
 
-    additional_instructions = str(additional_instructions or "").strip()
-    if additional_instructions:
-        prompt_parts.extend(
-            [
-                "",
-                "Additional user instructions:",
-                additional_instructions,
-                "Treat these as general LLM guidance, not as a style or framing modifier. They supplement and must not replace the active style or framing.",
-                "Use these instructions to guide the edit, but do not copy instruction language into the replacement prompt unless it explicitly describes visible content the user wants generated.",
-            ]
-        )
+    prompt_parts.extend(_additional_instruction_prompt_lines(additional_instructions))
 
     prompt_parts.extend(
         [
@@ -2238,16 +2269,7 @@ def _build_main_revision_prompt(
     protected_word_lines = _protected_word_instruction_lines(current_main_prompt, revision)
     if protected_word_lines:
         prompt_parts.extend(["", *protected_word_lines])
-    additional_instructions = str(additional_instructions or "").strip()
-    if additional_instructions:
-        prompt_parts.extend(
-            [
-                "",
-                "Additional user instructions:",
-                additional_instructions,
-                "Use these instructions to interpret and update the durable user intent. Do not copy meta-instructions into the updated main prompt.",
-            ]
-        )
+    prompt_parts.extend(_additional_instruction_prompt_lines(additional_instructions))
     if _reasoning_effort(thinking_mode) != "none":
         prompt_parts.extend(
             [
@@ -2362,16 +2384,7 @@ def _build_fragment_rewrite_prompt(profile, style_template, style_modifier, fram
             ]
         )
 
-    additional_instructions = (additional_instructions or "").strip()
-    if additional_instructions:
-        prompt_parts.extend(
-            [
-                "",
-                "Additional user instructions:",
-                additional_instructions,
-                "Treat these as general LLM guidance, not as a style or framing modifier. They supplement and must not replace the active style or framing.",
-            ]
-        )
+    prompt_parts.extend(_additional_instruction_prompt_lines(additional_instructions))
 
     protected_word_lines = _protected_word_instruction_lines(text)
     if protected_word_lines:

@@ -1166,6 +1166,7 @@ function normalizeConsultAgent(value) {
   ].includes(value.status) ? value.status : "paused";
   return {
     id: String(value.id || makeId()),
+    requestId: String(value.requestId || "").slice(0, 128),
     active: value.active === true && !["complete", "stopped", "error"].includes(status),
     status,
     resumeStatus: [
@@ -1970,6 +1971,7 @@ function saveChats({ immediate = false } = {}) {
 async function refreshChatsFromServer({ force = false } = {}) {
   if (!state.chatStoreLoaded || state.chatPersistenceBlocked || state.chatSyncInFlight) return;
   if (!force && (state.chatSaveTimer || state.chatSaveInFlight || state.busy)) return;
+  const syncMutationVersion = state.chatMutationVersion;
   state.chatSyncInFlight = true;
   try {
     const response = await api.fetchApi(`/promptstudio/prompt-studio/chats?revision=${encodeURIComponent(state.chatRevision)}`);
@@ -1977,6 +1979,9 @@ async function refreshChatsFromServer({ force = false } = {}) {
     const stored = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(stored.error || `Chat synchronization failed (${response.status}).`);
     if (Number(stored.revision || 0) <= state.chatRevision) return;
+    // A generation or other local action may have changed chat state while this request was in flight.
+    // Keep that state authoritative; its pending save will merge against the newer server revision.
+    if (state.chatMutationVersion !== syncMutationVersion) return;
     applyChatStoreSnapshot(stored, { preserveActive: true });
   } catch (error) {
     if (force) setStatus(error.message || "Chat history could not be synchronized.", "warning");
@@ -2599,20 +2604,14 @@ function chatTitle(timestamp) {
 }
 
 function chatActivityAt(chat) {
-  const studioActivity = chat.messages.reduce(
-    (newest, message) => Math.max(newest, message.updatedAt || message.createdAt),
-    chat.createdAt,
-  );
-  const consultActivity = (chat.consultMessages || []).reduce(
-    (newest, message) => Math.max(newest, message.updatedAt || message.createdAt),
-    chat.createdAt,
-  );
-  return Math.max(
-    chat.createdAt,
-    Number(chat.updatedAt) || 0,
-    Number(chat.consultAgent?.updatedAt) || 0,
-    studioActivity,
-    consultActivity,
+  const properMessageTime = (message) => {
+    if (!["user", "assistant"].includes(message?.role)) return 0;
+    const createdAt = Number(message.createdAt);
+    return Number.isFinite(createdAt) ? createdAt : 0;
+  };
+  return [...(chat.messages || []), ...(chat.consultMessages || [])].reduce(
+    (newest, message) => Math.max(newest, properMessageTime(message)),
+    Number(chat.createdAt) || 0,
   );
 }
 
@@ -4533,9 +4532,6 @@ function studioGenerationElement(record) {
 
 async function appendGenerationImages(promptId, images) {
   if (!images.length) return;
-  const record = studioGenerationRecord(promptId);
-  if (!record) return;
-  const { chat, message: stored } = record;
   const enrichedImages = await Promise.all(images.map(async (image) => {
     try {
       return await imageReferenceWithDimensions(image);
@@ -4543,6 +4539,11 @@ async function appendGenerationImages(promptId, images) {
       return normalizeImageReference(image);
     }
   }));
+  // Chat synchronization replaces normalized objects. Resolve the live record only after the
+  // asynchronous image enrichment so results are never written into a detached message object.
+  const record = studioGenerationRecord(promptId);
+  if (!record) return;
+  const { chat, message: stored } = record;
   stored.images = enrichedImages;
   stored.updatedAt = Date.now();
   const autoAdvanceSource = state.generationJobs.get(String(promptId))?.autoAdvanceSource
@@ -5216,6 +5217,14 @@ function promptAgentEffectiveGoal(agent) {
 
 function promptAgentIteration(agent, iterationId) {
   return agent?.iterations.find((item) => item.id === String(iterationId || "")) || null;
+}
+
+function promptAgentGenerationPromptId(agent) {
+  const iteration = promptAgentIteration(agent, agent?.currentIterationId);
+  const generation = normalizeConsultExperimentGeneration(iteration?.generation);
+  return generation?.promptId && ["queued", "generating"].includes(generation.generationState)
+    ? generation.promptId
+    : "";
 }
 
 function consultAgentChat(agentId) {
@@ -6680,6 +6689,9 @@ async function requestPromptAgentPhase(phase, agent, extra = {}, requestSettings
   const connectionPayload = requestSettings?.connectionPayload || llmConnectionPayload();
   const requestId = makeId();
   state.consultAgentRequestId = requestId;
+  updateConsultAgent((current) => {
+    current.requestId = requestId;
+  }, { immediate: true, agentId: agent.id });
   const progressMonitor = monitorPromptAgentPhase(
     agent.id,
     phase,
@@ -6696,6 +6708,7 @@ async function requestPromptAgentPhase(phase, agent, extra = {}, requestSettings
         ...connectionPayload,
         ...generationSettings,
         request_id: requestId,
+        agent_id: agent.id,
         max_response_tokens: Math.max(1400, Number(generationSettings.max_response_tokens) || 0),
         phase,
         goal: promptAgentEffectiveGoal(agent),
@@ -6712,18 +6725,25 @@ async function requestPromptAgentPhase(phase, agent, extra = {}, requestSettings
     return data;
   } finally {
     if (state.consultAgentRequestId === requestId) state.consultAgentRequestId = "";
+    const current = activeConsultAgent(consultAgentChat(agent.id));
+    if (current?.requestId === requestId) {
+      updateConsultAgent((latest) => {
+        latest.requestId = "";
+      }, { immediate: true, agentId: agent.id });
+    }
     void progressMonitor;
   }
 }
 
-async function cancelPromptAgentLlmRequest(requestId = state.consultAgentRequestId) {
+async function cancelPromptAgentLlmRequest(requestId = state.consultAgentRequestId, agentId = "") {
   const id = String(requestId || "");
-  if (!id) return;
+  const ownerId = String(agentId || "");
+  if (!id && !ownerId) return;
   try {
     await api.fetchApi(PROMPT_AGENT_CANCEL_ENDPOINT, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ request_id: id }),
+      body: JSON.stringify({ request_id: id, agent_id: ownerId }),
     });
   } catch (_) {
     // Run-token checks still prevent a cancelled response from advancing the agent.
@@ -6792,6 +6812,7 @@ function finishPromptAgent(status, message = "", chatId = null) {
     agent.active = false;
     agent.status = status;
     agent.resumeStatus = "";
+    agent.requestId = "";
     agent.error = status === "error" ? message : "";
   }, { immediate: true, chatId });
   state.consultAgentRunning = false;
@@ -6808,7 +6829,12 @@ async function runConsultAgent(agentId = activeConsultAgent()?.id, runtimeSettin
   if (state.consultAgentRunning) return;
   const agentChat = consultAgentChat(agentId) || activeChat();
   const agentChatId = agentChat?.id || "";
-  let agent = activeConsultAgent(agentChat);
+  const currentAgent = () => {
+    const currentChat = state.chats.find((item) => item.id === agentChatId);
+    const current = activeConsultAgent(currentChat);
+    return current?.id === agentId ? current : null;
+  };
+  let agent = currentAgent();
   if (!agent || agent.id !== agentId || !agent.active) return;
   const requestSettings = runtimeSettings?.requestSettings || {
     connectionPayload: llmConnectionPayload(),
@@ -6824,7 +6850,7 @@ async function runConsultAgent(agentId = activeConsultAgent()?.id, runtimeSettin
       current.status = current.resumeStatus || (current.rubric ? "architecting" : "compiling");
       current.resumeStatus = "";
     }, { immediate: true });
-    agent = activeConsultAgent(agentChat);
+    agent = currentAgent();
   }
   state.consultAgentRunning = true;
   const runToken = ++state.consultAgentRunToken;
@@ -6833,12 +6859,12 @@ async function runConsultAgent(agentId = activeConsultAgent()?.id, runtimeSettin
   const runCancelled = () => (
     abortController.signal.aborted
     || runToken !== state.consultAgentRunToken
-    || !activeConsultAgent(agentChat)?.active
+    || !currentAgent()?.active
   );
   setConsultBusy(true);
   try {
     while (runToken === state.consultAgentRunToken) {
-      agent = activeConsultAgent(agentChat);
+      agent = currentAgent();
       if (!agent || agent.id !== agentId || !agent.active || agent.status === "paused") return;
 
       if (!agent.rubric) {
@@ -6853,7 +6879,7 @@ async function runConsultAgent(agentId = activeConsultAgent()?.id, runtimeSettin
           requestSettings,
           abortController.signal,
         );
-        if (runToken !== state.consultAgentRunToken) return;
+        if (runCancelled()) return;
         const rubric = normalizePromptAgentRubric(compiled.rubric);
         if (!rubric) throw new Error("Prompt Agent returned an invalid acceptance rubric.");
         updateAgent((current) => {
@@ -6911,7 +6937,7 @@ async function runConsultAgent(agentId = activeConsultAgent()?.id, runtimeSettin
             ? promptAgentEvaluationPayload(previous.evaluation)
             : null,
         }, requestSettings, abortController.signal);
-        if (runToken !== state.consultAgentRunToken) return;
+        if (runCancelled()) return;
         const candidate = normalizePromptAgentCandidate(designed.candidate);
         if (!candidate) throw new Error("Prompt Agent returned an invalid prompt candidate.");
         updateAgent((current) => {
@@ -6970,7 +6996,7 @@ async function runConsultAgent(agentId = activeConsultAgent()?.id, runtimeSettin
             cancellationCheck: runCancelled,
           });
         }
-        if (runToken !== state.consultAgentRunToken || !generation) return;
+        if (runCancelled() || !generation) return;
         updateAgent((current) => {
           const target = promptAgentIteration(current, iteration.id);
           target.status = "evaluating";
@@ -6992,7 +7018,7 @@ async function runConsultAgent(agentId = activeConsultAgent()?.id, runtimeSettin
         const judged = await requestPromptAgentPhase("evaluate", agent, {
           generated_images: generation.images.map(storedImageReference).filter(Boolean),
         }, requestSettings, abortController.signal);
-        if (runToken !== state.consultAgentRunToken) return;
+        if (runCancelled()) return;
         const evaluation = normalizePromptAgentEvaluation(judged.evaluation);
         if (!evaluation) throw new Error("Prompt Agent returned an invalid visual evaluation.");
         updateAgent((current) => {
@@ -7021,7 +7047,7 @@ async function runConsultAgent(agentId = activeConsultAgent()?.id, runtimeSettin
       }
     }
   } catch (error) {
-    if (runToken !== state.consultAgentRunToken) return;
+    if (runCancelled()) return;
     finishPromptAgent("error", error.message || String(error), agentChatId);
   } finally {
     if (runToken === state.consultAgentRunToken) {
@@ -7030,7 +7056,7 @@ async function runConsultAgent(agentId = activeConsultAgent()?.id, runtimeSettin
     if (state.consultAgentAbortController === abortController) {
       state.consultAgentAbortController = null;
     }
-    const current = activeConsultAgent(agentChat);
+    const current = currentAgent();
     if (current?.active && current.status === "paused" && !state.generating) {
       setConsultBusy(false);
       setConsultStatus("Prompt Agent paused.", "warning");
@@ -7257,11 +7283,11 @@ function retryConsultAgent() {
 async function stopConsultAgent() {
   const agent = activeConsultAgent();
   if (!agent?.active) return;
-  const requestId = state.consultAgentRequestId;
+  const requestId = state.consultAgentRequestId || agent.requestId;
   const promptId = String(
     state.consultAgentGenerationTarget?.agentId === agent.id
       ? state.consultAgentGenerationTarget.promptId
-      : "",
+      : promptAgentGenerationPromptId(agent),
   );
   state.operationToken += 1;
   state.consultAgentRunToken += 1;
@@ -7269,7 +7295,7 @@ async function stopConsultAgent() {
   state.consultAgentAbortController?.abort();
   finishPromptAgent("stopped", "Prompt Agent stopped. The best completed result remains available.");
   await Promise.allSettled([
-    requestId ? cancelPromptAgentLlmRequest(requestId) : Promise.resolve(),
+    cancelPromptAgentLlmRequest(requestId, agent.id),
     promptId ? cancelComfyPrompt(promptId) : Promise.resolve(),
   ]);
 }

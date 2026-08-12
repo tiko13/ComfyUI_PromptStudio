@@ -267,6 +267,15 @@ def _prompt_agent_request_id(value, required=True):
     return request_id
 
 
+def _prompt_agent_agent_id(value, required=False):
+    agent_id = _text(value).strip()
+    if not agent_id and required:
+        raise ValueError("Prompt Agent agent_id must not be empty")
+    if len(agent_id) > 128:
+        raise ValueError("Prompt Agent agent_id is too large")
+    return agent_id
+
+
 def _register_prompt_agent_request(request_id, data):
     now = time.time()
     provider = _text(data.get("llm_provider"), "koboldcpp").strip().casefold()
@@ -281,6 +290,7 @@ def _register_prompt_agent_request(request_id, data):
             }
             PROMPT_AGENT_REQUESTS[request_id] = record
         record["provider"] = provider
+        record["agent_id"] = _prompt_agent_agent_id(data.get("agent_id"))
         record["kobold_url"] = data.get("kobold_url")
         record["ollama_url"] = data.get("ollama_url")
         return record
@@ -332,8 +342,7 @@ def _execute_prompt_agent_request(request_id, data):
     return result
 
 
-def _cancel_prompt_agent_request(data):
-    request_id = _prompt_agent_request_id(data.get("request_id"))
+def _cancel_prompt_agent_request_id(request_id):
     with PROMPT_AGENT_REQUESTS_LOCK:
         record = PROMPT_AGENT_REQUESTS.get(request_id)
         if record is None:
@@ -369,6 +378,35 @@ def _cancel_prompt_agent_request(data):
         "status": previous_status or "cancelled",
         "provider_aborted": provider_aborted,
         "connection_closed": connection_closed,
+    }
+
+
+def _cancel_prompt_agent_request(data):
+    request_id = _prompt_agent_request_id(data.get("request_id"), required=False)
+    agent_id = _prompt_agent_agent_id(data.get("agent_id"))
+    if not request_id and not agent_id:
+        raise ValueError("Prompt Agent request_id or agent_id must not be empty")
+    request_ids = []
+    if request_id:
+        request_ids.append(request_id)
+    if agent_id:
+        with PROMPT_AGENT_REQUESTS_LOCK:
+            for candidate_id, record in PROMPT_AGENT_REQUESTS.items():
+                if (
+                    record.get("agent_id") == agent_id
+                    and record.get("status") in {"queued", "running"}
+                    and candidate_id not in request_ids
+                ):
+                    request_ids.append(candidate_id)
+    results = [_cancel_prompt_agent_request_id(candidate_id) for candidate_id in request_ids]
+    return {
+        "request_id": request_id or (request_ids[0] if len(request_ids) == 1 else ""),
+        "agent_id": agent_id,
+        "request_ids": request_ids,
+        "cancelled": True,
+        "status": results[0]["status"] if len(results) == 1 else "cancelled",
+        "provider_aborted": any(result["provider_aborted"] for result in results),
+        "connection_closed": any(result["connection_closed"] for result in results),
     }
 
 
@@ -1205,9 +1243,18 @@ def _write_chat_store(data, current_revision=None):
 
 
 def _update_chat_store(data):
+    if not isinstance(data, dict) or not isinstance(data.get("chats"), list):
+        raise ValueError("Chat store must contain a chats list")
     current = _read_chat_store()
-    expected = _revision(data.get("revision")) if isinstance(data, dict) else 0
+    data, _pruned, removed_images = _prune_consult_history(data)
+    expected = _revision(data.get("revision"))
     actual = _revision(current.get("revision"))
+    if (
+        data.get("activeChatId") == current.get("activeChatId")
+        and data["chats"] == current.get("chats")
+    ):
+        _remove_unreferenced_consult_images(removed_images, current)
+        return current
     if expected != actual:
         raise StoreConflictError("Chat history changed in another browser. Reload Prompt Studio before saving again.")
     previous_consult_images = _consult_promptstudio_image_references(current)

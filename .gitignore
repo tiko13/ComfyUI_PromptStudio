@@ -55,3 +55,4 @@ protected_words.txt
 # User-owned presets (copy the tracked examples from presets/examples/)
 style_templates.additional.json
 framing_templates.additional.json
+additional_instruction_templates.json
