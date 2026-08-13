@@ -231,6 +231,39 @@ body.promptstudio-popout-body {
   gap: 7px;
 }
 
+.promptstudio-studio-switch {
+  display: inline-grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  min-width: 116px;
+  padding: 3px;
+  background: rgba(255, 255, 255, 0.045);
+  border: 1px solid var(--ps-border);
+  border-radius: 11px;
+}
+
+#promptstudio-prompt-studio .promptstudio-studio-switch button {
+  min-height: 28px;
+  padding: 0 9px;
+  color: var(--ps-muted);
+  background: transparent;
+  border: 0;
+  border-radius: 8px;
+  font-size: 10px;
+  font-weight: 750;
+  box-shadow: none;
+}
+
+#promptstudio-prompt-studio .promptstudio-studio-switch button[aria-pressed="true"] {
+  color: #fff;
+  background: var(--ps-accent);
+}
+
+#promptstudio-prompt-studio .promptstudio-studio-switch button[data-promptstudio-studio-mode="video"][data-available="false"] {
+  color: rgba(144, 150, 168, 0.5);
+  background: rgba(255, 255, 255, 0.02);
+  cursor: help;
+}
+
 .promptstudio-kobold-control {
   position: relative;
   flex: 0 0 auto;
@@ -433,6 +466,24 @@ body.promptstudio-popout-body {
 
 body.promptstudio-popout-body .promptstudio-standalone-only {
   display: inline-flex !important;
+}
+
+body.promptstudio-popout-body .promptstudio-studio-switch.promptstudio-standalone-only {
+  display: inline-grid !important;
+}
+
+body.promptstudio-popout-body .promptstudio-header {
+  flex-wrap: wrap;
+}
+
+body.promptstudio-popout-body .promptstudio-header .promptstudio-brand {
+  flex: 1 1 auto;
+}
+
+body.promptstudio-popout-body .promptstudio-header-actions {
+  flex: 0 0 auto;
+  width: auto;
+  justify-content: flex-end;
 }
 
 .promptstudio-consult-toggle {
@@ -1886,6 +1937,16 @@ body.promptstudio-popout-body .promptstudio-standalone-only {
   animation: promptstudio-generation-progress 1.2s ease-in-out infinite;
 }
 
+.promptstudio-operation-cancel {
+  margin-top: 9px;
+  padding: 5px 10px;
+  border: 1px solid color-mix(in srgb, var(--ps-danger, #ef6b73) 55%, transparent);
+  border-radius: 7px;
+  color: var(--ps-danger, #ef6b73);
+  background: transparent;
+  cursor: pointer;
+}
+
 @keyframes promptstudio-generation-progress {
   from {
     transform: translateX(-115%);
@@ -3100,6 +3161,100 @@ body.promptstudio-popout-body {
   font: 13px/1.5 Inter, ui-sans-serif, system-ui, sans-serif;
 }
 
+.promptstudio-studio-view {
+  display: grid;
+  width: 100%;
+  min-width: 0;
+  height: calc(100vh - 32px);
+  place-items: center;
+}
+
+.promptstudio-studio-view[hidden] {
+  display: none;
+}
+
+.promptstudio-video-install-dialog {
+  width: min(520px, calc(100vw - 32px));
+  padding: 0;
+  color: #f3f4f8;
+  background: #13151d;
+  border: 1px solid rgba(151, 126, 255, 0.38);
+  border-radius: 18px;
+  box-shadow: 0 28px 90px rgba(0, 0, 0, 0.72);
+}
+
+.promptstudio-video-install-dialog::backdrop {
+  background: rgba(4, 5, 9, 0.78);
+  backdrop-filter: blur(8px);
+}
+
+.promptstudio-video-install-card {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 14px 16px;
+  padding: 22px;
+  font: 13px/1.5 Inter, ui-sans-serif, system-ui, sans-serif;
+}
+
+.promptstudio-video-install-icon {
+  display: grid;
+  width: 44px;
+  height: 44px;
+  color: #fff;
+  background: linear-gradient(135deg, #7056dc, #9f7bff);
+  border-radius: 13px;
+  place-items: center;
+}
+
+.promptstudio-video-install-copy strong {
+  font-size: 17px;
+}
+
+.promptstudio-video-install-copy p,
+.promptstudio-video-install-status {
+  margin: 4px 0 0;
+  color: #a3a8b8;
+}
+
+.promptstudio-video-install-status,
+.promptstudio-video-install-actions {
+  grid-column: 1 / -1;
+}
+
+.promptstudio-video-install-status:empty {
+  display: none;
+}
+
+.promptstudio-video-install-status[data-kind="error"] { color: #ff9ca4; }
+.promptstudio-video-install-status[data-kind="ready"] { color: #78d99a; }
+
+.promptstudio-video-install-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.promptstudio-video-install-actions button,
+.promptstudio-video-install-actions a {
+  min-height: 36px;
+  padding: 0 13px;
+  color: #f3f4f8;
+  background: rgba(255, 255, 255, 0.055);
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  border-radius: 10px;
+  font: 650 12px/34px Inter, ui-sans-serif, system-ui, sans-serif;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.promptstudio-video-install-actions .promptstudio-video-install-primary {
+  color: #fff;
+  background: #8d73ff;
+  border-color: #8d73ff;
+}
+
 .promptstudio-popout-loading img {
   width: 64px;
   height: 64px;
@@ -3371,6 +3526,11 @@ body.promptstudio-popout-body #promptstudio-prompt-studio.promptstudio-chats-ope
 }
 
 @media (max-width: 760px), (max-width: 900px) and (max-height: 600px) {
+  .promptstudio-studio-view {
+    height: 100vh;
+    height: 100dvh;
+  }
+
   body.promptstudio-popout-body,
   .promptstudio-popout-mount {
     min-height: 100dvh;
@@ -3461,6 +3621,24 @@ body.promptstudio-popout-body #promptstudio-prompt-studio.promptstudio-chats-ope
     font-size: 15px;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+
+  .promptstudio-mobile-brand {
+    display: flex;
+    min-width: 0;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .promptstudio-mobile-brand > strong {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  #promptstudio-prompt-studio .promptstudio-mobile-brand .promptstudio-studio-switch {
+    min-width: 104px;
   }
 
   .promptstudio-mobile-header-actions {

@@ -10,13 +10,32 @@
 </head>
 <body class="promptstudio-popout-body">
   <main id="promptstudio-popout-mount" class="promptstudio-popout-mount">
-    <div class="promptstudio-popout-loading">
+    <section id="promptstudio-image-mount" class="promptstudio-studio-view" data-studio-mode="image">
+      <div class="promptstudio-popout-loading">
       <img src="./prompt-studio-icon.svg" alt="" aria-hidden="true">
       <strong>Prompt Studio</strong>
       <span id="promptstudio-standalone-status">Connecting to ComfyUI…</span>
-    </div>
+      </div>
+    </section>
+    <section id="promptstudio-video-mount" class="promptstudio-studio-view" data-studio-mode="video" hidden></section>
   </main>
+  <dialog id="promptstudio-video-install-dialog" class="promptstudio-video-install-dialog" aria-labelledby="promptstudio-video-install-title">
+    <div class="promptstudio-video-install-card">
+      <div class="promptstudio-video-install-icon" aria-hidden="true">▶</div>
+      <div class="promptstudio-video-install-copy">
+        <strong id="promptstudio-video-install-title">Video Studio is not installed</strong>
+        <p id="promptstudio-video-install-message">Install the Video Studio companion to plan, direct, and generate video projects in this tab.</p>
+      </div>
+      <div id="promptstudio-video-install-status" class="promptstudio-video-install-status" role="status" aria-live="polite"></div>
+      <div class="promptstudio-video-install-actions">
+        <button id="promptstudio-video-install-cancel" type="button">Cancel</button>
+        <a id="promptstudio-video-install-manual" href="https://github.com/tiko13/PromptStudio_Video" target="_blank" rel="noopener">View manual install</a>
+        <button id="promptstudio-video-install" class="promptstudio-video-install-primary" type="button">Install with ComfyUI Manager</button>
+        <button id="promptstudio-video-restart" class="promptstudio-video-install-primary" type="button" hidden>Restart ComfyUI</button>
+      </div>
+    </div>
+  </dialog>
   <iframe id="promptstudio-standalone-host" class="promptstudio-standalone-host" title="ComfyUI workflow host" aria-hidden="true" tabindex="-1"></iframe>
-  <script type="module" src="./js/prompt_studio_standalone.js?v=3"></script>
+  <script type="module" src="./js/prompt_studio_shell.js?v=2"></script>
 </body>
 </html>

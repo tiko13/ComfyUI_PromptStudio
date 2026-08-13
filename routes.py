@@ -89,6 +89,7 @@ CONSULT_TASKS = set()
 MAX_CONSULT_JOBS = 32
 PROMPT_AGENT_REQUESTS = {}
 PROMPT_AGENT_REQUESTS_LOCK = threading.Lock()
+PROMPT_AGENT_TASKS = set()
 MAX_PROMPT_AGENT_REQUESTS = 64
 PROMPT_AGENT_PHASE_DEADLINE_SECONDS = 30 * 60
 PROMPT_AGENT_DEFAULT_RESPONSE_TOKENS = 1400
@@ -324,11 +325,12 @@ def _execute_prompt_agent_request(request_id, data):
             response_hook=response_hook,
             cancellation_check=cancellation_check,
         )
-    except Exception:
+    except Exception as exc:
         with PROMPT_AGENT_REQUESTS_LOCK:
             record = PROMPT_AGENT_REQUESTS.get(request_id)
             if record is not None:
                 record["status"] = "cancelled" if record.get("cancelled") else "failed"
+                record["error"] = str(exc) or exc.__class__.__name__
                 record["finished_at"] = time.time()
         raise
     with PROMPT_AGENT_REQUESTS_LOCK:
@@ -339,8 +341,37 @@ def _execute_prompt_agent_request(request_id, data):
                 record["finished_at"] = time.time()
                 raise RuntimeError("Prompt Agent request was cancelled")
             record["status"] = "complete"
+            record["result"] = result
             record["finished_at"] = time.time()
     return result
+
+
+async def _run_prompt_agent_job(request_id, data):
+    try:
+        await _run_llm_request(
+            data,
+            LLM_PRIORITY_STUDIO,
+            lambda value: _execute_prompt_agent_request(request_id, value),
+        )
+    except Exception as exc:
+        with PROMPT_AGENT_REQUESTS_LOCK:
+            record = PROMPT_AGENT_REQUESTS.get(request_id)
+            if record is not None and record.get("status") not in {"failed", "cancelled"}:
+                record["status"] = "failed"
+                record["error"] = str(exc) or exc.__class__.__name__
+                record["finished_at"] = time.time()
+
+
+def _start_prompt_agent_job(request_id, data):
+    with PROMPT_AGENT_REQUESTS_LOCK:
+        record = PROMPT_AGENT_REQUESTS.get(request_id)
+        if record and record.get("status") in {"queued", "running", "complete", "failed", "cancelled"}:
+            return request_id
+    _register_prompt_agent_request(request_id, data)
+    task = asyncio.create_task(_run_prompt_agent_job(request_id, data))
+    PROMPT_AGENT_TASKS.add(task)
+    task.add_done_callback(PROMPT_AGENT_TASKS.discard)
+    return request_id
 
 
 def _cancel_prompt_agent_request_id(request_id):
@@ -418,7 +449,7 @@ def _prune_consult_jobs():
         (
             (job_id, job)
             for job_id, job in CONSULT_JOBS.items()
-            if job["status"] in {"complete", "failed"}
+            if job["status"] in {"complete", "failed", "cancelled"}
         ),
         key=lambda item: item[1].get("finished_at", item[1]["created_at"]),
     )
@@ -430,23 +461,39 @@ async def _run_consult_job(job_id, data):
     job = CONSULT_JOBS[job_id]
 
     def run_consult(value):
+        if job.get("cancelled"):
+            raise asyncio.CancelledError()
         job["status"] = "running"
         job["started_at"] = time.time()
         return _consult(value)
 
     try:
-        job["result"] = await _run_llm_request(data, LLM_PRIORITY_CONSULT, run_consult)
-        job["status"] = "complete"
+        result = await _run_llm_request(data, LLM_PRIORITY_CONSULT, run_consult)
+        if not job.get("cancelled"):
+            job["result"] = result
+            job["status"] = "complete"
+    except asyncio.CancelledError:
+        job["status"] = "cancelled"
     except Exception as exc:
-        job["status"] = "failed"
-        job["error"] = str(exc) or exc.__class__.__name__
+        if not job.get("cancelled"):
+            job["status"] = "failed"
+            job["error"] = str(exc) or exc.__class__.__name__
     finally:
         job["finished_at"] = time.time()
 
 
 def _start_consult_job(data):
+    requested_job_id = str(data.get("job_id") or "").strip()
+    if requested_job_id:
+        if len(requested_job_id) > 128 or not all(
+            character.isascii() and (character.isalnum() or character == "-")
+            for character in requested_job_id
+        ):
+            raise ValueError("Consultation job ID is invalid")
+        if requested_job_id in CONSULT_JOBS:
+            return requested_job_id
     _prune_consult_jobs()
-    job_id = str(uuid.uuid4())
+    job_id = requested_job_id or str(uuid.uuid4())
     CONSULT_JOBS[job_id] = {
         "status": "queued",
         "created_at": time.time(),
@@ -456,9 +503,29 @@ def _start_consult_job(data):
         },
     }
     task = asyncio.create_task(_run_consult_job(job_id, data))
+    CONSULT_JOBS[job_id]["task"] = task
     CONSULT_TASKS.add(task)
     task.add_done_callback(CONSULT_TASKS.discard)
     return job_id
+
+
+async def _cancel_consult_job(job_id):
+    job = CONSULT_JOBS.get(job_id)
+    if job is None:
+        raise ValueError("Consultation job was not found")
+    previous_status = job.get("status", "queued")
+    job["cancelled"] = True
+    job["status"] = "cancelled"
+    job["finished_at"] = time.time()
+    task = job.get("task")
+    if previous_status == "queued" and task and not task.done():
+        task.cancel()
+    if previous_status == "running" and str(job.get("provider_settings", {}).get("llm_provider") or "koboldcpp").casefold() == "koboldcpp":
+        try:
+            await asyncio.to_thread(_abort_kobold_generation, job["provider_settings"])
+        except Exception:
+            pass
+    return {"job_id": job_id, "status": "cancelled"}
 
 LAN_PASSWORD_ENV = "PROMPT_STUDIO_LAN_PASSWORD"
 LAN_PASSWORD_BASE64_ENV = "PROMPT_STUDIO_LAN_PASSWORD_B64"
@@ -2981,9 +3048,17 @@ async def prompt_studio_chat_status(request):
         warning = _generation_warning(result)
         if warning:
             response["result"]["warning"] = warning
-    elif job["status"] == "failed":
+    elif job["status"] in {"failed", "cancelled"}:
         response["error"] = job.get("error") or "Consultation request failed"
     return web.json_response(response)
+
+
+@PromptServer.instance.routes.post("/promptstudio/prompt-studio/chat/{job_id}/cancel")
+async def prompt_studio_chat_cancel(request):
+    try:
+        return web.json_response(await _cancel_consult_job(request.match_info.get("job_id", "")))
+    except ValueError as exc:
+        return web.json_response({"error": str(exc)}, status=404)
 
 
 @PromptServer.instance.routes.post("/promptstudio/prompt-studio/ollama/unload")
@@ -3064,6 +3139,11 @@ async def prompt_studio_agent(request):
         if not isinstance(data, dict):
             raise ValueError("JSON body must be an object")
         request_id = _prompt_agent_request_id(data.get("request_id"), required=False) or str(uuid.uuid4())
+        if data.get("async") is True:
+            _start_prompt_agent_job(request_id, data)
+            with PROMPT_AGENT_REQUESTS_LOCK:
+                status = PROMPT_AGENT_REQUESTS.get(request_id, {}).get("status", "queued")
+            return web.json_response({"request_id": request_id, "status": status}, status=202)
         _register_prompt_agent_request(request_id, data)
         try:
             response = await asyncio.wait_for(
@@ -3109,6 +3189,21 @@ async def prompt_studio_agent_cancel(request):
         return web.json_response({"error": str(exc)}, status=400)
     except Exception as exc:
         return web.json_response({"error": str(exc)}, status=502)
+
+
+@PromptServer.instance.routes.get("/promptstudio/prompt-studio/agent/{request_id}")
+async def prompt_studio_agent_status(request):
+    request_id = _prompt_agent_request_id(request.match_info.get("request_id"))
+    with PROMPT_AGENT_REQUESTS_LOCK:
+        record = PROMPT_AGENT_REQUESTS.get(request_id)
+        if record is None:
+            return web.json_response({"error": "Prompt Agent request was not found"}, status=404)
+        response = {"status": record.get("status", "queued")}
+        if response["status"] == "complete":
+            response["result"] = record.get("result")
+        elif response["status"] in {"failed", "cancelled"}:
+            response["error"] = record.get("error") or f"Prompt Agent request {response['status']}"
+    return web.json_response(response)
 
 
 _install_lan_access_middleware()
