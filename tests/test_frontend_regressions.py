@@ -76,6 +76,45 @@ class FrontendRegressionTests(unittest.TestCase):
         self.assertIn("chat.controlsFingerprint = exportedControlsFingerprint;", exported)
         self.assertIn("chat.pendingGeneration = null;", exported)
 
+    def test_direct_main_prompt_edits_are_rendered_before_generation(self):
+        sync = self.function_source("syncMainPromptEditor", "syncCanonicalEditor")
+        render_state = self.function_source("mainPromptNeedsRender", "promptNeedsRender")
+        revise = self.source[
+            self.source.index("async function reviseAndMaybeGenerate"):
+            self.source.index("async function createNewFromCurrentPrompt")
+        ]
+
+        self.assertIn("chat.mainPrompt = prompt;", sync)
+        self.assertIn("chat.mainPromptDirty = true;", sync)
+        self.assertIn("chat?.initialized && chat.mainPromptDirty", render_state)
+        self.assertIn("mainPrompt = previousMainPrompt;", revise)
+        self.assertIn('payloadFor(mainPrompt, "render", "", previousFinalPrompt)', revise)
+
+    def test_main_prompt_known_references_use_a_synchronized_highlight_layer(self):
+        ranges = self.function_source(
+            "knownReferenceHighlightRanges",
+            "renderKnownReferenceHighlights",
+        )
+        render = self.function_source(
+            "renderKnownReferenceHighlights",
+            "updatePromptEditor",
+        )
+        update = self.function_source("updateMainPromptEditor", "knownReferenceTokenCharacter")
+
+        self.assertIn("state.config?.known_reference_names", ranges)
+        self.assertIn("right.end - right.start", ranges)
+        self.assertIn("candidate.start < range.end", ranges)
+        self.assertIn('document.createElement("mark")', render)
+        self.assertIn("editor.scrollLeft", render)
+        self.assertIn("editor.scrollTop", render)
+        self.assertIn("renderKnownReferenceHighlights();", update)
+        self.assertIn('class="promptstudio-main-prompt-editor"', self.source)
+        self.assertIn('addEventListener("scroll", renderKnownReferenceHighlights)', self.source)
+        self.assertIn('if ("ResizeObserver" in window)', self.source)
+        self.assertIn("new ResizeObserver(renderKnownReferenceHighlights)", self.source)
+        self.assertIn(".promptstudio-main-prompt-highlights mark", self.styles)
+        self.assertIn("color: #b9a8ff", self.styles)
+
     def test_prompt_agent_failure_does_not_leave_iteration_generating(self):
         normalizer = self.function_source(
             "normalizePromptAgentIteration",
@@ -171,6 +210,25 @@ class FrontendRegressionTests(unittest.TestCase):
             append.index("const record = studioGenerationRecord(promptId);"),
             append.index("await Promise.all"),
         )
+        self.assertIn("renderImageGallery(element, stored.images, stored);", append)
+        self.assertIn("keepHistoryViewportStable(history, wasNearEnd, previousScrollTop);", append)
+        self.assertNotIn("renderChatHistory();", append)
+
+    def test_generation_status_updates_do_not_rebuild_image_history(self):
+        text_update = self.function_source("updateStudioGenerationText", "setStudioGenerationState")
+        state_update = self.function_source("setStudioGenerationState", "setupGenerationProgressEvents")
+
+        self.assertIn('element?.querySelector(".promptstudio-message-text")', text_update)
+        self.assertNotIn("renderChatHistory();", text_update)
+        self.assertIn("renderGenerationProgress(element, record.message);", state_update)
+        self.assertNotIn("renderChatHistory();", state_update)
+
+    def test_generated_image_urls_are_scoped_to_the_generation(self):
+        gallery = self.function_source("renderImageGallery", "directVideoStudioTarget")
+        image_url = self.function_source("imageReferenceUrl", "latestConversationImage")
+
+        self.assertIn("generationData?.promptId || generationData?.id", gallery)
+        self.assertIn('params.set("promptstudio_version", String(version))', image_url)
 
     def test_chat_images_preserve_their_aspect_ratio(self):
         self.assertNotIn("object-fit: cover", self.styles)

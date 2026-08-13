@@ -783,6 +783,205 @@ class RegressionTests(unittest.TestCase):
         self.assertIn('["Ciri", "iPhone"]', retry)
         self.assertIn('["iPhone"]', fragment)
 
+    def test_known_references_match_multiple_concept_types_without_mixing(self):
+        references_path = Path(self.temp.name) / "known-references.json"
+        references_path.write_text(
+            json.dumps(
+                {
+                    "known_references": [
+                        {"name": "Jane", "definition": "Jane definition"},
+                        {"name": "Jane Doe", "definition": "Jane Doe definition"},
+                        {"name": "Victory Pose", "definition": "Pose definition"},
+                        {"name": "Quiet Smile", "definition": "Expression definition"},
+                        {"name": "Blue Lantern", "definition": "Item definition"},
+                        {"name": "Old Courtyard", "definition": "Background definition"},
+                        {"name": "Unused Concept", "definition": "Unused definition"},
+                        {"name": "Disabled Concept", "definition": "Disabled definition", "enabled": False},
+                    ]
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        with mock.patch.object(self.nodes, "KNOWN_REFERENCES_PATH", str(references_path)):
+            matches = self.nodes._matched_known_references(
+                "JANE DOE uses Victory Pose and Quiet Smile while holding Blue Lantern in Old Courtyard."
+            )
+
+        self.assertEqual(
+            [reference["name"] for reference in matches],
+            ["Jane Doe", "Victory Pose", "Quiet Smile", "Blue Lantern", "Old Courtyard"],
+        )
+        self.assertEqual(matches[0]["matched_texts"], ["JANE DOE"])
+        self.assertNotIn("Jane", [reference["name"] for reference in matches])
+        self.assertNotIn("Unused Concept", [reference["name"] for reference in matches])
+        self.assertNotIn("Disabled Concept", [reference["name"] for reference in matches])
+
+    def test_known_reference_overlap_still_allows_separate_short_name_occurrences(self):
+        references_path = Path(self.temp.name) / "known-references.json"
+        references_path.write_text(
+            json.dumps(
+                {
+                    "known_references": [
+                        {"name": "Jane", "definition": "Short definition"},
+                        {"name": "Jane Doe", "definition": "Long definition"},
+                    ]
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        with mock.patch.object(self.nodes, "KNOWN_REFERENCES_PATH", str(references_path)):
+            matches = self.nodes._matched_known_references("Jane greets Jane Doe near Annette.")
+
+        self.assertEqual([reference["name"] for reference in matches], ["Jane", "Jane Doe"])
+
+    def test_main_prompt_revision_preserves_known_reference_literals_without_definitions(self):
+        references_path = Path(self.temp.name) / "known-references.json"
+        references_path.write_text(
+            json.dumps(
+                {
+                    "known_references": [
+                        {"name": "Jane", "definition": "A blonde woman in a black shirt."},
+                        {"name": "Victory Pose", "definition": "Both arms raised overhead."},
+                    ]
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        with mock.patch.object(self.nodes, "KNOWN_REFERENCES_PATH", str(references_path)):
+            request = self.nodes._build_main_revision_prompt(
+                "JANE using Victory Pose",
+                "A blonde woman standing with both arms raised overhead",
+                "Move JANE to a park",
+                "Disabled",
+            )
+
+        self.assertIn('["JANE", "Victory Pose"]', request)
+        self.assertIn("copy each listed reference literal exactly as shown", request)
+        self.assertIn("Do not replace it with its definition", request)
+        self.assertNotIn("A blonde woman in a black shirt.", request)
+        self.assertNotIn("Both arms raised overhead.", request)
+
+    def test_final_prompt_builders_receive_only_matched_known_reference_definitions(self):
+        references_path = Path(self.temp.name) / "known-references.json"
+        definitions = {
+            "Jane": "A blonde woman wearing denim pants.",
+            "Victory Pose": "A confident pose with both arms raised.",
+            "Quiet Smile": "A restrained closed-mouth smile.",
+            "Blue Lantern": "A weathered lantern with blue glass.",
+            "Old Courtyard": "An aged stone courtyard with ivy.",
+        }
+        references_path.write_text(
+            json.dumps(
+                {
+                    "known_references": [
+                        *[
+                            {"name": name, "definition": definition}
+                            for name, definition in definitions.items()
+                        ],
+                        {"name": "Unused Concept", "definition": "Never inject this definition."},
+                    ]
+                }
+            ),
+            encoding="utf-8",
+        )
+        source = "Jane uses Victory Pose and Quiet Smile, holding Blue Lantern in Old Courtyard."
+        profile = self.nodes.DEFAULT_PROFILE
+        style = self.nodes.DEFAULT_STYLE_TEMPLATE
+        framing = self.nodes.DEFAULT_FRAMING_TEMPLATE
+
+        with mock.patch.object(self.nodes, "KNOWN_REFERENCES_PATH", str(references_path)):
+            requests = [
+                self.nodes._build_instruction_prompt(
+                    profile, style, "", framing, "", "Clean", "Disabled", source, ""
+                ),
+                self.nodes._build_revision_prompt(
+                    profile,
+                    style,
+                    "",
+                    framing,
+                    "",
+                    "Clean",
+                    "Disabled",
+                    "A blonde woman stands in a courtyard.",
+                    "Give Jane Quiet Smile and Blue Lantern",
+                ),
+                self.nodes._build_expansion_retry_prompt(
+                    profile,
+                    style,
+                    "",
+                    framing,
+                    "",
+                    "Clean",
+                    "Disabled",
+                    source,
+                    "A woman stands in a courtyard.",
+                    "",
+                ),
+                self.nodes._build_fragment_rewrite_prompt(
+                    profile, style, "", framing, "", "Clean", "Disabled", source, ""
+                ),
+            ]
+
+        for request in requests:
+            with self.subTest(builder=request.splitlines()[0]):
+                self.assertIn("Known-reference conversion rules", request)
+                self.assertIn("Never assume all references are people or subjects", request)
+                self.assertIn("Apply every mapping independently and simultaneously", request)
+                self.assertIn("The definition is an instruction, not text that must be copied verbatim", request)
+                self.assertIn("Do not output a reference name or matched spelling", request)
+                self.assertNotIn("Never inject this definition.", request)
+
+        initial = requests[0]
+        for definition in definitions.values():
+            self.assertIn(definition, initial)
+
+        revision = requests[1]
+        self.assertIn(definitions["Jane"], revision)
+        self.assertIn(definitions["Quiet Smile"], revision)
+        self.assertIn(definitions["Blue Lantern"], revision)
+        self.assertNotIn(definitions["Victory Pose"], revision)
+        self.assertNotIn(definitions["Old Courtyard"], revision)
+
+    def test_known_reference_supersedes_same_named_protected_literal_in_final_prompt(self):
+        references_path = Path(self.temp.name) / "known-references.json"
+        protected_path = Path(self.temp.name) / "protected-words.txt"
+        references_path.write_text(
+            json.dumps(
+                {
+                    "known_references": [
+                        {"name": "Jane", "definition": "A woman wearing a green coat."}
+                    ]
+                }
+            ),
+            encoding="utf-8",
+        )
+        protected_path.write_text("Jane\nCiri\n", encoding="utf-8")
+
+        with (
+            mock.patch.object(self.nodes, "KNOWN_REFERENCES_PATH", str(references_path)),
+            mock.patch.object(self.nodes, "PROTECTED_WORDS_PATH", str(protected_path)),
+        ):
+            request = self.nodes._build_instruction_prompt(
+                self.nodes.DEFAULT_PROFILE,
+                self.nodes.DEFAULT_STYLE_TEMPLATE,
+                "",
+                self.nodes.DEFAULT_FRAMING_TEMPLATE,
+                "",
+                "Clean",
+                "Disabled",
+                "Jane stands beside Ciri",
+                "",
+            )
+
+        protected_section = request.split("Protected literals found in the source text:", 1)[1]
+        protected_section = protected_section.split("Known references used by the source text:", 1)[0]
+        self.assertIn('["Ciri"]', protected_section)
+        self.assertNotIn("Jane", protected_section)
+        self.assertIn("A woman wearing a green coat.", request)
+
     def test_output_length_defaults_follow_profile_and_embellishment(self):
         natural = self.nodes._get_profile("General Natural Language")
         tags = self.nodes._get_profile("Tag-Based Anime Model")
@@ -841,6 +1040,59 @@ class RegressionTests(unittest.TestCase):
             ("A woman in a green dress", additional_instructions),
         )
         self.assertEqual(build_render.call_args.kwargs["target_output_length"], 20)
+
+    def test_directly_typed_main_prompt_resolves_known_references_during_render(self):
+        references_path = Path(self.temp.name) / "known-references.json"
+        references_path.write_text(
+            json.dumps(
+                {
+                    "known_references": [
+                        {
+                            "name": "Jane",
+                            "definition": "A blonde woman wearing a black shirt and denim pants.",
+                        },
+                        {
+                            "name": "Victory Pose",
+                            "definition": "The appropriate subject raises both arms overhead.",
+                        },
+                    ]
+                }
+            ),
+            encoding="utf-8",
+        )
+        directly_typed_main_prompt = "Jane in Victory Pose on a beach"
+        payload = {
+            "kobold_url": "http://localhost:5001",
+            "model_profile": "General Natural Language",
+            "style_preset": "None",
+            "framing_preset": "None",
+            "thinking_mode": "Disabled",
+            "embellishment_level": "None",
+            "mode": "render",
+            "current_prompt": "",
+            "revision": directly_typed_main_prompt,
+        }
+
+        with (
+            mock.patch.object(self.nodes, "KNOWN_REFERENCES_PATH", str(references_path)),
+            mock.patch.object(
+                self.routes,
+                "_generate_kcpp",
+                return_value=(
+                    "Final prompt: A blonde woman wearing a black shirt and denim pants "
+                    "raises both arms overhead on a beach"
+                ),
+            ) as generate,
+        ):
+            rendered = self.routes._revise(payload)
+
+        request = generate.call_args.args[0]
+        self.assertIn(directly_typed_main_prompt, request)
+        self.assertIn("A blonde woman wearing a black shirt and denim pants.", request)
+        self.assertIn("The appropriate subject raises both arms overhead.", request)
+        self.assertIn("Apply every mapping independently and simultaneously", request)
+        self.assertNotIn("Jane", rendered)
+        self.assertNotIn("Victory Pose", rendered)
 
     def test_prompt_studio_can_route_revisions_through_ollama(self):
         payload = {
@@ -1966,6 +2218,11 @@ class RegressionTests(unittest.TestCase):
         self.assertEqual(data["styles"], [item["name"] for item in data["style_templates"]])
         self.assertEqual(data["framings"], [item["name"] for item in data["framing_templates"]])
         self.assertNotIn("additional_instruction_templates", data)
+        self.assertNotIn("known_references", data)
+        self.assertEqual(
+            data["known_reference_names"],
+            [reference["name"] for reference in self.nodes._load_known_references()],
+        )
         natural_lengths = data["output_length_profiles"]["General Natural Language"]
         tag_lengths = data["output_length_profiles"]["Tag-Based Anime Model"]
         self.assertEqual((natural_lengths["min"], natural_lengths["max"]), (20, 200))

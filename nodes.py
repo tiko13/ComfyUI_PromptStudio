@@ -44,6 +44,11 @@ ADDITIONAL_INSTRUCTION_TEMPLATES_EXAMPLE_PATH = os.path.join(
     PRESET_EXAMPLES_DIR,
     "additional_instruction_templates.example.json",
 )
+KNOWN_REFERENCES_PATH = os.path.join(BASE_DIR, "known_references.json")
+KNOWN_REFERENCES_EXAMPLE_PATH = os.path.join(
+    PRESET_EXAMPLES_DIR,
+    "known_references.example.json",
+)
 PROTECTED_WORDS_PATH = os.path.join(BASE_DIR, "protected_words.txt")
 _PROTECTED_WORDS_CACHE = {"signature": None, "words": ()}
 DEFAULT_PROFILE = {
@@ -369,32 +374,40 @@ def _load_protected_words():
     return result
 
 
-def _protected_word_matches(text, word):
+def _literal_match_spans(text, literal):
     text = str(text or "")
-    if not text or not word:
+    literal = str(literal or "")
+    if not text or not literal:
         return []
 
     matches = []
-    word_starts_with_token = word[0].isalnum() or word[0] == "_"
-    word_ends_with_token = word[-1].isalnum() or word[-1] == "_"
-    for match in re.finditer(re.escape(word), text, flags=re.IGNORECASE):
+    literal_starts_with_token = literal[0].isalnum() or literal[0] == "_"
+    literal_ends_with_token = literal[-1].isalnum() or literal[-1] == "_"
+    for match in re.finditer(re.escape(literal), text, flags=re.IGNORECASE):
         start, end = match.span()
-        if word_starts_with_token and start > 0:
+        if literal_starts_with_token and start > 0:
             previous = text[start - 1]
             if previous.isalnum() or previous == "_":
                 continue
-        if word_ends_with_token and end < len(text):
+        if literal_ends_with_token and end < len(text):
             following = text[end]
             if following.isalnum() or following == "_":
                 continue
-        matches.append(match.group(0))
+        matches.append((start, end, match.group(0)))
     return matches
 
 
-def _matched_protected_words(*source_texts):
+def _protected_word_matches(text, word):
+    return [match for _start, _end, match in _literal_match_spans(text, word)]
+
+
+def _matched_protected_words(*source_texts, excluded_literals=()):
     matches = []
     seen = set()
+    excluded = {str(item or "").strip().casefold() for item in excluded_literals}
     for word in _load_protected_words():
+        if word.casefold() in excluded:
+            continue
         for source_text in source_texts:
             for match in _protected_word_matches(source_text, word):
                 if match in seen:
@@ -404,8 +417,11 @@ def _matched_protected_words(*source_texts):
     return matches
 
 
-def _protected_word_instruction_lines(*source_texts):
-    matches = _matched_protected_words(*source_texts)
+def _protected_word_instruction_lines(*source_texts, excluded_literals=()):
+    matches = _matched_protected_words(
+        *source_texts,
+        excluded_literals=excluded_literals,
+    )
     if not matches:
         return []
     return [
@@ -511,6 +527,121 @@ def _load_additional_instruction_templates():
     ]
     _validate_unique_names(normalized, "additional instruction template")
     return normalized
+
+
+def _load_known_references():
+    _ensure_additional_template_file(
+        KNOWN_REFERENCES_PATH,
+        KNOWN_REFERENCES_EXAMPLE_PATH,
+    )
+    try:
+        with open(KNOWN_REFERENCES_PATH, "r", encoding="utf-8") as file:
+            data = json.load(file)
+    except FileNotFoundError:
+        return []
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Invalid known reference JSON: {KNOWN_REFERENCES_PATH}: {exc}") from exc
+
+    _require_json_object(data, "Known reference")
+    references = data.get("known_references", [])
+    if not isinstance(references, list):
+        raise ValueError("Known reference JSON must contain a 'known_references' list.")
+
+    normalized = []
+    for reference in references:
+        if not isinstance(reference, dict) or reference.get("enabled", True) is False:
+            continue
+        name = str(reference.get("name") or "").strip()
+        definition = str(reference.get("definition") or "").strip()
+        if not name or not definition:
+            continue
+        normalized.append({"name": name, "definition": definition})
+    _validate_unique_names(normalized, "known reference")
+    return normalized
+
+
+def _matched_known_references(*source_texts):
+    """Return matched definitions in source order, preferring the longest name at one position."""
+    references = _load_known_references()
+    found = {}
+    for source_index, source_text in enumerate(source_texts):
+        candidates = []
+        for reference_index, reference in enumerate(references):
+            for start, end, matched_text in _literal_match_spans(
+                source_text,
+                reference["name"],
+            ):
+                candidates.append(
+                    (start, -(end - start), reference_index, end, matched_text)
+                )
+
+        accepted = []
+        for start, _negative_length, reference_index, end, matched_text in sorted(candidates):
+            if any(
+                start < accepted_end and end > accepted_start
+                for accepted_start, accepted_end, *_ in accepted
+            ):
+                continue
+            accepted.append((start, end, reference_index, matched_text))
+
+        for start, end, reference_index, matched_text in sorted(accepted):
+            record = found.get(reference_index)
+            if record is None:
+                reference = references[reference_index]
+                record = {
+                    "name": reference["name"],
+                    "definition": reference["definition"],
+                    "matched_texts": [],
+                    "first_match": (source_index, start, end),
+                }
+                found[reference_index] = record
+            if matched_text not in record["matched_texts"]:
+                record["matched_texts"].append(matched_text)
+
+    return sorted(found.values(), key=lambda item: item["first_match"])
+
+
+def _known_reference_main_prompt_lines(*source_texts):
+    references = _matched_known_references(*source_texts)
+    matches = []
+    for reference in references:
+        for matched_text in reference["matched_texts"]:
+            if matched_text not in matches:
+                matches.append(matched_text)
+    if not matches:
+        return []
+    return [
+        "Known-reference literals found in the Main Prompt or requested revision:",
+        json.dumps(matches, ensure_ascii=False),
+        "While editing the Main Prompt, copy each listed reference literal exactly as shown whenever its referenced content remains. Do not replace it with its definition, translate it, rephrase it, correct it, re-capitalize it, pluralize it, split it, or join it. An explicit request to remove or replace that referenced content may remove its literal; otherwise do not omit it.",
+    ]
+
+
+def _known_reference_final_prompt_lines(references):
+    if not references:
+        return []
+    mappings = [
+        {
+            "reference_name": reference["name"],
+            "matched_texts": reference["matched_texts"],
+            "definition": reference["definition"],
+        }
+        for reference in references
+    ]
+    return [
+        "",
+        "Known references used by the source text:",
+        json.dumps(mappings, ensure_ascii=False, indent=2),
+        "Known-reference conversion rules:",
+        "- A reference may describe any reusable concept, including a person, character, item, clothing, pose, gesture, facial expression, location, background, lighting, composition, or visual treatment. Never assume all references are people or subjects.",
+        "- Interpret each reference from its definition and from the grammatical role of each occurrence in the source text.",
+        "- Replace every matched reference occurrence with final-prompt content guided by its definition. The definition is an instruction, not text that must be copied verbatim.",
+        "- Do not output a reference name or matched spelling merely because it appears in the source. The final prompt must describe the referenced content instead.",
+        "- Apply every mapping independently and simultaneously. Never merge mappings, swap definitions, transfer attributes between references, or assign a pose, expression, item, background, or other concept to the wrong subject or location.",
+        "- If a reference appears only in a requested revision, use its definition to identify the corresponding content in the current prompt, apply the requested edit, and still omit the reference name from the result.",
+        "- An explicit local modification attached to a reference may refine or override the conflicting part of its definition. Otherwise the definition is the baseline and overrides conflicting generic prompt, style, framing, or embellishment guidance. Highest-priority additional user instructions still take precedence.",
+        "- Preserve all compatible surrounding prompt details and combine compatible reference definitions coherently.",
+    ]
 
 
 def _expand_additional_instructions(value):
@@ -1911,9 +2042,15 @@ def _build_expansion_retry_prompt(
     else:
         prompt_parts.extend(["", "Reasoning policy:", _thinking_instruction(thinking_mode)])
 
-    protected_word_lines = _protected_word_instruction_lines(original_text, rewritten_text)
+    known_references = _matched_known_references(original_text, rewritten_text)
+    protected_word_lines = _protected_word_instruction_lines(
+        original_text,
+        rewritten_text,
+        excluded_literals=[reference["name"] for reference in known_references],
+    )
     if protected_word_lines:
         prompt_parts.extend(["", *protected_word_lines])
+    prompt_parts.extend(_known_reference_final_prompt_lines(known_references))
 
     prompt_parts.extend(
         [
@@ -2056,9 +2193,14 @@ def _build_instruction_prompt(profile, style_template, style_modifier, framing_t
 
     prompt_parts.extend(_additional_instruction_prompt_lines(additional_instructions))
 
-    protected_word_lines = _protected_word_instruction_lines(text)
+    known_references = _matched_known_references(text)
+    protected_word_lines = _protected_word_instruction_lines(
+        text,
+        excluded_literals=[reference["name"] for reference in known_references],
+    )
     if protected_word_lines:
         prompt_parts.extend(["", *protected_word_lines])
+    prompt_parts.extend(_known_reference_final_prompt_lines(known_references))
 
     prompt_parts.extend(
         [
@@ -2187,11 +2329,17 @@ def _build_revision_prompt(
     else:
         prompt_parts.extend(["", "Reasoning policy:", _revision_thinking_instruction(thinking_mode)])
 
-    protected_word_lines = _protected_word_instruction_lines(current_prompt, revision)
+    known_references = _matched_known_references(current_prompt, revision)
+    protected_word_lines = _protected_word_instruction_lines(
+        current_prompt,
+        revision,
+        excluded_literals=[reference["name"] for reference in known_references],
+    )
     if protected_word_lines:
         prompt_parts.extend(["", *protected_word_lines])
 
     prompt_parts.extend(_additional_instruction_prompt_lines(additional_instructions))
+    prompt_parts.extend(_known_reference_final_prompt_lines(known_references))
 
     prompt_parts.extend(
         [
@@ -2269,6 +2417,12 @@ def _build_main_revision_prompt(
     protected_word_lines = _protected_word_instruction_lines(current_main_prompt, revision)
     if protected_word_lines:
         prompt_parts.extend(["", *protected_word_lines])
+    known_reference_lines = _known_reference_main_prompt_lines(
+        current_main_prompt,
+        revision,
+    )
+    if known_reference_lines:
+        prompt_parts.extend(["", *known_reference_lines])
     prompt_parts.extend(_additional_instruction_prompt_lines(additional_instructions))
     if _reasoning_effort(thinking_mode) != "none":
         prompt_parts.extend(
@@ -2386,9 +2540,14 @@ def _build_fragment_rewrite_prompt(profile, style_template, style_modifier, fram
 
     prompt_parts.extend(_additional_instruction_prompt_lines(additional_instructions))
 
-    protected_word_lines = _protected_word_instruction_lines(text)
+    known_references = _matched_known_references(text)
+    protected_word_lines = _protected_word_instruction_lines(
+        text,
+        excluded_literals=[reference["name"] for reference in known_references],
+    )
     if protected_word_lines:
         prompt_parts.extend(["", *protected_word_lines])
+    prompt_parts.extend(_known_reference_final_prompt_lines(known_references))
 
     prompt_parts.extend(
         [

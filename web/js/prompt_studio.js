@@ -146,6 +146,7 @@ const state = {
   generationProgress: new Map(),
   generationJobs: new Map(),
   generationFailures: new Map(),
+  historyScrollRevision: 0,
   promptWorkerSeenAlive: false,
   promptWorkerHealthCheckedAt: 0,
   promptWorkerHealthRequest: null,
@@ -2670,7 +2671,9 @@ function renderChatList() {
 function scrollHistoryToEnd({ instant = false } = {}) {
   const history = state.panel?.querySelector("#promptstudio-history");
   if (!history) return;
+  const revision = ++state.historyScrollRevision;
   const scroll = () => {
+    if (revision !== state.historyScrollRevision || !history.isConnected) return;
     if (instant) history.classList.add("promptstudio-instant-scroll");
     history.scrollTop = history.scrollHeight;
     if (instant) history.classList.remove("promptstudio-instant-scroll");
@@ -2679,8 +2682,23 @@ function scrollHistoryToEnd({ instant = false } = {}) {
   const view = history.ownerDocument.defaultView;
   view?.requestAnimationFrame(() => view.requestAnimationFrame(scroll));
   for (const image of history.querySelectorAll("img")) {
-    if (!image.complete) image.addEventListener("load", scroll, { once: true });
+    if (!image.complete) {
+      image.addEventListener("load", () => {
+        if (image.isConnected) scroll();
+      }, { once: true });
+    }
   }
+}
+
+function historyIsNearEnd(history, threshold = 32) {
+  return history.scrollHeight - history.clientHeight - history.scrollTop <= threshold;
+}
+
+function keepHistoryViewportStable(history, wasNearEnd, previousScrollTop) {
+  state.historyScrollRevision += 1;
+  history.classList.add("promptstudio-instant-scroll");
+  history.scrollTop = wasNearEnd ? history.scrollHeight : previousScrollTop;
+  history.classList.remove("promptstudio-instant-scroll");
 }
 
 function setImageDropFeedback(text, kind = "") {
@@ -3675,13 +3693,15 @@ function imageReferenceKey(reference) {
   return value ? `${value.type}\u0000${value.subfolder}\u0000${value.filename}` : "";
 }
 
-function imageReferenceUrl(reference) {
+function imageReferenceUrl(reference, version = "") {
   const value = storedImageReference(reference);
   if (!value) return "";
   if (value.type === "promptstudio") {
     return `/promptstudio/prompt-studio/image?filename=${encodeURIComponent(value.filename)}`;
   }
-  return `/view?${new URLSearchParams(value)}`;
+  const params = new URLSearchParams(value);
+  if (version) params.set("promptstudio_version", String(version));
+  return `/view?${params}`;
 }
 
 function latestConversationImage(chat = activeChat()) {
@@ -3930,7 +3950,7 @@ function renderImageGallery(message, images, generationData = null) {
     const preview = document.createElement("button");
     preview.type = "button";
     preview.className = "promptstudio-image-preview";
-    const url = imageReferenceUrl(reference);
+    const url = imageReferenceUrl(reference, generationData?.promptId || generationData?.id);
     const image = document.createElement("img");
     image.src = url;
     image.alt = item.filename || "Generated image";
@@ -4556,13 +4576,87 @@ async function appendGenerationImages(promptId, images) {
   chat.updatedAt = Date.now();
   saveChats();
   renderChatList();
-  if (chat.id === state.activeChatId) renderChatHistory();
+  const element = studioGenerationElement(record);
+  if (element) {
+    const history = element.closest("#promptstudio-history");
+    const wasNearEnd = history ? historyIsNearEnd(history) : false;
+    const previousScrollTop = history?.scrollTop || 0;
+    element.querySelector(".promptstudio-image-grid")?.remove();
+    renderImageGallery(element, stored.images, stored);
+    renderPromptInfo(element, stored);
+    renderVideoHandoffAction(element, stored);
+    refreshRenderedImageSources();
+    if (history) keepHistoryViewportStable(history, wasNearEnd, previousScrollTop);
+  }
 }
 
 function updateMainPromptEditor(prompt) {
   state.mainPrompt = prompt;
   const editor = state.panel?.querySelector("#promptstudio-main-prompt");
   if (editor) editor.value = prompt;
+  renderKnownReferenceHighlights();
+}
+
+function knownReferenceTokenCharacter(value) {
+  return Boolean(value && /[\p{L}\p{N}_]/u.test(value));
+}
+
+function knownReferenceHighlightRanges(text) {
+  const source = String(text || "");
+  const names = Array.isArray(state.config?.known_reference_names)
+    ? state.config.known_reference_names.map(String).filter(Boolean)
+    : [];
+  const candidates = [];
+  names.forEach((name, referenceIndex) => {
+    const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const matcher = new RegExp(escaped, "giu");
+    for (const match of source.matchAll(matcher)) {
+      const start = match.index;
+      const end = start + match[0].length;
+      if (
+        (!knownReferenceTokenCharacter(name[0]) || !knownReferenceTokenCharacter(source[start - 1]))
+        && (!knownReferenceTokenCharacter(name.at(-1)) || !knownReferenceTokenCharacter(source[end]))
+      ) {
+        candidates.push({ start, end, referenceIndex });
+      }
+    }
+  });
+  candidates.sort((left, right) => (
+    left.start - right.start
+    || (right.end - right.start) - (left.end - left.start)
+    || left.referenceIndex - right.referenceIndex
+  ));
+  const accepted = [];
+  for (const candidate of candidates) {
+    if (accepted.some((range) => candidate.start < range.end && candidate.end > range.start)) continue;
+    accepted.push(candidate);
+  }
+  return accepted.sort((left, right) => left.start - right.start);
+}
+
+function renderKnownReferenceHighlights() {
+  const editor = state.panel?.querySelector("#promptstudio-main-prompt");
+  const layer = state.panel?.querySelector("#promptstudio-main-prompt-highlights");
+  const content = state.panel?.querySelector("#promptstudio-main-prompt-highlight-content");
+  if (!editor || !layer || !content) return;
+  const text = editor.value;
+  const ranges = knownReferenceHighlightRanges(text);
+  const fragment = document.createDocumentFragment();
+  let offset = 0;
+  for (const range of ranges) {
+    fragment.append(document.createTextNode(text.slice(offset, range.start)));
+    const mark = document.createElement("mark");
+    mark.textContent = text.slice(range.start, range.end);
+    fragment.append(mark);
+    offset = range.end;
+  }
+  fragment.append(document.createTextNode(`${text.slice(offset)}\n`));
+  content.replaceChildren(fragment);
+  layer.style.width = `${editor.clientWidth}px`;
+  layer.style.height = `${editor.clientHeight}px`;
+  content.style.width = `${editor.clientWidth}px`;
+  content.style.transform = `translate(${-editor.scrollLeft}px, ${-editor.scrollTop}px)`;
+  editor.closest(".promptstudio-main-prompt-editor")?.toggleAttribute("data-has-highlights", ranges.length > 0);
 }
 
 function updatePromptEditor(prompt) {
@@ -4788,6 +4882,7 @@ async function loadConfig() {
   setOptions("promptstudio-embellishment", state.config.embellishment_levels, settings.embellishment_level);
   syncOutputLengthControl({ storedSettings: settings });
   applyStudioSettings(activeChat());
+  renderKnownReferenceHighlights();
   if (selectedLlmProvider() === "ollama") await loadOllamaModels({ announce: false });
 }
 
@@ -5059,7 +5154,24 @@ function updateStudioGenerationText(promptId, text) {
   record.chat.updatedAt = record.message.updatedAt;
   saveChats();
   renderChatList();
-  if (record.chat.id === state.activeChatId) renderChatHistory();
+  const element = studioGenerationElement(record);
+  const history = element?.closest("#promptstudio-history");
+  const wasNearEnd = history ? historyIsNearEnd(history) : false;
+  const previousScrollTop = history?.scrollTop || 0;
+  const body = element?.querySelector(".promptstudio-message-text");
+  if (record.message.text) {
+    if (body) body.textContent = record.message.text;
+    else {
+      const next = document.createElement("div");
+      next.className = "promptstudio-message-text";
+      next.textContent = record.message.text;
+      element?.querySelector(".promptstudio-generation-progress")?.before(next);
+      if (element && !next.isConnected) element.appendChild(next);
+    }
+  } else {
+    body?.remove();
+  }
+  if (history) keepHistoryViewportStable(history, wasNearEnd, previousScrollTop);
 }
 
 function setStudioGenerationState(promptId, generationState) {
@@ -5075,8 +5187,15 @@ function setStudioGenerationState(promptId, generationState) {
   record.chat.updatedAt = record.message.updatedAt;
   saveChats();
   renderChatList();
-  if (record.chat.id === state.activeChatId) renderChatHistory();
-  else updateComposeMode();
+  const element = studioGenerationElement(record);
+  if (element) {
+    const history = element.closest("#promptstudio-history");
+    const wasNearEnd = history ? historyIsNearEnd(history) : false;
+    const previousScrollTop = history?.scrollTop || 0;
+    renderGenerationProgress(element, record.message);
+    if (history) keepHistoryViewportStable(history, wasNearEnd, previousScrollTop);
+  }
+  updateComposeMode();
   queueMicrotask(syncBackgroundActivityIndicator);
 }
 
@@ -9979,7 +10098,10 @@ function buildPanel() {
       <section class="promptstudio-control-deck">
         <details class="promptstudio-current-details" data-promptstudio-sidebar-group="main-prompt" open>
           <summary><span>Main prompt</span><small>Editable source intent</small></summary>
-          <textarea id="promptstudio-main-prompt" rows="5" placeholder="The user's model-neutral image description"></textarea>
+          <div class="promptstudio-main-prompt-editor">
+            <div id="promptstudio-main-prompt-highlights" class="promptstudio-main-prompt-highlights" aria-hidden="true"><pre id="promptstudio-main-prompt-highlight-content"></pre></div>
+            <textarea id="promptstudio-main-prompt" rows="5" placeholder="The user's model-neutral image description"></textarea>
+          </div>
         </details>
         <details class="promptstudio-current-details" data-promptstudio-sidebar-group="final-prompt" open>
           <summary><span>Final prompt</span><small>Editable; rebuilt when controls change</small></summary>
@@ -10533,6 +10655,10 @@ function buildPanel() {
   panel.querySelector("#promptstudio-main-prompt").addEventListener("input", (event) => {
     syncMainPromptEditor(event.target.value, { userEdit: true });
   });
+  panel.querySelector("#promptstudio-main-prompt").addEventListener("scroll", renderKnownReferenceHighlights);
+  if ("ResizeObserver" in window) {
+    new ResizeObserver(renderKnownReferenceHighlights).observe(panel.querySelector("#promptstudio-main-prompt"));
+  }
   panel.querySelector("#promptstudio-main-prompt").addEventListener("change", commitPromptEditorVersion);
   panel.querySelector("#promptstudio-current-prompt").addEventListener("input", (event) => {
     syncCanonicalEditor(event.target.value, { userEdit: true });

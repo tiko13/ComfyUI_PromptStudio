@@ -40,6 +40,7 @@ from .nodes import (
     _get_profile,
     _get_style_template,
     _load_framing_templates,
+    _load_known_references,
     _load_profiles,
     _load_style_templates,
     _list_ollama_models,
@@ -2623,6 +2624,7 @@ async def prompt_studio_alias(request):
 async def prompt_studio_config(request):
     style_templates = _load_style_templates()
     framing_templates = _load_framing_templates()
+    known_references = _load_known_references()
     profiles = _load_profiles()
     return web.json_response(
         {
@@ -2654,6 +2656,7 @@ async def prompt_studio_config(request):
                 }
                 for template in framing_templates
             ],
+            "known_reference_names": [reference["name"] for reference in known_references],
             "thinking_modes": ["Disabled", "Minimal", "Low", "Medium", "High"],
             "embellishment_levels": [
                 "None",

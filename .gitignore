@@ -9,9 +9,11 @@ __pycache__/
 .mypy_cache/
 .ruff_cache/
 .coverage
+coverage.xml
 htmlcov/
 .venv/
 venv/
+.python-version
 build/
 dist/
 *.egg-info/
@@ -31,6 +33,8 @@ pnpm-debug.log*
 # Editors and operating systems
 .idea/
 .vscode/
+.agents/
+.codex/
 .DS_Store
 Thumbs.db
 Desktop.ini
@@ -43,6 +47,16 @@ Desktop.ini
 *.bak
 .env
 .env.*
+!.env.example
+*.pem
+*.key
+*.pfx
+*.p12
+*.crt
+*.cer
+*.db
+*.sqlite
+*.sqlite3
 
 # Prompt Studio runtime state
 prompt_studio_chats.json
@@ -56,3 +70,4 @@ protected_words.txt
 style_templates.additional.json
 framing_templates.additional.json
 additional_instruction_templates.json
+known_references.json

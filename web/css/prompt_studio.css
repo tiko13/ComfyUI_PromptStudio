@@ -2411,8 +2411,63 @@ body.promptstudio-popout-body .promptstudio-standalone-only {
   width: calc(100% - 16px) !important;
 }
 
-#promptstudio-main-prompt {
+.promptstudio-main-prompt-editor {
+  position: relative;
+  margin: 0 8px 8px;
+}
+
+#promptstudio-prompt-studio .promptstudio-main-prompt-editor #promptstudio-main-prompt {
+  position: relative;
+  z-index: 1;
+  margin: 0;
+  width: 100% !important;
   min-height: 84px;
+}
+
+.promptstudio-main-prompt-highlights {
+  position: absolute;
+  top: 1px;
+  left: 1px;
+  z-index: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.promptstudio-main-prompt-highlights pre {
+  min-height: 100%;
+  margin: 0;
+  padding: 10px 11px;
+  color: var(--ps-text);
+  background: transparent;
+  font: inherit;
+  line-height: inherit;
+  overflow-wrap: break-word;
+  white-space: pre-wrap;
+}
+
+.promptstudio-main-prompt-highlights mark {
+  color: #b9a8ff;
+  background: rgba(141, 115, 255, 0.09);
+  border-radius: 2px;
+}
+
+.promptstudio-main-prompt-editor[data-has-highlights] #promptstudio-main-prompt {
+  color: transparent;
+  caret-color: var(--ps-text);
+  background: transparent;
+}
+
+.promptstudio-main-prompt-editor[data-has-highlights] #promptstudio-main-prompt::placeholder {
+  color: var(--ps-muted);
+}
+
+.promptstudio-main-prompt-editor[data-has-highlights] {
+  background: #0e1017;
+  border-radius: 10px;
+}
+
+.promptstudio-main-prompt-editor[data-has-highlights]:focus-within {
+  background: #11141d;
 }
 
 #promptstudio-current-prompt {

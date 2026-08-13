@@ -504,6 +504,41 @@ exactly match an enabled template name is sent unchanged. Additional instruction
 over conflicting main-prompt, style, style-modifier, framing, and framing-modifier guidance.
 Restart ComfyUI after changing the file.
 
+### Known references
+
+The tracked `presets/examples/known_references.example.json` file seeds the ignored local
+`known_references.json` file. Known references are case-insensitive reusable names for any concept,
+including people, characters, items, clothing, poses, expressions, locations, backgrounds,
+lighting, composition, or visual treatments:
+
+```json
+{
+  "known_references": [
+    {
+      "name": "Jane",
+      "definition": "A blonde 25-year-old woman wearing a black shirt, white sneakers, and denim pants.",
+      "enabled": true
+    },
+    {
+      "name": "Victory Pose",
+      "definition": "The appropriate subject stands upright with both arms raised in a confident celebratory gesture.",
+      "enabled": true
+    }
+  ]
+}
+```
+
+Matched names remain verbatim while Prompt Studio stores and revises the Main Prompt, including
+when a name is typed directly into the Main Prompt editor. When it creates or revises a Final
+Prompt, the backend sends only the matched definitions to the LLM. The
+LLM uses each definition as guidance, replaces the reference with described prompt content, and
+omits the reference name from the Final Prompt. Multiple definitions are applied independently in
+the grammatical roles where their names occur. Explicit local modifiers attached to a reference
+may refine its baseline definition; otherwise the definition takes priority over conflicting
+generic prompt, style, framing, or embellishment guidance. Names must be unique without regard to
+case, incomplete or disabled entries are ignored, and longer names win when configured names
+overlap at the same position. Restart ComfyUI after changing the file.
+
 ## Backend API
 
 Prompt Studio revisions are served by ComfyUI at:
