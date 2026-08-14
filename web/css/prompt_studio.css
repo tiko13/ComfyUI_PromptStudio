@@ -333,7 +333,7 @@ body.promptstudio-popout-body {
   right: 0;
   display: grid;
   gap: 8px;
-  width: 245px;
+  width: 270px;
   padding: 11px;
   background: rgba(19, 21, 29, 0.98);
   border: 1px solid var(--ps-border);
@@ -343,6 +343,44 @@ body.promptstudio-popout-body {
 
 .promptstudio-kobold-popover strong {
   font-size: 11px;
+}
+
+.promptstudio-system-status-heading {
+  color: var(--ps-text);
+  font-size: 12px !important;
+}
+
+.promptstudio-system-status-section {
+  display: grid;
+  gap: 7px;
+}
+
+.promptstudio-system-status-section + .promptstudio-system-status-section {
+  padding-top: 9px;
+  border-top: 1px solid var(--ps-border);
+}
+
+.promptstudio-system-status-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.promptstudio-system-status-row span {
+  text-align: right;
+}
+
+.promptstudio-system-status-row span[data-state="idle"] {
+  color: var(--ps-success);
+}
+
+.promptstudio-system-status-row span[data-state="busy"] {
+  color: var(--ps-warning);
+}
+
+.promptstudio-system-status-row span[data-state="offline"] {
+  color: var(--ps-error);
 }
 
 .promptstudio-kobold-popover span,
@@ -389,13 +427,23 @@ body.promptstudio-popout-body {
   color: var(--ps-warning);
 }
 
-#promptstudio-prompt-studio .promptstudio-header-actions .promptstudio-kobold-popover button {
+#promptstudio-prompt-studio .promptstudio-header-actions #promptstudio-kobold-stop {
   width: 100%;
   min-height: 32px;
   padding: 0 10px;
   color: #ffd9dc;
   background: rgba(255, 98, 111, 0.12);
   border-color: rgba(255, 133, 142, 0.32);
+  font-size: 10px;
+}
+
+#promptstudio-prompt-studio .promptstudio-header-actions #promptstudio-comfy-restart {
+  width: 100%;
+  min-height: 32px;
+  padding: 0 10px;
+  color: var(--ps-text);
+  background: rgba(255, 255, 255, 0.055);
+  border-color: var(--ps-border);
   font-size: 10px;
 }
 

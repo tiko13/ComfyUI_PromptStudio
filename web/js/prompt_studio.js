@@ -29,6 +29,7 @@ const PROMPT_AGENT_CANCEL_ENDPOINT = "/promptstudio/prompt-studio/agent/cancel";
 const LLM_STATUS_ENDPOINT = "/promptstudio/prompt-studio/llm/status";
 const KOBOLD_STATUS_ENDPOINT = "/promptstudio/prompt-studio/kobold/status";
 const KOBOLD_ABORT_ENDPOINT = "/promptstudio/prompt-studio/kobold/abort";
+const COMFY_RESTART_ENDPOINT = "/manager/reboot";
 const CONSULT_JOB_POLL_MS = 1000;
 const CONSULT_STATUS_RETRY_LIMIT = 3;
 const KOBOLD_STATUS_POLL_MS = 3000;
@@ -169,6 +170,9 @@ const state = {
   llmStatusRequest: null,
   llmStatusRequestProvider: "",
   llmStatusTimer: null,
+  llmStatusSnapshot: null,
+  comfyQueueRemaining: 0,
+  comfyRestartBusy: false,
   koboldAbortBusy: false,
   consultVisionAvailable: null,
   consultVisionReason: "",
@@ -3511,7 +3515,9 @@ function freezeDisconnectedControls(root = state.panel) {
 function setApiConnected(connected, { announce = true } = {}) {
   connected = Boolean(connected);
   if (state.apiConnected === connected && state.panel?.dataset.apiConnected) return;
+  const reconnectedAfterRestart = connected && !state.apiConnected && state.comfyRestartBusy;
   state.apiConnected = connected;
+  if (reconnectedAfterRestart) state.comfyRestartBusy = false;
   if (connected) {
     if (state.disconnectedGenerationTimer) clearTimeout(state.disconnectedGenerationTimer);
     state.disconnectedGenerationTimer = null;
@@ -3521,6 +3527,7 @@ function setApiConnected(connected, { announce = true } = {}) {
   const banner = panel.querySelector("#promptstudio-api-connection");
   panel.dataset.apiConnected = connected ? "true" : "false";
   if (banner) banner.hidden = connected;
+  renderSystemStatusSummary();
 
   if (!connected) {
     freezeDisconnectedControls();
@@ -3548,7 +3555,12 @@ function setApiConnected(connected, { announce = true } = {}) {
 function setupApiConnectionState() {
   api.addEventListener("reconnecting", () => setApiConnected(false));
   api.addEventListener("reconnected", () => setApiConnected(true));
-  api.addEventListener("status", (event) => setApiConnected(event.detail !== null));
+  api.addEventListener("status", (event) => {
+    const queueRemaining = Number(event.detail?.exec_info?.queue_remaining);
+    if (Number.isFinite(queueRemaining)) state.comfyQueueRemaining = Math.max(0, queueRemaining);
+    setApiConnected(event.detail !== null);
+    renderSystemStatusSummary();
+  });
 
   state.disconnectedControlObserver?.disconnect();
   state.disconnectedControlObserver = new MutationObserver((mutations) => {
@@ -6487,6 +6499,62 @@ function llmConnectionPayload() {
   };
 }
 
+function comfyUiIsProcessing() {
+  return state.comfyQueueRemaining > 0
+    || state.generating
+    || state.queueing
+    || state.generationJobs.size > 0
+    || pendingStudioGenerationCount() > 0;
+}
+
+function renderSystemStatusSummary() {
+  const control = state.panel?.querySelector("#promptstudio-kobold-control");
+  const label = control?.querySelector("#promptstudio-kobold-status-label");
+  const comfyDetail = control?.querySelector("#promptstudio-comfy-status-detail");
+  const restart = control?.querySelector("#promptstudio-comfy-restart");
+  if (!control || !label || !comfyDetail || !restart) return;
+
+  const llm = state.llmStatusSnapshot;
+  const provider = llm?.provider === "ollama" ? "ollama" : selectedLlmProvider();
+  const llmUnhealthy = llm?.reachable === false
+    || (provider === "ollama" && llm?.reachable === true && (!llm.model || llm.model_installed === false));
+  const checking = !llm || llm.checking === true;
+  const comfyProcessing = comfyUiIsProcessing();
+  const processing = checking
+    || llm?.busy === true
+    || comfyProcessing
+    || state.busy
+    || state.consultBusy
+    || state.consultAgentRunning
+    || state.comfyRestartBusy;
+  const unhealthy = !state.apiConnected || llmUnhealthy;
+  const stateName = unhealthy ? "offline" : (processing ? "busy" : "idle");
+  control.dataset.state = stateName;
+  control.querySelector("summary").title = stateName === "offline"
+    ? "System status: attention needed"
+    : (stateName === "busy" ? "System status: processing" : "System status: ready");
+  label.textContent = stateName === "offline"
+    ? "Status: attention needed"
+    : (stateName === "busy" ? "Status: processing" : "Status: ready");
+
+  if (!state.apiConnected) {
+    comfyDetail.textContent = "Not responding";
+    comfyDetail.dataset.state = "offline";
+  } else if (state.comfyRestartBusy) {
+    comfyDetail.textContent = "Restart requested";
+    comfyDetail.dataset.state = "busy";
+  } else if (comfyProcessing) {
+    const queued = Math.max(0, Number(state.comfyQueueRemaining) || 0);
+    comfyDetail.textContent = queued ? `Processing · ${queued} queued` : "Processing";
+    comfyDetail.dataset.state = "busy";
+  } else {
+    comfyDetail.textContent = "Connected and ready";
+    comfyDetail.dataset.state = "idle";
+  }
+  restart.disabled = state.comfyRestartBusy || !state.apiConnected;
+  restart.textContent = state.comfyRestartBusy ? "Restarting…" : "Restart ComfyUI";
+}
+
 function renderLlmStatus(status = {}) {
   const control = state.panel?.querySelector("#promptstudio-kobold-control");
   const label = control?.querySelector("#promptstudio-kobold-status-label");
@@ -6500,17 +6568,11 @@ function renderLlmStatus(status = {}) {
   const provider = status.provider === "ollama" ? "ollama" : selectedLlmProvider();
   const isOllama = provider === "ollama";
   const providerName = isOllama ? "Ollama" : "KoboldCpp";
-  const shortName = isOllama ? "Ollama" : "Kobold";
   const reachable = status.reachable === true;
   const busy = !isOllama && reachable && status.busy === true;
-  const stateName = busy ? "busy" : (reachable ? "idle" : (status.checking ? "checking" : "offline"));
+  state.llmStatusSnapshot = { ...status, provider };
   control.dataset.provider = provider;
-  control.dataset.state = stateName;
-  control.querySelector("summary").title = `${providerName} status${isOllama ? "" : " and emergency stop"}`;
   heading.textContent = providerName;
-  label.textContent = busy
-    ? "Kobold busy"
-    : (reachable ? `${shortName} ${isOllama ? "online" : "idle"}` : (status.checking ? `${shortName}…` : `${shortName} offline`));
   const characters = Number(status.generated_characters);
   detail.textContent = status.message || (busy
     ? `Generation active${Number.isFinite(characters) && characters > 0 ? ` · ${characters.toLocaleString()} characters` : ""}`
@@ -6524,6 +6586,29 @@ function renderLlmStatus(status = {}) {
   stopHelp.hidden = isOllama;
   stop.disabled = !busy || state.koboldAbortBusy;
   stop.textContent = state.koboldAbortBusy ? "Stopping…" : "Force stop generation";
+  renderSystemStatusSummary();
+}
+
+async function restartComfyUIFromStatus() {
+  if (state.comfyRestartBusy || !state.apiConnected) return;
+  const ownerWindow = state.panel?.ownerDocument?.defaultView || window;
+  if (!ownerWindow.confirm("Restart ComfyUI now? Running generations and connected clients will be interrupted.")) return;
+  state.comfyRestartBusy = true;
+  renderSystemStatusSummary();
+  try {
+    const response = await api.fetchApi(COMFY_RESTART_ENDPOINT, { method: "POST" });
+    if (!response.ok) throw new Error(`ComfyUI Manager could not restart the server (${response.status}).`);
+    const detail = state.panel?.querySelector("#promptstudio-comfy-status-detail");
+    if (detail) detail.textContent = "Restarting; waiting to reconnect…";
+  } catch (error) {
+    state.comfyRestartBusy = false;
+    renderSystemStatusSummary();
+    const detail = state.panel?.querySelector("#promptstudio-comfy-status-detail");
+    if (detail) {
+      detail.textContent = `${error.message || error} Restart ComfyUI manually if Manager is unavailable.`;
+      detail.dataset.state = "offline";
+    }
+  }
 }
 
 async function refreshLlmStatus() {
@@ -10575,16 +10660,24 @@ function buildPanel() {
         </div>
         <div class="promptstudio-header-actions">
           <details id="promptstudio-kobold-control" class="promptstudio-kobold-control" data-state="checking">
-            <summary title="${settings.llm_provider === "ollama" ? "Ollama status" : "KoboldCpp status and emergency stop"}"><span class="promptstudio-kobold-dot" aria-hidden="true"></span><span id="promptstudio-kobold-status-label">${settings.llm_provider === "ollama" ? "Ollama…" : "Kobold…"}</span></summary>
+            <summary title="System status"><span class="promptstudio-kobold-dot" aria-hidden="true"></span><span id="promptstudio-kobold-status-label">Status: checking</span></summary>
             <div class="promptstudio-kobold-popover">
-              <strong id="promptstudio-llm-status-heading">${settings.llm_provider === "ollama" ? "Ollama" : "KoboldCpp"}</strong>
-              <span id="promptstudio-kobold-status-detail" role="status" aria-live="polite">Checking local status…</span>
-              <dl class="promptstudio-kobold-metadata">
-                <div><dt>Model</dt><dd id="promptstudio-kobold-model">Checking…</dd></div>
-                <div><dt>Vision</dt><dd id="promptstudio-kobold-vision" data-state="unknown">Checking…</dd></div>
-              </dl>
-              <button id="promptstudio-kobold-stop" type="button" disabled ${settings.llm_provider === "ollama" ? "hidden" : ""}>Force stop generation</button>
-              <small id="promptstudio-kobold-stop-help" ${settings.llm_provider === "ollama" ? "hidden" : ""}>Stops text generation only. KoboldCpp stays loaded.</small>
+              <strong class="promptstudio-system-status-heading">System status</strong>
+              <section class="promptstudio-system-status-section">
+                <strong id="promptstudio-llm-status-heading">${settings.llm_provider === "ollama" ? "Ollama" : "KoboldCpp"}</strong>
+                <span id="promptstudio-kobold-status-detail" role="status" aria-live="polite">Checking local status…</span>
+                <dl class="promptstudio-kobold-metadata">
+                  <div><dt>Model</dt><dd id="promptstudio-kobold-model">Checking…</dd></div>
+                  <div><dt>Vision</dt><dd id="promptstudio-kobold-vision" data-state="unknown">Checking…</dd></div>
+                </dl>
+                <button id="promptstudio-kobold-stop" type="button" disabled ${settings.llm_provider === "ollama" ? "hidden" : ""}>Force stop generation</button>
+                <small id="promptstudio-kobold-stop-help" ${settings.llm_provider === "ollama" ? "hidden" : ""}>Stops text generation only. KoboldCpp stays loaded.</small>
+              </section>
+              <section class="promptstudio-system-status-section promptstudio-comfy-status-section">
+                <div class="promptstudio-system-status-row"><strong>ComfyUI</strong><span id="promptstudio-comfy-status-detail" data-state="busy" role="status" aria-live="polite">Checking…</span></div>
+                <button id="promptstudio-comfy-restart" type="button" data-promptstudio-allow-disconnected="true">Restart ComfyUI</button>
+                <small>Requires ComfyUI Manager. Running work will be interrupted.</small>
+              </section>
             </div>
           </details>
           <button id="promptstudio-toggle-chats" class="promptstudio-chats-button" type="button" title="Show chats" aria-label="Show chats" data-promptstudio-drawer="chats" aria-expanded="false">Sessions</button>
@@ -11088,6 +11181,7 @@ function buildPanel() {
   });
   panel.querySelector("#promptstudio-new-chat").addEventListener("click", createChat);
   panel.querySelector("#promptstudio-kobold-stop").addEventListener("click", stopKoboldGeneration);
+  panel.querySelector("#promptstudio-comfy-restart").addEventListener("click", restartComfyUIFromStatus);
   panel.querySelector("#promptstudio-popout").addEventListener("click", () => togglePopout({ returnToEmbedded: true }));
   panel.querySelector("#promptstudio-close").addEventListener("click", () => togglePanel(false));
   panel.querySelector("#promptstudio-mobile-close").addEventListener("click", () => togglePanel(false));
