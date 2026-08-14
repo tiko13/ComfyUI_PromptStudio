@@ -3,7 +3,7 @@ const CHANNEL_NAME = "promptstudio.promptStudio.standalone.v1";
 const VIDEO_CAPABILITIES_ENDPOINT = "/promptstudio-video/capabilities";
 const VIDEO_REPOSITORY_URL = "https://github.com/tiko13/PromptStudio_Video";
 const VIDEO_INSTALL_ENDPOINT = "/customnode/install/git_url";
-const COMFY_RESTART_ENDPOINT = "/manager/reboot";
+const COMFY_RESTART_ENDPOINTS = ["/v2/manager/reboot", "/manager/reboot"];
 const IMAGE_ICON_URL = new URL("../prompt-studio-icon.svg", import.meta.url).href;
 const VIDEO_ICON_URL = "/extensions/PromptStudio_Video/prompt-studio-video-favicon.svg";
 const VIDEO_STYLESHEET_URL = "/extensions/PromptStudio_Video/css/promptstudio_video_studio.css?v=5";
@@ -236,7 +236,11 @@ async function restartComfyUI() {
   installStatus.dataset.kind = "working";
   installStatus.textContent = "Restarting ComfyUI… this page will reconnect automatically.";
   try {
-    const response = await fetch(COMFY_RESTART_ENDPOINT, { method: "POST" });
+    let response;
+    for (const endpoint of COMFY_RESTART_ENDPOINTS) {
+      response = await fetch(endpoint, { method: "POST" });
+      if (response.ok || ![404, 405].includes(response.status)) break;
+    }
     if (!response.ok) throw new Error(`ComfyUI Manager could not restart the server (${response.status}).`);
     window.setTimeout(() => window.location.reload(), 7000);
   } catch (error) {

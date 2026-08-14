@@ -437,6 +437,7 @@ body.promptstudio-popout-body {
   font-size: 10px;
 }
 
+#promptstudio-prompt-studio .promptstudio-header-actions #promptstudio-comfy-update,
 #promptstudio-prompt-studio .promptstudio-header-actions #promptstudio-comfy-restart {
   width: 100%;
   min-height: 32px;
@@ -445,6 +446,12 @@ body.promptstudio-popout-body {
   background: rgba(255, 255, 255, 0.055);
   border-color: var(--ps-border);
   font-size: 10px;
+}
+
+.promptstudio-system-status-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 7px;
 }
 
 #promptstudio-prompt-studio button {
@@ -3526,6 +3533,403 @@ body.promptstudio-popout-body #promptstudio-prompt-studio.promptstudio-chats-ope
   color: var(--ps-text);
 }
 
+.promptstudio-sr-only {
+  position: absolute !important;
+  width: 1px !important;
+  height: 1px !important;
+  padding: 0 !important;
+  margin: -1px !important;
+  overflow: hidden !important;
+  clip: rect(0, 0, 0, 0) !important;
+  white-space: nowrap !important;
+  border: 0 !important;
+}
+
+.promptstudio-mutation-config-card {
+  grid-column: 1 / -1;
+}
+
+.promptstudio-mutation-launchers {
+  display: grid;
+}
+
+#promptstudio-prompt-studio .promptstudio-mutation-launchers > button {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  width: 100%;
+  min-height: 72px;
+  padding: 14px 17px;
+  color: var(--ps-text);
+  text-align: left;
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+}
+
+#promptstudio-prompt-studio .promptstudio-mutation-launchers > button + button {
+  border-top: 1px solid var(--ps-border);
+}
+
+#promptstudio-prompt-studio .promptstudio-mutation-launchers > button:hover,
+#promptstudio-prompt-studio .promptstudio-mutation-launchers > button:focus-visible {
+  background: rgba(141, 115, 255, 0.065);
+}
+
+.promptstudio-mutation-launchers > button > span:first-child {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.promptstudio-mutation-launchers strong {
+  font-size: 12px;
+}
+
+.promptstudio-mutation-launchers small,
+.promptstudio-mutation-launcher-meta output {
+  color: var(--ps-muted);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.promptstudio-mutation-launcher-meta {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 18px;
+}
+
+.promptstudio-mutation-launcher-meta output {
+  min-width: 128px;
+  text-align: right;
+}
+
+.promptstudio-mutation-launcher-meta b {
+  min-width: 68px;
+  color: var(--ps-accent-strong);
+  font-size: 11px;
+}
+
+.promptstudio-mutation-manager {
+  position: absolute;
+  inset: 0;
+  z-index: 4;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: rgba(20, 22, 31, 0.99);
+  border-radius: inherit;
+}
+
+.promptstudio-mutation-manager[hidden],
+.promptstudio-mutation-editor[hidden],
+.promptstudio-mutation-manager-banner[hidden] {
+  display: none;
+}
+
+.promptstudio-mutation-manager-header {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 15px;
+  min-height: 78px;
+  padding: 13px 18px;
+  border-bottom: 1px solid var(--ps-border);
+}
+
+.promptstudio-mutation-manager-header > div {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.promptstudio-mutation-manager-header strong {
+  font-size: 15px;
+}
+
+.promptstudio-mutation-manager-header span {
+  overflow: hidden;
+  color: var(--ps-muted);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+#promptstudio-prompt-studio .promptstudio-mutation-back {
+  color: var(--ps-muted);
+  background: transparent;
+  border-color: transparent;
+}
+
+.promptstudio-mutation-manager-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 10px 18px;
+  color: #f2d99a;
+  background: rgba(231, 172, 53, 0.09);
+  border-bottom: 1px solid rgba(231, 172, 53, 0.22);
+  font-size: 11px;
+}
+
+.promptstudio-mutation-manager-banner[data-kind="error"] {
+  color: #ffb8c2;
+  background: rgba(220, 68, 90, 0.1);
+  border-bottom-color: rgba(220, 68, 90, 0.24);
+}
+
+.promptstudio-mutation-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 14px 18px;
+  border-bottom: 1px solid var(--ps-border);
+}
+
+.promptstudio-mutation-toolbar label {
+  flex: 1 1 420px;
+  max-width: 520px;
+}
+
+#promptstudio-prompt-studio .promptstudio-mutation-toolbar input {
+  width: 100%;
+  min-height: 38px;
+}
+
+.promptstudio-mutation-toolbar output {
+  flex: 0 0 auto;
+  color: var(--ps-muted);
+  font-size: 11px;
+}
+
+.promptstudio-mutation-list {
+  display: grid;
+  flex: 1 1 auto;
+  align-content: start;
+  gap: 10px;
+  width: min(980px, 100%);
+  margin: 0 auto;
+  padding: 18px;
+  overflow-y: auto;
+}
+
+.promptstudio-mutation-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  min-width: 0;
+  padding: 14px 15px;
+  background: rgba(16, 18, 26, 0.72);
+  border: 1px solid var(--ps-border);
+  border-radius: 10px;
+}
+
+.promptstudio-mutation-row.is-disabled {
+  opacity: 0.66;
+}
+
+.promptstudio-mutation-row-copy {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+}
+
+.promptstudio-mutation-row-copy strong {
+  overflow-wrap: anywhere;
+  font-size: 12px;
+}
+
+.promptstudio-mutation-row-copy span {
+  display: -webkit-box;
+  overflow: hidden;
+  color: var(--ps-muted);
+  font-size: 11px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.promptstudio-mutation-row-controls {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 8px;
+}
+
+#promptstudio-prompt-studio .promptstudio-mutation-row-controls > button {
+  min-height: 32px;
+  padding: 6px 10px;
+  font-size: 10px;
+}
+
+.promptstudio-mutation-enabled {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-right: 5px;
+  color: var(--ps-muted);
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+#promptstudio-prompt-studio .promptstudio-mutation-enabled input {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--ps-accent);
+}
+
+.promptstudio-mutation-delete-confirmation {
+  color: #ffb8c2;
+  font-size: 10px;
+}
+
+#promptstudio-prompt-studio .promptstudio-danger-link {
+  color: #ff9bab;
+  background: transparent;
+  border-color: transparent;
+}
+
+#promptstudio-prompt-studio .promptstudio-danger-button {
+  color: white;
+  background: #a82e43;
+  border-color: #ca4259;
+}
+
+.promptstudio-mutation-empty {
+  padding: 56px 20px;
+  color: var(--ps-muted);
+  text-align: center;
+  border: 1px dashed var(--ps-border);
+  border-radius: 10px;
+  font-size: 12px;
+}
+
+.promptstudio-mutation-editor {
+  position: absolute;
+  inset: 0;
+  z-index: 6;
+  display: grid;
+  place-items: center;
+  padding: 22px;
+  background: rgba(5, 6, 10, 0.74);
+  backdrop-filter: blur(5px);
+}
+
+.promptstudio-mutation-editor-card {
+  display: grid;
+  width: min(680px, 100%);
+  max-height: 100%;
+  overflow: hidden;
+  background: #171923;
+  border: 1px solid rgba(169, 145, 255, 0.3);
+  border-radius: 12px;
+  box-shadow: 0 24px 70px rgba(0, 0, 0, 0.64);
+}
+
+.promptstudio-mutation-editor-card > header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 15px;
+  padding: 15px 17px;
+  border-bottom: 1px solid var(--ps-border);
+}
+
+.promptstudio-mutation-editor-card > header > div {
+  display: grid;
+  gap: 3px;
+}
+
+.promptstudio-mutation-editor-card > header strong {
+  font-size: 14px;
+}
+
+.promptstudio-mutation-editor-card > header span,
+.promptstudio-mutation-editor-enabled small {
+  color: var(--ps-muted);
+  font-size: 10px;
+}
+
+#promptstudio-prompt-studio .promptstudio-mutation-editor-card > header button {
+  width: 34px;
+  min-width: 34px;
+  padding: 0;
+  font-size: 18px;
+}
+
+.promptstudio-mutation-editor-fields {
+  display: grid;
+  gap: 14px;
+  padding: 17px;
+  overflow-y: auto;
+}
+
+.promptstudio-mutation-editor-help {
+  margin: 0;
+  padding: 10px 11px;
+  color: var(--ps-muted);
+  background: rgba(141, 115, 255, 0.055);
+  border: 1px solid rgba(141, 115, 255, 0.13);
+  border-radius: 8px;
+  font-size: 10px;
+  line-height: 1.45;
+}
+
+.promptstudio-mutation-editor-fields > label:not(.promptstudio-mutation-editor-enabled) {
+  display: grid;
+  gap: 6px;
+  color: var(--ps-muted);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.promptstudio-mutation-editor-fields label[hidden] {
+  display: none;
+}
+
+.promptstudio-mutation-editor-enabled {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  padding: 12px;
+  background: rgba(141, 115, 255, 0.055);
+  border: 1px solid rgba(141, 115, 255, 0.13);
+  border-radius: 9px;
+}
+
+.promptstudio-mutation-editor-enabled > span {
+  display: grid;
+  gap: 3px;
+}
+
+#promptstudio-prompt-studio .promptstudio-mutation-editor-enabled input {
+  width: 18px;
+  height: 18px;
+  accent-color: var(--ps-accent);
+}
+
+.promptstudio-mutation-editor-error {
+  min-height: 16px;
+  margin: 0;
+  color: #ff9bab;
+  font-size: 11px;
+}
+
+.promptstudio-mutation-editor-card > footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 9px;
+  padding: 13px 17px;
+  border-top: 1px solid var(--ps-border);
+}
+
 .promptstudio-image-card {
   display: grid;
   gap: 5px;
@@ -3897,6 +4301,69 @@ body.promptstudio-popout-body #promptstudio-prompt-studio.promptstudio-chats-ope
 
   .promptstudio-studio-setting {
     align-items: stretch;
+  }
+
+  #promptstudio-prompt-studio .promptstudio-mutation-launchers > button {
+    align-items: flex-start;
+    gap: 12px;
+  }
+
+  .promptstudio-mutation-launcher-meta {
+    display: grid;
+    justify-items: end;
+    gap: 4px;
+  }
+
+  .promptstudio-mutation-launcher-meta output {
+    min-width: 0;
+  }
+
+  .promptstudio-mutation-manager-header {
+    grid-template-columns: auto minmax(0, 1fr);
+    gap: 10px;
+    padding: 11px;
+  }
+
+  .promptstudio-mutation-manager-header > div span {
+    display: none;
+  }
+
+  #promptstudio-prompt-studio .promptstudio-mutation-manager-header > #promptstudio-mutation-add {
+    grid-column: 1 / -1;
+    width: 100%;
+  }
+
+  .promptstudio-mutation-toolbar {
+    padding: 11px;
+  }
+
+  .promptstudio-mutation-list {
+    gap: 9px;
+    padding: 11px;
+  }
+
+  .promptstudio-mutation-row {
+    align-items: stretch;
+    flex-direction: column;
+    gap: 12px;
+  }
+
+  .promptstudio-mutation-row-controls {
+    flex-wrap: wrap;
+  }
+
+  .promptstudio-mutation-enabled {
+    margin-right: auto;
+  }
+
+  .promptstudio-mutation-editor {
+    align-items: end;
+    padding: 8px;
+  }
+
+  .promptstudio-mutation-editor-card {
+    width: 100%;
+    max-height: 94%;
   }
 
   .promptstudio-image-scale-control {

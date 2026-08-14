@@ -29,10 +29,15 @@ const PROMPT_AGENT_CANCEL_ENDPOINT = "/promptstudio/prompt-studio/agent/cancel";
 const LLM_STATUS_ENDPOINT = "/promptstudio/prompt-studio/llm/status";
 const KOBOLD_STATUS_ENDPOINT = "/promptstudio/prompt-studio/kobold/status";
 const KOBOLD_ABORT_ENDPOINT = "/promptstudio/prompt-studio/kobold/abort";
-const COMFY_RESTART_ENDPOINT = "/manager/reboot";
+const MUTATION_CONFIG_ENDPOINT = "/promptstudio/prompt-studio/mutation-config";
+const COMFY_RESTART_ENDPOINTS = ["/v2/manager/reboot", "/manager/reboot"];
+const COMFY_UPDATE_ENDPOINT = "/manager/queue/update_comfyui";
+const MANAGER_UPDATE_ALL_ENDPOINT = "/manager/queue/update_all";
+const MANAGER_QUEUE_START_ENDPOINT = "/manager/queue/start";
 const CONSULT_JOB_POLL_MS = 1000;
 const CONSULT_STATUS_RETRY_LIMIT = 3;
 const KOBOLD_STATUS_POLL_MS = 3000;
+const MUTATION_CONFIG_POLL_MS = 2500;
 const MAX_DROPPED_IMAGE_BYTES = 20 * 1024 * 1024;
 const CONSULT_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 const CONSULT_EXPERIMENT_MARKER = "PROMPT_STUDIO_EXPERIMENT";
@@ -108,6 +113,47 @@ const DISCONNECTED_ALLOWED_CONTROL_IDS = [
 ];
 const VIDEO_STUDIO_PRESENCE_TIMEOUT_MS = 7000;
 const TYPE_ANYWHERE_WINDOWS = new WeakSet();
+const MUTATION_CONFIG_CATEGORIES = Object.freeze({
+  protected_words: {
+    title: "Protected words",
+    description: "Preserve specific words and phrases during prompt rewriting.",
+    itemLabel: "word or phrase",
+    textField: null,
+    help: "Matching ignores case and uses token boundaries for word-like entries.",
+  },
+  additional_instruction_templates: {
+    title: "Additional instruction templates",
+    description: "Create reusable shortcuts for high-priority instructions.",
+    itemLabel: "instruction template",
+    textField: "instruction",
+    textLabel: "Instruction",
+    help: "The name expands only when it exactly matches the complete Additional instructions value, ignoring case and surrounding spaces.",
+  },
+  known_references: {
+    title: "Known references",
+    description: "Define reusable names for people, objects, poses, locations, and other concepts.",
+    itemLabel: "known reference",
+    textField: "definition",
+    textLabel: "Definition",
+    help: "Reference names match case-insensitively inside prompts; longer overlapping names take priority.",
+  },
+  additional_style_templates: {
+    title: "Additional style presets",
+    description: "Manage personal style guidance added to the built-in presets.",
+    itemLabel: "style preset",
+    textField: "instruction",
+    textLabel: "Style instruction",
+    help: "Additional preset names must not duplicate a built-in or another personal style name.",
+  },
+  additional_framing_templates: {
+    title: "Additional framing presets",
+    description: "Manage personal composition and camera-framing guidance.",
+    itemLabel: "framing preset",
+    textField: "instruction",
+    textLabel: "Framing instruction",
+    help: "Additional preset names must not duplicate a built-in or another personal framing name.",
+  },
+});
 
 const state = {
   panel: null,
@@ -127,6 +173,15 @@ const state = {
   workflowSyncChannel: null,
   chatSyncChannel: null,
   config: null,
+  mutationConfig: null,
+  mutationConfigPending: null,
+  mutationConfigLoading: false,
+  mutationConfigTimer: null,
+  mutationManagerCategory: "",
+  mutationEditorIndex: null,
+  mutationEditorDirty: false,
+  mutationDeleteIndex: null,
+  mutationManagerTrigger: null,
   mainPrompt: "",
   currentPrompt: "",
   versions: [],
@@ -173,6 +228,10 @@ const state = {
   llmStatusSnapshot: null,
   comfyQueueRemaining: 0,
   comfyRestartBusy: false,
+  comfyUpdateBusy: false,
+  comfyUpdateError: false,
+  comfyUpdateMessage: "",
+  comfyUpdateNeedsRestart: false,
   koboldAbortBusy: false,
   consultVisionAvailable: null,
   consultVisionReason: "",
@@ -430,6 +489,402 @@ function resolutionSettings() {
   };
 }
 
+function mutationConfigItems(category = state.mutationManagerCategory) {
+  const items = state.mutationConfig?.[category];
+  return Array.isArray(items) ? items : [];
+}
+
+function mutationConfigSummary(category) {
+  const items = mutationConfigItems(category);
+  if (category === "protected_words") {
+    return `${items.length} ${items.length === 1 ? "entry" : "entries"}`;
+  }
+  const enabled = items.filter((item) => item?.enabled !== false).length;
+  const disabled = items.length - enabled;
+  if (!disabled) return `${enabled} enabled`;
+  return `${enabled} enabled · ${disabled} disabled`;
+}
+
+function renderMutationConfigLaunchers() {
+  if (!state.panel) return;
+  for (const category of Object.keys(MUTATION_CONFIG_CATEGORIES)) {
+    const output = state.panel.querySelector(`[data-mutation-count="${category}"]`);
+    if (output) output.textContent = state.mutationConfig ? mutationConfigSummary(category) : "Load to view";
+  }
+}
+
+function setMutationManagerBanner(message = "", kind = "warning", actionLabel = "") {
+  const banner = state.panel?.querySelector("#promptstudio-mutation-manager-banner");
+  if (!banner) return;
+  banner.hidden = !message;
+  banner.dataset.kind = kind;
+  const copy = banner.querySelector("span");
+  const action = banner.querySelector("button");
+  if (copy) copy.textContent = message;
+  if (action) {
+    action.textContent = actionLabel;
+    action.hidden = !actionLabel;
+  }
+}
+
+function mutationEditorIsOpen() {
+  const editor = state.panel?.querySelector("#promptstudio-mutation-editor");
+  return Boolean(editor && !editor.hidden);
+}
+
+async function refreshRuntimeConfigAfterMutation() {
+  if (!state.config) return;
+  await loadConfig();
+  const validStyles = new Set((state.config?.styles || []).map(String));
+  const validFramings = new Set((state.config?.framings || []).map(String));
+  let changed = false;
+  for (const chat of state.chats) {
+    if (!validStyles.has(chat.studioSettings?.style_preset)) {
+      chat.studioSettings.style_preset = "None";
+      changed = true;
+    }
+    if (!validFramings.has(chat.studioSettings?.framing_preset)) {
+      chat.studioSettings.framing_preset = "None";
+      changed = true;
+    }
+  }
+  if (changed) {
+    const settings = activeChat()?.studioSettings || getSettings();
+    setOptions("promptstudio-style", state.config.styles, settings.style_preset);
+    setOptions("promptstudio-framing", state.config.framings, settings.framing_preset);
+    applyStudioSettings(activeChat());
+    saveSettings();
+    saveChats();
+    setStatus("A removed or disabled active preset was reset to None.", "warning");
+  }
+}
+
+function applyMutationConfig(data, { external = false } = {}) {
+  const previousRevision = state.mutationConfig?.revision || "";
+  state.mutationConfig = data;
+  state.mutationConfigPending = null;
+  setMutationManagerBanner();
+  renderMutationConfigLaunchers();
+  renderMutationManager();
+  if (external && previousRevision !== data.revision) {
+    refreshRuntimeConfigAfterMutation().catch((error) => {
+      setMutationManagerBanner(error.message || "Prompt controls could not be refreshed.", "warning");
+    });
+  }
+}
+
+async function loadMutationConfig({ conditional = false, external = false } = {}) {
+  if (state.mutationConfigLoading) return;
+  state.mutationConfigLoading = true;
+  const revision = state.mutationConfigPending?.revision || state.mutationConfig?.revision || "";
+  const url = conditional && revision
+    ? `${MUTATION_CONFIG_ENDPOINT}?revision=${encodeURIComponent(revision)}`
+    : MUTATION_CONFIG_ENDPOINT;
+  try {
+    const response = await api.fetchApi(url, { cache: "no-store" });
+    if (response.status === 204) return;
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.error || `Prompt Mutation Configuration could not be loaded (${response.status}).`);
+    if (mutationEditorIsOpen() && state.mutationConfig?.revision !== data.revision) {
+      if (state.mutationEditorDirty) {
+        state.mutationConfigPending = data;
+        setMutationManagerBanner(
+          "The configuration files changed outside Prompt Studio. Your unsaved edit is preserved.",
+          "warning",
+          "Reload files",
+        );
+        return;
+      }
+      closeMutationEditor({ restoreFocus: false });
+    }
+    applyMutationConfig(data, { external });
+  } catch (error) {
+    if (state.mutationConfig) {
+      setMutationManagerBanner(
+        `${error.message || "The configuration files could not be read."} Keeping the last valid view and retrying.`,
+        "warning",
+      );
+    } else {
+      setMutationManagerBanner(error.message || "Prompt Mutation Configuration could not be loaded.", "error");
+    }
+  } finally {
+    state.mutationConfigLoading = false;
+  }
+}
+
+function startMutationConfigMonitor() {
+  if (state.mutationConfigTimer) window.clearInterval(state.mutationConfigTimer);
+  loadMutationConfig({ conditional: Boolean(state.mutationConfig), external: true });
+  state.mutationConfigTimer = window.setInterval(() => {
+    const settings = state.panel?.querySelector("#promptstudio-studio-settings");
+    if (settings && !settings.hidden) loadMutationConfig({ conditional: true, external: true });
+  }, MUTATION_CONFIG_POLL_MS);
+}
+
+function stopMutationConfigMonitor() {
+  if (state.mutationConfigTimer) window.clearInterval(state.mutationConfigTimer);
+  state.mutationConfigTimer = null;
+}
+
+function openMutationManager(category, trigger = null) {
+  const metadata = MUTATION_CONFIG_CATEGORIES[category];
+  const manager = state.panel?.querySelector("#promptstudio-mutation-manager");
+  if (!metadata || !manager) return;
+  state.mutationManagerCategory = category;
+  state.mutationDeleteIndex = null;
+  state.mutationManagerTrigger = trigger || state.panel.ownerDocument.activeElement;
+  manager.hidden = false;
+  manager.querySelector("#promptstudio-mutation-manager-title").textContent = metadata.title;
+  manager.querySelector("#promptstudio-mutation-manager-description").textContent = metadata.description;
+  manager.querySelector("#promptstudio-mutation-search").value = "";
+  manager.querySelector("#promptstudio-mutation-add").textContent = `Add ${metadata.itemLabel}`;
+  renderMutationManager();
+  manager.querySelector("#promptstudio-mutation-search")?.focus({ preventScroll: true });
+  loadMutationConfig({ conditional: Boolean(state.mutationConfig), external: true });
+}
+
+function closeMutationManager({ restoreFocus = true } = {}) {
+  const manager = state.panel?.querySelector("#promptstudio-mutation-manager");
+  if (!manager || manager.hidden) return;
+  closeMutationEditor({ restoreFocus: false });
+  manager.hidden = true;
+  state.mutationManagerCategory = "";
+  state.mutationDeleteIndex = null;
+  setMutationManagerBanner();
+  if (restoreFocus) state.mutationManagerTrigger?.focus?.({ preventScroll: true });
+  state.mutationManagerTrigger = null;
+}
+
+function mutationRowButton(label, action, index, className = "") {
+  const button = state.panel.ownerDocument.createElement("button");
+  button.type = "button";
+  button.textContent = label;
+  button.dataset.mutationAction = action;
+  button.dataset.index = String(index);
+  if (className) button.className = className;
+  return button;
+}
+
+function renderMutationManager() {
+  const manager = state.panel?.querySelector("#promptstudio-mutation-manager");
+  const list = manager?.querySelector("#promptstudio-mutation-list");
+  if (!manager || manager.hidden || !list) return;
+  const category = state.mutationManagerCategory;
+  const metadata = MUTATION_CONFIG_CATEGORIES[category];
+  if (!metadata) return;
+  manager.querySelector("#promptstudio-mutation-add").disabled = !state.mutationConfig;
+  const query = manager.querySelector("#promptstudio-mutation-search")?.value.trim().toLocaleLowerCase() || "";
+  list.replaceChildren();
+  const items = mutationConfigItems(category);
+  const matches = items
+    .map((item, index) => ({ item, index }))
+    .filter(({ item }) => {
+      if (!query) return true;
+      const haystack = category === "protected_words"
+        ? String(item)
+        : `${item?.name || ""}\n${item?.[metadata.textField] || ""}`;
+      return haystack.toLocaleLowerCase().includes(query);
+    });
+  manager.querySelector("#promptstudio-mutation-manager-count").textContent = mutationConfigSummary(category);
+  if (!state.mutationConfig) {
+    const empty = state.panel.ownerDocument.createElement("div");
+    empty.className = "promptstudio-mutation-empty";
+    empty.textContent = "Loading configuration…";
+    list.appendChild(empty);
+    return;
+  }
+  if (!matches.length) {
+    const empty = state.panel.ownerDocument.createElement("div");
+    empty.className = "promptstudio-mutation-empty";
+    empty.textContent = query ? "No matching entries." : `No ${metadata.itemLabel}s yet.`;
+    list.appendChild(empty);
+    return;
+  }
+  for (const { item, index } of matches) {
+    const row = state.panel.ownerDocument.createElement("article");
+    row.className = "promptstudio-mutation-row";
+    if (category !== "protected_words" && item.enabled === false) row.classList.add("is-disabled");
+    const copy = state.panel.ownerDocument.createElement("div");
+    copy.className = "promptstudio-mutation-row-copy";
+    const title = state.panel.ownerDocument.createElement("strong");
+    title.textContent = category === "protected_words" ? String(item) : item.name;
+    copy.appendChild(title);
+    if (category !== "protected_words") {
+      const preview = state.panel.ownerDocument.createElement("span");
+      preview.textContent = item[metadata.textField];
+      copy.appendChild(preview);
+    }
+    row.appendChild(copy);
+    const controls = state.panel.ownerDocument.createElement("div");
+    controls.className = "promptstudio-mutation-row-controls";
+    if (category !== "protected_words") {
+      const toggleLabel = state.panel.ownerDocument.createElement("label");
+      toggleLabel.className = "promptstudio-mutation-enabled";
+      const toggle = state.panel.ownerDocument.createElement("input");
+      toggle.type = "checkbox";
+      toggle.checked = item.enabled !== false;
+      toggle.dataset.mutationAction = "toggle";
+      toggle.dataset.index = String(index);
+      toggle.setAttribute("aria-label", `${toggle.checked ? "Disable" : "Enable"} ${item.name}`);
+      const toggleCopy = state.panel.ownerDocument.createElement("span");
+      toggleCopy.textContent = toggle.checked ? "Enabled" : "Disabled";
+      toggleLabel.append(toggle, toggleCopy);
+      controls.appendChild(toggleLabel);
+    }
+    if (state.mutationDeleteIndex === index) {
+      const confirmation = state.panel.ownerDocument.createElement("span");
+      confirmation.className = "promptstudio-mutation-delete-confirmation";
+      confirmation.textContent = "Delete this entry?";
+      controls.append(
+        confirmation,
+        mutationRowButton("Cancel", "cancel-delete", index),
+        mutationRowButton("Delete", "confirm-delete", index, "promptstudio-danger-button"),
+      );
+    } else {
+      controls.append(
+        mutationRowButton("Edit", "edit", index),
+        mutationRowButton("Delete", "delete", index, "promptstudio-danger-link"),
+      );
+    }
+    row.appendChild(controls);
+    list.appendChild(row);
+  }
+}
+
+function openMutationEditor(index = null) {
+  const category = state.mutationManagerCategory;
+  const metadata = MUTATION_CONFIG_CATEGORIES[category];
+  const editor = state.panel?.querySelector("#promptstudio-mutation-editor");
+  if (!metadata || !editor) return;
+  const item = index === null ? null : mutationConfigItems(category)[index];
+  state.mutationEditorIndex = index;
+  state.mutationEditorDirty = false;
+  editor.querySelector("#promptstudio-mutation-editor-title").textContent = `${item ? "Edit" : "Add"} ${metadata.itemLabel}`;
+  editor.querySelector("#promptstudio-mutation-editor-help").textContent = metadata.help;
+  const nameRow = editor.querySelector("#promptstudio-mutation-editor-name-row");
+  const nameLabel = editor.querySelector("#promptstudio-mutation-editor-name-label");
+  const nameInput = editor.querySelector("#promptstudio-mutation-editor-name");
+  nameLabel.textContent = category === "protected_words" ? "Word or phrase" : "Name";
+  nameInput.value = category === "protected_words" ? String(item || "") : String(item?.name || "");
+  nameInput.maxLength = category === "protected_words" ? 256 : 200;
+  nameRow.hidden = false;
+  const textRow = editor.querySelector("#promptstudio-mutation-editor-text-row");
+  textRow.hidden = !metadata.textField;
+  editor.querySelector("#promptstudio-mutation-editor-text-label").textContent = metadata.textLabel || "";
+  editor.querySelector("#promptstudio-mutation-editor-text").value = metadata.textField
+    ? String(item?.[metadata.textField] || "")
+    : "";
+  const enabledRow = editor.querySelector("#promptstudio-mutation-editor-enabled-row");
+  enabledRow.hidden = category === "protected_words";
+  editor.querySelector("#promptstudio-mutation-editor-enabled").checked = item?.enabled !== false;
+  editor.querySelector("#promptstudio-mutation-editor-error").textContent = "";
+  editor.hidden = false;
+  nameInput.focus({ preventScroll: true });
+}
+
+function closeMutationEditor({ restoreFocus = true } = {}) {
+  const editor = state.panel?.querySelector("#promptstudio-mutation-editor");
+  if (!editor || editor.hidden) return;
+  editor.hidden = true;
+  state.mutationEditorIndex = null;
+  state.mutationEditorDirty = false;
+  if (state.mutationConfigPending) {
+    const pending = state.mutationConfigPending;
+    applyMutationConfig(pending, { external: true });
+  } else {
+    setMutationManagerBanner();
+  }
+  if (restoreFocus) state.panel.querySelector("#promptstudio-mutation-add")?.focus({ preventScroll: true });
+}
+
+async function saveMutationCategory(category, items, successMessage) {
+  const manager = state.panel?.querySelector("#promptstudio-mutation-manager");
+  if (!state.mutationConfig?.revision || !manager) return false;
+  manager.setAttribute("aria-busy", "true");
+  manager.querySelectorAll("button, input, textarea").forEach((control) => { control.disabled = true; });
+  try {
+    const response = await api.fetchApi(MUTATION_CONFIG_ENDPOINT, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ revision: state.mutationConfig.revision, category, items }),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.error || `Configuration could not be saved (${response.status}).`);
+    applyMutationConfig(data);
+    refreshRuntimeConfigAfterMutation().catch((error) => {
+      setMutationManagerBanner(error.message || "Prompt controls could not be refreshed.", "warning");
+    });
+    setStatus(successMessage, "ready");
+    return true;
+  } catch (error) {
+    const errorElement = state.panel.querySelector("#promptstudio-mutation-editor-error");
+    if (mutationEditorIsOpen() && errorElement) errorElement.textContent = error.message || String(error);
+    else setMutationManagerBanner(error.message || "Configuration could not be saved.", "error", "Reload files");
+    if (String(error.message || "").includes("another window")) {
+      loadMutationConfig({ conditional: false, external: true });
+    }
+    return false;
+  } finally {
+    manager.removeAttribute("aria-busy");
+    manager.querySelectorAll("button, input, textarea").forEach((control) => { control.disabled = false; });
+  }
+}
+
+async function submitMutationEditor(event) {
+  event.preventDefault();
+  const category = state.mutationManagerCategory;
+  const metadata = MUTATION_CONFIG_CATEGORIES[category];
+  if (!metadata) return;
+  const name = state.panel.querySelector("#promptstudio-mutation-editor-name").value.trim();
+  const items = structuredClone(mutationConfigItems(category));
+  let nextItem = name;
+  if (category !== "protected_words") {
+    nextItem = {
+      name,
+      [metadata.textField]: state.panel.querySelector("#promptstudio-mutation-editor-text").value.trim(),
+      enabled: state.panel.querySelector("#promptstudio-mutation-editor-enabled").checked,
+    };
+  }
+  if (state.mutationEditorIndex === null) items.push(nextItem);
+  else items[state.mutationEditorIndex] = nextItem;
+  const saved = await saveMutationCategory(category, items, `${metadata.title} saved.`);
+  if (saved) closeMutationEditor();
+}
+
+async function handleMutationListAction(event) {
+  const control = event.target.closest?.("[data-mutation-action]");
+  if (!control) return;
+  const category = state.mutationManagerCategory;
+  const metadata = MUTATION_CONFIG_CATEGORIES[category];
+  const index = Number(control.dataset.index);
+  if (!metadata || !Number.isInteger(index)) return;
+  const action = control.dataset.mutationAction;
+  if (action === "edit") return openMutationEditor(index);
+  if (action === "delete") {
+    state.mutationDeleteIndex = index;
+    return renderMutationManager();
+  }
+  if (action === "cancel-delete") {
+    state.mutationDeleteIndex = null;
+    return renderMutationManager();
+  }
+  const items = structuredClone(mutationConfigItems(category));
+  if (action === "toggle") {
+    items[index].enabled = control.checked;
+    const saved = await saveMutationCategory(category, items, `${items[index].name} ${control.checked ? "enabled" : "disabled"}.`);
+    if (!saved) control.checked = !control.checked;
+    return;
+  }
+  if (action === "confirm-delete") {
+    const removed = items.splice(index, 1)[0];
+    const label = category === "protected_words" ? removed : removed?.name;
+    if (await saveMutationCategory(category, items, `${label} deleted.`)) {
+      state.mutationDeleteIndex = null;
+      renderMutationManager();
+    }
+  }
+}
+
 function toggleStudioSettings(force) {
   const popover = state.panel?.querySelector("#promptstudio-studio-settings");
   const button = state.panel?.querySelector("#promptstudio-toggle-studio-settings");
@@ -438,6 +893,11 @@ function toggleStudioSettings(force) {
   if (show) toggleConsult(false);
   popover.hidden = !show;
   button.setAttribute("aria-expanded", show ? "true" : "false");
+  if (show) startMutationConfigMonitor();
+  else {
+    stopMutationConfigMonitor();
+    closeMutationManager({ restoreFocus: false });
+  }
 }
 
 function getConsultSettings() {
@@ -797,6 +1257,13 @@ function installTypeAnywhereFocus(ownerDocument) {
       && state.panel.ownerDocument === ownerDocument
       && !openPromptStudioDialog()
     ) {
+      const mutationManager = state.panel.querySelector("#promptstudio-mutation-manager");
+      if (mutationManager && !mutationManager.hidden) {
+        event.preventDefault();
+        event.stopPropagation();
+        closeMutationManager();
+        return;
+      }
       const settings = state.panel.querySelector("#promptstudio-studio-settings");
       if (settings && !settings.hidden) {
         event.preventDefault();
@@ -2399,15 +2866,58 @@ function firstExecutableNode(graph, snapshot, classTypes) {
   ));
 }
 
+function bridgeWorkflowSubgraphs(graph, workflowData) {
+  const definitions = workflowData?.definitions?.subgraphs;
+  if (!Array.isArray(definitions) || definitions.length === 0) return () => {};
+
+  // Off-canvas graphs do not inherit ComfyUI's root subgraph listener. Forward
+  // their creation events so each node type binds to this graph's definitions.
+  const originals = new Map();
+  for (const definition of definitions) {
+    const id = String(definition?.id || "");
+    const original = id && app.rootGraph?.subgraphs?.get(id);
+    if (original) originals.set(id, original);
+  }
+
+  const listener = (event) => {
+    app.rootGraph.events.dispatch("subgraph-created", event.detail);
+  };
+  graph.events.addEventListener("subgraph-created", listener);
+
+  const restore = () => {
+    graph.events.removeEventListener("subgraph-created", listener);
+    for (const [id, subgraph] of originals) {
+      app.rootGraph.events.dispatch("subgraph-created", {
+        subgraph,
+        data: subgraph.asSerialisable?.() || { id },
+      });
+    }
+  };
+  return restore;
+}
+
 async function buildWorkflowTemplate(file, workflowData, cached) {
   const Graph = app.rootGraph?.constructor || app.graph?.constructor;
   if (typeof Graph !== "function") throw new Error("ComfyUI's workflow graph is not ready.");
   const graph = new Graph();
-  const configureErrors = graph.configure(structuredClone(workflowData));
-  if (Array.isArray(configureErrors) && configureErrors.length) {
-    throw new Error(`ComfyUI could not load ${configureErrors.length} workflow node${configureErrors.length === 1 ? "" : "s"}.`);
+  const restoreSubgraphTypes = bridgeWorkflowSubgraphs(graph, workflowData);
+  let snapshot;
+  try {
+    const configureError = graph.configure(structuredClone(workflowData));
+    if (configureError) {
+      throw new Error("ComfyUI could not load one or more workflow nodes.");
+    }
+    const subgraphIds = new Set((workflowData?.definitions?.subgraphs || []).map((definition) => String(definition.id)));
+    const unresolvedSubgraphs = (graph._nodes || []).filter((node) => (
+      subgraphIds.has(String(node.type)) && !node.isSubgraphNode?.()
+    ));
+    if (unresolvedSubgraphs.length) {
+      throw new Error(`ComfyUI could not resolve ${unresolvedSubgraphs.length} subgraph node${unresolvedSubgraphs.length === 1 ? "" : "s"}.`);
+    }
+    snapshot = structuredClone(await app.graphToPrompt(graph));
+  } finally {
+    restoreSubgraphTypes();
   }
-  const snapshot = structuredClone(await app.graphToPrompt(graph));
   const graphUpscaleNodes = (graph._nodes || []).filter((node) => nodeClassName(node) === UPSCALE_TYPE);
   const upscaleWorkflow = graphUpscaleNodes.length > 0 || cached?.kind === "upscale";
   const upscaleNode = firstExecutableNode(graph, snapshot, [UPSCALE_TYPE]);
@@ -3516,8 +4026,15 @@ function setApiConnected(connected, { announce = true } = {}) {
   connected = Boolean(connected);
   if (state.apiConnected === connected && state.panel?.dataset.apiConnected) return;
   const reconnectedAfterRestart = connected && !state.apiConnected && state.comfyRestartBusy;
+  const reconnectedAfterUpdate = connected && !state.apiConnected
+    && (state.comfyUpdateNeedsRestart || state.comfyUpdateError);
   state.apiConnected = connected;
   if (reconnectedAfterRestart) state.comfyRestartBusy = false;
+  if (reconnectedAfterRestart || reconnectedAfterUpdate) {
+    state.comfyUpdateError = false;
+    state.comfyUpdateMessage = "";
+    state.comfyUpdateNeedsRestart = false;
+  }
   if (connected) {
     if (state.disconnectedGenerationTimer) clearTimeout(state.disconnectedGenerationTimer);
     state.disconnectedGenerationTimer = null;
@@ -6511,8 +7028,9 @@ function renderSystemStatusSummary() {
   const control = state.panel?.querySelector("#promptstudio-kobold-control");
   const label = control?.querySelector("#promptstudio-kobold-status-label");
   const comfyDetail = control?.querySelector("#promptstudio-comfy-status-detail");
+  const update = control?.querySelector("#promptstudio-comfy-update");
   const restart = control?.querySelector("#promptstudio-comfy-restart");
-  if (!control || !label || !comfyDetail || !restart) return;
+  if (!control || !label || !comfyDetail || !update || !restart) return;
 
   const llm = state.llmStatusSnapshot;
   const provider = llm?.provider === "ollama" ? "ollama" : selectedLlmProvider();
@@ -6526,8 +7044,10 @@ function renderSystemStatusSummary() {
     || state.busy
     || state.consultBusy
     || state.consultAgentRunning
-    || state.comfyRestartBusy;
-  const unhealthy = !state.apiConnected || llmUnhealthy;
+    || state.comfyRestartBusy
+    || state.comfyUpdateBusy
+    || state.comfyUpdateNeedsRestart;
+  const unhealthy = !state.apiConnected || llmUnhealthy || state.comfyUpdateError;
   const stateName = unhealthy ? "offline" : (processing ? "busy" : "idle");
   control.dataset.state = stateName;
   control.querySelector("summary").title = stateName === "offline"
@@ -6543,6 +7063,11 @@ function renderSystemStatusSummary() {
   } else if (state.comfyRestartBusy) {
     comfyDetail.textContent = "Restart requested";
     comfyDetail.dataset.state = "busy";
+  } else if (state.comfyUpdateMessage) {
+    comfyDetail.textContent = state.comfyUpdateMessage;
+    comfyDetail.dataset.state = state.comfyUpdateError
+      ? "offline"
+      : (state.comfyUpdateBusy || state.comfyUpdateNeedsRestart ? "busy" : "idle");
   } else if (comfyProcessing) {
     const queued = Math.max(0, Number(state.comfyQueueRemaining) || 0);
     comfyDetail.textContent = queued ? `Processing · ${queued} queued` : "Processing";
@@ -6551,7 +7076,10 @@ function renderSystemStatusSummary() {
     comfyDetail.textContent = "Connected and ready";
     comfyDetail.dataset.state = "idle";
   }
-  restart.disabled = state.comfyRestartBusy || !state.apiConnected;
+  const managerBusy = state.comfyRestartBusy || state.comfyUpdateBusy;
+  update.disabled = managerBusy || !state.apiConnected;
+  update.textContent = state.comfyUpdateBusy ? "Updating…" : "Update ComfyUI";
+  restart.disabled = managerBusy || !state.apiConnected;
   restart.textContent = state.comfyRestartBusy ? "Restarting…" : "Restart ComfyUI";
 }
 
@@ -6590,13 +7118,17 @@ function renderLlmStatus(status = {}) {
 }
 
 async function restartComfyUIFromStatus() {
-  if (state.comfyRestartBusy || !state.apiConnected) return;
+  if (state.comfyRestartBusy || state.comfyUpdateBusy || !state.apiConnected) return;
   const ownerWindow = state.panel?.ownerDocument?.defaultView || window;
   if (!ownerWindow.confirm("Restart ComfyUI now? Running generations and connected clients will be interrupted.")) return;
   state.comfyRestartBusy = true;
   renderSystemStatusSummary();
   try {
-    const response = await api.fetchApi(COMFY_RESTART_ENDPOINT, { method: "POST" });
+    let response;
+    for (const endpoint of COMFY_RESTART_ENDPOINTS) {
+      response = await api.fetchApi(endpoint, { method: "POST" });
+      if (response.ok || ![404, 405].includes(response.status)) break;
+    }
     if (!response.ok) throw new Error(`ComfyUI Manager could not restart the server (${response.status}).`);
     const detail = state.panel?.querySelector("#promptstudio-comfy-status-detail");
     if (detail) detail.textContent = "Restarting; waiting to reconnect…";
@@ -6609,6 +7141,84 @@ async function restartComfyUIFromStatus() {
       detail.dataset.state = "offline";
     }
   }
+}
+
+async function requireManagerResponse(endpoint, options, action) {
+  const response = await api.fetchApi(endpoint, options);
+  if (response.ok) return response;
+  const detail = (await response.text().catch(() => "")).trim();
+  if (response.status === 404) {
+    throw new Error("ComfyUI Manager is not enabled. Enable Manager, restart ComfyUI, and try again.");
+  }
+  if (response.status === 401) {
+    throw new Error("ComfyUI Manager is already processing another task.");
+  }
+  if (response.status === 403) {
+    throw new Error("ComfyUI Manager's security policy blocked Update All. Check Manager security settings.");
+  }
+  throw new Error(detail || `ComfyUI Manager could not ${action} (${response.status}).`);
+}
+
+async function updateComfyUIFromStatus() {
+  if (state.comfyUpdateBusy || state.comfyRestartBusy || !state.apiConnected) return;
+  const ownerWindow = state.panel?.ownerDocument?.defaultView || window;
+  if (!ownerWindow.confirm("Run ComfyUI Manager Update All now? This updates ComfyUI and installed custom nodes. Restart ComfyUI after it finishes to apply the updates.")) return;
+  state.comfyUpdateBusy = true;
+  state.comfyUpdateError = false;
+  state.comfyUpdateMessage = "Queuing Manager Update All…";
+  state.comfyUpdateNeedsRestart = false;
+  renderSystemStatusSummary();
+  try {
+    await requireManagerResponse(COMFY_UPDATE_ENDPOINT, { method: "POST" }, "queue the ComfyUI update");
+    await requireManagerResponse(MANAGER_UPDATE_ALL_ENDPOINT, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mode: "default" }),
+    }, "queue Update All");
+    await requireManagerResponse(MANAGER_QUEUE_START_ENDPOINT, { method: "POST" }, "start Update All");
+    state.comfyUpdateMessage = "Manager Update All is running…";
+    renderSystemStatusSummary();
+  } catch (error) {
+    state.comfyUpdateBusy = false;
+    state.comfyUpdateError = true;
+    state.comfyUpdateMessage = error.message || String(error);
+    renderSystemStatusSummary();
+  }
+}
+
+function managerResultSucceeded(result) {
+  const message = typeof result === "object" && result ? result.msg : result;
+  return typeof message === "string" && message.startsWith("success");
+}
+
+function managerResultFailed(result) {
+  const message = typeof result === "object" && result ? result.msg : result;
+  return typeof message === "string" && message !== "skip" && !message.startsWith("success");
+}
+
+function handleManagerQueueStatus(event) {
+  if (!state.comfyUpdateBusy) return;
+  const status = event.detail || {};
+  if (status.status === "in_progress") {
+    const done = Number(status.done_count);
+    const total = Number(status.total_count);
+    state.comfyUpdateMessage = Number.isFinite(done) && Number.isFinite(total)
+      ? `Manager Update All · ${done}/${total}`
+      : "Manager Update All is running…";
+    renderSystemStatusSummary();
+    return;
+  }
+  if (status.status !== "done") return;
+  const results = Object.values(status.nodepack_result || {});
+  const updated = results.some(managerResultSucceeded);
+  const failed = results.some(managerResultFailed);
+  state.comfyUpdateBusy = false;
+  state.comfyUpdateError = failed;
+  state.comfyUpdateNeedsRestart = updated;
+  state.comfyUpdateMessage = failed
+    ? `Update finished with errors${updated ? " · Restart required" : " · Check the ComfyUI terminal"}`
+    : (updated ? "Update complete · Restart required" : "ComfyUI and custom nodes are up to date");
+  renderSystemStatusSummary();
 }
 
 async function refreshLlmStatus() {
@@ -10675,8 +11285,11 @@ function buildPanel() {
               </section>
               <section class="promptstudio-system-status-section promptstudio-comfy-status-section">
                 <div class="promptstudio-system-status-row"><strong>ComfyUI</strong><span id="promptstudio-comfy-status-detail" data-state="busy" role="status" aria-live="polite">Checking…</span></div>
-                <button id="promptstudio-comfy-restart" type="button" data-promptstudio-allow-disconnected="true">Restart ComfyUI</button>
-                <small>Requires ComfyUI Manager. Running work will be interrupted.</small>
+                <div class="promptstudio-system-status-actions">
+                  <button id="promptstudio-comfy-update" type="button">Update ComfyUI</button>
+                  <button id="promptstudio-comfy-restart" type="button" data-promptstudio-allow-disconnected="true">Restart ComfyUI</button>
+                </div>
+                <small>Requires ComfyUI Manager. Update runs Manager's Update All for ComfyUI and installed custom nodes.</small>
               </section>
             </div>
           </details>
@@ -10838,7 +11451,65 @@ function buildPanel() {
             </div>
           </div>
         </section>
+        <section class="promptstudio-studio-settings-card promptstudio-mutation-config-card" aria-labelledby="promptstudio-mutation-settings-title">
+          <header class="promptstudio-studio-settings-card-header">
+            <div>
+              <strong id="promptstudio-mutation-settings-title">Prompt Mutation Configuration</strong>
+              <span>Manage the local language rules and personal presets used when Prompt Studio rewrites prompts.</span>
+            </div>
+          </header>
+          <div class="promptstudio-mutation-launchers">
+            <button type="button" data-mutation-category="protected_words">
+              <span><strong>Protected words</strong><small>Preserve specific words and phrases during prompt rewriting.</small></span>
+              <span class="promptstudio-mutation-launcher-meta"><output data-mutation-count="protected_words">Load to view</output><b>Manage ›</b></span>
+            </button>
+            <button type="button" data-mutation-category="additional_instruction_templates">
+              <span><strong>Additional instruction templates</strong><small>Create reusable shortcuts for high-priority instructions.</small></span>
+              <span class="promptstudio-mutation-launcher-meta"><output data-mutation-count="additional_instruction_templates">Load to view</output><b>Manage ›</b></span>
+            </button>
+            <button type="button" data-mutation-category="known_references">
+              <span><strong>Known references</strong><small>Define reusable names for people, objects, poses, locations, and other concepts.</small></span>
+              <span class="promptstudio-mutation-launcher-meta"><output data-mutation-count="known_references">Load to view</output><b>Manage ›</b></span>
+            </button>
+            <button type="button" data-mutation-category="additional_style_templates">
+              <span><strong>Additional style presets</strong><small>Manage personal style guidance added to the built-in presets.</small></span>
+              <span class="promptstudio-mutation-launcher-meta"><output data-mutation-count="additional_style_templates">Load to view</output><b>Manage ›</b></span>
+            </button>
+            <button type="button" data-mutation-category="additional_framing_templates">
+              <span><strong>Additional framing presets</strong><small>Manage personal composition and camera-framing guidance.</small></span>
+              <span class="promptstudio-mutation-launcher-meta"><output data-mutation-count="additional_framing_templates">Load to view</output><b>Manage ›</b></span>
+            </button>
+          </div>
+        </section>
       </div>
+      <section id="promptstudio-mutation-manager" class="promptstudio-mutation-manager" aria-labelledby="promptstudio-mutation-manager-title" hidden>
+        <header class="promptstudio-mutation-manager-header">
+          <button id="promptstudio-mutation-back" type="button" class="promptstudio-mutation-back">‹ Settings</button>
+          <div><strong id="promptstudio-mutation-manager-title"></strong><span id="promptstudio-mutation-manager-description"></span></div>
+          <button id="promptstudio-mutation-add" type="button"></button>
+        </header>
+        <div id="promptstudio-mutation-manager-banner" class="promptstudio-mutation-manager-banner" role="status" hidden>
+          <span></span><button type="button" hidden></button>
+        </div>
+        <div class="promptstudio-mutation-toolbar">
+          <label><span class="promptstudio-sr-only">Search configuration</span><input id="promptstudio-mutation-search" type="search" placeholder="Search" autocomplete="off" /></label>
+          <output id="promptstudio-mutation-manager-count"></output>
+        </div>
+        <div id="promptstudio-mutation-list" class="promptstudio-mutation-list"></div>
+        <div id="promptstudio-mutation-editor" class="promptstudio-mutation-editor" role="dialog" aria-modal="true" aria-labelledby="promptstudio-mutation-editor-title" hidden>
+          <form class="promptstudio-mutation-editor-card">
+            <header><div><strong id="promptstudio-mutation-editor-title"></strong><span>Changes are saved to the corresponding local configuration file.</span></div><button id="promptstudio-mutation-editor-close" type="button" aria-label="Close editor">×</button></header>
+            <div class="promptstudio-mutation-editor-fields">
+              <p id="promptstudio-mutation-editor-help" class="promptstudio-mutation-editor-help"></p>
+              <label id="promptstudio-mutation-editor-name-row"><span id="promptstudio-mutation-editor-name-label">Name</span><input id="promptstudio-mutation-editor-name" type="text" autocomplete="off" required /></label>
+              <label id="promptstudio-mutation-editor-text-row"><span id="promptstudio-mutation-editor-text-label"></span><textarea id="promptstudio-mutation-editor-text" rows="8" maxlength="20000" required></textarea></label>
+              <label id="promptstudio-mutation-editor-enabled-row" class="promptstudio-mutation-editor-enabled"><span><strong>Enabled</strong><small>Disabled entries remain stored and visible but are not used for prompt mutation.</small></span><input id="promptstudio-mutation-editor-enabled" type="checkbox" role="switch" checked /></label>
+              <p id="promptstudio-mutation-editor-error" class="promptstudio-mutation-editor-error" role="alert"></p>
+            </div>
+            <footer><button id="promptstudio-mutation-editor-cancel" type="button">Cancel</button><button type="submit">Save</button></footer>
+          </form>
+        </div>
+      </section>
     </div>
     <section id="promptstudio-consult" class="promptstudio-consult" aria-labelledby="promptstudio-consult-title" hidden>
       <header class="promptstudio-consult-header">
@@ -11078,6 +11749,42 @@ function buildPanel() {
   panel.querySelector("#promptstudio-close-inspector").addEventListener("click", closePanelDrawers);
   panel.querySelector(".promptstudio-mobile-scrim").addEventListener("click", closePanelDrawers);
   panel.querySelector("#promptstudio-toggle-studio-settings").addEventListener("click", () => toggleStudioSettings());
+  panel.querySelectorAll("[data-mutation-category]").forEach((button) => {
+    button.addEventListener("click", () => openMutationManager(button.dataset.mutationCategory, button));
+  });
+  panel.querySelector("#promptstudio-mutation-back").addEventListener("click", () => closeMutationManager());
+  panel.querySelector("#promptstudio-mutation-add").addEventListener("click", () => openMutationEditor());
+  panel.querySelector("#promptstudio-mutation-search").addEventListener("input", renderMutationManager);
+  panel.querySelector("#promptstudio-mutation-list").addEventListener("click", handleMutationListAction);
+  panel.querySelector("#promptstudio-mutation-manager-banner button").addEventListener("click", () => {
+    if (state.mutationConfigPending) {
+      closeMutationEditor({ restoreFocus: false });
+      return;
+    }
+    loadMutationConfig({ conditional: false, external: true });
+  });
+  panel.querySelector("#promptstudio-mutation-editor form").addEventListener("submit", submitMutationEditor);
+  panel.querySelector("#promptstudio-mutation-editor form").addEventListener("input", () => {
+    state.mutationEditorDirty = true;
+  });
+  panel.querySelector("#promptstudio-mutation-editor-close").addEventListener("click", () => closeMutationEditor());
+  panel.querySelector("#promptstudio-mutation-editor-cancel").addEventListener("click", () => closeMutationEditor());
+  panel.querySelector("#promptstudio-mutation-editor").addEventListener("click", (event) => {
+    if (event.target === event.currentTarget) closeMutationEditor();
+  });
+  panel.querySelector("#promptstudio-mutation-editor").addEventListener("keydown", (event) => {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      closeMutationEditor();
+    }
+  });
+  panel.querySelector("#promptstudio-mutation-manager").addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && !mutationEditorIsOpen()) {
+      event.preventDefault();
+      event.stopPropagation();
+      closeMutationManager();
+    }
+  });
   panel.querySelector("#promptstudio-consult-close").addEventListener("click", () => toggleConsult(false));
   panel.querySelector("#promptstudio-consult-clear").addEventListener("click", clearConsultHistory);
   panel.querySelector("#promptstudio-consult-start-experiment").addEventListener("click", startConsultExperiment);
@@ -11181,6 +11888,7 @@ function buildPanel() {
   });
   panel.querySelector("#promptstudio-new-chat").addEventListener("click", createChat);
   panel.querySelector("#promptstudio-kobold-stop").addEventListener("click", stopKoboldGeneration);
+  panel.querySelector("#promptstudio-comfy-update").addEventListener("click", updateComfyUIFromStatus);
   panel.querySelector("#promptstudio-comfy-restart").addEventListener("click", restartComfyUIFromStatus);
   panel.querySelector("#promptstudio-popout").addEventListener("click", () => togglePopout({ returnToEmbedded: true }));
   panel.querySelector("#promptstudio-close").addEventListener("click", () => togglePanel(false));
@@ -11564,6 +12272,7 @@ app.registerExtension({
     loadCss();
     buildPanel();
     startLlmStatusMonitor();
+    api.addEventListener("cm-queue-status", handleManagerQueueStatus);
     setupApiConnectionState();
     setupGenerationProgressEvents();
     setupWorkflowSync();

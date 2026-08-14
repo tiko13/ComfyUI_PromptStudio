@@ -255,6 +255,39 @@ class FrontendRegressionTests(unittest.TestCase):
         self.assertIn("if (routed.warning)", turn)
         self.assertIn('appendMessage("system", routed.warning', turn)
 
+    def test_mutation_settings_expose_five_focused_managers(self):
+        self.assertEqual(self.source.count('data-mutation-category="'), 5)
+        for category in (
+            "protected_words",
+            "additional_instruction_templates",
+            "known_references",
+            "additional_style_templates",
+            "additional_framing_templates",
+        ):
+            self.assertIn(f'data-mutation-category="{category}"', self.source)
+            self.assertIn(f'data-mutation-count="{category}"', self.source)
+        self.assertIn(".promptstudio-mutation-config-card", self.styles)
+        self.assertIn("grid-column: 1 / -1", self.styles)
+
+    def test_mutation_manager_preserves_drafts_during_external_file_edits(self):
+        load = self.source[
+            self.source.index("async function loadMutationConfig"):
+            self.source.index("function startMutationConfigMonitor")
+        ]
+        monitor = self.function_source("startMutationConfigMonitor", "stopMutationConfigMonitor")
+        save = self.source[
+            self.source.index("async function saveMutationCategory"):
+            self.source.index("async function submitMutationEditor")
+        ]
+
+        self.assertIn("state.mutationEditorDirty", load)
+        self.assertIn("state.mutationConfigPending = data", load)
+        self.assertIn("Your unsaved edit is preserved", load)
+        self.assertIn("Keeping the last valid view and retrying", load)
+        self.assertIn("MUTATION_CONFIG_POLL_MS", monitor)
+        self.assertIn("revision: state.mutationConfig.revision", save)
+        self.assertIn('method: "PUT"', save)
+
 
 if __name__ == "__main__":
     unittest.main()

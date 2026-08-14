@@ -36,9 +36,16 @@ class StudioSwitchContractTests(unittest.TestCase):
         self.assertIn('id="promptstudio-video-install"', self.page)
         self.assertIn('"/customnode/install/git_url"', self.shell)
         self.assertIn('"https://github.com/tiko13/PromptStudio_Video"', self.shell)
-        self.assertIn('"/manager/reboot"', self.shell)
+        self.assertIn('["/v2/manager/reboot", "/manager/reboot"]', self.shell)
+        self.assertIn("![404, 405].includes(response.status)", self.shell)
         self.assertIn("window.confirm", self.shell)
         self.assertIn('cursor: help', self.styles)
+
+    def test_restart_uses_manager_v4_with_a_legacy_fallback(self):
+        for source in (self.panel, self.shell):
+            self.assertIn('["/v2/manager/reboot", "/manager/reboot"]', source)
+            self.assertIn("for (const endpoint of COMFY_RESTART_ENDPOINTS)", source)
+            self.assertIn("![404, 405].includes(response.status)", source)
 
 
 if __name__ == "__main__":

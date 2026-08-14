@@ -21,8 +21,15 @@ from aiohttp import web
 from server import PromptServer
 
 from .nodes import (
+    ADDITIONAL_FRAMING_TEMPLATES_PATH,
+    ADDITIONAL_INSTRUCTION_TEMPLATES_PATH,
+    ADDITIONAL_STYLE_TEMPLATES_PATH,
     BASE_DIR,
     DEFAULT_PROFILE,
+    FRAMING_TEMPLATES_PATH,
+    KNOWN_REFERENCES_PATH,
+    PROTECTED_WORDS_PATH,
+    STYLE_TEMPLATES_PATH,
     _apply_profile_wrappers,
     _build_expansion_retry_prompt,
     _build_instruction_prompt,
@@ -66,7 +73,9 @@ CHAT_STORE_LOCK = asyncio.Lock()
 CONSULT_RETENTION_SECONDS = 7 * 24 * 60 * 60
 WORKFLOW_STORE_PATH = os.path.join(BASE_DIR, "prompt_studio_workflows.json")
 WORKFLOW_STORE_LOCK = asyncio.Lock()
+MUTATION_CONFIG_LOCK = asyncio.Lock()
 MAX_WORKFLOW_STORE_BYTES = 100 * 1024 * 1024
+MAX_MUTATION_CONFIG_BYTES = 1024 * 1024
 MAX_REVISE_REQUEST_BYTES = 1024 * 1024
 MAX_CONSULT_REQUEST_BYTES = 1024 * 1024
 MAX_PROMPT_AGENT_REQUEST_BYTES = 1024 * 1024
@@ -649,6 +658,42 @@ LAN_PASSWORD = _password_from_environment()
 
 class StoreConflictError(RuntimeError):
     pass
+
+
+MUTATION_CONFIG_SPECS = {
+    "protected_words": {
+        "path": PROTECTED_WORDS_PATH,
+        "collection": None,
+        "text_field": None,
+        "label": "protected word",
+    },
+    "additional_instruction_templates": {
+        "path": ADDITIONAL_INSTRUCTION_TEMPLATES_PATH,
+        "collection": "additional_instruction_templates",
+        "text_field": "instruction",
+        "label": "additional instruction template",
+    },
+    "known_references": {
+        "path": KNOWN_REFERENCES_PATH,
+        "collection": "known_references",
+        "text_field": "definition",
+        "label": "known reference",
+    },
+    "additional_style_templates": {
+        "path": ADDITIONAL_STYLE_TEMPLATES_PATH,
+        "collection": "style_templates",
+        "text_field": "instruction",
+        "label": "additional style preset",
+        "builtin_path": STYLE_TEMPLATES_PATH,
+    },
+    "additional_framing_templates": {
+        "path": ADDITIONAL_FRAMING_TEMPLATES_PATH,
+        "collection": "framing_templates",
+        "text_field": "instruction",
+        "label": "additional framing preset",
+        "builtin_path": FRAMING_TEMPLATES_PATH,
+    },
+}
 
 
 def _client_ip(value):
@@ -1891,6 +1936,220 @@ def _normalize_studio_control_changes(value):
     return normalized
 
 
+def _mutation_config_json_items(spec):
+    path = spec["path"]
+    try:
+        with open(path, "r", encoding="utf-8-sig") as file:
+            data = json.load(file)
+    except FileNotFoundError:
+        return []
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Invalid {spec['label']} JSON: {path}: {exc}") from exc
+    if not isinstance(data, dict):
+        raise ValueError(f"{spec['label'].capitalize()} JSON must contain an object at the root.")
+    items = data.get(spec["collection"], [])
+    if not isinstance(items, list):
+        raise ValueError(
+            f"{spec['label'].capitalize()} JSON must contain a '{spec['collection']}' list."
+        )
+    normalized = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        normalized.append(
+            {
+                "name": str(item.get("name") or "").strip(),
+                spec["text_field"]: str(item.get(spec["text_field"]) or "").strip(),
+                "enabled": item.get("enabled", True) is not False,
+            }
+        )
+    return normalized
+
+
+def _mutation_config_protected_words():
+    try:
+        with open(PROTECTED_WORDS_PATH, "r", encoding="utf-8-sig") as file:
+            lines = file.readlines()
+    except FileNotFoundError:
+        return []
+    words = []
+    seen = set()
+    for line in lines:
+        word = line.strip()
+        if not word or word == "#" or word.startswith("# "):
+            continue
+        key = word.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        words.append(word)
+    return words
+
+
+def _mutation_config_revision(data):
+    payload = {
+        key: data.get(key, [])
+        for key in MUTATION_CONFIG_SPECS
+    }
+    encoded = json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _read_mutation_config():
+    data = {"version": 1}
+    for key, spec in MUTATION_CONFIG_SPECS.items():
+        data[key] = (
+            _mutation_config_protected_words()
+            if key == "protected_words"
+            else _mutation_config_json_items(spec)
+        )
+    data["revision"] = _mutation_config_revision(data)
+    return data
+
+
+def _builtin_mutation_template_names(spec):
+    path = spec.get("builtin_path")
+    if not path:
+        return set()
+    try:
+        with open(path, "r", encoding="utf-8-sig") as file:
+            data = json.load(file)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return set()
+    items = data.get(spec["collection"], []) if isinstance(data, dict) else []
+    return {
+        str(item.get("name") or "").strip().casefold()
+        for item in items
+        if isinstance(item, dict) and str(item.get("name") or "").strip()
+    }
+
+
+def _normalize_mutation_config_items(category, items):
+    spec = MUTATION_CONFIG_SPECS.get(category)
+    if not spec:
+        raise ValueError("Unknown Prompt Mutation Configuration category")
+    if not isinstance(items, list):
+        raise ValueError("Configuration items must be a list")
+    if len(items) > 1000:
+        raise ValueError("A configuration collection cannot contain more than 1,000 items")
+
+    seen = set()
+    normalized = []
+    builtin_names = _builtin_mutation_template_names(spec)
+    for index, item in enumerate(items, start=1):
+        if category == "protected_words":
+            value = str(item or "").strip()
+            if not value:
+                raise ValueError(f"Protected word {index} cannot be empty")
+            if len(value) > 256 or "\n" in value or "\r" in value:
+                raise ValueError(f"Protected word {index} must be a single line of at most 256 characters")
+            key = value.casefold()
+            if key in seen:
+                raise ValueError(f"Duplicate protected word: {value}")
+            seen.add(key)
+            normalized.append(value)
+            continue
+
+        if not isinstance(item, dict):
+            raise ValueError(f"{spec['label'].capitalize()} {index} must be an object")
+        name = str(item.get("name") or "").strip()
+        text_value = str(item.get(spec["text_field"]) or "").strip()
+        if not name:
+            raise ValueError(f"{spec['label'].capitalize()} {index} needs a name")
+        if not text_value:
+            raise ValueError(f"{spec['label'].capitalize()} '{name}' needs {spec['text_field'].replace('_', ' ')} text")
+        if len(name) > 200:
+            raise ValueError(f"{spec['label'].capitalize()} names cannot exceed 200 characters")
+        if len(text_value) > 20_000:
+            raise ValueError(f"{spec['label'].capitalize()} text cannot exceed 20,000 characters")
+        if not isinstance(item.get("enabled", True), bool):
+            raise ValueError(f"{spec['label'].capitalize()} '{name}' has an invalid enabled value")
+        key = name.casefold()
+        if key in seen:
+            raise ValueError(f"Duplicate {spec['label']} name: {name}")
+        if key in builtin_names:
+            raise ValueError(f"{spec['label'].capitalize()} name conflicts with a built-in preset: {name}")
+        seen.add(key)
+        normalized.append(
+            {
+                "name": name,
+                spec["text_field"]: text_value,
+                "enabled": item.get("enabled", True),
+            }
+        )
+    return normalized
+
+
+def _atomic_write_protected_words(words):
+    try:
+        with open(PROTECTED_WORDS_PATH, "r", encoding="utf-8-sig") as file:
+            comments = [
+                line.rstrip("\r\n")
+                for line in file
+                if line.strip() == "#" or line.strip().startswith("# ")
+            ]
+    except FileNotFoundError:
+        comments = []
+    if not comments:
+        comments = [
+            "# Add one protected word or phrase per line.",
+            "# Matching ignores case and requires token boundaries for word-like entries.",
+        ]
+    encoded = (
+        "".join(f"{comment}\n" for comment in comments)
+        + "".join(f"{word}\n" for word in words)
+    ).encode("utf-8")
+    if len(encoded) > MAX_MUTATION_CONFIG_BYTES:
+        raise ValueError("Protected words exceed the 1 MB limit")
+    path = PROTECTED_WORDS_PATH
+    temporary_path = path + ".tmp"
+    try:
+        with open(temporary_path, "wb") as file:
+            file.write(encoded)
+            file.flush()
+            os.fsync(file.fileno())
+        if os.path.isfile(path):
+            shutil.copy2(path, path + ".bak")
+        os.replace(temporary_path, path)
+    finally:
+        try:
+            os.remove(temporary_path)
+        except FileNotFoundError:
+            pass
+
+
+def _update_mutation_config(data):
+    if not isinstance(data, dict):
+        raise ValueError("JSON body must be an object")
+    category = str(data.get("category") or "").strip()
+    expected_revision = str(data.get("revision") or "").strip()
+    current = _read_mutation_config()
+    if not expected_revision:
+        raise ValueError("Configuration revision is required")
+    if expected_revision != current["revision"]:
+        raise StoreConflictError(
+            "Prompt Mutation Configuration changed in another window. Reload it before saving again."
+        )
+    items = _normalize_mutation_config_items(category, data.get("items"))
+    spec = MUTATION_CONFIG_SPECS[category]
+    if category == "protected_words":
+        _atomic_write_protected_words(items)
+    else:
+        _atomic_write_store(
+            spec["path"],
+            {spec["collection"]: items},
+            MAX_MUTATION_CONFIG_BYTES,
+            f"{spec['label'].capitalize()} configuration exceeds the 1 MB limit",
+            skip_unchanged=True,
+        )
+    return _read_mutation_config()
+
+
 def _studio_turn_route(data):
     user_text = _text(data.get("user_text")).strip()
     if not user_text:
@@ -2736,6 +2995,41 @@ async def prompt_studio_config(request):
             ],
         }
     )
+
+
+@PromptServer.instance.routes.get("/promptstudio/prompt-studio/mutation-config")
+async def prompt_studio_get_mutation_config(request):
+    try:
+        async with MUTATION_CONFIG_LOCK:
+            data = await asyncio.to_thread(_read_mutation_config)
+        requested_revision = str(request.query.get("revision") or "").strip()
+        if requested_revision and hmac.compare_digest(requested_revision, data["revision"]):
+            return web.Response(
+                status=204,
+                headers={"X-PromptStudio-Mutation-Revision": data["revision"]},
+            )
+        return web.json_response(data)
+    except (OSError, ValueError) as exc:
+        return web.json_response({"error": str(exc)}, status=400)
+    except Exception as exc:
+        return web.json_response({"error": str(exc)}, status=500)
+
+
+@PromptServer.instance.routes.put("/promptstudio/prompt-studio/mutation-config")
+async def prompt_studio_save_mutation_config(request):
+    try:
+        if request.content_length is not None and request.content_length > MAX_MUTATION_CONFIG_BYTES:
+            raise ValueError("Prompt Mutation Configuration request exceeds the 1 MB limit")
+        data = await request.json()
+        async with MUTATION_CONFIG_LOCK:
+            saved = await asyncio.to_thread(_update_mutation_config, data)
+        return web.json_response(saved)
+    except StoreConflictError as exc:
+        return web.json_response({"error": str(exc)}, status=409)
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        return web.json_response({"error": str(exc)}, status=400)
+    except Exception as exc:
+        return web.json_response({"error": str(exc)}, status=500)
 
 
 @PromptServer.instance.routes.get("/promptstudio/prompt-studio/loras")

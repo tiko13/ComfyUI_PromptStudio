@@ -226,6 +226,18 @@ class RegressionTests(unittest.TestCase):
         self.assertIn("releaseBusy: false", reroll)
         self.assertIn("chatId: chat.id", reroll)
 
+    def test_status_update_uses_comfyui_manager_update_all_queue(self):
+        source = (REPO_ROOT / "web" / "js" / "prompt_studio.js").read_text(encoding="utf-8")
+        start = source.index("async function updateComfyUIFromStatus")
+        end = source.index("\nfunction managerResultSucceeded", start)
+        update = source[start:end]
+        self.assertIn('COMFY_UPDATE_ENDPOINT', update)
+        self.assertIn('MANAGER_UPDATE_ALL_ENDPOINT', update)
+        self.assertIn('JSON.stringify({ mode: "default" })', update)
+        self.assertIn('MANAGER_QUEUE_START_ENDPOINT', update)
+        self.assertLess(update.index("COMFY_UPDATE_ENDPOINT"), update.index("MANAGER_UPDATE_ALL_ENDPOINT"))
+        self.assertLess(update.index("MANAGER_UPDATE_ALL_ENDPOINT"), update.index("MANAGER_QUEUE_START_ENDPOINT"))
+
     def test_lan_access_address_scope_is_private_only(self):
         for address in ("192.168.1.25", "10.2.3.4", "172.16.0.8", "169.254.10.20", "fd12::42", "fe80::1"):
             with self.subTest(address=address):
@@ -2228,6 +2240,117 @@ class RegressionTests(unittest.TestCase):
         self.assertEqual((natural_lengths["min"], natural_lengths["max"]), (20, 200))
         self.assertEqual(tag_lengths["unit"], "tags")
         self.assertEqual(tag_lengths["defaults"]["ultra maximum"], 32)
+
+    def test_mutation_config_preserves_disabled_items_and_rejects_stale_saves(self):
+        storage = Path(self.temp.name)
+        protected = storage / "protected_words.txt"
+        instructions = storage / "additional_instruction_templates.json"
+        references = storage / "known_references.json"
+        styles = storage / "style_templates.additional.json"
+        framings = storage / "framing_templates.additional.json"
+        builtin_styles = storage / "styles.json"
+        builtin_framings = storage / "framings.json"
+        protected.write_text("# comment\nCiri\n", encoding="utf-8")
+        instructions.write_text(json.dumps({
+            "additional_instruction_templates": [
+                {"name": "Private rule", "instruction": "Keep this exact guidance.", "enabled": False}
+            ]
+        }), encoding="utf-8")
+        references.write_text(json.dumps({"known_references": []}), encoding="utf-8")
+        styles.write_text(json.dumps({"style_templates": []}), encoding="utf-8")
+        framings.write_text(json.dumps({"framing_templates": []}), encoding="utf-8")
+        builtin_styles.write_text(json.dumps({"style_templates": [{"name": "None"}]}), encoding="utf-8")
+        builtin_framings.write_text(json.dumps({"framing_templates": [{"name": "None"}]}), encoding="utf-8")
+        specs = {
+            "protected_words": {"path": str(protected), "collection": None, "text_field": None, "label": "protected word"},
+            "additional_instruction_templates": {"path": str(instructions), "collection": "additional_instruction_templates", "text_field": "instruction", "label": "additional instruction template"},
+            "known_references": {"path": str(references), "collection": "known_references", "text_field": "definition", "label": "known reference"},
+            "additional_style_templates": {"path": str(styles), "collection": "style_templates", "text_field": "instruction", "label": "additional style preset", "builtin_path": str(builtin_styles)},
+            "additional_framing_templates": {"path": str(framings), "collection": "framing_templates", "text_field": "instruction", "label": "additional framing preset", "builtin_path": str(builtin_framings)},
+        }
+
+        with (
+            mock.patch.dict(self.routes.MUTATION_CONFIG_SPECS, specs, clear=True),
+            mock.patch.object(self.routes, "PROTECTED_WORDS_PATH", str(protected)),
+        ):
+            initial = self.routes._read_mutation_config()
+            self.assertEqual(initial["protected_words"], ["Ciri"])
+            self.assertIs(initial["additional_instruction_templates"][0]["enabled"], False)
+
+            saved = self.routes._update_mutation_config({
+                "revision": initial["revision"],
+                "category": "additional_instruction_templates",
+                "items": [
+                    {"name": "Private rule", "instruction": "Updated guidance.", "enabled": True}
+                ],
+            })
+            self.assertNotEqual(saved["revision"], initial["revision"])
+            self.assertEqual(saved["additional_instruction_templates"][0]["instruction"], "Updated guidance.")
+            protected_saved = self.routes._update_mutation_config({
+                "revision": saved["revision"],
+                "category": "protected_words",
+                "items": ["Yennefer"],
+            })
+            self.assertEqual(protected_saved["protected_words"], ["Yennefer"])
+            self.assertIn("# comment", protected.read_text(encoding="utf-8"))
+            with self.assertRaises(self.routes.StoreConflictError):
+                self.routes._update_mutation_config({
+                    "revision": initial["revision"],
+                    "category": "protected_words",
+                    "items": ["Yennefer"],
+                })
+
+    def test_mutation_config_rejects_duplicates_and_builtin_preset_names(self):
+        storage = Path(self.temp.name)
+        builtin_styles = storage / "styles.json"
+        builtin_styles.write_text(
+            json.dumps({"style_templates": [{"name": "Neutral"}]}),
+            encoding="utf-8",
+        )
+        spec = {
+            "path": str(storage / "additional-styles.json"),
+            "collection": "style_templates",
+            "text_field": "instruction",
+            "label": "additional style preset",
+            "builtin_path": str(builtin_styles),
+        }
+        with mock.patch.dict(
+            self.routes.MUTATION_CONFIG_SPECS,
+            {"additional_style_templates": spec},
+            clear=True,
+        ):
+            with self.assertRaisesRegex(ValueError, "built-in preset"):
+                self.routes._normalize_mutation_config_items(
+                    "additional_style_templates",
+                    [{"name": "neutral", "instruction": "Custom.", "enabled": True}],
+                )
+            with self.assertRaisesRegex(ValueError, "Duplicate"):
+                self.routes._normalize_mutation_config_items(
+                    "additional_style_templates",
+                    [
+                        {"name": "Personal", "instruction": "One.", "enabled": True},
+                        {"name": "PERSONAL", "instruction": "Two.", "enabled": False},
+                    ],
+                )
+
+    def test_mutation_config_conditional_get_detects_unchanged_files(self):
+        data = {
+            "version": 1,
+            "revision": "a" * 64,
+            "protected_words": [],
+            "additional_instruction_templates": [],
+            "known_references": [],
+            "additional_style_templates": [],
+            "additional_framing_templates": [],
+        }
+        request = types.SimpleNamespace(query={"revision": data["revision"]})
+        with mock.patch.object(self.routes, "_read_mutation_config", return_value=data):
+            response = asyncio.run(self.routes.prompt_studio_get_mutation_config(request))
+        self.assertEqual(response.status, 204)
+        self.assertEqual(
+            response.headers["X-PromptStudio-Mutation-Revision"],
+            data["revision"],
+        )
 
     def test_additional_presets_merge_and_disabled_examples_are_ignored(self):
         storage = Path(self.temp.name)

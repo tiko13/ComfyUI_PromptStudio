@@ -430,13 +430,21 @@ Edit `model_profiles.json` to add prompt formats for different image models:
 
 `default_max_response_tokens` is the final-answer allowance used when the node or Prompt Studio sends `0`; reasoning allowance is added automatically. `example_prompts` teach format only; their subjects should not be copied into the result. Older profiles containing one `example_prompt` string remain supported. `notes` may be an empty string, a string, or a list of strings. Exact `final_prompt_prefix` and `final_prompt_suffix` values are applied after rewriting.
 
+### Protected words
+
+Manage protected literals under **Settings → Prompt Mutation Configuration → Protected words** or
+edit `protected_words.txt` directly. Put one word or phrase on each line. Matching ignores case and
+uses token boundaries for word-like entries; comment lines start with `# `. Prompt Studio preserves
+matching source literals exactly during rewrites unless the requested edit explicitly removes their
+content.
+
 ### Style presets
 
 Built-in styles live in `presets/default/style_templates.json`. That file is maintained by the
 repository and should not be edited for personal presets.
 
-For personal or private styles, edit `style_templates.additional.json`, change its example, and
-set `"enabled": true`:
+Manage personal or private styles under **Settings → Prompt Mutation Configuration → Additional
+style presets**. The same entries remain directly editable in `style_templates.additional.json`:
 
 ```json
 {
@@ -452,8 +460,9 @@ set `"enabled": true`:
 
 ### Framing presets
 
-Built-in framings live in `presets/default/framing_templates.json`. For personal framings, edit
-`framing_templates.additional.json`, change its example, and set `"enabled": true`:
+Built-in framings live in `presets/default/framing_templates.json`. Manage personal framings under
+**Settings → Prompt Mutation Configuration → Additional framing presets** or edit
+`framing_templates.additional.json` directly:
 
 ```json
 {
@@ -477,8 +486,9 @@ cannot make a normal pull fail. Their `.example.json` counterparts are tracked a
 the repository. Prompt Studio automatically creates each missing local file from its tracked
 example when ComfyUI starts or first loads the preset list. Creation is best-effort, so a read-only
 installation still loads the built-in presets. Do not manually add the local files to GitHub: once
-tracked, `.gitignore` can no longer provide this protection. Restart ComfyUI after changing either
-file.
+tracked, `.gitignore` can no longer provide this protection. Manager changes take effect
+immediately. While Settings is open, valid direct file changes refresh the manager and active
+controls automatically within a few seconds.
 
 ### Additional instruction templates
 
@@ -486,6 +496,9 @@ The tracked `presets/examples/additional_instruction_templates.example.json` fil
 local `additional_instruction_templates.json` file. Each enabled entry maps an exact,
 case-insensitive `name` entered as the complete Additional instructions value to the reusable
 `instruction` sent to the LLM:
+
+Entries can be managed under **Settings → Prompt Mutation Configuration → Additional instruction
+templates** or edited directly in the JSON file.
 
 ```json
 {
@@ -502,7 +515,8 @@ case-insensitive `name` entered as the complete Additional instructions value to
 Leading and trailing whitespace around the entered phrase is ignored. Any value that does not
 exactly match an enabled template name is sent unchanged. Additional instructions take priority
 over conflicting main-prompt, style, style-modifier, framing, and framing-modifier guidance.
-Restart ComfyUI after changing the file.
+Manager changes take effect immediately, and direct file changes are detected while Settings is
+open.
 
 ### Known references
 
@@ -510,6 +524,9 @@ The tracked `presets/examples/known_references.example.json` file seeds the igno
 `known_references.json` file. Known references are case-insensitive reusable names for any concept,
 including people, characters, items, clothing, poses, expressions, locations, backgrounds,
 lighting, composition, or visual treatments:
+
+Entries can be managed under **Settings → Prompt Mutation Configuration → Known references** or
+edited directly in the JSON file.
 
 ```json
 {
@@ -537,7 +554,8 @@ the grammatical roles where their names occur. Explicit local modifiers attached
 may refine its baseline definition; otherwise the definition takes priority over conflicting
 generic prompt, style, framing, or embellishment guidance. Names must be unique without regard to
 case, incomplete or disabled entries are ignored, and longer names win when configured names
-overlap at the same position. Restart ComfyUI after changing the file.
+overlap at the same position. Manager changes take effect immediately, and direct file changes are
+detected while Settings is open.
 
 ## Backend API
 
