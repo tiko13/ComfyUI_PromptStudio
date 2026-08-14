@@ -769,12 +769,22 @@ def _ollama_api_url(base_url, endpoint):
     return f"{base}/api/{endpoint}"
 
 
-def _post_json(url, payload, timeout, service_name="KoboldCpp", response_hook=None):
+def _post_json(
+    url,
+    payload,
+    timeout,
+    service_name="KoboldCpp",
+    response_hook=None,
+    headers=None,
+):
     data = json.dumps(payload).encode("utf-8")
+    request_headers = {"Content-Type": "application/json", "Accept": "application/json"}
+    if headers:
+        request_headers.update(headers)
     request = urllib.request.Request(
         url,
         data=data,
-        headers={"Content-Type": "application/json", "Accept": "application/json"},
+        headers=request_headers,
         method="POST",
     )
     try:
@@ -1148,6 +1158,7 @@ def _generate_kcpp(
     messages_override=None,
     response_hook=None,
     cancellation_check=None,
+    presence_penalty=0.0,
 ):
     def ensure_active():
         if cancellation_check is not None and cancellation_check():
@@ -1238,6 +1249,7 @@ def _generate_kcpp(
             "top_p": float(top_p),
             "top_k": int(top_k),
             "min_p": float(min_p),
+            "presence_penalty": float(presence_penalty),
             "rep_pen": float(rep_pen),
             "rep_pen_range": int(rep_pen_range),
             "seed": int(sampler_seed),
@@ -1373,6 +1385,7 @@ def _generate_ollama(
     cancellation_check=None,
     allow_partial=True,
     keep_alive=30,
+    presence_penalty=0.0,
 ):
     def ensure_active():
         if cancellation_check is not None and cancellation_check():
@@ -1416,6 +1429,7 @@ def _generate_ollama(
             "top_p": float(top_p),
             "top_k": int(top_k),
             "min_p": float(min_p),
+            "presence_penalty": float(presence_penalty),
             "repeat_penalty": float(rep_pen),
             "repeat_last_n": int(rep_pen_range),
             "stop": stop_sequences,

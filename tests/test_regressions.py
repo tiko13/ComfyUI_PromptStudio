@@ -156,6 +156,43 @@ class RegressionTests(unittest.TestCase):
         self.assertIs(status["reachable"], True)
         self.assertIs(status["vision"], True)
 
+    def test_llm_status_preserves_failed_shared_gpu_handoff_until_success(self):
+        payload = {
+            "llm_provider": "koboldcpp",
+            "kobold_url": "http://localhost:5001",
+            "keep_models_loaded": False,
+        }
+        self.routes._SHARED_GPU_OWNER = "llm"
+        self.routes._ACTIVE_SHARED_LLM = self.routes._llm_provider_settings(payload)
+        with mock.patch.object(
+            self.routes,
+            "_unload_llm_provider",
+            side_effect=RuntimeError("Admin Mode is not configured"),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "Admin Mode"):
+                self.routes._release_shared_llm_for_comfy(payload)
+
+        with mock.patch.object(
+            self.routes,
+            "_kobold_generation_status",
+            return_value={"provider": "koboldcpp", "reachable": True, "busy": False},
+        ):
+            failed = self.routes._llm_generation_status(payload)
+            kept_loaded = self.routes._llm_generation_status({**payload, "keep_models_loaded": True})
+
+        self.assertEqual(failed["handoff_error"], "Admin Mode is not configured")
+        self.assertNotIn("handoff_error", kept_loaded)
+
+        with mock.patch.object(
+            self.routes,
+            "_unload_llm_provider",
+            return_value={"provider": "koboldcpp", "unloaded": True},
+        ):
+            result = self.routes._release_shared_llm_for_comfy(payload)
+
+        self.assertTrue(result["unloaded"])
+        self.assertIsNone(self.routes._llm_handoff_error(payload))
+
     def test_random_seed_invalidates_llm_nodes(self):
         self.assertTrue(math.isnan(self.nodes.KCPP_PromptAmplify.IS_CHANGED(sampler_seed=-1)))
         self.assertTrue(math.isnan(self.nodes.KCPP_Apply.IS_CHANGED(sampler_seed=-1)))
@@ -206,6 +243,108 @@ class RegressionTests(unittest.TestCase):
         results = asyncio.run(scenario())
         self.assertEqual(results, ["active", "consult", "studio"])
         self.assertEqual(order, ["active", "studio", "consult"])
+
+    def test_shared_gpu_queue_is_global_unless_models_are_kept_loaded(self):
+        kobold = {"llm_provider": "koboldcpp", "kobold_url": "http://localhost:5001"}
+        ollama = {
+            "llm_provider": "ollama",
+            "ollama_url": "http://localhost:11434",
+            "ollama_model": "gemma3:4b",
+        }
+
+        self.assertEqual(self.routes._llm_queue_key(kobold), ("shared-gpu",))
+        self.assertEqual(self.routes._llm_queue_key(ollama), ("shared-gpu",))
+        self.assertNotEqual(
+            self.routes._llm_queue_key({**kobold, "keep_models_loaded": True}),
+            self.routes._llm_queue_key({**ollama, "keep_models_loaded": True}),
+        )
+
+    def test_shared_gpu_releases_comfy_only_on_transition_back_to_llm(self):
+        payload = {
+            "llm_provider": "ollama",
+            "ollama_url": "http://localhost:11434",
+            "ollama_model": "gemma3:4b",
+            "keep_models_loaded": False,
+        }
+        self.routes._SHARED_GPU_OWNER = "comfy"
+        self.routes._ACTIVE_SHARED_LLM = None
+
+        with mock.patch.object(self.routes, "_release_comfy_models") as release_comfy:
+            self.routes._prepare_shared_gpu_for_llm(payload)
+            self.routes._prepare_shared_gpu_for_llm(payload)
+            release_comfy.assert_called_once_with()
+
+        with mock.patch.object(
+            self.routes,
+            "_unload_llm_provider",
+            return_value={"provider": "ollama", "unloaded": True},
+        ) as unload_llm:
+            result = self.routes._release_shared_llm_for_comfy(payload)
+            unload_llm.assert_called_once()
+            self.assertTrue(result["unloaded"])
+            self.assertTrue(self.routes._complete_comfy_handoff(result["handoff_token"]))
+
+        with mock.patch.object(self.routes, "_release_comfy_models") as release_comfy:
+            self.routes._prepare_shared_gpu_for_llm(payload)
+            release_comfy.assert_called_once_with()
+
+    def test_shared_gpu_handoff_waits_for_comfy_queue_acknowledgement(self):
+        result = self.routes._release_shared_llm_for_comfy({
+            "llm_provider": "ollama",
+            "ollama_url": "http://localhost:11434",
+            "ollama_model": "gemma3:4b",
+        })
+        token = result["handoff_token"]
+        completed = []
+
+        waiter = threading.Thread(
+            target=lambda: (self.routes._wait_for_pending_comfy_handoffs(timeout=1), completed.append(True))
+        )
+        waiter.start()
+        self.assertFalse(completed)
+        self.assertTrue(self.routes._complete_comfy_handoff(token))
+        waiter.join(timeout=1)
+
+        self.assertEqual(completed, [True])
+
+    def test_keep_models_loaded_skips_both_handoff_directions(self):
+        payload = {
+            "llm_provider": "ollama",
+            "ollama_url": "http://localhost:11434",
+            "ollama_model": "gemma3:4b",
+            "keep_models_loaded": True,
+        }
+        with (
+            mock.patch.object(self.routes, "_release_comfy_models") as release_comfy,
+            mock.patch.object(self.routes, "_unload_llm_provider") as unload_llm,
+        ):
+            self.routes._prepare_shared_gpu_for_llm(payload)
+            result = self.routes._release_shared_llm_for_comfy(payload)
+
+        release_comfy.assert_not_called()
+        unload_llm.assert_not_called()
+        self.assertEqual(result, {"unloaded": False, "kept_loaded": True})
+        self.assertEqual(self.routes._ollama_keep_alive(payload), -1)
+
+    def test_kobold_admin_handoff_unloads_and_restores_initial_model(self):
+        payload = {"llm_provider": "koboldcpp", "kobold_url": "http://localhost:5001"}
+        targets = []
+
+        def admin_request(_data, target):
+            targets.append(target)
+            return "http://localhost:5001"
+
+        self.routes._KOBOLD_ADMIN_UNLOADED.clear()
+        with (
+            mock.patch.object(self.routes, "_kobold_admin_request", side_effect=admin_request),
+            mock.patch.object(self.routes, "_wait_for_kobold_model_state", return_value="inactive"),
+            mock.patch.object(self.routes, "_kobold_model_name", return_value="inactive"),
+        ):
+            self.routes._unload_kobold_model(payload)
+            self.routes._reload_kobold_model_if_needed(payload)
+
+        self.assertEqual(targets, ["unload_model", "initial_model"])
+        self.assertFalse(self.routes._KOBOLD_ADMIN_UNLOADED)
 
     def test_reroll_preparation_stays_nonblocking_and_keeps_its_origin(self):
         source = (REPO_ROOT / "web" / "js" / "prompt_studio.js").read_text(encoding="utf-8")
@@ -1021,6 +1160,7 @@ class RegressionTests(unittest.TestCase):
             "framing_preset": "None",
             "thinking_mode": "Disabled",
             "embellishment_level": "None",
+            "presence_penalty": 1.5,
             "revision": "Change the dress to green",
             "additional_instructions": additional_instructions,
         }
@@ -1035,6 +1175,7 @@ class RegressionTests(unittest.TestCase):
         self.assertIn("model-neutral main prompt", generate.call_args.args[0])
         self.assertIn("Additional user instructions", generate.call_args.args[0])
         self.assertIn(additional_instructions, generate.call_args.args[0])
+        self.assertEqual(generate.call_args.kwargs["presence_penalty"], 1.5)
 
         with (
             mock.patch.object(self.routes, "_build_instruction_prompt", return_value="render request") as build_render,
@@ -1359,6 +1500,7 @@ class RegressionTests(unittest.TestCase):
                 "Medium",
                 "",
                 120,
+                presence_penalty=1.5,
             )
 
         self.assertEqual(result, "A finished image prompt.")
@@ -1367,6 +1509,7 @@ class RegressionTests(unittest.TestCase):
         self.assertEqual(timeout, 120)
         self.assertEqual(payload["max_tokens"], 1300)
         self.assertEqual(payload["thinking_budget_tokens"], 1000)
+        self.assertEqual(payload["presence_penalty"], 1.5)
         self.assertNotIn("reasoning_effort", payload)
         self.assertTrue(payload["chat_template_kwargs"]["enable_thinking"])
         self.assertEqual(payload["chat_template_kwargs"]["reasoning_effort"], "medium")
@@ -1394,6 +1537,7 @@ class RegressionTests(unittest.TestCase):
                 "Medium",
                 "",
                 120,
+                presence_penalty=1.5,
             )
 
         self.assertEqual(result, "A finished image prompt.")
@@ -1405,6 +1549,7 @@ class RegressionTests(unittest.TestCase):
         self.assertFalse(payload["stream"])
         self.assertEqual(payload["keep_alive"], 30)
         self.assertEqual(payload["options"]["num_predict"], 750)
+        self.assertEqual(payload["options"]["presence_penalty"], 1.5)
         self.assertEqual(payload["options"]["repeat_penalty"], 1.05)
         self.assertEqual(payload["options"]["repeat_last_n"], 360)
         self.assertNotIn("seed", payload["options"])

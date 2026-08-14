@@ -63,6 +63,7 @@ class FrontendRegressionTests(unittest.TestCase):
         self.assertIn("kobold_url:", remembered)
         self.assertIn("ollama_url:", remembered)
         self.assertIn("ollama_model:", remembered)
+        self.assertIn("keep_models_loaded:", remembered)
         self.assertIn("applyRememberedLlmConnection(", applied)
 
     def test_prompt_agent_export_updates_visible_main_prompt(self):
@@ -214,6 +215,26 @@ class FrontendRegressionTests(unittest.TestCase):
         self.assertIn("keepHistoryViewportStable(history, wasNearEnd, previousScrollTop);", append)
         self.assertNotIn("renderChatHistory();", append)
 
+    def test_chat_auto_scroll_tracks_user_distance_across_rapid_appends(self):
+        scroll = self.function_source("scrollElementToEnd", "scrollHistoryToEnd")
+        render = self.function_source("renderMessage", "appendMessage")
+        build = self.function_source("buildPanel", "updatePopoutButton")
+        activate = self.function_source("activateChat", "nodeClassName")
+        history_render = self.function_source("renderChatHistory", "updateComposeMode")
+
+        self.assertIn("const CHAT_SCROLL_STICK_THRESHOLD = 450;", self.source)
+        self.assertIn("historyShouldStickToEnd(history)", scroll)
+        self.assertIn("setHistoryShouldStickToEnd(history, true);", scroll)
+        self.assertIn("const wasNearEnd = historyShouldStickToEnd(history);", render)
+        self.assertIn("scrollHistoryToEnd({ instant: true });", render)
+        self.assertIn('history.addEventListener("scroll"', build)
+        self.assertIn('consultHistory.addEventListener("scroll"', build)
+        self.assertIn("state.historyWasNearEnd = true;", activate)
+        self.assertIn("renderChatHistory({ forceEnd: true });", activate)
+        self.assertNotIn("scrollHistoryToEnd", activate)
+        self.assertIn("if (forceEnd) placeHistoryAtEnd(history);", history_render)
+        self.assertIn('image.loading = "lazy";', self.source)
+
     def test_generation_status_updates_do_not_rebuild_image_history(self):
         text_update = self.function_source("updateStudioGenerationText", "setStudioGenerationState")
         state_update = self.function_source("setStudioGenerationState", "setupGenerationProgressEvents")
@@ -235,15 +256,47 @@ class FrontendRegressionTests(unittest.TestCase):
         self.assertIn("--promptstudio-chat-image-max-size: 180px", self.styles)
         self.assertIn("max-height: var(--promptstudio-chat-image-max-size)", self.styles)
 
-    def test_ollama_is_unloaded_immediately_before_diffusion_queueing(self):
+    def test_llm_is_released_immediately_before_diffusion_queueing(self):
         queue = self.source[
             self.source.index("async function queueGeneration"):
             self.source.index("async function queueUpscale", self.source.index("async function queueGeneration"))
         ]
         self.assertLess(
-            queue.index("await unloadOllamaBeforeGeneration();"),
+            queue.index("llmHandoffToken = await releaseLlmBeforeGeneration();"),
             queue.index("await api.queuePrompt(-1, context.snapshot);"),
         )
+        self.assertLess(
+            queue.index("await api.queuePrompt(-1, context.snapshot);"),
+            queue.index("await completeLlmHandoff(llmHandoffToken);"),
+        )
+
+    def test_keep_models_loaded_defaults_off_and_is_documented_for_multi_gpu_only(self):
+        connection = self.function_source("llmConnectionPayload", "comfyUiIsProcessing")
+        revision_payload = self.function_source("collectRevisionPayload", "captureGenerationQueueSettings")
+        release = self.source[
+            self.source.index("async function releaseLlmBeforeGeneration"):
+            self.source.index("function llmConnectionPayload")
+        ]
+
+        self.assertIn("keep_models_loaded: false", self.source)
+        self.assertIn('id="promptstudio-keep-models-loaded"', self.source)
+        self.assertIn("Enable only when they use separate GPUs", self.source)
+        self.assertIn("keep_models_loaded:", connection)
+        self.assertIn("keep_models_loaded:", revision_payload)
+        self.assertIn("if (connection.keep_models_loaded) {", release)
+        self.assertIn("LLM_RELEASE_ENDPOINT", release)
+        self.assertIn("updateLlmHandoffStatus(message)", release)
+        summary = self.function_source("renderSystemStatusSummary", "renderLlmStatus")
+        llm_status_start = self.source.index("function renderLlmStatus")
+        llm_status_end = self.source.index("\nasync function restartComfyUIFromStatus", llm_status_start)
+        llm_status = self.source[llm_status_start:llm_status_end]
+        self.assertIn("Boolean(llm?.handoff_error)", summary)
+        self.assertIn("status.handoff_error || status.message", llm_status)
+        execution_success = self.source[
+            self.source.index('api.addEventListener("execution_success"'):
+            self.source.index('for (const eventName of ["execution_error"', self.source.index('api.addEventListener("execution_success"'))
+        ]
+        self.assertNotIn("releaseLlmBeforeGeneration", execution_success)
 
     def test_ollama_routing_fallback_warning_is_visible(self):
         route = self.function_source("requestStudioTurnRoute", "studioDiscussionRequestMessages")
@@ -287,6 +340,76 @@ class FrontendRegressionTests(unittest.TestCase):
         self.assertIn("MUTATION_CONFIG_POLL_MS", monitor)
         self.assertIn("revision: state.mutationConfig.revision", save)
         self.assertIn('method: "PUT"', save)
+
+    def test_llm_profiles_share_complete_sampler_settings_across_requests(self):
+        settings = self.function_source("llmProfileGenerationSettings", "renderLlmProfileOptions")
+        revision = self.function_source("collectRevisionPayload", "captureGenerationQueueSettings")
+        consultation = self.function_source("collectConsultGenerationSettings", "selectedConsultVariant")
+
+        for key in (
+            "thinking_mode", "max_response_tokens", "temperature", "top_p", "top_k", "min_p",
+            "presence_penalty", "rep_pen", "rep_pen_range", "sampler_seed", "request_timeout",
+            "stop_sequence",
+        ):
+            self.assertIn(f"{key}:", settings)
+        self.assertIn("...llmProfileGenerationSettings()", revision)
+        self.assertIn("return llmProfileGenerationSettings();", consultation)
+        self.assertIn("const thinkingMode = selectedLlmThinkingMode();", settings)
+        self.assertIn('thinkingMode !== "Disabled"', settings)
+        for key in (
+            "thinking_temperature", "thinking_top_p", "thinking_top_k", "thinking_min_p",
+            "thinking_presence_penalty", "thinking_rep_pen", "thinking_rep_pen_range",
+        ):
+            self.assertIn(f"profile.{key}", settings)
+
+    def test_llm_profile_editor_supports_defaults_add_delete_and_safe_fallback(self):
+        available = self.function_source("availableLlmProfiles", "persistLlmProfiles")
+        editor = self.function_source("openLlmProfileEditor", "closeLlmProfileEditor")
+        restore = self.function_source("restoreLlmProfileEditorDefaults", "submitLlmProfileEditor")
+        delete = self.function_source("deleteLlmProfile", "applyRememberedLlmConnection")
+
+        self.assertIn('name: "Qwen3.5"', self.source)
+        self.assertIn('name: "Qwen 3.8 (27B)"', self.source)
+        self.assertIn('id: "qwen3.8-27b"', self.source)
+        self.assertIn("presence_penalty: 1.5", self.source)
+        self.assertIn("top_p: 0.8", self.source)
+        self.assertIn("top_k: 20", self.source)
+        self.assertIn("thinking_temperature: 1.0", self.source)
+        self.assertIn("thinking_top_p: 0.95", self.source)
+        self.assertIn("thinking_presence_penalty: 0", self.source)
+        self.assertIn("LLM_PROFILE_STORAGE_VERSION = 3", self.source)
+        self.assertIn("storageVersion < LLM_PROFILE_STORAGE_VERSION", self.source)
+        self.assertIn("storageVersion < 2", self.source)
+        self.assertIn('id: "__default__", name: "Default"', available)
+        self.assertIn('profile.id === "__default__"', editor)
+        self.assertIn('"Add LLM profile"', editor)
+        self.assertIn("LLM_PROFILE_PRESETS.find", restore)
+        self.assertIn("state.llmProfiles.filter", delete)
+        self.assertIn("immutable Default profile is now active", delete)
+        self.assertIn("Only change these parameters if you understand", self.source)
+        self.assertIn('id="promptstudio-add-llm-profile"', self.source)
+        self.assertIn('id="promptstudio-delete-llm-profile"', self.source)
+        self.assertIn("Non-thinking sampler", self.source)
+        self.assertIn("Thinking sampler", self.source)
+
+        profile_editor_markup = self.source[
+            self.source.index('id="promptstudio-llm-profile-editor"'):
+            self.source.index('id="promptstudio-consult"')
+        ]
+        self.assertNotIn('name="thinking_mode"', profile_editor_markup)
+        self.assertIn('<label id="promptstudio-thinking-control">Thinking<select id="promptstudio-thinking">', self.source)
+        self.assertIn('id="promptstudio-consult-thinking" aria-hidden="true" hidden', self.source)
+        self.assertIn('panel.querySelector("#promptstudio-thinking").addEventListener("change"', self.source)
+
+    def test_llm_profile_editor_keeps_actions_visible_while_settings_scroll(self):
+        self.assertIn("grid-template-rows: auto minmax(0, 1fr) auto", self.styles)
+        fields = self.styles[
+            self.styles.index(".promptstudio-llm-profile-editor-fields {"):
+            self.styles.index(".promptstudio-llm-profile-warning {")
+        ]
+        self.assertIn("min-height: 0", fields)
+        self.assertIn("overflow-y: auto", fields)
+        self.assertIn("overscroll-behavior: contain", fields)
 
 
 if __name__ == "__main__":

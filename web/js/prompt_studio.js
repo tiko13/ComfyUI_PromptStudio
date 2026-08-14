@@ -14,6 +14,7 @@ const STORAGE_KEY = "promptstudio.promptStudio.settings.v1";
 const LORA_STORAGE_KEY = "promptstudio.promptStudio.loras.v1";
 const MODEL_STORAGE_KEY = "promptstudio.promptStudio.models.v1";
 const CONSULT_STORAGE_KEY = "promptstudio.promptStudio.consult.settings.v1";
+const LLM_PROFILE_STORAGE_KEY = "promptstudio.promptStudio.llmProfiles.v1";
 const SIDEBAR_GROUP_ORDER_STORAGE_KEY = "promptstudio.promptStudio.sidebarGroupOrder.v1";
 const STANDALONE_CHANNEL = "promptstudio.promptStudio.standalone.v1";
 const VIDEO_STUDIO_CHANNEL = "promptstudio.video.standalone.v1";
@@ -23,7 +24,8 @@ const STUDIO_SETTINGS_VERSION = 2;
 const STUDIO_ROUTE_ENDPOINT = "/promptstudio/prompt-studio/route-turn";
 const STUDIO_DISCUSS_ENDPOINT = "/promptstudio/prompt-studio/discuss";
 const CONSULT_CHAT_ENDPOINT = "/promptstudio/prompt-studio/chat";
-const OLLAMA_UNLOAD_ENDPOINT = "/promptstudio/prompt-studio/ollama/unload";
+const LLM_RELEASE_ENDPOINT = "/promptstudio/prompt-studio/llm/release";
+const LLM_HANDOFF_COMPLETE_ENDPOINT = "/promptstudio/prompt-studio/llm/handoff-complete";
 const PROMPT_AGENT_ENDPOINT = "/promptstudio/prompt-studio/agent";
 const PROMPT_AGENT_CANCEL_ENDPOINT = "/promptstudio/prompt-studio/agent/cancel";
 const LLM_STATUS_ENDPOINT = "/promptstudio/prompt-studio/llm/status";
@@ -38,6 +40,7 @@ const CONSULT_JOB_POLL_MS = 1000;
 const CONSULT_STATUS_RETRY_LIMIT = 3;
 const KOBOLD_STATUS_POLL_MS = 3000;
 const MUTATION_CONFIG_POLL_MS = 2500;
+const CHAT_SCROLL_STICK_THRESHOLD = 450;
 const MAX_DROPPED_IMAGE_BYTES = 20 * 1024 * 1024;
 const CONSULT_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 const CONSULT_EXPERIMENT_MARKER = "PROMPT_STUDIO_EXPERIMENT";
@@ -67,6 +70,8 @@ const SETTINGS_DEFAULTS = Object.freeze({
   kobold_url: "http://localhost:5001",
   ollama_url: "http://localhost:11434",
   ollama_model: "",
+  keep_models_loaded: false,
+  llm_profile: "qwen3.5",
   model_profile: "General Natural Language",
   style_preset: "None",
   framing_preset: "None",
@@ -90,6 +95,51 @@ const SETTINGS_DEFAULTS = Object.freeze({
   resolution_megapixels: 1.0,
   resolution_multiple: 8,
 });
+const LLM_PROFILE_DEFAULTS = Object.freeze({
+  id: "qwen3.5",
+  name: "Qwen3.5",
+  thinking_mode: "Disabled",
+  max_response_tokens: 800,
+  temperature: 0.7,
+  top_p: 0.9,
+  top_k: 100,
+  min_p: 0,
+  presence_penalty: 0,
+  rep_pen: 1.05,
+  rep_pen_range: 360,
+  thinking_temperature: 0.7,
+  thinking_top_p: 0.9,
+  thinking_top_k: 100,
+  thinking_min_p: 0,
+  thinking_presence_penalty: 0,
+  thinking_rep_pen: 1.05,
+  thinking_rep_pen_range: 360,
+  sampler_seed: -1,
+  request_timeout: 120,
+  stop_sequence: "",
+});
+const QWEN38_27B_PROFILE_DEFAULTS = Object.freeze({
+  ...LLM_PROFILE_DEFAULTS,
+  id: "qwen3.8-27b",
+  name: "Qwen 3.8 (27B)",
+  temperature: 0.7,
+  top_p: 0.8,
+  top_k: 20,
+  min_p: 0,
+  presence_penalty: 1.5,
+  rep_pen: 1.0,
+  thinking_temperature: 1.0,
+  thinking_top_p: 0.95,
+  thinking_top_k: 20,
+  thinking_min_p: 0,
+  thinking_presence_penalty: 0,
+  thinking_rep_pen: 1.0,
+});
+const LLM_PROFILE_PRESETS = Object.freeze([
+  LLM_PROFILE_DEFAULTS,
+  QWEN38_27B_PROFILE_DEFAULTS,
+]);
+const LLM_PROFILE_STORAGE_VERSION = 3;
 const RENDER_CONTROL_IDS = [
   "promptstudio-profile",
   "promptstudio-style",
@@ -182,6 +232,9 @@ const state = {
   mutationEditorDirty: false,
   mutationDeleteIndex: null,
   mutationManagerTrigger: null,
+  llmProfiles: [],
+  llmProfileEditorTrigger: null,
+  llmProfileEditorId: null,
   mainPrompt: "",
   currentPrompt: "",
   versions: [],
@@ -204,6 +257,9 @@ const state = {
   operationControllers: new Map(),
   generationFailures: new Map(),
   historyScrollRevision: 0,
+  consultHistoryScrollRevision: 0,
+  historyWasNearEnd: true,
+  consultHistoryWasNearEnd: true,
   promptWorkerSeenAlive: false,
   promptWorkerHealthCheckedAt: 0,
   promptWorkerHealthRequest: null,
@@ -407,6 +463,301 @@ function getSettings() {
   }
 }
 
+function normalizeLlmProfile(value, fallback = null) {
+  const source = value && typeof value === "object" && !Array.isArray(value) ? value : {};
+  const presetFallback = LLM_PROFILE_PRESETS.find((profile) => profile.id === source.id) || null;
+  const thinkingPresetFallback = source.id === QWEN38_27B_PROFILE_DEFAULTS.id
+    ? QWEN38_27B_PROFILE_DEFAULTS
+    : null;
+  const defaults = fallback || presetFallback || LLM_PROFILE_DEFAULTS;
+  const number = (key, minimum, maximum, integer = false) => {
+    const requested = Number(source[key]);
+    const fallbackValue = Number(defaults[key]);
+    const bounded = Math.max(minimum, Math.min(maximum, Number.isFinite(requested) ? requested : fallbackValue));
+    return integer ? Math.round(bounded) : bounded;
+  };
+  const thinkingNumber = (key, standardKey, minimum, maximum, integer = false) => {
+    const requested = Number(source[key]);
+    const presetValue = Number(thinkingPresetFallback?.[key]);
+    const standardValue = Number(source[standardKey]);
+    const defaultValue = Number(defaults[key] ?? defaults[standardKey]);
+    const fallbackValue = Number.isFinite(presetValue)
+      ? presetValue
+      : Number.isFinite(standardValue) ? standardValue : defaultValue;
+    const bounded = Math.max(minimum, Math.min(maximum, Number.isFinite(requested) ? requested : fallbackValue));
+    return integer ? Math.round(bounded) : bounded;
+  };
+  const thinkingModes = ["Disabled", "Minimal", "Low", "Medium", "High"];
+  return {
+    id: String(source.id || defaults.id || LLM_PROFILE_DEFAULTS.id),
+    name: String(source.name || defaults.name || LLM_PROFILE_DEFAULTS.name).trim().slice(0, 80)
+      || LLM_PROFILE_DEFAULTS.name,
+    thinking_mode: thinkingModes.includes(source.thinking_mode) ? source.thinking_mode : defaults.thinking_mode,
+    max_response_tokens: number("max_response_tokens", 0, 8192, true),
+    temperature: number("temperature", 0, 5),
+    top_p: number("top_p", 0, 1),
+    top_k: number("top_k", 0, 200, true),
+    min_p: number("min_p", 0, 1),
+    presence_penalty: number("presence_penalty", -2, 2),
+    rep_pen: number("rep_pen", 0.5, 3),
+    rep_pen_range: number("rep_pen_range", 0, 4096, true),
+    thinking_temperature: thinkingNumber("thinking_temperature", "temperature", 0, 5),
+    thinking_top_p: thinkingNumber("thinking_top_p", "top_p", 0, 1),
+    thinking_top_k: thinkingNumber("thinking_top_k", "top_k", 0, 200, true),
+    thinking_min_p: thinkingNumber("thinking_min_p", "min_p", 0, 1),
+    thinking_presence_penalty: thinkingNumber("thinking_presence_penalty", "presence_penalty", -2, 2),
+    thinking_rep_pen: thinkingNumber("thinking_rep_pen", "rep_pen", 0.5, 3),
+    thinking_rep_pen_range: thinkingNumber("thinking_rep_pen_range", "rep_pen_range", 0, 4096, true),
+    sampler_seed: number("sampler_seed", -1, 999999, true),
+    request_timeout: number("request_timeout", 5, 600, true),
+    stop_sequence: String(source.stop_sequence ?? defaults.stop_sequence ?? "").slice(0, 4096),
+  };
+}
+
+function loadLlmProfiles() {
+  let raw = null;
+  try {
+    raw = localStorage.getItem(LLM_PROFILE_STORAGE_KEY);
+  } catch (_) {
+    raw = null;
+  }
+  if (raw === null) return LLM_PROFILE_PRESETS.map((profile) => normalizeLlmProfile(profile, profile));
+  let stored = null;
+  try {
+    stored = JSON.parse(raw);
+  } catch (_) {
+    return LLM_PROFILE_PRESETS.map((profile) => normalizeLlmProfile(profile, profile));
+  }
+  const candidates = Array.isArray(stored) ? stored : stored?.profiles;
+  if (!Array.isArray(candidates)) {
+    return LLM_PROFILE_PRESETS.map((profile) => normalizeLlmProfile(profile, profile));
+  }
+  const seen = new Set();
+  const profiles = candidates
+    .map((profile) => normalizeLlmProfile(profile))
+    .filter((profile) => profile.id !== "default" && profile.id !== "__default__")
+    .filter((profile) => {
+      if (seen.has(profile.id)) return false;
+      seen.add(profile.id);
+      return true;
+    });
+  const storageVersion = Array.isArray(stored) ? 0 : Number(stored?.version) || 0;
+  if (storageVersion < 2
+      && !profiles.some((profile) => profile.id === QWEN38_27B_PROFILE_DEFAULTS.id)) {
+    profiles.push(normalizeLlmProfile(QWEN38_27B_PROFILE_DEFAULTS, QWEN38_27B_PROFILE_DEFAULTS));
+  }
+  if (storageVersion < LLM_PROFILE_STORAGE_VERSION) {
+    try {
+      localStorage.setItem(LLM_PROFILE_STORAGE_KEY, JSON.stringify({
+        version: LLM_PROFILE_STORAGE_VERSION,
+        profiles,
+      }));
+    } catch (_) {
+      // The migrated profiles remain usable for this session when storage is unavailable.
+    }
+  }
+  return profiles;
+}
+
+function availableLlmProfiles() {
+  return state.llmProfiles.length
+    ? state.llmProfiles
+    : [normalizeLlmProfile({ ...LLM_PROFILE_DEFAULTS, id: "__default__", name: "Default" })];
+}
+
+function persistLlmProfiles() {
+  try {
+    localStorage.setItem(LLM_PROFILE_STORAGE_KEY, JSON.stringify({
+      version: LLM_PROFILE_STORAGE_VERSION,
+      profiles: state.llmProfiles.map((profile) => normalizeLlmProfile(profile)),
+    }));
+    return true;
+  } catch (error) {
+    setStatus(error.message || "LLM profiles could not be saved.", "warning");
+    return false;
+  }
+}
+
+function selectedLlmProfile() {
+  const selectedId = state.panel?.querySelector("#promptstudio-llm-profile")?.value
+    || getSettings().llm_profile
+    || LLM_PROFILE_DEFAULTS.id;
+  const profiles = availableLlmProfiles();
+  return profiles.find((profile) => profile.id === selectedId) || profiles[0];
+}
+
+function selectedLlmThinkingMode() {
+  const mainValue = state.panel?.querySelector("#promptstudio-thinking")?.value;
+  const consultValue = state.panel?.querySelector("#promptstudio-consult-thinking")?.value;
+  const requested = mainValue || consultValue || getSettings().thinking_mode || "Disabled";
+  return ["Disabled", "Minimal", "Low", "Medium", "High"].includes(requested)
+    ? requested
+    : "Disabled";
+}
+
+function llmProfileGenerationSettings() {
+  const profile = selectedLlmProfile();
+  const thinkingMode = selectedLlmThinkingMode();
+  const thinkingEnabled = thinkingMode !== "Disabled";
+  return {
+    thinking_mode: thinkingMode,
+    max_response_tokens: profile.max_response_tokens,
+    temperature: thinkingEnabled ? profile.thinking_temperature : profile.temperature,
+    top_p: thinkingEnabled ? profile.thinking_top_p : profile.top_p,
+    top_k: thinkingEnabled ? profile.thinking_top_k : profile.top_k,
+    min_p: thinkingEnabled ? profile.thinking_min_p : profile.min_p,
+    presence_penalty: thinkingEnabled ? profile.thinking_presence_penalty : profile.presence_penalty,
+    rep_pen: thinkingEnabled ? profile.thinking_rep_pen : profile.rep_pen,
+    rep_pen_range: thinkingEnabled ? profile.thinking_rep_pen_range : profile.rep_pen_range,
+    sampler_seed: profile.sampler_seed,
+    request_timeout: profile.request_timeout,
+    stop_sequence: profile.stop_sequence,
+  };
+}
+
+function renderLlmProfileOptions(selectedId = null) {
+  const select = state.panel?.querySelector("#promptstudio-llm-profile");
+  if (!select) return;
+  const requested = selectedId || select.value || LLM_PROFILE_DEFAULTS.id;
+  const profiles = availableLlmProfiles();
+  select.replaceChildren(...profiles.map((profile) => {
+    const option = document.createElement("option");
+    option.value = profile.id;
+    option.textContent = profile.name;
+    return option;
+  }));
+  select.value = profiles.some((profile) => profile.id === requested)
+    ? requested
+    : profiles[0]?.id || "";
+  const edit = state.panel.querySelector("#promptstudio-edit-llm-profile");
+  if (edit) edit.disabled = select.value === "__default__";
+}
+
+function syncLlmProfileControls() {
+  if (!state.panel) return;
+  const profile = selectedLlmProfile();
+  const sampler = llmProfileGenerationSettings();
+  const setValue = (id, value) => {
+    const control = state.panel.querySelector(`#${id}`);
+    if (control) control.value = String(value ?? "");
+  };
+  setValue("promptstudio-thinking", sampler.thinking_mode);
+  setValue("promptstudio-temperature", sampler.temperature);
+  setValue("promptstudio-consult-thinking", sampler.thinking_mode);
+  setValue("promptstudio-consult-max-tokens", profile.max_response_tokens);
+  setValue("promptstudio-consult-temperature", sampler.temperature);
+  setValue("promptstudio-consult-top-p", sampler.top_p);
+  setValue("promptstudio-consult-top-k", sampler.top_k);
+  setValue("promptstudio-consult-min-p", sampler.min_p);
+  setValue("promptstudio-consult-presence-penalty", sampler.presence_penalty);
+  setValue("promptstudio-consult-rep-pen", sampler.rep_pen);
+  setValue("promptstudio-consult-rep-pen-range", sampler.rep_pen_range);
+  setValue("promptstudio-consult-seed", profile.sampler_seed);
+  const summary = state.panel.querySelector("#promptstudio-consult-profile-summary");
+  if (summary) summary.textContent = `${profile.name} · ${sampler.thinking_mode === "Disabled" ? "non-thinking" : "thinking"} · temperature ${sampler.temperature} · top p ${sampler.top_p}`;
+  const name = state.panel.querySelector("#promptstudio-consult-profile-name");
+  if (name) name.textContent = profile.name;
+}
+
+function llmProfileEditorIsOpen() {
+  return state.panel?.querySelector("#promptstudio-llm-profile-editor")?.hidden === false;
+}
+
+function openLlmProfileEditor(trigger = null, { create = false } = {}) {
+  const editor = state.panel?.querySelector("#promptstudio-llm-profile-editor");
+  if (!editor) return;
+  const profile = create
+    ? normalizeLlmProfile({ ...LLM_PROFILE_DEFAULTS, id: "", name: "New profile" })
+    : selectedLlmProfile();
+  if (!create && profile.id === "__default__") return;
+  const setValue = (name, value) => {
+    const control = editor.querySelector(`[name="${name}"]`);
+    if (control) control.value = String(value ?? "");
+  };
+  Object.entries(profile).forEach(([name, value]) => setValue(name, value));
+  state.llmProfileEditorId = create ? null : profile.id;
+  editor.querySelector("#promptstudio-llm-profile-editor-title").textContent = create
+    ? "Add LLM profile"
+    : `Edit ${profile.name}`;
+  editor.querySelector("#promptstudio-delete-llm-profile").hidden = create;
+  editor.querySelector("#promptstudio-llm-profile-editor-error").textContent = "";
+  state.llmProfileEditorTrigger = trigger || state.panel.ownerDocument.activeElement;
+  editor.hidden = false;
+  editor.querySelector('[name="name"]')?.focus({ preventScroll: true });
+}
+
+function closeLlmProfileEditor({ restoreFocus = true } = {}) {
+  const editor = state.panel?.querySelector("#promptstudio-llm-profile-editor");
+  if (!editor || editor.hidden) return;
+  editor.hidden = true;
+  const trigger = state.llmProfileEditorTrigger;
+  state.llmProfileEditorTrigger = null;
+  state.llmProfileEditorId = null;
+  if (restoreFocus) editor.ownerDocument.defaultView?.setTimeout(() => trigger?.focus({ preventScroll: true }));
+}
+
+function restoreLlmProfileEditorDefaults() {
+  const editor = state.panel?.querySelector("#promptstudio-llm-profile-editor");
+  if (!editor) return;
+  const defaults = LLM_PROFILE_PRESETS.find((profile) => profile.id === state.llmProfileEditorId)
+    || LLM_PROFILE_DEFAULTS;
+  Object.entries(defaults).forEach(([name, value]) => {
+    if (["id", "name"].includes(name)) return;
+    const control = editor.querySelector(`[name="${name}"]`);
+    if (control) control.value = String(value ?? "");
+  });
+  editor.querySelector("#promptstudio-llm-profile-editor-error").textContent = "";
+}
+
+function submitLlmProfileEditor(event) {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const error = form.querySelector("#promptstudio-llm-profile-editor-error");
+  const data = Object.fromEntries(new FormData(form));
+  const name = String(data.name || "").trim();
+  if (!name) {
+    error.textContent = "Profile name is required.";
+    form.elements.name.focus();
+    return;
+  }
+  if (state.llmProfiles.some((profile) => (
+    profile.id !== state.llmProfileEditorId && profile.name.localeCompare(name, undefined, { sensitivity: "accent" }) === 0
+  ))) {
+    error.textContent = "Profile names must be unique.";
+    form.elements.name.focus();
+    return;
+  }
+  const current = selectedLlmProfile();
+  const id = state.llmProfileEditorId || `llm-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+  const updated = normalizeLlmProfile({ ...current, ...data, id });
+  state.llmProfiles = state.llmProfileEditorId
+    ? state.llmProfiles.map((profile) => profile.id === updated.id ? updated : profile)
+    : [...state.llmProfiles, updated];
+  if (!persistLlmProfiles()) return;
+  renderLlmProfileOptions(updated.id);
+  syncLlmProfileControls();
+  saveSettings();
+  markControlsChanged();
+  closeLlmProfileEditor();
+  setStatus(`${updated.name} LLM profile saved.`, "ready");
+}
+
+function deleteLlmProfile() {
+  const profile = state.llmProfiles.find((candidate) => candidate.id === state.llmProfileEditorId);
+  if (!profile) return;
+  if (!state.panel.ownerDocument.defaultView?.confirm(`Delete the “${profile.name}” LLM profile?`)) return;
+  state.llmProfiles = state.llmProfiles.filter((candidate) => candidate.id !== profile.id);
+  if (!persistLlmProfiles()) return;
+  renderLlmProfileOptions();
+  syncLlmProfileControls();
+  saveSettings();
+  markControlsChanged();
+  closeLlmProfileEditor();
+  setStatus(state.llmProfiles.length
+    ? `${profile.name} deleted.`
+    : `${profile.name} deleted. The immutable Default profile is now active.`, "ready");
+}
+
 function applyRememberedLlmConnection(settings) {
   let remembered = {};
   try {
@@ -419,9 +770,13 @@ function applyRememberedLlmConnection(settings) {
   return {
     ...settings,
     llm_provider: remembered.llm_provider === "ollama" ? "ollama" : "koboldcpp",
+    llm_profile: String(remembered.llm_profile || settings.llm_profile || LLM_PROFILE_DEFAULTS.id),
     kobold_url: String(remembered.kobold_url ?? settings.kobold_url ?? SETTINGS_DEFAULTS.kobold_url),
     ollama_url: String(remembered.ollama_url ?? settings.ollama_url ?? SETTINGS_DEFAULTS.ollama_url),
     ollama_model: String(remembered.ollama_model ?? settings.ollama_model ?? ""),
+    keep_models_loaded: remembered.keep_models_loaded == null
+      ? Boolean(settings.keep_models_loaded)
+      : Boolean(remembered.keep_models_loaded),
   };
 }
 
@@ -434,9 +789,11 @@ function saveSettings() {
       STORAGE_KEY,
       JSON.stringify({
       llm_provider: value("promptstudio-llm-provider"),
+      llm_profile: value("promptstudio-llm-profile"),
       kobold_url: value("promptstudio-kobold-url"),
       ollama_url: value("promptstudio-ollama-url"),
       ollama_model: value("promptstudio-ollama-model"),
+      keep_models_loaded: checked("promptstudio-keep-models-loaded"),
       model_profile: value("promptstudio-profile"),
       style_preset: value("promptstudio-style"),
       framing_preset: value("promptstudio-framing"),
@@ -897,6 +1254,7 @@ function toggleStudioSettings(force) {
   else {
     stopMutationConfigMonitor();
     closeMutationManager({ restoreFocus: false });
+    closeLlmProfileEditor({ restoreFocus: false });
   }
 }
 
@@ -908,6 +1266,7 @@ function getConsultSettings() {
     top_p: 0.9,
     top_k: 100,
     min_p: 0,
+    presence_penalty: 0,
     rep_pen: 1.05,
     rep_pen_range: 360,
     sampler_seed: -1,
@@ -932,6 +1291,7 @@ function getConsultSettings() {
     top_p: number("top_p", 0, 1),
     top_k: Math.round(number("top_k", 0, 200)),
     min_p: number("min_p", 0, 1),
+    presence_penalty: number("presence_penalty", -2, 2),
     rep_pen: number("rep_pen", 0.5, 3),
     rep_pen_range: Math.round(number("rep_pen_range", 0, 4096)),
     sampler_seed: Math.round(number("sampler_seed", -1, 999999)),
@@ -949,6 +1309,7 @@ function saveConsultSettings() {
       top_p: Number(value("promptstudio-consult-top-p") || 0.9),
       top_k: Number(value("promptstudio-consult-top-k") || 100),
       min_p: Number(value("promptstudio-consult-min-p") || 0),
+      presence_penalty: Number(value("promptstudio-consult-presence-penalty") || 0),
       rep_pen: Number(value("promptstudio-consult-rep-pen") || 1.05),
       rep_pen_range: Number(value("promptstudio-consult-rep-pen-range") || 360),
       sampler_seed: Number(value("promptstudio-consult-seed") || -1),
@@ -962,14 +1323,16 @@ function toggleConsult(force) {
   const overlay = state.panel?.querySelector("#promptstudio-consult");
   if (!overlay) return;
   const show = force ?? overlay.hidden;
+  const history = overlay.querySelector("#promptstudio-consult-history");
+  if (!show && history) state.consultHistoryWasNearEnd = historyIsNearEnd(history);
+  overlay.hidden = !show;
   if (show) {
     toggleStudioSettings(false);
     closePanelDrawers();
-    renderConsultHistory();
+    renderConsultHistory({ forceEnd: state.consultHistoryWasNearEnd });
     renderConsultAttachments();
     refreshConsultVisionCapability();
   }
-  overlay.hidden = !show;
   state.panel.querySelectorAll(".promptstudio-consult-toggle").forEach((button) => {
     button.setAttribute("aria-expanded", show ? "true" : "false");
   });
@@ -1840,9 +2203,11 @@ function normalizeStudioSettings(value, fallback = getSettings()) {
   return {
     version: STUDIO_SETTINGS_VERSION,
     llm_provider: text("llm_provider") === "ollama" ? "ollama" : "koboldcpp",
+    llm_profile: requiredText("llm_profile"),
     kobold_url: text("kobold_url"),
     ollama_url: text("ollama_url"),
     ollama_model: text("ollama_model"),
+    keep_models_loaded: checked("keep_models_loaded"),
     model_profile: requiredText("model_profile"),
     style_preset: requiredText("style_preset"),
     framing_preset: requiredText("framing_preset"),
@@ -1881,9 +2246,11 @@ function newChatStudioSettings(value = getSettings()) {
     // generation shaping from a clean slate. Thinking and embellishment are
     // the only generation controls intentionally carried into a new chat.
     llm_provider: previous.llm_provider,
+    llm_profile: previous.llm_profile,
     kobold_url: previous.kobold_url,
     ollama_url: previous.ollama_url,
     ollama_model: previous.ollama_model,
+    keep_models_loaded: previous.keep_models_loaded,
     thinking_mode: previous.thinking_mode,
     embellishment_level: previous.embellishment_level,
     use_llm_amplification: previous.use_llm_amplification,
@@ -2567,9 +2934,11 @@ function captureStudioSettings(chat = activeChat()) {
   };
   return normalizeStudioSettings({
     llm_provider: value("llm_provider", "promptstudio-llm-provider"),
+    llm_profile: value("llm_profile", "promptstudio-llm-profile"),
     kobold_url: value("kobold_url", "promptstudio-kobold-url"),
     ollama_url: value("ollama_url", "promptstudio-ollama-url"),
     ollama_model: value("ollama_model", "promptstudio-ollama-model"),
+    keep_models_loaded: checked("keep_models_loaded", "promptstudio-keep-models-loaded"),
     model_profile: value("model_profile", "promptstudio-profile"),
     style_preset: value("style_preset", "promptstudio-style"),
     framing_preset: value("framing_preset", "promptstudio-framing"),
@@ -2628,6 +2997,7 @@ function applyStudioSettings(chat) {
     const control = state.panel.querySelector(`#${id}`);
     if (control) control.checked = Boolean(value);
   };
+  renderLlmProfileOptions(settings.llm_profile);
   [
     ["promptstudio-llm-provider", settings.llm_provider],
     ["promptstudio-kobold-url", settings.kobold_url],
@@ -2664,6 +3034,7 @@ function applyStudioSettings(chat) {
     ["promptstudio-auto-generate", settings.auto_generate],
     ["promptstudio-auto-advance-source", settings.auto_advance_source],
     ["promptstudio-use-latest-image-context", settings.use_latest_image_context],
+    ["promptstudio-keep-models-loaded", settings.keep_models_loaded],
   ].forEach(([id, setting]) => setChecked(id, setting));
   const action = state.panel.querySelector(
     `input[name="promptstudio-generation-action"][value="${settings.generation_action}"]`,
@@ -2673,6 +3044,7 @@ function applyStudioSettings(chat) {
   if (outputLength) outputLength.dataset.custom = String(settings.output_length_custom);
   applyImageScale(settings.image_scale);
   syncOutputLengthControl({ storedSettings: settings });
+  syncLlmProfileControls();
   syncLlmProviderControls();
   updateAmplificationMode({ announce: false, persist: false });
 }
@@ -3203,36 +3575,70 @@ function renderChatList() {
   }
 }
 
-function scrollHistoryToEnd({ instant = false } = {}) {
-  const history = state.panel?.querySelector("#promptstudio-history");
+function scrollElementToEnd(history, { instant = false, revisionKey = "historyScrollRevision" } = {}) {
   if (!history) return;
-  const revision = ++state.historyScrollRevision;
-  const scroll = () => {
-    if (revision !== state.historyScrollRevision || !history.isConnected) return;
+  const revision = ++state[revisionKey];
+  const scroll = ({ onlyIfNearEnd = false } = {}) => {
+    if (revision !== state[revisionKey] || !history.isConnected) return;
+    if (onlyIfNearEnd && !historyShouldStickToEnd(history)) return;
+    setHistoryShouldStickToEnd(history, true);
     if (instant) history.classList.add("promptstudio-instant-scroll");
     history.scrollTop = history.scrollHeight;
     if (instant) history.classList.remove("promptstudio-instant-scroll");
   };
   scroll();
   const view = history.ownerDocument.defaultView;
-  view?.requestAnimationFrame(() => view.requestAnimationFrame(scroll));
+  view?.requestAnimationFrame(() => view.requestAnimationFrame(() => scroll({ onlyIfNearEnd: true })));
   for (const image of history.querySelectorAll("img")) {
     if (!image.complete) {
       image.addEventListener("load", () => {
-        if (image.isConnected) scroll();
+        if (image.isConnected) scroll({ onlyIfNearEnd: true });
       }, { once: true });
     }
   }
 }
 
-function historyIsNearEnd(history, threshold = 32) {
+function scrollHistoryToEnd({ instant = false } = {}) {
+  scrollElementToEnd(state.panel?.querySelector("#promptstudio-history"), { instant });
+}
+
+function historyIsNearEnd(history, threshold = CHAT_SCROLL_STICK_THRESHOLD) {
   return history.scrollHeight - history.clientHeight - history.scrollTop <= threshold;
 }
 
-function keepHistoryViewportStable(history, wasNearEnd, previousScrollTop) {
-  state.historyScrollRevision += 1;
+function historyShouldStickToEnd(history) {
+  if (history?.id === "promptstudio-history") return state.historyWasNearEnd;
+  if (history?.id === "promptstudio-consult-history") return state.consultHistoryWasNearEnd;
+  return history ? historyIsNearEnd(history) : false;
+}
+
+function setHistoryShouldStickToEnd(history, value) {
+  if (history?.id === "promptstudio-history") state.historyWasNearEnd = Boolean(value);
+  if (history?.id === "promptstudio-consult-history") state.consultHistoryWasNearEnd = Boolean(value);
+}
+
+function placeHistoryAtEnd(history, { revisionKey = "historyScrollRevision" } = {}) {
+  state[revisionKey] += 1;
+  setHistoryShouldStickToEnd(history, true);
   history.classList.add("promptstudio-instant-scroll");
-  history.scrollTop = wasNearEnd ? history.scrollHeight : previousScrollTop;
+  history.scrollTop = history.scrollHeight;
+  history.classList.remove("promptstudio-instant-scroll");
+}
+
+function keepHistoryViewportStable(
+  history,
+  wasNearEnd,
+  previousScrollTop,
+  { revisionKey = "historyScrollRevision" } = {},
+) {
+  if (wasNearEnd) {
+    scrollElementToEnd(history, { instant: true, revisionKey });
+    return;
+  }
+  setHistoryShouldStickToEnd(history, false);
+  state[revisionKey] += 1;
+  history.classList.add("promptstudio-instant-scroll");
+  history.scrollTop = previousScrollTop;
   history.classList.remove("promptstudio-instant-scroll");
 }
 
@@ -3273,14 +3679,17 @@ function refreshEmptyImageDropZone() {
   history.appendChild(zone);
 }
 
-function renderChatHistory() {
+function renderChatHistory({ forceEnd = false } = {}) {
   const history = state.panel?.querySelector("#promptstudio-history");
   if (!history) return;
+  const wasNearEnd = forceEnd || historyShouldStickToEnd(history);
+  const previousScrollTop = history.scrollTop;
   history.replaceChildren();
   for (const message of activeChat()?.messages || []) renderMessage(message, { scroll: false });
   refreshEmptyImageDropZone();
   renderStudioDiscussionContext();
-  scrollHistoryToEnd({ instant: true });
+  if (forceEnd) placeHistoryAtEnd(history);
+  else keepHistoryViewportStable(history, wasNearEnd, previousScrollTop);
   updateComposeMode();
 }
 
@@ -3447,11 +3856,13 @@ function activateChat(chatId) {
   state.activeChatId = chat.id;
   state.consultSelectedImages.clear();
   state.consultUploadedImages = [];
+  state.historyWasNearEnd = true;
+  state.consultHistoryWasNearEnd = true;
   if (switchingChats) showMainPastedImageForChat(chat.id);
   restoreChatState(chat);
   refreshWorkflowControls();
-  renderChatHistory();
-  renderConsultHistory();
+  renderChatHistory({ forceEnd: true });
+  renderConsultHistory({ forceEnd: true });
   renderChatList();
   refreshSecondaryInstructionsControl();
   if (!selectedWorkflowProfile(selectedAction())) {
@@ -4503,9 +4914,12 @@ function renderImageGallery(message, images, generationData = null) {
     const image = document.createElement("img");
     image.src = url;
     image.alt = item.filename || "Generated image";
+    image.loading = "lazy";
+    image.decoding = "async";
     if (reference.width && reference.height) {
       image.width = reference.width;
       image.height = reference.height;
+      preview.style.aspectRatio = `${reference.width} / ${reference.height}`;
     }
     preview.title = `Preview ${image.alt}`;
     preview.setAttribute("aria-label", preview.title);
@@ -4620,6 +5034,30 @@ function refreshVideoHandoffActions() {
   }
 }
 
+function settleVideoHandoffChoice(choice = null) {
+  const dialog = state.panel?.querySelector("#promptstudio-video-handoff-dialog");
+  if (!dialog || dialog.hidden) return;
+  dialog.hidden = true;
+  const resolve = dialog._resolveChoice;
+  const trigger = dialog._choiceTrigger;
+  dialog._resolveChoice = null;
+  dialog._choiceTrigger = null;
+  resolve?.(choice);
+  dialog.ownerDocument.defaultView?.setTimeout(() => trigger?.focus({ preventScroll: true }));
+}
+
+function chooseVideoHandoffTarget(target, trigger) {
+  if (target?.projectEmpty !== false) return Promise.resolve("current");
+  const dialog = state.panel?.querySelector("#promptstudio-video-handoff-dialog");
+  if (!dialog) return Promise.resolve("current");
+  settleVideoHandoffChoice();
+  dialog.querySelector("#promptstudio-video-handoff-project-name").textContent = target.projectName || "Untitled video";
+  dialog.hidden = false;
+  dialog._choiceTrigger = trigger;
+  dialog.querySelector("#promptstudio-video-handoff-current").focus({ preventScroll: true });
+  return new Promise(resolve => { dialog._resolveChoice = resolve; });
+}
+
 async function handoffImageToVideoStudio(reference, button) {
   const availability = videoHandoffAvailability();
   if (!availability.available) {
@@ -4629,15 +5067,18 @@ async function handoffImageToVideoStudio(reference, button) {
   const target = availability.target;
   const image = normalizeImageReference(reference);
   if (!image) return;
-  const payload = {
-    filename: image.filename,
-    width: image.width || 0,
-    height: image.height || 0,
-    url: imageReferenceUrl(image),
-    targetProjectId: target.activeProjectId,
-  };
   button.disabled = true;
   try {
+    const targetMode = await chooseVideoHandoffTarget(target, button);
+    if (!targetMode) return;
+    const payload = {
+      filename: image.filename,
+      width: image.width || 0,
+      height: image.height || 0,
+      url: imageReferenceUrl(image),
+      targetProjectId: target.activeProjectId,
+      targetMode,
+    };
     let result;
     if (target.direct) {
       result = await target.host.handoffImage(payload);
@@ -5013,6 +5454,7 @@ function renderStudioProposalCard(message, data) {
 function renderMessage(data, { scroll = true } = {}) {
   const history = state.panel?.querySelector("#promptstudio-history");
   if (!history) return null;
+  const wasNearEnd = historyShouldStickToEnd(history);
   const message = document.createElement("div");
   message.className = `promptstudio-message promptstudio-${data.role}`;
   if (data.studioMessageKind === "discussion") message.classList.add("promptstudio-studio-discussion-message");
@@ -5050,7 +5492,7 @@ function renderMessage(data, { scroll = true } = {}) {
   renderStudioProposalCard(message, data);
 
   history.appendChild(message);
-  if (scroll) history.scrollTop = history.scrollHeight;
+  if (scroll && wasNearEnd) scrollHistoryToEnd({ instant: true });
   return message;
 }
 
@@ -5205,7 +5647,7 @@ async function appendGenerationImages(promptId, images) {
   const element = studioGenerationElement(record);
   if (element) {
     const history = element.closest("#promptstudio-history");
-    const wasNearEnd = history ? historyIsNearEnd(history) : false;
+    const wasNearEnd = history ? historyShouldStickToEnd(history) : false;
     const previousScrollTop = history?.scrollTop || 0;
     element.querySelector(".promptstudio-image-grid")?.remove();
     renderImageGallery(element, stored.images, stored);
@@ -5323,10 +5765,20 @@ function syncCanonicalEditor(prompt, { userEdit = false } = {}) {
   chat.finalPrompt = prompt;
   chat.currentPrompt = prompt;
   chat.initialized = Boolean(prompt.trim());
-  if (userEdit) chat.pendingGeneration = null;
+  if (userEdit) {
+    chat.mainPromptDirty = false;
+    chat.controlsFingerprint = controlsFingerprint();
+    chat.pendingGeneration = null;
+  }
   chat.updatedAt = Date.now();
   saveChats();
   updateComposeMode();
+  if (!userEdit) return;
+  if (!prompt.trim()) {
+    setStatus("The final prompt is empty.", "warning");
+  } else {
+    setStatus(`Final prompt changed. ComfyUI will generate directly without ${llmProviderName()}.`, "ready");
+  }
 }
 
 function commitPromptEditorVersion() {
@@ -5529,16 +5981,16 @@ function collectRevisionPayload(
     kobold_url: value("promptstudio-kobold-url"),
     ollama_url: value("promptstudio-ollama-url"),
     ollama_model: value("promptstudio-ollama-model"),
+    keep_models_loaded: Boolean(state.panel.querySelector("#promptstudio-keep-models-loaded")?.checked),
+    ...llmProfileGenerationSettings(),
     model_profile: value("promptstudio-profile"),
     style_preset: value("promptstudio-style"),
     framing_preset: value("promptstudio-framing"),
     style_modifier: value("promptstudio-style-modifier"),
     framing_modifier: value("promptstudio-framing-modifier"),
     additional_instructions: value("promptstudio-additional-instructions"),
-    thinking_mode: value("promptstudio-thinking"),
     embellishment_level: value("promptstudio-embellishment"),
     target_output_length: Number(value("promptstudio-output-length") || 35),
-    temperature: Number(value("promptstudio-temperature") || 0.7),
   };
   const storedContextImage = storedImageReference(contextImage);
   if (storedContextImage) payload.context_image = storedContextImage;
@@ -5771,7 +6223,7 @@ function updateStudioGenerationText(promptId, text) {
   renderChatList();
   const element = studioGenerationElement(record);
   const history = element?.closest("#promptstudio-history");
-  const wasNearEnd = history ? historyIsNearEnd(history) : false;
+  const wasNearEnd = history ? historyShouldStickToEnd(history) : false;
   const previousScrollTop = history?.scrollTop || 0;
   const body = element?.querySelector(".promptstudio-message-text");
   if (record.message.text) {
@@ -5814,7 +6266,7 @@ function setStudioGenerationState(promptId, generationState) {
   const element = studioGenerationElement(record);
   if (element) {
     const history = element.closest("#promptstudio-history");
-    const wasNearEnd = history ? historyIsNearEnd(history) : false;
+    const wasNearEnd = history ? historyShouldStickToEnd(history) : false;
     const previousScrollTop = history?.scrollTop || 0;
     renderGenerationProgress(element, record.message);
     if (history) keepHistoryViewportStable(history, wasNearEnd, previousScrollTop);
@@ -6697,9 +7149,10 @@ async function queueGeneration({
   };
 
   let queued;
+  let llmHandoffToken = "";
   state.queueing = true;
   try {
-    await unloadOllamaBeforeGeneration();
+    llmHandoffToken = await releaseLlmBeforeGeneration();
     if (operationCancelled()) return false;
     if (operationMessage) updateStudioOperation(operationMessage.id, {
       operationPhase: "queueing",
@@ -6707,6 +7160,7 @@ async function queueGeneration({
     });
     queued = await api.queuePrompt(-1, context.snapshot);
   } finally {
+    await completeLlmHandoff(llmHandoffToken);
     state.queueing = false;
   }
   const promptId = queued?.prompt_id;
@@ -6992,17 +7446,37 @@ async function requestPromptRevision(payload, actionLabel, warningSink = null, s
   return prompt;
 }
 
-async function unloadOllamaBeforeGeneration() {
+async function releaseLlmBeforeGeneration() {
   const connection = llmConnectionPayload();
-  if (connection.llm_provider !== "ollama" || !connection.ollama_model) return;
-  const response = await api.fetchApi(OLLAMA_UNLOAD_ENDPOINT, {
+  if (connection.keep_models_loaded) {
+    updateLlmHandoffStatus();
+    return "";
+  }
+  const response = await api.fetchApi(LLM_RELEASE_ENDPOINT, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(connection),
   });
   const data = await response.json().catch(() => ({}));
   if (!response.ok) {
-    throw new Error(data.error || `Ollama could not release the model (${response.status}).`);
+    const message = data.error || `The local LLM could not release its model (${response.status}).`;
+    updateLlmHandoffStatus(message);
+    throw new Error(message);
+  }
+  updateLlmHandoffStatus();
+  return String(data.handoff_token || "");
+}
+
+async function completeLlmHandoff(handoffToken) {
+  if (!handoffToken) return;
+  try {
+    await api.fetchApi(LLM_HANDOFF_COMPLETE_ENDPOINT, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ handoff_token: handoffToken }),
+    });
+  } catch (error) {
+    console.warn("Prompt Studio could not acknowledge the ComfyUI queue handoff.", error);
   }
 }
 
@@ -7013,6 +7487,7 @@ function llmConnectionPayload() {
     kobold_url: value("promptstudio-kobold-url"),
     ollama_url: value("promptstudio-ollama-url"),
     ollama_model: value("promptstudio-ollama-model"),
+    keep_models_loaded: Boolean(state.panel.querySelector("#promptstudio-keep-models-loaded")?.checked),
   };
 }
 
@@ -7022,6 +7497,14 @@ function comfyUiIsProcessing() {
     || state.queueing
     || state.generationJobs.size > 0
     || pendingStudioGenerationCount() > 0;
+}
+
+function updateLlmHandoffStatus(message = "") {
+  const provider = selectedLlmProvider();
+  const current = state.llmStatusSnapshot?.provider === provider
+    ? state.llmStatusSnapshot
+    : { provider };
+  renderLlmStatus({ ...current, provider, handoff_error: message || undefined });
 }
 
 function renderSystemStatusSummary() {
@@ -7035,6 +7518,7 @@ function renderSystemStatusSummary() {
   const llm = state.llmStatusSnapshot;
   const provider = llm?.provider === "ollama" ? "ollama" : selectedLlmProvider();
   const llmUnhealthy = llm?.reachable === false
+    || Boolean(llm?.handoff_error)
     || (provider === "ollama" && llm?.reachable === true && (!llm.model || llm.model_installed === false));
   const checking = !llm || llm.checking === true;
   const comfyProcessing = comfyUiIsProcessing();
@@ -7102,7 +7586,7 @@ function renderLlmStatus(status = {}) {
   control.dataset.provider = provider;
   heading.textContent = providerName;
   const characters = Number(status.generated_characters);
-  detail.textContent = status.message || (busy
+  detail.textContent = status.handoff_error || status.message || (busy
     ? `Generation active${Number.isFinite(characters) && characters > 0 ? ` · ${characters.toLocaleString()} characters` : ""}`
     : (reachable ? "Ready for local requests." : `${providerName} could not be reached.`));
   const modelName = typeof status.model === "string" ? status.model.trim() : "";
@@ -7528,10 +8012,10 @@ function consultCurrentGenerationSettings() {
     local_llm: {
       provider: llmProviderName(),
       model: selectedLlmProvider() === "ollama" ? value("promptstudio-ollama-model") : "KoboldCpp active model",
-      thinking: value("promptstudio-thinking"),
+      profile: selectedLlmProfile().name,
+      ...llmProfileGenerationSettings(),
       target_output_length: Number(value("promptstudio-output-length") || 35),
       target_output_unit: outputLengthSpec().unit === "tags" ? "tags" : "words",
-      temperature: Number(value("promptstudio-temperature") || 0.7),
     },
   };
 }
@@ -8906,18 +9390,7 @@ function consultRequestMessages(messages) {
 }
 
 function collectConsultGenerationSettings() {
-  const value = (id) => state.panel?.querySelector(`#${id}`)?.value;
-  return {
-    thinking_mode: value("promptstudio-consult-thinking"),
-    max_response_tokens: Number(value("promptstudio-consult-max-tokens") || 800),
-    temperature: Number(value("promptstudio-consult-temperature") || 0.7),
-    top_p: Number(value("promptstudio-consult-top-p") || 0.9),
-    top_k: Number(value("promptstudio-consult-top-k") || 100),
-    min_p: Number(value("promptstudio-consult-min-p") || 0),
-    rep_pen: Number(value("promptstudio-consult-rep-pen") || 1.05),
-    rep_pen_range: Number(value("promptstudio-consult-rep-pen-range") || 360),
-    sampler_seed: Number(value("promptstudio-consult-seed") || -1),
-  };
+  return llmProfileGenerationSettings();
 }
 
 function selectedConsultVariant(message) {
@@ -9406,9 +9879,17 @@ function renderConsultAgentCard(history, agent) {
   history.appendChild(card);
 }
 
-function renderConsultHistory() {
+function renderConsultHistory({ forceEnd = false } = {}) {
   const history = state.panel?.querySelector("#promptstudio-consult-history");
   if (!history) return;
+  const wasNearEnd = forceEnd || historyShouldStickToEnd(history);
+  const previousScrollTop = history.scrollTop;
+  const settleViewport = () => {
+    if (forceEnd) placeHistoryAtEnd(history, { revisionKey: "consultHistoryScrollRevision" });
+    else keepHistoryViewportStable(history, wasNearEnd, previousScrollTop, {
+      revisionKey: "consultHistoryScrollRevision",
+    });
+  };
   history.replaceChildren();
   const chat = activeChat();
   const messages = chat?.consultMessages || [];
@@ -9421,6 +9902,7 @@ function renderConsultHistory() {
     empty.className = "promptstudio-consult-empty";
     empty.innerHTML = "<strong>Talk with your local model</strong><span>Ask a general question, or attach prompts, settings, generated results, and reference images for comparison.</span>";
     history.appendChild(empty);
+    settleViewport();
     return;
   }
   for (const [messageIndex, message] of messages.entries()) {
@@ -9440,6 +9922,12 @@ function renderConsultHistory() {
         const image = document.createElement("img");
         image.src = imageReferenceUrl(reference);
         image.alt = attached[index]?.label || `Image ${index + 1}`;
+        image.loading = "lazy";
+        image.decoding = "async";
+        if (reference.width && reference.height) {
+          image.width = reference.width;
+          image.height = reference.height;
+        }
         const caption = document.createElement("figcaption");
         caption.textContent = [attached[index]?.label, attached[index]?.purpose].filter(Boolean).join(" · ");
         figure.append(image, caption);
@@ -9522,7 +10010,7 @@ function renderConsultHistory() {
     pendingBubble.append(pendingText, cancel);
     history.appendChild(pendingBubble);
   }
-  history.scrollTop = history.scrollHeight;
+  settleViewport();
 }
 
 function selectConsultResponse(messageId, variantIndex) {
@@ -10248,7 +10736,6 @@ function studioDiscussionRequestMessages(chat, discussion) {
 async function requestStudioDiscussion(chat, discussion) {
   const messages = studioDiscussionRequestMessages(chat, discussion);
   const connection = llmConnectionPayload();
-  const settings = collectRevisionPayload("Discuss the current image", "render", "", "");
   const hasImages = messages.some((message) => Array.isArray(message.images) && message.images.length);
   if (hasImages) await requireVisionCapability(connection);
   const response = await api.fetchApi(STUDIO_DISCUSS_ENDPOINT, {
@@ -10256,9 +10743,8 @@ async function requestStudioDiscussion(chat, discussion) {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       ...connection,
-      thinking_mode: settings.thinking_mode,
+      ...llmProfileGenerationSettings(),
       max_response_tokens: 1200,
-      temperature: settings.temperature,
       messages,
     }),
   });
@@ -11173,6 +11659,7 @@ async function interrupt() {
 }
 
 function buildPanel() {
+  state.llmProfiles = loadLlmProfiles();
   const settings = getSettings();
   const consultSettings = getConsultSettings();
   const panel = document.createElement("section");
@@ -11328,7 +11815,7 @@ function buildPanel() {
             <label>Style<select id="promptstudio-style"></select></label>
             <label>Framing<select id="promptstudio-framing"></select></label>
             <label>Embellishment<select id="promptstudio-embellishment"></select></label>
-            <label id="promptstudio-thinking-control" title="Controls local-LLM reasoning effort.">Thinking<select id="promptstudio-thinking"></select></label>
+            <label id="promptstudio-thinking-control">Thinking<select id="promptstudio-thinking"></select></label>
             <label class="promptstudio-control-wide" title="Additional guidance applied together with the selected style preset. Select None for modifier-only behavior.">Style modifier<textarea id="promptstudio-style-modifier" rows="2" placeholder="Further style guidance added to the selected preset"></textarea></label>
             <label class="promptstudio-control-wide" title="Additional guidance applied together with the selected framing preset. Select None for modifier-only behavior.">Framing modifier<textarea id="promptstudio-framing-modifier" rows="2" placeholder="Further framing guidance added to the selected preset"></textarea></label>
             <label id="promptstudio-output-length-control" class="promptstudio-control-wide">Target length
@@ -11339,7 +11826,7 @@ function buildPanel() {
               </span>
               <small id="promptstudio-output-length-help">Default for Clean</small>
             </label>
-            <label>Temperature<input id="promptstudio-temperature" type="number" min="0" max="5" step="0.05" /></label>
+            <input id="promptstudio-temperature" type="hidden" />
           </div>
         </details>
         <details id="promptstudio-lora-details" class="promptstudio-lora-details" data-promptstudio-sidebar-group="lora" open hidden>
@@ -11389,7 +11876,7 @@ function buildPanel() {
       <div class="promptstudio-studio-settings-layout">
         <section class="promptstudio-studio-settings-card" aria-labelledby="promptstudio-general-settings-title">
           <header class="promptstudio-studio-settings-card-header">
-            <div><strong id="promptstudio-general-settings-title">General</strong><span>Connection, chat display and editing behavior</span></div>
+            <div><strong id="promptstudio-general-settings-title">General</strong><span>Connection, LLM profiles, chat display and editing behavior</span></div>
           </header>
           <div class="promptstudio-studio-settings-list">
             <label class="promptstudio-studio-setting promptstudio-endpoint-control">
@@ -11399,8 +11886,20 @@ function buildPanel() {
                 <option value="ollama" ${settings.llm_provider === "ollama" ? "selected" : ""}>Ollama</option>
               </select>
             </label>
+            <label class="promptstudio-studio-setting promptstudio-studio-setting-toggle">
+              <span class="promptstudio-studio-setting-copy"><strong>Keep models loaded</strong><small>Keep ComfyUI and LLM models resident instead of handing GPU memory between them. Enable only when they use separate GPUs; leave off for a shared or single GPU.</small></span>
+              <input id="promptstudio-keep-models-loaded" type="checkbox" role="switch" ${settings.keep_models_loaded ? "checked" : ""} />
+            </label>
+            <div class="promptstudio-studio-setting promptstudio-llm-profile-control">
+              <span class="promptstudio-studio-setting-copy"><strong>LLM Profiles</strong><small>Model-specific thinking, sampler and request settings.</small></span>
+              <span class="promptstudio-llm-profile-field">
+                <select id="promptstudio-llm-profile" aria-label="LLM profile"></select>
+                <button id="promptstudio-add-llm-profile" type="button">Add</button>
+                <button id="promptstudio-edit-llm-profile" type="button">Edit</button>
+              </span>
+            </div>
             <label class="promptstudio-studio-setting promptstudio-endpoint-control" data-llm-provider="koboldcpp">
-              <span class="promptstudio-studio-setting-copy"><strong>KoboldCpp endpoint</strong><small>Base URL for the local generation server.</small></span>
+              <span class="promptstudio-studio-setting-copy"><strong>KoboldCpp endpoint</strong><small>Base URL for the local generation server. Shared-GPU handoff requires KoboldCpp Admin Mode and an Admin Directory.</small></span>
               <input id="promptstudio-kobold-url" type="url" inputmode="url" spellcheck="false" aria-label="KoboldCpp endpoint" />
             </label>
             <label class="promptstudio-studio-setting promptstudio-endpoint-control" data-llm-provider="ollama">
@@ -11510,6 +12009,59 @@ function buildPanel() {
           </form>
         </div>
       </section>
+      <div id="promptstudio-llm-profile-editor" class="promptstudio-llm-profile-editor" role="dialog" aria-modal="true" aria-labelledby="promptstudio-llm-profile-editor-title" hidden>
+        <form class="promptstudio-llm-profile-editor-card">
+          <header>
+            <div><strong id="promptstudio-llm-profile-editor-title">Edit LLM profile</strong><span>These settings are used for prompt rewriting, local model chat, and Prompt Agent.</span></div>
+            <button id="promptstudio-llm-profile-editor-close" type="button" aria-label="Close editor">×</button>
+          </header>
+          <div class="promptstudio-llm-profile-editor-fields">
+            <p class="promptstudio-llm-profile-warning"><strong>Advanced settings</strong><span>Only change these parameters if you understand how they affect your model. Incorrect sampler, token, or timeout values can reduce output quality or cause requests to fail.</span></p>
+            <label class="promptstudio-llm-profile-name"><span>Profile name</span><input name="name" type="text" maxlength="80" autocomplete="off" required /></label>
+            <section class="promptstudio-llm-profile-parameter-group">
+              <div class="promptstudio-llm-profile-parameter-heading"><strong>Request settings</strong><span>Shared by the thinking and non-thinking samplers.</span></div>
+              <div class="promptstudio-llm-profile-parameter-grid">
+                <label title="Maximum final-answer tokens. Use 0 for the request-specific automatic limit."><span>Response tokens</span><input name="max_response_tokens" type="number" min="0" max="8192" step="1" required /></label>
+                <label title="Use -1 to let the provider choose a random seed."><span>Sampler seed</span><input name="sampler_seed" type="number" min="-1" max="999999" step="1" required /></label>
+                <label><span>Request timeout (seconds)</span><input name="request_timeout" type="number" min="5" max="600" step="1" required /></label>
+              </div>
+            </section>
+            <section class="promptstudio-llm-profile-parameter-group">
+              <div class="promptstudio-llm-profile-parameter-heading"><strong>Non-thinking sampler</strong><span>Used when Thinking is Disabled.</span></div>
+              <div class="promptstudio-llm-profile-parameter-grid">
+                <label><span>Temperature</span><input name="temperature" type="number" min="0" max="5" step="0.05" required /></label>
+                <label><span>Top P</span><input name="top_p" type="number" min="0" max="1" step="0.01" required /></label>
+                <label><span>Top K</span><input name="top_k" type="number" min="0" max="200" step="1" required /></label>
+                <label><span>Min P</span><input name="min_p" type="number" min="0" max="1" step="0.01" required /></label>
+                <label><span>Presence penalty</span><input name="presence_penalty" type="number" min="-2" max="2" step="0.05" required /></label>
+                <label><span>Repeat penalty</span><input name="rep_pen" type="number" min="0.5" max="3" step="0.01" required /></label>
+                <label><span>Repeat range</span><input name="rep_pen_range" type="number" min="0" max="4096" step="1" required /></label>
+              </div>
+            </section>
+            <section class="promptstudio-llm-profile-parameter-group">
+              <div class="promptstudio-llm-profile-parameter-heading"><strong>Thinking sampler</strong><span>Used for Minimal, Low, Medium, and High thinking.</span></div>
+              <div class="promptstudio-llm-profile-parameter-grid">
+                <label><span>Temperature</span><input name="thinking_temperature" type="number" min="0" max="5" step="0.05" required /></label>
+                <label><span>Top P</span><input name="thinking_top_p" type="number" min="0" max="1" step="0.01" required /></label>
+                <label><span>Top K</span><input name="thinking_top_k" type="number" min="0" max="200" step="1" required /></label>
+                <label><span>Min P</span><input name="thinking_min_p" type="number" min="0" max="1" step="0.01" required /></label>
+                <label><span>Presence penalty</span><input name="thinking_presence_penalty" type="number" min="-2" max="2" step="0.05" required /></label>
+                <label><span>Repeat penalty</span><input name="thinking_rep_pen" type="number" min="0.5" max="3" step="0.01" required /></label>
+                <label><span>Repeat range</span><input name="thinking_rep_pen_range" type="number" min="0" max="4096" step="1" required /></label>
+              </div>
+            </section>
+            <label class="promptstudio-llm-profile-stop"><span>Custom stop sequences <small>One per line; leave empty for provider defaults.</small></span><textarea name="stop_sequence" rows="3" maxlength="4096"></textarea></label>
+            <p id="promptstudio-llm-profile-editor-error" class="promptstudio-llm-profile-editor-error" role="alert"></p>
+          </div>
+          <footer>
+            <button id="promptstudio-delete-llm-profile" class="promptstudio-danger" type="button">Delete profile</button>
+            <span></span>
+            <button id="promptstudio-restore-llm-profile" type="button">Restore defaults</button>
+            <button id="promptstudio-llm-profile-editor-cancel" type="button">Cancel</button>
+            <button type="submit">Save</button>
+          </footer>
+        </form>
+      </div>
     </div>
     <section id="promptstudio-consult" class="promptstudio-consult" aria-labelledby="promptstudio-consult-title" hidden>
       <header class="promptstudio-consult-header">
@@ -11576,40 +12128,23 @@ function buildPanel() {
       </section>
       <section id="promptstudio-consult-generation-settings" class="promptstudio-consult-generation-settings" hidden>
         <div class="promptstudio-consult-section-heading">
-          <strong>Chat generation settings</strong>
-          <span>Used only for this assistant conversation</span>
+          <strong>Generation settings</strong>
+          <span>Shared by model chat, prompt rewriting, and Prompt Agent</span>
         </div>
-        <div class="promptstudio-consult-generation-grid">
-          <label title="Controls the local model's private reasoning effort.">Thinking
-            <select id="promptstudio-consult-thinking">
-              ${["Disabled", "Minimal", "Low", "Medium", "High"].map((value) => `<option value="${value}" ${consultSettings.thinking_mode === value ? "selected" : ""}>${value}</option>`).join("")}
-            </select>
-          </label>
-          <label title="Maximum final-answer tokens returned by the chat model.">Response tokens
-            <input id="promptstudio-consult-max-tokens" type="number" min="1" max="8192" step="1" value="${Math.max(1, Math.min(8192, Number(consultSettings.max_response_tokens) || 800))}" />
-          </label>
-          <label>Temperature
-            <input id="promptstudio-consult-temperature" type="number" min="0" max="5" step="0.05" value="${consultSettings.temperature}" />
-          </label>
-          <label>Top P
-            <input id="promptstudio-consult-top-p" type="number" min="0" max="1" step="0.01" value="${consultSettings.top_p}" />
-          </label>
-          <label>Top K
-            <input id="promptstudio-consult-top-k" type="number" min="0" max="200" step="1" value="${consultSettings.top_k}" />
-          </label>
-          <label>Min P
-            <input id="promptstudio-consult-min-p" type="number" min="0" max="1" step="0.01" value="${consultSettings.min_p}" />
-          </label>
-          <label>Repeat penalty
-            <input id="promptstudio-consult-rep-pen" type="number" min="0.5" max="3" step="0.01" value="${consultSettings.rep_pen}" />
-          </label>
-          <label>Repeat range
-            <input id="promptstudio-consult-rep-pen-range" type="number" min="0" max="4096" step="1" value="${consultSettings.rep_pen_range}" />
-          </label>
-          <label title="-1 asks the provider to choose a random seed.">Seed
-            <input id="promptstudio-consult-seed" type="number" min="-1" max="999999" step="1" value="${consultSettings.sampler_seed}" />
-          </label>
+        <div class="promptstudio-consult-profile-card">
+          <span><strong id="promptstudio-consult-profile-name">Qwen3.5</strong><small id="promptstudio-consult-profile-summary">Temperature 0.7 · top p 0.9</small></span>
+          <button id="promptstudio-consult-edit-llm-profile" type="button">Edit profile</button>
         </div>
+        <select id="promptstudio-consult-thinking" aria-hidden="true" hidden><option value="${consultSettings.thinking_mode}">${consultSettings.thinking_mode}</option></select>
+        <input id="promptstudio-consult-max-tokens" type="hidden" value="${consultSettings.max_response_tokens}" />
+        <input id="promptstudio-consult-temperature" type="hidden" value="${consultSettings.temperature}" />
+        <input id="promptstudio-consult-top-p" type="hidden" value="${consultSettings.top_p}" />
+        <input id="promptstudio-consult-top-k" type="hidden" value="${consultSettings.top_k}" />
+        <input id="promptstudio-consult-min-p" type="hidden" value="${consultSettings.min_p}" />
+        <input id="promptstudio-consult-presence-penalty" type="hidden" value="${consultSettings.presence_penalty}" />
+        <input id="promptstudio-consult-rep-pen" type="hidden" value="${consultSettings.rep_pen}" />
+        <input id="promptstudio-consult-rep-pen-range" type="hidden" value="${consultSettings.rep_pen_range}" />
+        <input id="promptstudio-consult-seed" type="hidden" value="${consultSettings.sampler_seed}" />
       </section>
       <footer class="promptstudio-consult-compose">
         <div class="promptstudio-consult-compose-tools">
@@ -11644,6 +12179,17 @@ function buildPanel() {
         </div>
       </form>
     </div>
+    <div id="promptstudio-video-handoff-dialog" class="promptstudio-video-handoff-dialog" role="dialog" aria-modal="true" aria-labelledby="promptstudio-video-handoff-title" aria-describedby="promptstudio-video-handoff-message" hidden>
+      <div class="promptstudio-video-handoff-card">
+        <strong id="promptstudio-video-handoff-title">Add image to Video Studio</strong>
+        <p id="promptstudio-video-handoff-message">The current session "<span id="promptstudio-video-handoff-project-name"></span>" already contains work. Where should this image go?</p>
+        <div class="promptstudio-video-handoff-dialog-actions">
+          <button id="promptstudio-video-handoff-cancel" type="button">Cancel</button>
+          <button id="promptstudio-video-handoff-new" type="button">Brand new session</button>
+          <button id="promptstudio-video-handoff-current" class="promptstudio-primary" type="button">Current session</button>
+        </div>
+      </div>
+    </div>
     <div id="promptstudio-generation-failure-dialog" class="promptstudio-generation-failure-dialog" role="dialog" aria-modal="true" aria-labelledby="promptstudio-generation-failure-title" aria-describedby="promptstudio-generation-failure-message promptstudio-generation-failure-help" hidden>
       <div class="promptstudio-generation-failure-card">
         <strong id="promptstudio-generation-failure-title">Generation failed</strong>
@@ -11664,6 +12210,13 @@ function buildPanel() {
   panel.querySelector(".promptstudio-mobile-scrim")?.setAttribute("data-promptstudio-allow-disconnected", "true");
   installTypeAnywhereFocus(panel.ownerDocument);
   const history = panel.querySelector("#promptstudio-history");
+  const consultHistory = panel.querySelector("#promptstudio-consult-history");
+  history.addEventListener("scroll", () => {
+    state.historyWasNearEnd = historyIsNearEnd(history);
+  }, { passive: true });
+  consultHistory.addEventListener("scroll", () => {
+    state.consultHistoryWasNearEnd = historyIsNearEnd(consultHistory);
+  }, { passive: true });
   const compose = panel.querySelector(".promptstudio-compose");
   const mainDropTargets = [history, compose];
   const imageImport = panel.querySelector("#promptstudio-image-import");
@@ -11715,6 +12268,8 @@ function buildPanel() {
     imageImport.value = "";
   });
 
+  renderLlmProfileOptions(settings.llm_profile);
+  syncLlmProfileControls();
   panel.querySelector("#promptstudio-kobold-url").value = settings.kobold_url;
   panel.querySelector("#promptstudio-ollama-url").value = settings.ollama_url;
   if (settings.ollama_model) {
@@ -11749,6 +12304,36 @@ function buildPanel() {
   panel.querySelector("#promptstudio-close-inspector").addEventListener("click", closePanelDrawers);
   panel.querySelector(".promptstudio-mobile-scrim").addEventListener("click", closePanelDrawers);
   panel.querySelector("#promptstudio-toggle-studio-settings").addEventListener("click", () => toggleStudioSettings());
+  panel.querySelector("#promptstudio-llm-profile").addEventListener("change", (event) => {
+    renderLlmProfileOptions(event.target.value);
+    syncLlmProfileControls();
+    saveSettings();
+    markControlsChanged();
+  });
+  panel.querySelector("#promptstudio-add-llm-profile").addEventListener("click", (event) => {
+    openLlmProfileEditor(event.currentTarget, { create: true });
+  });
+  panel.querySelector("#promptstudio-edit-llm-profile").addEventListener("click", (event) => {
+    openLlmProfileEditor(event.currentTarget);
+  });
+  panel.querySelector("#promptstudio-consult-edit-llm-profile").addEventListener("click", (event) => {
+    toggleStudioSettings(true);
+    openLlmProfileEditor(event.currentTarget);
+  });
+  panel.querySelector("#promptstudio-llm-profile-editor form").addEventListener("submit", submitLlmProfileEditor);
+  panel.querySelector("#promptstudio-llm-profile-editor-close").addEventListener("click", () => closeLlmProfileEditor());
+  panel.querySelector("#promptstudio-llm-profile-editor-cancel").addEventListener("click", () => closeLlmProfileEditor());
+  panel.querySelector("#promptstudio-restore-llm-profile").addEventListener("click", restoreLlmProfileEditorDefaults);
+  panel.querySelector("#promptstudio-delete-llm-profile").addEventListener("click", deleteLlmProfile);
+  panel.querySelector("#promptstudio-llm-profile-editor").addEventListener("click", (event) => {
+    if (event.target === event.currentTarget) closeLlmProfileEditor();
+  });
+  panel.querySelector("#promptstudio-llm-profile-editor").addEventListener("keydown", (event) => {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      closeLlmProfileEditor();
+    }
+  });
   panel.querySelectorAll("[data-mutation-category]").forEach((button) => {
     button.addEventListener("click", () => openMutationManager(button.dataset.mutationCategory, button));
   });
@@ -11799,7 +12384,7 @@ function buildPanel() {
   panel.querySelectorAll(".promptstudio-consult-context-options input").forEach((control) => {
     control.addEventListener("change", updateConsultAttachmentSummary);
   });
-  panel.querySelectorAll(".promptstudio-consult-generation-settings input, .promptstudio-consult-generation-settings select")
+  [...panel.querySelectorAll(".promptstudio-consult-generation-settings input, .promptstudio-consult-generation-settings select")]
     .forEach((control) => control.addEventListener("change", saveConsultSettings));
   const consultUpload = panel.querySelector("#promptstudio-consult-upload");
   consultUpload.addEventListener("click", () => {
@@ -11871,6 +12456,15 @@ function buildPanel() {
     closeUpscaleDialog();
     queueUpscale(request.source, request.generationData, factor, request.workflowProfileId);
   });
+  panel.querySelector("#promptstudio-video-handoff-dialog").addEventListener("click", (event) => {
+    if (event.target === event.currentTarget) settleVideoHandoffChoice();
+  });
+  panel.querySelector("#promptstudio-video-handoff-dialog").addEventListener("keydown", (event) => {
+    if (event.key === "Escape") settleVideoHandoffChoice();
+  });
+  panel.querySelector("#promptstudio-video-handoff-cancel").addEventListener("click", () => settleVideoHandoffChoice());
+  panel.querySelector("#promptstudio-video-handoff-new").addEventListener("click", () => settleVideoHandoffChoice("new"));
+  panel.querySelector("#promptstudio-video-handoff-current").addEventListener("click", () => settleVideoHandoffChoice("current"));
   panel.querySelector("#promptstudio-generation-failure-dialog").addEventListener("click", (event) => {
     if (event.target === event.currentTarget) closeGenerationFailureDialog();
   });
@@ -11909,6 +12503,11 @@ function buildPanel() {
     markControlsChanged();
     updateComposeMode();
     if (!panel.querySelector("#promptstudio-consult").hidden) refreshConsultVisionCapability();
+  });
+  panel.querySelector("#promptstudio-keep-models-loaded").addEventListener("change", () => {
+    saveSettings();
+    updateLlmHandoffStatus();
+    refreshLlmStatus();
   });
   panel.querySelector("#promptstudio-refresh-ollama-models").addEventListener("click", () => loadOllamaModels({ announce: true }));
   panel.querySelector("#promptstudio-ollama-url").addEventListener("change", () => {
@@ -11962,6 +12561,10 @@ function buildPanel() {
   });
   panel.querySelector("#promptstudio-secondary-instructions").addEventListener("change", saveSettings);
   panel.querySelector("#promptstudio-additional-instructions").addEventListener("change", markControlsChanged);
+  panel.querySelector("#promptstudio-thinking").addEventListener("change", () => {
+    syncLlmProfileControls();
+    saveConsultSettings();
+  });
   panel.querySelector("#promptstudio-main-prompt").addEventListener("input", (event) => {
     syncMainPromptEditor(event.target.value, { userEdit: true });
   });
@@ -12238,6 +12841,8 @@ function togglePopout({ returnToEmbedded = false } = {}) {
 
 async function togglePanel(force) {
   const show = force ?? state.panel.hidden;
+  const history = state.panel.querySelector("#promptstudio-history");
+  if (!show && history) state.historyWasNearEnd = historyIsNearEnd(history);
   if (!show) {
     commitPromptEditorVersion();
     closeImageLightbox();
@@ -12257,7 +12862,7 @@ async function togglePanel(force) {
   } catch (error) {
     setStatus(error.message || String(error), "error");
   }
-  scrollHistoryToEnd({ instant: true });
+  if (history && state.historyWasNearEnd) scrollHistoryToEnd({ instant: true });
 }
 
 app.registerExtension({

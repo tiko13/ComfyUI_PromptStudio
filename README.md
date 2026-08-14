@@ -84,9 +84,35 @@ The sections below cover setup, everyday use, workflow contracts, nodes, presets
 
 Prompt Studio uses KoboldCpp at `http://localhost:5001` by default. Open Prompt Studio settings to select **KoboldCpp** or **Ollama** as the LLM provider. Ollama defaults to `http://localhost:11434`; select one of the locally installed models discovered from `/api/tags`. For safety, both providers accept loopback hosts only by default.
 
+**Settings → General → Keep models loaded** is off by default. In this shared-GPU mode, Prompt Studio keeps ComfyUI's models resident after image generation so reruns and already-queued work remain fast. Only when the next LLM operation begins does it wait for the ComfyUI queue to become idle, unload ComfyUI's models, and free its allocator cache. The LLM remains available across routing, rewriting, discussion, and consultation stages; immediately before Prompt Studio queues another ComfyUI workflow, it unloads the active LLM and hands the GPU back to ComfyUI. This transition is serialized so background LLM work cannot overlap ComfyUI inference on the shared device.
+
+Enable **Keep models loaded** only when ComfyUI and the LLM use separate GPUs. It disables both sides of the handoff and asks Ollama to keep its selected model resident indefinitely. Enabling it while both services use the same full GPU can cause an out-of-memory failure.
+
+Shared-GPU KoboldCpp operation requires KoboldCpp Admin Mode and an Admin Directory. Prompt Studio uses the admin API to switch to `unload_model`, then restores `initial_model` before the next LLM request. If KoboldCpp has an Admin Password, set it in ComfyUI's environment before startup:
+
+When a shared-GPU handoff fails, the system-status dot turns red and the provider detail shows the handoff error. The warning remains visible across status polling until that provider completes a handoff successfully; enabling **Keep models loaded** hides handoff-only warnings because no model switch is required.
+
+```powershell
+$env:PROMPT_STUDIO_KOBOLD_ADMIN_PASSWORD = "your-admin-password"
+```
+
+**Settings → General → LLM Profiles** stores model-specific thinking, response-token, sampler,
+stop-sequence, and request-timeout values. The shipped editable profiles are **Qwen3.5** and
+**Qwen 3.8 (27B)**; the latter stores Unsloth's separate recommended sampler values for thinking
+and non-thinking operation and switches between them from the Generation controls' Thinking selector. Profiles can
+be added, renamed, edited, restored to their shipped parameter defaults, or deleted. When no user
+profiles remain, Prompt Studio exposes an immutable **Default** profile with the shipped values so
+local-LLM features remain usable. The selected profile is shared by prompt rewriting, local model
+chat, image discussion, and Prompt Agent.
+
+For **Qwen 3.8 (27B)**, Disabled thinking uses temperature `0.7`, `top_p` `0.8`, `top_k` `20`,
+`min_p` `0`, presence penalty `1.5`, and repetition penalty `1.0`. Any enabled thinking level uses
+temperature `1.0`, `top_p` `0.95`, `top_k` `20`, `min_p` `0`, presence penalty `0`, and repetition
+penalty `1.0`. Both sampler groups remain editable in the profile dialog.
+
 Prompt rewriting uses KoboldCpp's OpenAI-compatible Chat Completions endpoint and the model's native GGUF chat template. Enable **Use Jinja** in KoboldCpp and restart its server after changing that setting. The backend checks this capability and stops with a clear error instead of silently using generic chat formatting. KoboldCpp 1.117.1 or newer is recommended and is the version used for integration testing.
 
-With Ollama selected, Prompt Studio uses Ollama's native, non-streaming `/api/chat` endpoint. Sampling controls are translated to Ollama options, and the Thinking control uses Ollama's separate `think` response channel. **Minimal** and **Low** both request Ollama's `low` thinking level. If a constrained model spends the initial routing budget on reasoning, Prompt Studio retries that decision once with Thinking disabled and displays a warning instead of failing the Studio turn. A non-structured response that reaches its limit but contains usable text is retained with an incomplete-result warning. Ollama stays loaded briefly across the routing and rewrite stages, then Prompt Studio sends an explicit unload request immediately before queueing ComfyUI so the same runner is not repeatedly restarted and diffusion can reclaim VRAM. The ComfyUI canvas nodes remain named KoboldCpp Prompt Slot/Amplify for workflow compatibility; in interactive Prompt Studio, they act as prompt handoff nodes and the provider selected in settings performs the rewrite.
+With Ollama selected, Prompt Studio uses Ollama's native, non-streaming `/api/chat` endpoint. Sampling controls are translated to Ollama options, and the Thinking control uses Ollama's separate `think` response channel. **Minimal** and **Low** both request Ollama's `low` thinking level. If a constrained model spends the initial routing budget on reasoning, Prompt Studio retries that decision once with Thinking disabled and displays a warning instead of failing the Studio turn. A non-structured response that reaches its limit but contains usable text is retained with an incomplete-result warning. In shared-GPU mode Ollama stays loaded briefly across related LLM stages and is explicitly unloaded at the LLM-to-ComfyUI transition. The ComfyUI canvas nodes remain named KoboldCpp Prompt Slot/Amplify for workflow compatibility; in interactive Prompt Studio, they act as prompt handoff nodes and the provider selected in settings performs the rewrite.
 
 > Want to use the chat UI without an LLM? Turn off **Use LLM amplification**. The composer becomes a direct-prompt editor, the main and final prompts stay identical, and **Generate** sends that text straight to ComfyUI.
 
@@ -211,9 +237,9 @@ Additional reference images can be uploaded directly in the attachment tray.
 The upload control is also a drop target, so one image can be dragged directly beside the recent
 image thumbnails.
 
-The chat composer has its own **Gen settings** panel for Thinking, response tokens, temperature,
-Top P, Top K, Min P, repeat penalty and range, and seed. These values are stored separately and do
-not change the LLM settings used for Prompt Studio prompt rewriting.
+The chat composer's **Gen settings** panel shows the active shared LLM profile and links to its
+editor. Sampling behavior is managed centrally in **Settings → General → LLM Profiles** rather than
+being stored separately for each assistant conversation.
 
 Consultation messages are temporary and automatically expire seven days after they are created.
 The **Clear** action removes the full consultation history, draft, and all pending context
@@ -346,7 +372,7 @@ Its prompt controls are:
 - `secondary_instructions`: the inspector's **Unmodified part**; passes phrases such as LoRA trigger words unchanged to the second output and does not include them in the LLM request.
 - `aspect_ratio`, `megapixels`, and `multiple`: calculate the optional `width` and `height` outputs using the same settings and rounding as ComfyUI's **Resolution Selector**.
 
-The remaining controls configure the KoboldCpp request: URL, final-answer token allowance, temperature, `top_p`, `top_k`, `min_p`, repetition penalty and range, sampler seed, stop sequences, and request timeout. Set `max_response_tokens` to `0` to use the selected profile's default. The backend adds a reasoning allowance, measures the fully Jinja-formatted prompt with `/api/extra/tokencount`, and caps the combined completion against `/api/extra/true_max_context_length` without treating KoboldCpp's unrelated Horde `config/max_length` value as a server limit. Use one custom stop sequence per line; when native thinking is enabled, the backend does not add legacy textual continuation stops because labels such as `Response:` may occur during the analysis-to-final transition. `sampler_seed: -1` lets KoboldCpp choose the seed.
+The remaining controls configure the KoboldCpp request: URL, final-answer token allowance, temperature, `top_p`, `top_k`, `min_p`, presence penalty, repetition penalty and range, sampler seed, stop sequences, and request timeout. Set `max_response_tokens` to `0` to use the selected profile's default. The backend adds a reasoning allowance, measures the fully Jinja-formatted prompt with `/api/extra/tokencount`, and caps the combined completion against `/api/extra/true_max_context_length` without treating KoboldCpp's unrelated Horde `config/max_length` value as a server limit. Use one custom stop sequence per line; when native thinking is enabled, the backend does not add legacy textual continuation stops because labels such as `Response:` may occur during the analysis-to-final transition. `sampler_seed: -1` lets KoboldCpp choose the seed.
 
 KoboldCpp counts reasoning and final text inside one completion. To preserve approximately the configured final-answer allowance, the backend requests a larger combined completion for reasoning modes:
 
@@ -588,6 +614,7 @@ KoboldCpp and Ollama requests remain on the Python side, so the browser does not
 - If Prompt Studio does not list a workflow, make sure its saved ComfyUI filename starts with `[PS]` and that it meets all four validation rules above.
 - If a workflow is marked **cached**, hover the workflow status for the validation error, correct the saved workflow in ComfyUI, and refresh it.
 - If prompt creation fails, confirm that the selected LLM provider is running, its endpoint is correct, and an Ollama model is selected when using Ollama. The defaults are `http://localhost:5001` for KoboldCpp and `http://localhost:11434` for Ollama.
+- If shared-GPU generation reaches the KoboldCpp admin error, enable Admin Mode, configure a valid Admin Directory, and restart KoboldCpp. Set `PROMPT_STUDIO_KOBOLD_ADMIN_PASSWORD` before ComfyUI starts when the admin API is password-protected.
 - If prompt creation succeeds but no image appears, queue the workflow normally in ComfyUI and fix any disconnected or invalid generation nodes first.
 - If Prompt Studio reports a save conflict, reload it to obtain the newest chat or workflow-cache revision before making further changes.
 

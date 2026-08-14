@@ -104,9 +104,294 @@ PROMPT_AGENT_PHASE_DEADLINE_SECONDS = 30 * 60
 PROMPT_AGENT_DEFAULT_RESPONSE_TOKENS = 1400
 PROMPT_AGENT_MAX_RESPONSE_TOKENS = 8192
 PROMPT_AGENT_RETRY_TOKEN_INCREMENT = 400
+GPU_HANDOFF_TIMEOUT_SECONDS = 30 * 60
+COMFY_HANDOFF_ACK_TIMEOUT_SECONDS = 30
+KOBOLD_ADMIN_TIMEOUT_SECONDS = 5 * 60
+_GPU_HANDOFF_LOCK = threading.RLock()
+_SHARED_GPU_OWNER = "comfy"
+_ACTIVE_SHARED_LLM = None
+_KOBOLD_ADMIN_UNLOADED = set()
+_PENDING_COMFY_HANDOFFS = {}
+_LLM_HANDOFF_ERRORS = {}
+
+
+def _keep_models_loaded(data):
+    value = data.get("keep_models_loaded", False)
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().casefold() in {"1", "true", "yes", "on"}
+    return bool(value)
+
+
+def _llm_provider_settings(data):
+    provider = _text(data.get("llm_provider"), "koboldcpp").strip().casefold()
+    if provider == "ollama":
+        return {
+            "llm_provider": "ollama",
+            "ollama_url": _text(data.get("ollama_url"), "http://localhost:11434"),
+            "ollama_model": _text(data.get("ollama_model")).strip(),
+        }
+    if provider == "koboldcpp":
+        return {
+            "llm_provider": "koboldcpp",
+            "kobold_url": _text(data.get("kobold_url"), "http://localhost:5001"),
+        }
+    raise ValueError("llm_provider must be koboldcpp or ollama")
+
+
+def _llm_provider_key(data):
+    settings = _llm_provider_settings(data)
+    if settings["llm_provider"] == "ollama":
+        return (
+            "ollama",
+            settings["ollama_url"].strip(),
+            settings["ollama_model"],
+        )
+    return ("koboldcpp", settings["kobold_url"].strip())
+
+
+def _record_llm_handoff_error(data, error):
+    with _GPU_HANDOFF_LOCK:
+        _LLM_HANDOFF_ERRORS[_llm_provider_key(data)] = str(error)
+
+
+def _clear_llm_handoff_error(data):
+    with _GPU_HANDOFF_LOCK:
+        _LLM_HANDOFF_ERRORS.pop(_llm_provider_key(data), None)
+
+
+def _llm_handoff_error(data):
+    if _keep_models_loaded(data):
+        return None
+    with _GPU_HANDOFF_LOCK:
+        return _LLM_HANDOFF_ERRORS.get(_llm_provider_key(data))
+
+
+def _ollama_keep_alive(data):
+    return -1 if _keep_models_loaded(data) else 30
+
+
+def _comfy_loaded_model_count():
+    try:
+        import comfy.model_management as model_management
+
+        return len(model_management.loaded_models())
+    except (AttributeError, ImportError, TypeError):
+        return None
+
+
+def _wait_for_comfy_idle(timeout=GPU_HANDOFF_TIMEOUT_SECONDS):
+    prompt_queue = getattr(PromptServer.instance, "prompt_queue", None)
+    if prompt_queue is None or not hasattr(prompt_queue, "get_tasks_remaining"):
+        return
+    deadline = time.monotonic() + timeout
+    while prompt_queue.get_tasks_remaining() > 0:
+        if time.monotonic() >= deadline:
+            raise RuntimeError(
+                "Timed out waiting for ComfyUI's queued work to finish before switching to the local LLM."
+            )
+        time.sleep(0.1)
+
+
+def _comfy_tasks_remaining():
+    prompt_queue = getattr(PromptServer.instance, "prompt_queue", None)
+    if prompt_queue is None or not hasattr(prompt_queue, "get_tasks_remaining"):
+        return 0
+    return max(0, int(prompt_queue.get_tasks_remaining()))
+
+
+def _release_comfy_models(timeout=GPU_HANDOFF_TIMEOUT_SECONDS):
+    """Release ComfyUI models only when ownership is switching back to the LLM."""
+    _wait_for_comfy_idle(timeout)
+    prompt_queue = getattr(PromptServer.instance, "prompt_queue", None)
+    if prompt_queue is None or not hasattr(prompt_queue, "set_flag"):
+        try:
+            import comfy.model_management as model_management
+
+            model_management.unload_all_models()
+            model_management.soft_empty_cache()
+            return
+        except (AttributeError, ImportError):
+            logging.debug("[ComfyUI_PromptStudio] ComfyUI model unloading is unavailable in this runtime.")
+            return
+
+    prompt_queue.set_flag("unload_models", True)
+    prompt_queue.set_flag("free_memory", True)
+    deadline = time.monotonic() + timeout
+    while True:
+        flags = prompt_queue.get_flags(reset=False) if hasattr(prompt_queue, "get_flags") else {}
+        flags_consumed = not flags.get("unload_models") and not flags.get("free_memory")
+        loaded_count = _comfy_loaded_model_count()
+        if flags_consumed and (loaded_count in {None, 0}):
+            logging.info("[ComfyUI_PromptStudio] Released ComfyUI models before local LLM work.")
+            return
+        if time.monotonic() >= deadline:
+            raise RuntimeError("ComfyUI did not release its models before the local LLM handoff.")
+        time.sleep(0.05)
+
+
+def _reserve_comfy_handoff():
+    token = str(uuid.uuid4())
+    with _GPU_HANDOFF_LOCK:
+        _PENDING_COMFY_HANDOFFS[token] = threading.Event()
+    return token
+
+
+def _complete_comfy_handoff(token):
+    with _GPU_HANDOFF_LOCK:
+        event = _PENDING_COMFY_HANDOFFS.pop(token, None)
+        if event is not None:
+            event.set()
+            return True
+    return False
+
+
+def _wait_for_pending_comfy_handoffs(timeout=COMFY_HANDOFF_ACK_TIMEOUT_SECONDS):
+    """Keep new LLM work behind the browser's immediately following ComfyUI queue call."""
+    deadline = time.monotonic() + timeout
+    while True:
+        with _GPU_HANDOFF_LOCK:
+            pending = list(_PENDING_COMFY_HANDOFFS.items())
+        if not pending:
+            return
+        for token, event in pending:
+            remaining = deadline - time.monotonic()
+            if remaining > 0 and event.wait(remaining):
+                continue
+            with _GPU_HANDOFF_LOCK:
+                for pending_token, pending_event in pending:
+                    if _PENDING_COMFY_HANDOFFS.get(pending_token) is pending_event:
+                        _PENDING_COMFY_HANDOFFS.pop(pending_token, None)
+                        pending_event.set()
+            logging.warning(
+                "[ComfyUI_PromptStudio] Timed out waiting for the ComfyUI queue handoff acknowledgement."
+            )
+            return
+
+
+def _kobold_model_name(base_url):
+    result = _get_json(urllib.parse.urljoin(base_url + "/", "api/v1/model"), 3)
+    if not isinstance(result, dict):
+        return None
+    name = result.get("result")
+    return name.strip() if isinstance(name, str) and name.strip() else None
+
+
+def _kobold_model_is_inactive(name):
+    return not name or name.casefold() in {"inactive", "none", "no model", "unloaded"}
+
+
+def _kobold_admin_request(data, target):
+    base_url = _clean_base_url(data.get("kobold_url"))
+    headers = {}
+    admin_password = os.environ.get("PROMPT_STUDIO_KOBOLD_ADMIN_PASSWORD", "").strip()
+    if admin_password:
+        headers["Authorization"] = f"Bearer {admin_password}"
+    result = _post_json(
+        urllib.parse.urljoin(base_url + "/", "api/admin/reload_config"),
+        {"filename": target},
+        15,
+        "KoboldCpp admin",
+        headers=headers,
+    )
+    if not isinstance(result, dict) or result.get("success") is not True:
+        raise RuntimeError(
+            "KoboldCpp could not switch models through its admin API. Start it with Admin Mode "
+            "enabled and an Admin Directory configured, or enable 'Keep models loaded' only when "
+            "the LLM and ComfyUI use separate GPUs. If Admin Password is enabled, set "
+            "PROMPT_STUDIO_KOBOLD_ADMIN_PASSWORD before starting ComfyUI."
+        )
+    return base_url
+
+
+def _wait_for_kobold_model_state(base_url, inactive, timeout=KOBOLD_ADMIN_TIMEOUT_SECONDS):
+    deadline = time.monotonic() + timeout
+    while True:
+        name = _kobold_model_name(base_url)
+        if name is not None and _kobold_model_is_inactive(name) is inactive:
+            return name
+        if time.monotonic() >= deadline:
+            state = "unload" if inactive else "reload"
+            raise RuntimeError(f"KoboldCpp did not finish its model {state} before the GPU handoff.")
+        time.sleep(0.25)
+
+
+def _unload_kobold_model(data):
+    base_url = _kobold_admin_request(data, "unload_model")
+    _wait_for_kobold_model_state(base_url, True)
+    _KOBOLD_ADMIN_UNLOADED.add(base_url)
+    return {"provider": "koboldcpp", "unloaded": True}
+
+
+def _reload_kobold_model_if_needed(data):
+    if not _KOBOLD_ADMIN_UNLOADED:
+        return
+    base_url = _clean_base_url(data.get("kobold_url"))
+    if base_url not in _KOBOLD_ADMIN_UNLOADED:
+        return
+    current_name = _kobold_model_name(base_url)
+    if current_name is not None and not _kobold_model_is_inactive(current_name):
+        _KOBOLD_ADMIN_UNLOADED.discard(base_url)
+        return
+    _kobold_admin_request(data, "initial_model")
+    _wait_for_kobold_model_state(base_url, False)
+    _KOBOLD_ADMIN_UNLOADED.discard(base_url)
+
+
+def _unload_llm_provider(data):
+    settings = _llm_provider_settings(data)
+    if settings["llm_provider"] == "ollama":
+        _unload_ollama_model(settings["ollama_url"], settings["ollama_model"])
+        return {"provider": "ollama", "unloaded": True}
+    return _unload_kobold_model(settings)
+
+
+def _prepare_shared_gpu_for_llm(data):
+    global _ACTIVE_SHARED_LLM, _SHARED_GPU_OWNER
+    if _keep_models_loaded(data):
+        return
+    _wait_for_pending_comfy_handoffs()
+    requested = _llm_provider_settings(data)
+    requested_key = _llm_provider_key(requested)
+    with _GPU_HANDOFF_LOCK:
+        if _ACTIVE_SHARED_LLM is not None and _llm_provider_key(_ACTIVE_SHARED_LLM) != requested_key:
+            _unload_llm_provider(_ACTIVE_SHARED_LLM)
+            _ACTIVE_SHARED_LLM = None
+        if _SHARED_GPU_OWNER != "llm" or _comfy_tasks_remaining() > 0:
+            _release_comfy_models()
+        if requested["llm_provider"] == "koboldcpp":
+            _reload_kobold_model_if_needed(requested)
+        _ACTIVE_SHARED_LLM = requested
+        _SHARED_GPU_OWNER = "llm"
+
+
+def _release_shared_llm_for_comfy(data):
+    global _ACTIVE_SHARED_LLM, _SHARED_GPU_OWNER
+    if _keep_models_loaded(data):
+        return {"unloaded": False, "kept_loaded": True}
+    with _GPU_HANDOFF_LOCK:
+        if _SHARED_GPU_OWNER == "comfy" and _ACTIVE_SHARED_LLM is None:
+            result = {"unloaded": False, "already_released": True}
+        else:
+            active = _ACTIVE_SHARED_LLM or _llm_provider_settings(data)
+            try:
+                result = _unload_llm_provider(active)
+            except Exception as exc:
+                _record_llm_handoff_error(active, exc)
+                _record_llm_handoff_error(data, exc)
+                raise
+            _clear_llm_handoff_error(active)
+            _clear_llm_handoff_error(data)
+            _ACTIVE_SHARED_LLM = None
+            _SHARED_GPU_OWNER = "comfy"
+        result["handoff_token"] = _reserve_comfy_handoff()
+        return result
 
 
 def _llm_queue_key(data):
+    if not _keep_models_loaded(data):
+        return ("shared-gpu",)
     provider = _text(data.get("llm_provider"), "koboldcpp").strip().casefold()
     if provider == "ollama":
         return (
@@ -135,7 +420,7 @@ async def _llm_queue_worker(queue):
             queue.task_done()
 
 
-async def _run_llm_request(data, priority, operation):
+async def _run_llm_request(data, priority, operation, prepare_for_llm=True):
     """Serialize requests per LLM endpoint, preferring Studio work over consultation."""
     key = _llm_queue_key(data)
     queue = _LLM_QUEUES.get(key)
@@ -146,7 +431,12 @@ async def _run_llm_request(data, priority, operation):
     if worker is None or worker.done():
         _LLM_QUEUE_WORKERS[key] = asyncio.create_task(_llm_queue_worker(queue))
     future = asyncio.get_running_loop().create_future()
-    await queue.put((priority, next(_LLM_QUEUE_SEQUENCE), future, operation, data))
+    def coordinated_operation(value):
+        if prepare_for_llm:
+            _prepare_shared_gpu_for_llm(value)
+        return operation(value)
+
+    await queue.put((priority, next(_LLM_QUEUE_SEQUENCE), future, coordinated_operation, data))
     return await future
 
 
@@ -231,10 +521,15 @@ def _ollama_generation_status(data):
 def _llm_generation_status(data):
     provider = _text(data.get("llm_provider"), "koboldcpp").strip().casefold()
     if provider == "koboldcpp":
-        return _kobold_generation_status(data)
-    if provider == "ollama":
-        return _ollama_generation_status(data)
-    raise ValueError("llm_provider must be koboldcpp or ollama")
+        status = dict(_kobold_generation_status(data))
+    elif provider == "ollama":
+        status = dict(_ollama_generation_status(data))
+    else:
+        raise ValueError("llm_provider must be koboldcpp or ollama")
+    handoff_error = _llm_handoff_error(data)
+    if handoff_error:
+        status["handoff_error"] = handoff_error
+    return status
 
 
 def _abort_kobold_generation(data):
@@ -1543,6 +1838,7 @@ def _revise(data):
     top_p = _bounded_number(data.get("top_p"), 0.9, 0.0, 1.0)
     top_k = _bounded_number(data.get("top_k"), 100, 0, 200, integer=True)
     min_p = _bounded_number(data.get("min_p"), 0.0, 0.0, 1.0)
+    presence_penalty = _bounded_number(data.get("presence_penalty"), 0.0, -2.0, 2.0)
     rep_pen = _bounded_number(data.get("rep_pen"), 1.05, 0.5, 3.0)
     rep_pen_range = _bounded_number(data.get("rep_pen_range"), 360, 0, 4096, integer=True)
     sampler_seed = _bounded_number(data.get("sampler_seed"), -1, -1, 999999, integer=True)
@@ -1631,6 +1927,8 @@ def _revise(data):
                 request_timeout,
                 include_default_continuation_stops=True,
                 image_base64=image_base64,
+                keep_alive=_ollama_keep_alive(data),
+                presence_penalty=presence_penalty,
             )
             _record_generation_warning(data, generated)
             return generated
@@ -1651,6 +1949,7 @@ def _revise(data):
             request_timeout,
             include_default_continuation_stops=True,
             image_data_uri=image_data_uri,
+            presence_penalty=presence_penalty,
         )
 
     raw = generate(prompt, sampler_seed)
@@ -1830,6 +2129,7 @@ def _consult(data, system_message=None, allow_partial=True):
     top_p = _bounded_number(data.get("top_p"), 0.9, 0.0, 1.0)
     top_k = _bounded_number(data.get("top_k"), 100, 0, 200, integer=True)
     min_p = _bounded_number(data.get("min_p"), 0.0, 0.0, 1.0)
+    presence_penalty = _bounded_number(data.get("presence_penalty"), 0.0, -2.0, 2.0)
     rep_pen = _bounded_number(data.get("rep_pen"), 1.05, 0.5, 3.0)
     rep_pen_range = _bounded_number(data.get("rep_pen_range"), 360, 0, 4096, integer=True)
     sampler_seed = _bounded_number(data.get("sampler_seed"), -1, -1, 999999, integer=True)
@@ -1855,6 +2155,8 @@ def _consult(data, system_message=None, allow_partial=True):
             request_timeout,
             messages_override=messages,
             allow_partial=allow_partial,
+            keep_alive=_ollama_keep_alive(data),
+            presence_penalty=presence_penalty,
         )
     return _generate_kcpp(
         "",
@@ -1872,6 +2174,7 @@ def _consult(data, system_message=None, allow_partial=True):
         "",
         request_timeout,
         messages_override=messages,
+        presence_penalty=presence_penalty,
     )
 
 
@@ -2697,6 +3000,7 @@ def _prompt_agent(data, response_hook=None, cancellation_check=None):
     top_p = _bounded_number(data.get("top_p"), 0.9, 0.0, 1.0)
     top_k = _bounded_number(data.get("top_k"), 100, 0, 200, integer=True)
     min_p = _bounded_number(data.get("min_p"), 0.0, 0.0, 1.0)
+    presence_penalty = _bounded_number(data.get("presence_penalty"), 0.0, -2.0, 2.0)
     rep_pen = _bounded_number(data.get("rep_pen"), 1.05, 0.5, 3.0)
     rep_pen_range = _bounded_number(data.get("rep_pen_range"), 360, 0, 4096, integer=True)
     sampler_seed = _bounded_number(data.get("sampler_seed"), -1, -1, 999999, integer=True)
@@ -2730,6 +3034,8 @@ def _prompt_agent(data, response_hook=None, cancellation_check=None):
                 response_hook=response_hook,
                 cancellation_check=cancellation_check,
                 allow_partial=False,
+                keep_alive=_ollama_keep_alive(data),
+                presence_penalty=presence_penalty,
             )
         return _generate_kcpp(
             "",
@@ -2749,6 +3055,7 @@ def _prompt_agent(data, response_hook=None, cancellation_check=None):
             messages_override=messages,
             response_hook=response_hook,
             cancellation_check=cancellation_check,
+            presence_penalty=presence_penalty,
         )
 
     token_retry_used = False
@@ -2857,6 +3164,7 @@ def _caption_image(data):
     top_p = _bounded_number(data.get("top_p"), 0.9, 0.0, 1.0)
     top_k = _bounded_number(data.get("top_k"), 100, 0, 200, integer=True)
     min_p = _bounded_number(data.get("min_p"), 0.0, 0.0, 1.0)
+    presence_penalty = _bounded_number(data.get("presence_penalty"), 0.0, -2.0, 2.0)
     rep_pen = _bounded_number(data.get("rep_pen"), 1.05, 0.5, 3.0)
     rep_pen_range = _bounded_number(data.get("rep_pen_range"), 360, 0, 4096, integer=True)
     sampler_seed = _bounded_number(data.get("sampler_seed"), -1, -1, 999999, integer=True)
@@ -2891,6 +3199,8 @@ def _caption_image(data):
             *common_args,
             include_default_continuation_stops=True,
             image_base64=image_base64,
+            keep_alive=_ollama_keep_alive(data),
+            presence_penalty=presence_penalty,
         )
     else:
         raw = _generate_kcpp(
@@ -2899,6 +3209,7 @@ def _caption_image(data):
             *common_args,
             include_default_continuation_stops=True,
             image_data_uri=image_data_uri,
+            presence_penalty=presence_penalty,
         )
 
     caption = _strip_response(raw)
@@ -3371,12 +3682,54 @@ async def prompt_studio_ollama_unload(request):
             )
             return {"unloaded": True}
 
-        result = await _run_llm_request(data, LLM_PRIORITY_STUDIO, unload)
+        result = await _run_llm_request(
+            data,
+            LLM_PRIORITY_STUDIO,
+            unload,
+            prepare_for_llm=False,
+        )
         return web.json_response(result)
     except (ValueError, json.JSONDecodeError, OSError) as exc:
         return web.json_response({"error": str(exc)}, status=400)
     except Exception as exc:
         return web.json_response({"error": str(exc)}, status=502)
+
+
+@PromptServer.instance.routes.post("/promptstudio/prompt-studio/llm/release")
+async def prompt_studio_llm_release(request):
+    try:
+        if request.content_length is not None and request.content_length > MAX_LLM_CONFIG_REQUEST_BYTES:
+            raise ValueError("LLM release request is too large")
+        data = await request.json()
+        if not isinstance(data, dict):
+            raise ValueError("JSON body must be an object")
+        result = await _run_llm_request(
+            data,
+            LLM_PRIORITY_STUDIO,
+            _release_shared_llm_for_comfy,
+            prepare_for_llm=False,
+        )
+        return web.json_response(result)
+    except (ValueError, json.JSONDecodeError, OSError) as exc:
+        return web.json_response({"error": str(exc)}, status=400)
+    except Exception as exc:
+        return web.json_response({"error": str(exc)}, status=502)
+
+
+@PromptServer.instance.routes.post("/promptstudio/prompt-studio/llm/handoff-complete")
+async def prompt_studio_llm_handoff_complete(request):
+    try:
+        if request.content_length is not None and request.content_length > MAX_LLM_CONFIG_REQUEST_BYTES:
+            raise ValueError("LLM handoff acknowledgement is too large")
+        data = await request.json()
+        if not isinstance(data, dict):
+            raise ValueError("JSON body must be an object")
+        token = _text(data.get("handoff_token")).strip()
+        if len(token) > 128:
+            raise ValueError("Invalid LLM handoff token")
+        return web.json_response({"completed": _complete_comfy_handoff(token)})
+    except (ValueError, json.JSONDecodeError) as exc:
+        return web.json_response({"error": str(exc)}, status=400)
 
 
 @PromptServer.instance.routes.post("/promptstudio/prompt-studio/kobold/status")
