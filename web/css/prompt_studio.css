@@ -167,6 +167,7 @@ body.promptstudio-popout-body {
 
 .promptstudio-header {
   position: relative;
+  z-index: 10;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -335,7 +336,7 @@ body.promptstudio-popout-body {
   gap: 8px;
   width: 270px;
   padding: 11px;
-  background: rgba(19, 21, 29, 0.98);
+  background: var(--ps-panel);
   border: 1px solid var(--ps-border);
   border-radius: 12px;
   box-shadow: 0 18px 44px rgba(0, 0, 0, 0.52);
@@ -452,6 +453,23 @@ body.promptstudio-popout-body {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 7px;
+}
+
+.promptstudio-system-status-actions[hidden] {
+  display: none;
+}
+
+#promptstudio-llamacpp-process-controls {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+#promptstudio-prompt-studio .promptstudio-header-actions #promptstudio-llamacpp-process-controls button {
+  width: 100%;
+  min-width: 0;
+  min-height: 32px;
+  padding: 0 6px;
+  white-space: nowrap;
+  font-size: 9px;
 }
 
 #promptstudio-prompt-studio button {
@@ -673,6 +691,7 @@ body.promptstudio-popout-body .promptstudio-header-actions {
 }
 
 .promptstudio-consult-message {
+  position: relative;
   width: fit-content;
   max-width: min(760px, 86%);
   margin-bottom: 14px;
@@ -1581,6 +1600,34 @@ body.promptstudio-popout-body .promptstudio-header-actions {
   min-width: 180px;
 }
 
+.promptstudio-path-field {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  flex: 0 1 360px;
+  align-items: center;
+  gap: 7px;
+  width: min(58%, 360px);
+  min-width: 230px;
+}
+
+.promptstudio-config-path-field {
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  flex-basis: 430px;
+  width: min(65%, 430px);
+}
+
+#promptstudio-prompt-studio .promptstudio-path-field input {
+  width: 100%;
+  min-width: 0;
+  min-height: 36px;
+  padding: 8px 10px;
+}
+
+#promptstudio-prompt-studio .promptstudio-path-field button {
+  min-height: 36px;
+  padding: 0 10px;
+}
+
 .promptstudio-llm-profile-field {
   display: grid;
   grid-template-columns: minmax(120px, 1fr) auto auto;
@@ -1986,6 +2033,19 @@ body.promptstudio-popout-body .promptstudio-header-actions {
   color: var(--ps-muted);
   font-variant-numeric: tabular-nums;
   text-align: right;
+}
+
+.promptstudio-llm-token-count {
+  position: absolute;
+  right: 13px;
+  bottom: 13px;
+  color: var(--ps-muted);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+  pointer-events: none;
+  text-align: right;
+  white-space: nowrap;
 }
 
 .promptstudio-generation-progress-track {
@@ -4101,6 +4161,32 @@ body.promptstudio-popout-body #promptstudio-prompt-studio.promptstudio-chats-ope
   text-align: right;
 }
 
+.promptstudio-llm-profile-thinking-modes {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(96px, 1fr));
+  gap: 7px;
+}
+
+#promptstudio-prompt-studio .promptstudio-llm-profile-thinking-modes label {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  padding: 8px 9px;
+  color: var(--ps-muted);
+  background: rgba(255, 255, 255, 0.025);
+  border: 1px solid var(--ps-border);
+  border-radius: 8px;
+  font-size: 10px;
+  font-weight: 700;
+}
+
+#promptstudio-prompt-studio .promptstudio-llm-profile-thinking-modes input {
+  width: auto;
+  min-width: 0;
+  margin: 0;
+}
+
 .promptstudio-llm-profile-parameter-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -4683,7 +4769,8 @@ body.promptstudio-popout-body #promptstudio-prompt-studio.promptstudio-chats-ope
 
   #promptstudio-prompt-studio .promptstudio-endpoint-control > input,
   #promptstudio-prompt-studio .promptstudio-endpoint-control > select,
-  .promptstudio-ollama-model-field {
+  .promptstudio-ollama-model-field,
+  .promptstudio-path-field {
     flex-basis: auto;
     width: 100%;
     min-width: 0;

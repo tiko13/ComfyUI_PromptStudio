@@ -16,11 +16,12 @@ const MODEL_STORAGE_KEY = "promptstudio.promptStudio.models.v1";
 const CONSULT_STORAGE_KEY = "promptstudio.promptStudio.consult.settings.v1";
 const LLM_PROFILE_STORAGE_KEY = "promptstudio.promptStudio.llmProfiles.v1";
 const SIDEBAR_GROUP_ORDER_STORAGE_KEY = "promptstudio.promptStudio.sidebarGroupOrder.v1";
+const ADVANCED_LLM_ACK_STORAGE_KEY = "promptstudio.promptStudio.advancedLlmAcknowledged.v1";
 const STANDALONE_CHANNEL = "promptstudio.promptStudio.standalone.v1";
 const VIDEO_STUDIO_CHANNEL = "promptstudio.video.standalone.v1";
 const WORKFLOW_SYNC_CHANNEL = "promptstudio.promptStudio.workflows.v1";
 const CHAT_SYNC_CHANNEL = "promptstudio.promptStudio.chats.v1";
-const STUDIO_SETTINGS_VERSION = 2;
+const STUDIO_SETTINGS_VERSION = 3;
 const STUDIO_ROUTE_ENDPOINT = "/promptstudio/prompt-studio/route-turn";
 const STUDIO_DISCUSS_ENDPOINT = "/promptstudio/prompt-studio/discuss";
 const CONSULT_CHAT_ENDPOINT = "/promptstudio/prompt-studio/chat";
@@ -29,8 +30,12 @@ const LLM_HANDOFF_COMPLETE_ENDPOINT = "/promptstudio/prompt-studio/llm/handoff-c
 const PROMPT_AGENT_ENDPOINT = "/promptstudio/prompt-studio/agent";
 const PROMPT_AGENT_CANCEL_ENDPOINT = "/promptstudio/prompt-studio/agent/cancel";
 const LLM_STATUS_ENDPOINT = "/promptstudio/prompt-studio/llm/status";
+const LLM_ABORT_ENDPOINT = "/promptstudio/prompt-studio/llm/abort";
 const KOBOLD_STATUS_ENDPOINT = "/promptstudio/prompt-studio/kobold/status";
 const KOBOLD_ABORT_ENDPOINT = "/promptstudio/prompt-studio/kobold/abort";
+const LLAMACPP_SERVER_ENDPOINT = "/promptstudio/prompt-studio/llamacpp/server";
+const LLAMACPP_FILE_PICKER_ENDPOINT = "/promptstudio/prompt-studio/llamacpp/pick-file";
+const LLAMACPP_CONFIG_BUILDER_ENDPOINT = "/promptstudio/prompt-studio/llamacpp/config-builder";
 const MUTATION_CONFIG_ENDPOINT = "/promptstudio/prompt-studio/mutation-config";
 const COMFY_RESTART_ENDPOINTS = ["/v2/manager/reboot", "/manager/reboot"];
 const COMFY_UPDATE_ENDPOINT = "/manager/queue/update_comfyui";
@@ -66,10 +71,14 @@ const RESOLUTION_ASPECT_RATIOS = [
   "21:9 (Ultrawide)",
 ];
 const SETTINGS_DEFAULTS = Object.freeze({
-  llm_provider: "koboldcpp",
+  llm_provider: "ollama",
   kobold_url: "http://localhost:5001",
   ollama_url: "http://localhost:11434",
   ollama_model: "",
+  llamacpp_url: "http://127.0.0.1:8080",
+  llamacpp_model: "",
+  llamacpp_executable: "",
+  llamacpp_config_path: "",
   keep_models_loaded: false,
   llm_profile: "qwen3.5",
   model_profile: "General Natural Language",
@@ -95,11 +104,22 @@ const SETTINGS_DEFAULTS = Object.freeze({
   resolution_megapixels: 1.0,
   resolution_multiple: 8,
 });
+const LLM_THINKING_MODE_OPTIONS = Object.freeze([
+  "Disabled",
+  "Minimal",
+  "Low",
+  "Medium",
+  "High",
+  "XHigh",
+]);
+const DEFAULT_LLM_THINKING_MODES = Object.freeze(["Disabled", "Minimal", "Low", "Medium", "High"]);
 const LLM_PROFILE_DEFAULTS = Object.freeze({
   id: "qwen3.5",
-  name: "Qwen3.5",
+  name: "Default",
   thinking_mode: "Disabled",
+  thinking_modes: DEFAULT_LLM_THINKING_MODES,
   max_response_tokens: 800,
+  llamacpp_reasoning_budget_tokens: 0,
   temperature: 0.7,
   top_p: 0.9,
   top_k: 100,
@@ -122,6 +142,8 @@ const QWEN38_27B_PROFILE_DEFAULTS = Object.freeze({
   ...LLM_PROFILE_DEFAULTS,
   id: "qwen3.8-27b",
   name: "Qwen 3.8 (27B)",
+  thinking_mode: "XHigh",
+  thinking_modes: Object.freeze(["XHigh", "Medium", "Low", "Disabled"]),
   temperature: 0.7,
   top_p: 0.8,
   top_k: 20,
@@ -139,7 +161,7 @@ const LLM_PROFILE_PRESETS = Object.freeze([
   LLM_PROFILE_DEFAULTS,
   QWEN38_27B_PROFILE_DEFAULTS,
 ]);
-const LLM_PROFILE_STORAGE_VERSION = 3;
+const LLM_PROFILE_STORAGE_VERSION = 6;
 const RENDER_CONTROL_IDS = [
   "promptstudio-profile",
   "promptstudio-style",
@@ -289,6 +311,7 @@ const state = {
   comfyUpdateMessage: "",
   comfyUpdateNeedsRestart: false,
   koboldAbortBusy: false,
+  llamacppProcessBusy: false,
   consultVisionAvailable: null,
   consultVisionReason: "",
   consultSelectedImages: new Map(),
@@ -487,13 +510,27 @@ function normalizeLlmProfile(value, fallback = null) {
     const bounded = Math.max(minimum, Math.min(maximum, Number.isFinite(requested) ? requested : fallbackValue));
     return integer ? Math.round(bounded) : bounded;
   };
-  const thinkingModes = ["Disabled", "Minimal", "Low", "Medium", "High"];
+  const fallbackThinkingModes = Array.isArray(defaults.thinking_modes)
+    ? defaults.thinking_modes
+    : DEFAULT_LLM_THINKING_MODES;
+  const requestedThinkingModes = Array.isArray(source.thinking_modes)
+    ? source.thinking_modes
+    : fallbackThinkingModes;
+  const thinkingModes = [...new Set(requestedThinkingModes.map((value) => (
+    LLM_THINKING_MODE_OPTIONS.find((option) => option.toLowerCase() === String(value).trim().toLowerCase())
+  )).filter(Boolean))];
+  if (!thinkingModes.length) thinkingModes.push(...fallbackThinkingModes);
+  const requestedThinkingMode = LLM_THINKING_MODE_OPTIONS.find((option) => (
+    option.toLowerCase() === String(source.thinking_mode ?? defaults.thinking_mode).trim().toLowerCase()
+  ));
   return {
     id: String(source.id || defaults.id || LLM_PROFILE_DEFAULTS.id),
     name: String(source.name || defaults.name || LLM_PROFILE_DEFAULTS.name).trim().slice(0, 80)
       || LLM_PROFILE_DEFAULTS.name,
-    thinking_mode: thinkingModes.includes(source.thinking_mode) ? source.thinking_mode : defaults.thinking_mode,
+    thinking_mode: thinkingModes.includes(requestedThinkingMode) ? requestedThinkingMode : thinkingModes[0],
+    thinking_modes: thinkingModes,
     max_response_tokens: number("max_response_tokens", 0, 8192, true),
+    llamacpp_reasoning_budget_tokens: number("llamacpp_reasoning_budget_tokens", 0, 262144, true),
     temperature: number("temperature", 0, 5),
     top_p: number("top_p", 0, 1),
     top_k: number("top_k", 0, 200, true),
@@ -532,16 +569,27 @@ function loadLlmProfiles() {
   if (!Array.isArray(candidates)) {
     return LLM_PROFILE_PRESETS.map((profile) => normalizeLlmProfile(profile, profile));
   }
+  const storageVersion = Array.isArray(stored) ? 0 : Number(stored?.version) || 0;
   const seen = new Set();
   const profiles = candidates
-    .map((profile) => normalizeLlmProfile(profile))
+    .map((profile) => {
+      let migrated = profile;
+      if (storageVersion < 4 && profile?.id === QWEN38_27B_PROFILE_DEFAULTS.id
+          && !Array.isArray(profile.thinking_modes)) {
+        migrated = { ...migrated, thinking_mode: QWEN38_27B_PROFILE_DEFAULTS.thinking_mode };
+      }
+      if (storageVersion < 5 && profile?.id === LLM_PROFILE_DEFAULTS.id
+          && profile?.name === "Qwen3.5") {
+        migrated = { ...migrated, name: LLM_PROFILE_DEFAULTS.name };
+      }
+      return normalizeLlmProfile(migrated);
+    })
     .filter((profile) => profile.id !== "default" && profile.id !== "__default__")
     .filter((profile) => {
       if (seen.has(profile.id)) return false;
       seen.add(profile.id);
       return true;
     });
-  const storageVersion = Array.isArray(stored) ? 0 : Number(stored?.version) || 0;
   if (storageVersion < 2
       && !profiles.some((profile) => profile.id === QWEN38_27B_PROFILE_DEFAULTS.id)) {
     profiles.push(normalizeLlmProfile(QWEN38_27B_PROFILE_DEFAULTS, QWEN38_27B_PROFILE_DEFAULTS));
@@ -587,21 +635,67 @@ function selectedLlmProfile() {
 }
 
 function selectedLlmThinkingMode() {
+  const profile = selectedLlmProfile();
   const mainValue = state.panel?.querySelector("#promptstudio-thinking")?.value;
   const consultValue = state.panel?.querySelector("#promptstudio-consult-thinking")?.value;
-  const requested = mainValue || consultValue || getSettings().thinking_mode || "Disabled";
-  return ["Disabled", "Minimal", "Low", "Medium", "High"].includes(requested)
-    ? requested
-    : "Disabled";
+  const requested = mainValue || consultValue || getSettings().thinking_mode || profile.thinking_mode;
+  return profile.thinking_modes.find((mode) => mode.toLowerCase() === String(requested).toLowerCase())
+    || profile.thinking_mode
+    || profile.thinking_modes[0];
+}
+
+function thinkingModeEnablesReasoning(mode) {
+  return !["disabled", "none"].includes(String(mode || "").trim().toLowerCase());
+}
+
+function llmActivityLabel(status = {}, thinkingEnabled = false) {
+  if (status.generation_phase === "thinking") return "Thinking";
+  if (status.generation_phase === "generating") return "Generating";
+  if (status.generation_phase === "thinking_or_generating" || thinkingEnabled) {
+    return "Thinking / generating";
+  }
+  return "Generating";
+}
+
+function llmGeneratedTokenCount(status = {}) {
+  if (status.generated_tokens == null || status.generated_tokens === "") return null;
+  const tokens = Number(status.generated_tokens);
+  return Number.isFinite(tokens) && tokens >= 0 ? Math.trunc(tokens) : null;
+}
+
+function renderLlmThinkingModeOptions(requestedMode = null) {
+  const select = state.panel?.querySelector("#promptstudio-thinking");
+  if (!select) return;
+  const profile = selectedLlmProfile();
+  const requested = requestedMode || select.value || getSettings().thinking_mode || profile.thinking_mode;
+  select.replaceChildren(...profile.thinking_modes.map((mode) => {
+    const option = document.createElement("option");
+    option.value = mode;
+    option.textContent = mode;
+    return option;
+  }));
+  const selected = profile.thinking_modes.find((mode) => mode.toLowerCase() === String(requested).toLowerCase())
+    || profile.thinking_mode
+    || profile.thinking_modes[0];
+  select.value = selected;
+  const consult = state.panel.querySelector("#promptstudio-consult-thinking");
+  if (consult) {
+    const option = document.createElement("option");
+    option.value = selected;
+    option.textContent = selected;
+    consult.replaceChildren(option);
+    consult.value = selected;
+  }
 }
 
 function llmProfileGenerationSettings() {
   const profile = selectedLlmProfile();
   const thinkingMode = selectedLlmThinkingMode();
-  const thinkingEnabled = thinkingMode !== "Disabled";
+  const thinkingEnabled = thinkingModeEnablesReasoning(thinkingMode);
   return {
     thinking_mode: thinkingMode,
     max_response_tokens: profile.max_response_tokens,
+    llamacpp_reasoning_budget_tokens: profile.llamacpp_reasoning_budget_tokens,
     temperature: thinkingEnabled ? profile.thinking_temperature : profile.temperature,
     top_p: thinkingEnabled ? profile.thinking_top_p : profile.top_p,
     top_k: thinkingEnabled ? profile.thinking_top_k : profile.top_k,
@@ -631,6 +725,7 @@ function renderLlmProfileOptions(selectedId = null) {
     : profiles[0]?.id || "";
   const edit = state.panel.querySelector("#promptstudio-edit-llm-profile");
   if (edit) edit.disabled = select.value === "__default__";
+  renderLlmThinkingModeOptions();
 }
 
 function syncLlmProfileControls() {
@@ -654,13 +749,20 @@ function syncLlmProfileControls() {
   setValue("promptstudio-consult-rep-pen-range", sampler.rep_pen_range);
   setValue("promptstudio-consult-seed", profile.sampler_seed);
   const summary = state.panel.querySelector("#promptstudio-consult-profile-summary");
-  if (summary) summary.textContent = `${profile.name} · ${sampler.thinking_mode === "Disabled" ? "non-thinking" : "thinking"} · temperature ${sampler.temperature} · top p ${sampler.top_p}`;
+  if (summary) summary.textContent = `${profile.name} · ${thinkingModeEnablesReasoning(sampler.thinking_mode) ? "thinking" : "non-thinking"} · temperature ${sampler.temperature} · top p ${sampler.top_p}`;
   const name = state.panel.querySelector("#promptstudio-consult-profile-name");
   if (name) name.textContent = profile.name;
 }
 
 function llmProfileEditorIsOpen() {
   return state.panel?.querySelector("#promptstudio-llm-profile-editor")?.hidden === false;
+}
+
+function setLlmProfileEditorThinkingModes(modes) {
+  const selected = new Set((Array.isArray(modes) ? modes : []).map((mode) => String(mode).toLowerCase()));
+  state.panel?.querySelectorAll('#promptstudio-llm-profile-editor [name="thinking_modes"]').forEach((control) => {
+    control.checked = selected.has(control.value.toLowerCase());
+  });
 }
 
 function openLlmProfileEditor(trigger = null, { create = false } = {}) {
@@ -674,7 +776,10 @@ function openLlmProfileEditor(trigger = null, { create = false } = {}) {
     const control = editor.querySelector(`[name="${name}"]`);
     if (control) control.value = String(value ?? "");
   };
-  Object.entries(profile).forEach(([name, value]) => setValue(name, value));
+  Object.entries(profile).forEach(([name, value]) => {
+    if (name !== "thinking_modes") setValue(name, value);
+  });
+  setLlmProfileEditorThinkingModes(profile.thinking_modes);
   state.llmProfileEditorId = create ? null : profile.id;
   editor.querySelector("#promptstudio-llm-profile-editor-title").textContent = create
     ? "Add LLM profile"
@@ -702,10 +807,11 @@ function restoreLlmProfileEditorDefaults() {
   const defaults = LLM_PROFILE_PRESETS.find((profile) => profile.id === state.llmProfileEditorId)
     || LLM_PROFILE_DEFAULTS;
   Object.entries(defaults).forEach(([name, value]) => {
-    if (["id", "name"].includes(name)) return;
+    if (["id", "name", "thinking_modes"].includes(name)) return;
     const control = editor.querySelector(`[name="${name}"]`);
     if (control) control.value = String(value ?? "");
   });
+  setLlmProfileEditorThinkingModes(defaults.thinking_modes);
   editor.querySelector("#promptstudio-llm-profile-editor-error").textContent = "";
 }
 
@@ -714,10 +820,17 @@ function submitLlmProfileEditor(event) {
   const form = event.currentTarget;
   const error = form.querySelector("#promptstudio-llm-profile-editor-error");
   const data = Object.fromEntries(new FormData(form));
+  data.thinking_modes = [...form.querySelectorAll('[name="thinking_modes"]:checked')]
+    .map((control) => control.value);
   const name = String(data.name || "").trim();
   if (!name) {
     error.textContent = "Profile name is required.";
     form.elements.name.focus();
+    return;
+  }
+  if (!data.thinking_modes.length) {
+    error.textContent = "Select at least one available thinking mode.";
+    form.querySelector('[name="thinking_modes"]')?.focus();
     return;
   }
   if (state.llmProfiles.some((profile) => (
@@ -769,11 +882,15 @@ function applyRememberedLlmConnection(settings) {
       || !Object.hasOwn(remembered, "llm_provider")) return settings;
   return {
     ...settings,
-    llm_provider: remembered.llm_provider === "ollama" ? "ollama" : "koboldcpp",
+    llm_provider: normalizeLlmProvider(remembered.llm_provider),
     llm_profile: String(remembered.llm_profile || settings.llm_profile || LLM_PROFILE_DEFAULTS.id),
     kobold_url: String(remembered.kobold_url ?? settings.kobold_url ?? SETTINGS_DEFAULTS.kobold_url),
     ollama_url: String(remembered.ollama_url ?? settings.ollama_url ?? SETTINGS_DEFAULTS.ollama_url),
     ollama_model: String(remembered.ollama_model ?? settings.ollama_model ?? ""),
+    llamacpp_url: String(remembered.llamacpp_url ?? settings.llamacpp_url ?? SETTINGS_DEFAULTS.llamacpp_url),
+    llamacpp_model: String(remembered.llamacpp_model ?? settings.llamacpp_model ?? ""),
+    llamacpp_executable: String(remembered.llamacpp_executable ?? settings.llamacpp_executable ?? ""),
+    llamacpp_config_path: String(remembered.llamacpp_config_path ?? settings.llamacpp_config_path ?? ""),
     keep_models_loaded: remembered.keep_models_loaded == null
       ? Boolean(settings.keep_models_loaded)
       : Boolean(remembered.keep_models_loaded),
@@ -793,6 +910,10 @@ function saveSettings() {
       kobold_url: value("promptstudio-kobold-url"),
       ollama_url: value("promptstudio-ollama-url"),
       ollama_model: value("promptstudio-ollama-model"),
+      llamacpp_url: value("promptstudio-llamacpp-url"),
+      llamacpp_model: value("promptstudio-llamacpp-model"),
+      llamacpp_executable: value("promptstudio-llamacpp-executable"),
+      llamacpp_config_path: value("promptstudio-llamacpp-config-path"),
       keep_models_loaded: checked("promptstudio-keep-models-loaded"),
       model_profile: value("promptstudio-profile"),
       style_preset: value("promptstudio-style"),
@@ -1283,7 +1404,7 @@ function getConsultSettings() {
     return Number.isFinite(value) ? Math.max(min, Math.min(max, value)) : defaults[key];
   };
   return {
-    thinking_mode: ["Disabled", "Minimal", "Low", "Medium", "High"].includes(source.thinking_mode)
+    thinking_mode: ["Disabled", "Minimal", "Low", "Medium", "High", "XHigh"].includes(source.thinking_mode)
       ? source.thinking_mode
       : defaults.thinking_mode,
     max_response_tokens: Math.round(number("max_response_tokens", 1, 8192)),
@@ -2202,11 +2323,15 @@ function normalizeStudioSettings(value, fallback = getSettings()) {
   };
   return {
     version: STUDIO_SETTINGS_VERSION,
-    llm_provider: text("llm_provider") === "ollama" ? "ollama" : "koboldcpp",
+    llm_provider: normalizeLlmProvider(text("llm_provider")),
     llm_profile: requiredText("llm_profile"),
     kobold_url: text("kobold_url"),
     ollama_url: text("ollama_url"),
     ollama_model: text("ollama_model"),
+    llamacpp_url: text("llamacpp_url"),
+    llamacpp_model: text("llamacpp_model"),
+    llamacpp_executable: text("llamacpp_executable"),
+    llamacpp_config_path: text("llamacpp_config_path"),
     keep_models_loaded: checked("keep_models_loaded"),
     model_profile: requiredText("model_profile"),
     style_preset: requiredText("style_preset"),
@@ -2250,6 +2375,10 @@ function newChatStudioSettings(value = getSettings()) {
     kobold_url: previous.kobold_url,
     ollama_url: previous.ollama_url,
     ollama_model: previous.ollama_model,
+    llamacpp_url: previous.llamacpp_url,
+    llamacpp_model: previous.llamacpp_model,
+    llamacpp_executable: previous.llamacpp_executable,
+    llamacpp_config_path: previous.llamacpp_config_path,
     keep_models_loaded: previous.keep_models_loaded,
     thinking_mode: previous.thinking_mode,
     embellishment_level: previous.embellishment_level,
@@ -2490,6 +2619,11 @@ function normalizeChat(chat) {
         operationPhase: String(message?.operationPhase || ""),
         operationStatus: String(message?.operationStatus || ""),
         operationKind: String(message?.operationKind || ""),
+        llmProvider: message?.llmProvider ? normalizeLlmProvider(message.llmProvider) : "",
+        llmThinkingEnabled: message?.llmThinkingEnabled === true,
+        llmTokenCount: message?.llmTokenCount != null && Number.isFinite(Number(message.llmTokenCount))
+          ? Math.max(0, Math.trunc(Number(message.llmTokenCount)))
+          : null,
         studioMessageKind: ["discussion", "revision"].includes(message?.studioMessageKind)
           ? message.studioMessageKind
           : "",
@@ -2938,6 +3072,10 @@ function captureStudioSettings(chat = activeChat()) {
     kobold_url: value("kobold_url", "promptstudio-kobold-url"),
     ollama_url: value("ollama_url", "promptstudio-ollama-url"),
     ollama_model: value("ollama_model", "promptstudio-ollama-model"),
+    llamacpp_url: value("llamacpp_url", "promptstudio-llamacpp-url"),
+    llamacpp_model: value("llamacpp_model", "promptstudio-llamacpp-model"),
+    llamacpp_executable: value("llamacpp_executable", "promptstudio-llamacpp-executable"),
+    llamacpp_config_path: value("llamacpp_config_path", "promptstudio-llamacpp-config-path"),
     keep_models_loaded: checked("keep_models_loaded", "promptstudio-keep-models-loaded"),
     model_profile: value("model_profile", "promptstudio-profile"),
     style_preset: value("style_preset", "promptstudio-style"),
@@ -3002,12 +3140,15 @@ function applyStudioSettings(chat) {
     ["promptstudio-llm-provider", settings.llm_provider],
     ["promptstudio-kobold-url", settings.kobold_url],
     ["promptstudio-ollama-url", settings.ollama_url],
+    ["promptstudio-llamacpp-url", settings.llamacpp_url],
+    ["promptstudio-llamacpp-executable", settings.llamacpp_executable],
+    ["promptstudio-llamacpp-config-path", settings.llamacpp_config_path],
     ["promptstudio-profile", settings.model_profile],
     ["promptstudio-style", settings.style_preset],
     ["promptstudio-framing", settings.framing_preset],
     ["promptstudio-style-modifier", settings.style_modifier],
     ["promptstudio-framing-modifier", settings.framing_modifier],
-    ["promptstudio-thinking", settings.thinking_mode],
+    ["promptstudio-thinking", selectedLlmThinkingMode()],
     ["promptstudio-embellishment", settings.embellishment_level],
     ["promptstudio-output-length", settings.target_output_length],
     ["promptstudio-temperature", settings.temperature],
@@ -3027,6 +3168,15 @@ function applyStudioSettings(chat) {
     ollamaModel.appendChild(option);
   }
   setValue("promptstudio-ollama-model", settings.ollama_model);
+  const llamacppModel = state.panel.querySelector("#promptstudio-llamacpp-model");
+  if (llamacppModel && settings.llamacpp_model
+      && ![...llamacppModel.options].some((option) => option.value === settings.llamacpp_model)) {
+    const option = document.createElement("option");
+    option.value = settings.llamacpp_model;
+    option.textContent = settings.llamacpp_model;
+    llamacppModel.appendChild(option);
+  }
+  setValue("promptstudio-llamacpp-model", settings.llamacpp_model);
   [
     ["promptstudio-use-llm-amplification", settings.use_llm_amplification],
     ["promptstudio-use-prompt-upscaling", settings.use_prompt_upscaling],
@@ -3458,12 +3608,57 @@ function useLlmAmplification() {
   return state.panel?.querySelector("#promptstudio-use-llm-amplification")?.checked !== false;
 }
 
+function normalizeLlmProvider(value) {
+  return ["koboldcpp", "ollama", "llamacpp"].includes(String(value || "").trim().toLowerCase())
+    ? String(value).trim().toLowerCase()
+    : "ollama";
+}
+
+function confirmAdvancedLlmProvider(provider) {
+  const normalized = normalizeLlmProvider(provider);
+  if (normalized === "ollama") return true;
+  try {
+    if (localStorage.getItem(ADVANCED_LLM_ACK_STORAGE_KEY) === "acknowledged") return true;
+  } catch (_) {
+    // Continue with the notice when browser storage is unavailable.
+  }
+  const view = state.panel?.ownerDocument.defaultView;
+  const accepted = Boolean(view?.confirm(
+    `${llmProviderDisplayName(normalized)} is an advanced local-server option.\n\n`
+    + "You are responsible for installing and configuring the server, model files, endpoint, vision/projector support, and GPU settings. Incorrect settings can prevent generation or exhaust GPU memory. Ollama is the recommended default for most users.\n\n"
+    + "Choose OK to continue. This notice will not be shown again.",
+  ));
+  if (accepted) {
+    try {
+      localStorage.setItem(ADVANCED_LLM_ACK_STORAGE_KEY, "acknowledged");
+    } catch (_) {
+      // Selection still works, but the notice cannot be remembered without browser storage.
+    }
+  }
+  return accepted;
+}
+
+function handleLlmProviderChange() {
+  const select = state.panel?.querySelector("#promptstudio-llm-provider");
+  if (!select) return;
+  const requested = normalizeLlmProvider(select.value);
+  if (!confirmAdvancedLlmProvider(requested)) select.value = "ollama";
+  syncLlmProviderControls({ refreshModels: true });
+  markControlsChanged();
+  updateComposeMode();
+  if (!state.panel.querySelector("#promptstudio-consult").hidden) refreshConsultVisionCapability();
+}
+
+function llmProviderDisplayName(provider = selectedLlmProvider()) {
+  return { koboldcpp: "KoboldCpp", ollama: "Ollama", llamacpp: "Llama.cpp" }[normalizeLlmProvider(provider)];
+}
+
 function selectedLlmProvider() {
-  return state.panel?.querySelector("#promptstudio-llm-provider")?.value === "ollama" ? "ollama" : "koboldcpp";
+  return normalizeLlmProvider(state.panel?.querySelector("#promptstudio-llm-provider")?.value);
 }
 
 function llmProviderName() {
-  return selectedLlmProvider() === "ollama" ? "Ollama" : "KoboldCpp";
+  return llmProviderDisplayName();
 }
 
 function controlsNeedApply() {
@@ -5362,9 +5557,21 @@ function renderGenerationProgress(message, data) {
   const label = document.createElement("span");
   label.textContent = statusText;
   const amount = document.createElement("span");
-  amount.className = "promptstudio-generation-progress-amount";
-  amount.textContent = percent == null ? "" : `${percent}%`;
-  status.append(label, amount);
+  const llmTokenCount = data?.llmTokenCount == null ? null : Number(data.llmTokenCount);
+  const hasTokenCount = percent == null
+    && llmTokenCount != null
+    && Number.isFinite(llmTokenCount)
+    && llmTokenCount >= 0;
+  if (percent == null) {
+    amount.className = "promptstudio-llm-token-count";
+    amount.textContent = hasTokenCount ? `${llmTokenCount.toLocaleString()} tokens` : "";
+    amount.setAttribute("aria-label", amount.textContent);
+  } else {
+    amount.className = "promptstudio-generation-progress-amount";
+    amount.textContent = `${percent}%`;
+  }
+  status.appendChild(label);
+  if (percent != null) status.appendChild(amount);
 
   const track = document.createElement("div");
   track.className = "promptstudio-generation-progress-track";
@@ -5390,6 +5597,7 @@ function renderGenerationProgress(message, data) {
     cancel.addEventListener("click", () => cancelStudioOperation(data.id));
     container.appendChild(cancel);
   }
+  if (hasTokenCount) container.appendChild(amount);
   message.appendChild(container);
 }
 
@@ -5527,6 +5735,11 @@ function appendMessage(role, text, options = {}) {
     operationPhase: String(options.operationPhase || ""),
     operationStatus: String(options.operationStatus || ""),
     operationKind: String(options.operationKind || ""),
+    llmProvider: options.llmProvider ? normalizeLlmProvider(options.llmProvider) : "",
+    llmThinkingEnabled: options.llmThinkingEnabled === true,
+    llmTokenCount: options.llmTokenCount != null && Number.isFinite(Number(options.llmTokenCount))
+      ? Math.max(0, Math.trunc(Number(options.llmTokenCount)))
+      : null,
     studioMessageKind: ["discussion", "revision"].includes(options.studioMessageKind)
       ? options.studioMessageKind
       : "",
@@ -5933,6 +6146,40 @@ async function loadOllamaModels({ announce = false } = {}) {
   }
 }
 
+async function loadLlamacppModels({ announce = false } = {}) {
+  const select = state.panel?.querySelector("#promptstudio-llamacpp-model");
+  const button = state.panel?.querySelector("#promptstudio-refresh-llamacpp-models");
+  const endpoint = state.panel?.querySelector("#promptstudio-llamacpp-url")?.value.trim();
+  if (!select || !endpoint) return;
+  const selected = select.value || getSettings().llamacpp_model;
+  if (button) button.disabled = true;
+  try {
+    const response = await api.fetchApi("/promptstudio/prompt-studio/llamacpp-models", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ llamacpp_url: endpoint }),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.error || `Could not load Llama.cpp models (${response.status}).`);
+    const models = Array.isArray(data.models) ? data.models.map(String).filter(Boolean) : [];
+    setOptions("promptstudio-llamacpp-model", models, selected);
+    if (!models.length) {
+      const option = document.createElement("option");
+      option.value = "";
+      option.textContent = "No models reported";
+      select.appendChild(option);
+    } else if (!models.includes(selected)) {
+      select.value = models[0];
+    }
+    saveSettings();
+    if (announce) setStatus(`Loaded ${models.length} Llama.cpp model${models.length === 1 ? "" : "s"}.`, models.length ? "ready" : "warning");
+  } catch (error) {
+    if (announce) setStatus(error.message || String(error), "warning");
+  } finally {
+    if (button) button.disabled = false;
+  }
+}
+
 function syncLlmProviderControls({ refreshModels = false } = {}) {
   const provider = selectedLlmProvider();
   state.panel?.querySelectorAll("[data-llm-provider]").forEach((element) => {
@@ -5941,10 +6188,15 @@ function syncLlmProviderControls({ refreshModels = false } = {}) {
   const help = state.panel?.querySelector("#promptstudio-llm-amplification-help");
   if (help) help.textContent = `Rewrite prompts through ${llmProviderName()}`;
   const thinking = state.panel?.querySelector("#promptstudio-thinking-control");
-  if (thinking) thinking.title = provider === "ollama"
-    ? "Controls Ollama thinking. Minimal and Low both request Ollama's low thinking level."
-    : "Private-reasoning limits: Minimal 200 tokens, Low 500, Medium 1,000, and High uses the available context window.";
+  if (thinking) {
+    const profile = selectedLlmProfile();
+    const providerHelp = provider === "ollama"
+      ? "Ollama receives the selected native reasoning effort."
+      : `${llmProviderName()} receives the selected reasoning_effort through Chat Completions.`;
+    thinking.title = `${profile.name} modes: ${profile.thinking_modes.join(", ")}. ${providerHelp}`;
+  }
   if (refreshModels && provider === "ollama") loadOllamaModels({ announce: true });
+  if (refreshModels && provider === "llamacpp") loadLlamacppModels({ announce: true });
   if (state.llmStatusTimer) refreshLlmStatus();
 }
 
@@ -5956,12 +6208,13 @@ async function loadConfig() {
   setOptions("promptstudio-profile", state.config.profiles, settings.model_profile);
   setOptions("promptstudio-style", state.config.styles, settings.style_preset);
   setOptions("promptstudio-framing", state.config.framings, settings.framing_preset);
-  setOptions("promptstudio-thinking", state.config.thinking_modes, settings.thinking_mode);
+  renderLlmThinkingModeOptions(settings.thinking_mode);
   setOptions("promptstudio-embellishment", state.config.embellishment_levels, settings.embellishment_level);
   syncOutputLengthControl({ storedSettings: settings });
   applyStudioSettings(activeChat());
   renderKnownReferenceHighlights();
   if (selectedLlmProvider() === "ollama") await loadOllamaModels({ announce: false });
+  if (selectedLlmProvider() === "llamacpp") await loadLlamacppModels({ announce: false });
 }
 
 function collectRevisionPayload(
@@ -5981,6 +6234,10 @@ function collectRevisionPayload(
     kobold_url: value("promptstudio-kobold-url"),
     ollama_url: value("promptstudio-ollama-url"),
     ollama_model: value("promptstudio-ollama-model"),
+    llamacpp_url: value("promptstudio-llamacpp-url"),
+    llamacpp_model: value("promptstudio-llamacpp-model"),
+    llamacpp_executable: value("promptstudio-llamacpp-executable"),
+    llamacpp_config_path: value("promptstudio-llamacpp-config-path"),
     keep_models_loaded: Boolean(state.panel.querySelector("#promptstudio-keep-models-loaded")?.checked),
     ...llmProfileGenerationSettings(),
     model_profile: value("promptstudio-profile"),
@@ -7487,8 +7744,19 @@ function llmConnectionPayload() {
     kobold_url: value("promptstudio-kobold-url"),
     ollama_url: value("promptstudio-ollama-url"),
     ollama_model: value("promptstudio-ollama-model"),
+    llamacpp_url: value("promptstudio-llamacpp-url"),
+    llamacpp_model: value("promptstudio-llamacpp-model"),
+    llamacpp_executable: value("promptstudio-llamacpp-executable"),
+    llamacpp_config_path: value("promptstudio-llamacpp-config-path"),
     keep_models_loaded: Boolean(state.panel.querySelector("#promptstudio-keep-models-loaded")?.checked),
   };
+}
+
+function llamacppLauncherConfigured(payload = llmConnectionPayload()) {
+  return Boolean(
+    String(payload.llamacpp_executable || "").trim()
+    && String(payload.llamacpp_config_path || "").trim()
+  );
 }
 
 function comfyUiIsProcessing() {
@@ -7516,10 +7784,11 @@ function renderSystemStatusSummary() {
   if (!control || !label || !comfyDetail || !update || !restart) return;
 
   const llm = state.llmStatusSnapshot;
-  const provider = llm?.provider === "ollama" ? "ollama" : selectedLlmProvider();
+  const provider = normalizeLlmProvider(llm?.provider || selectedLlmProvider());
   const llmUnhealthy = llm?.reachable === false
     || Boolean(llm?.handoff_error)
-    || (provider === "ollama" && llm?.reachable === true && (!llm.model || llm.model_installed === false));
+    || (["ollama", "llamacpp"].includes(provider)
+      && llm?.reachable === true && (!llm.model || llm.model_installed === false));
   const checking = !llm || llm.checking === true;
   const comfyProcessing = comfyUiIsProcessing();
   const processing = checking
@@ -7576,18 +7845,28 @@ function renderLlmStatus(status = {}) {
   const heading = control?.querySelector("#promptstudio-llm-status-heading");
   const stop = control?.querySelector("#promptstudio-kobold-stop");
   const stopHelp = control?.querySelector("#promptstudio-kobold-stop-help");
+  const processControls = control?.querySelector("#promptstudio-llamacpp-process-controls");
+  const processDetail = control?.querySelector("#promptstudio-llamacpp-process-detail");
+  const processStart = control?.querySelector("#promptstudio-llamacpp-start");
+  const processStop = control?.querySelector("#promptstudio-llamacpp-server-stop");
+  const processRestart = control?.querySelector("#promptstudio-llamacpp-restart");
   if (!control || !label || !detail || !model || !vision || !heading || !stop || !stopHelp) return;
-  const provider = status.provider === "ollama" ? "ollama" : selectedLlmProvider();
+  const provider = normalizeLlmProvider(status.provider || selectedLlmProvider());
   const isOllama = provider === "ollama";
-  const providerName = isOllama ? "Ollama" : "KoboldCpp";
+  const isLlamacpp = provider === "llamacpp";
+  const providerName = llmProviderDisplayName(provider);
   const reachable = status.reachable === true;
   const busy = !isOllama && reachable && status.busy === true;
   state.llmStatusSnapshot = { ...status, provider };
   control.dataset.provider = provider;
   heading.textContent = providerName;
   const characters = Number(status.generated_characters);
+  const generatedTokens = llmGeneratedTokenCount(status);
+  const activity = llmActivityLabel(status, thinkingModeEnablesReasoning(selectedLlmThinkingMode()));
   detail.textContent = status.handoff_error || status.message || (busy
-    ? `Generation active${Number.isFinite(characters) && characters > 0 ? ` · ${characters.toLocaleString()} characters` : ""}`
+    ? `${activity}${generatedTokens != null
+      ? ` · ${generatedTokens.toLocaleString()} tokens`
+      : (Number.isFinite(characters) && characters > 0 ? ` · ${characters.toLocaleString()} characters` : "")}`
     : (reachable ? "Ready for local requests." : `${providerName} could not be reached.`));
   const modelName = typeof status.model === "string" ? status.model.trim() : "";
   model.textContent = modelName || (reachable ? "Unavailable" : "—");
@@ -7598,6 +7877,24 @@ function renderLlmStatus(status = {}) {
   stopHelp.hidden = isOllama;
   stop.disabled = !busy || state.koboldAbortBusy;
   stop.textContent = state.koboldAbortBusy ? "Stopping…" : "Force stop generation";
+  stopHelp.textContent = isLlamacpp
+    ? "Stops Prompt Studio text streams only. The Llama.cpp server stays loaded."
+    : "Stops text generation only. KoboldCpp stays loaded.";
+  if (processControls && processDetail && processStart && processStop && processRestart) {
+    processControls.hidden = !isLlamacpp;
+    processDetail.hidden = !isLlamacpp;
+    const process = status.server_process || {};
+    const managedRunning = process.managed === true && process.running === true;
+    const launcherConfigured = llamacppLauncherConfigured();
+    processDetail.textContent = state.llamacppProcessBusy
+      ? "Applying server action…"
+      : (managedRunning
+        ? `Managed server running${process.pid ? ` · PID ${process.pid}` : ""}`
+        : (reachable ? "Server running externally" : (launcherConfigured ? "Managed server stopped" : "Set executable and config paths in Settings")));
+    processStart.disabled = state.llamacppProcessBusy || managedRunning || reachable || !launcherConfigured;
+    processStop.disabled = state.llamacppProcessBusy || !managedRunning;
+    processRestart.disabled = state.llamacppProcessBusy || !managedRunning || !launcherConfigured;
+  }
   renderSystemStatusSummary();
 }
 
@@ -7706,8 +8003,11 @@ function handleManagerQueueStatus(event) {
 }
 
 async function refreshLlmStatus() {
-  const payload = llmConnectionPayload();
-  const provider = payload.llm_provider === "ollama" ? "ollama" : "koboldcpp";
+  const payload = {
+    ...llmConnectionPayload(),
+    thinking_mode: selectedLlmThinkingMode(),
+  };
+  const provider = normalizeLlmProvider(payload.llm_provider);
   if (state.llmStatusRequest && state.llmStatusRequestProvider === provider) return state.llmStatusRequest;
   const control = state.panel?.querySelector("#promptstudio-kobold-control");
   if (!control) return null;
@@ -7722,8 +8022,11 @@ async function refreshLlmStatus() {
         body: JSON.stringify(payload),
       });
       const data = await response.json().catch(() => ({}));
-      if (!response.ok) throw new Error(data.error || `${provider === "ollama" ? "Ollama" : "KoboldCpp"} status failed (${response.status}).`);
-      if (selectedLlmProvider() === provider) renderLlmStatus(data);
+      if (!response.ok) throw new Error(data.error || `${llmProviderDisplayName(provider)} status failed (${response.status}).`);
+      if (selectedLlmProvider() === provider) {
+        renderLlmStatus(data);
+        updateActiveLlmOperationProgress(data);
+      }
       return data;
     } catch (error) {
       if (selectedLlmProvider() === provider) {
@@ -7742,29 +8045,149 @@ async function refreshLlmStatus() {
   return request;
 }
 
-async function stopKoboldGeneration() {
-  if (selectedLlmProvider() !== "koboldcpp" || state.koboldAbortBusy) return;
+function updateActiveLlmOperationProgress(status = {}) {
+  const provider = normalizeLlmProvider(status.provider || selectedLlmProvider());
+  let activeChatChanged = false;
+  for (const chat of state.chats) {
+    for (const message of chat.messages || []) {
+      if (message.operationPhase !== "llm_processing") continue;
+      if (message.llmProvider && normalizeLlmProvider(message.llmProvider) !== provider) continue;
+      const activity = llmActivityLabel(status, message.llmThinkingEnabled === true);
+      const tokenCount = llmGeneratedTokenCount(status);
+      message.operationStatus = status.busy === true
+        ? `${activity}…`
+        : `${activity} · waiting…`;
+      if (tokenCount != null) message.llmTokenCount = tokenCount;
+      activeChatChanged ||= chat.id === state.activeChatId;
+    }
+  }
+  if (activeChatChanged) renderChatHistory();
+}
+
+async function stopLlmGeneration() {
+  const provider = selectedLlmProvider();
+  if (!["koboldcpp", "llamacpp"].includes(provider) || state.koboldAbortBusy) return;
   state.koboldAbortBusy = true;
-  renderLlmStatus({ provider: "koboldcpp", reachable: true, busy: true, message: "Sending force-stop signal…" });
+  renderLlmStatus({ provider, reachable: true, busy: true, message: "Sending force-stop signal…" });
   try {
-    const response = await api.fetchApi(KOBOLD_ABORT_ENDPOINT, {
+    const response = await api.fetchApi(LLM_ABORT_ENDPOINT, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ kobold_url: llmConnectionPayload().kobold_url }),
+      body: JSON.stringify(llmConnectionPayload()),
     });
     const data = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(data.error || `KoboldCpp stop failed (${response.status}).`);
+    if (!response.ok) throw new Error(data.error || `${llmProviderDisplayName(provider)} stop failed (${response.status}).`);
     renderLlmStatus({
-      provider: "koboldcpp",
+      provider,
       reachable: true,
       busy: data.success !== true,
-      message: data.success ? "Stop signal accepted." : "KoboldCpp reported no abortable generation.",
+      message: data.success ? "Stop signal accepted." : `${llmProviderDisplayName(provider)} reported no Prompt Studio generation to stop.`,
     });
   } catch (error) {
-    renderLlmStatus({ provider: "koboldcpp", reachable: false, message: error.message || String(error) });
+    renderLlmStatus({ provider, reachable: false, message: error.message || String(error) });
   } finally {
     state.koboldAbortBusy = false;
     window.setTimeout(refreshLlmStatus, 500);
+  }
+}
+
+async function controlLlamacppServer(action) {
+  if (selectedLlmProvider() !== "llamacpp" || state.llamacppProcessBusy) return;
+  const payload = llmConnectionPayload();
+  if (["start", "restart"].includes(action) && !llamacppLauncherConfigured(payload)) {
+    setStatus("Set both the Llama.cpp executable and config paths before starting the server.", "warning");
+    return;
+  }
+  state.llamacppProcessBusy = true;
+  renderLlmStatus({ ...(state.llmStatusSnapshot || {}), provider: "llamacpp" });
+  try {
+    const response = await api.fetchApi(`${LLAMACPP_SERVER_ENDPOINT}/${action}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.error || `Llama.cpp server ${action} failed (${response.status}).`);
+    if (data.url) {
+      const endpoint = state.panel?.querySelector("#promptstudio-llamacpp-url");
+      if (endpoint) endpoint.value = data.url;
+      saveSettings();
+    }
+    setStatus(data.external
+      ? "A Llama.cpp server is already running at the configured endpoint; it remains externally managed."
+      : `Llama.cpp server ${action} requested.`, data.external ? "warning" : "ready");
+  } catch (error) {
+    setStatus(error.message || String(error), "warning");
+  } finally {
+    state.llamacppProcessBusy = false;
+    window.setTimeout(refreshLlmStatus, action === "stop" ? 300 : 1000);
+  }
+}
+
+async function browseLlamacppPath(kind) {
+  const controls = {
+    executable: {
+      input: "#promptstudio-llamacpp-executable",
+      button: "#promptstudio-browse-llamacpp-executable",
+      label: "Llama.cpp executable",
+    },
+    config: {
+      input: "#promptstudio-llamacpp-config-path",
+      button: "#promptstudio-browse-llamacpp-config",
+      label: "Llama.cpp launcher config",
+    },
+  };
+  const control = controls[kind];
+  if (!control) return;
+  const input = state.panel?.querySelector(control.input);
+  const button = state.panel?.querySelector(control.button);
+  if (!input || !button || button.disabled) return;
+  button.disabled = true;
+  button.textContent = "Browsing…";
+  try {
+    const response = await api.fetchApi(LLAMACPP_FILE_PICKER_ENDPOINT, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ kind, current_path: input.value.trim() }),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.error || `Could not open the ${control.label} picker (${response.status}).`);
+    if (!data.path) return;
+    input.value = data.path;
+    input.dispatchEvent(new Event("change", { bubbles: true }));
+    setStatus(`${control.label} selected.`, "ready");
+  } catch (error) {
+    setStatus(error.message || String(error), "warning");
+  } finally {
+    button.disabled = false;
+    button.textContent = "Browse…";
+  }
+}
+
+async function openLlamacppConfigBuilder() {
+  const input = state.panel?.querySelector("#promptstudio-llamacpp-config-path");
+  const button = state.panel?.querySelector("#promptstudio-build-llamacpp-config");
+  if (!input || !button || button.disabled) return;
+  button.disabled = true;
+  button.textContent = "Opening…";
+  try {
+    const response = await api.fetchApi(LLAMACPP_CONFIG_BUILDER_ENDPOINT, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ llamacpp_config_path: input.value.trim() }),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.error || `Could not open the Llama.cpp config builder (${response.status}).`);
+    if (data.config_path) {
+      input.value = data.config_path;
+      input.dispatchEvent(new Event("change", { bubbles: true }));
+    }
+    setStatus("Llama.cpp config builder opened. Save there before starting or restarting the server.", "ready");
+  } catch (error) {
+    setStatus(error.message || String(error), "warning");
+  } finally {
+    button.disabled = false;
+    button.textContent = "Build…";
   }
 }
 
@@ -7906,7 +8329,7 @@ async function pasteMainReference(file, { source = "pasted" } = {}) {
   const chat = activeChat();
   if (!chat) return;
   const connectionPayload = llmConnectionPayload();
-  const providerName = connectionPayload.llm_provider === "ollama" ? "Ollama" : "KoboldCpp";
+  const providerName = llmProviderDisplayName(connectionPayload.llm_provider);
   const preparationId = makeId();
   state.studioPreparations.set(preparationId, { chatId: chat.id, kind: "reference-import" });
   state.latestStudioPreparationByChat.set(chat.id, preparationId);
@@ -8011,7 +8434,11 @@ function consultCurrentGenerationSettings() {
     secondary_instructions: value("promptstudio-secondary-instructions"),
     local_llm: {
       provider: llmProviderName(),
-      model: selectedLlmProvider() === "ollama" ? value("promptstudio-ollama-model") : "KoboldCpp active model",
+      model: selectedLlmProvider() === "ollama"
+        ? value("promptstudio-ollama-model")
+        : (selectedLlmProvider() === "llamacpp"
+          ? value("promptstudio-llamacpp-model")
+          : "KoboldCpp active model"),
       profile: selectedLlmProfile().name,
       ...llmProfileGenerationSettings(),
       target_output_length: Number(value("promptstudio-output-length") || 35),
@@ -8178,7 +8605,7 @@ async function monitorPromptAgentPhase(agentId, phase, connectionPayload, reques
     if (state.consultAgentRequestId !== requestId || signal?.aborted) return;
     const chat = consultAgentChat(agentId);
     if (chat?.id !== state.activeChatId) continue;
-    if (connectionPayload.llm_provider !== "koboldcpp") {
+    if (connectionPayload.llm_provider === "ollama") {
       setConsultStatus(
         `${phaseLabel} · ${Math.max(1, Math.round((Date.now() - startedAt) / 1000))}s elapsed…`,
         "working",
@@ -8186,10 +8613,10 @@ async function monitorPromptAgentPhase(agentId, phase, connectionPayload, reques
       continue;
     }
     try {
-      const response = await api.fetchApi(KOBOLD_STATUS_ENDPOINT, {
+      const response = await api.fetchApi(LLM_STATUS_ENDPOINT, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ kobold_url: connectionPayload.kobold_url }),
+        body: JSON.stringify(connectionPayload),
       });
       const status = await response.json().catch(() => ({}));
       if (
@@ -8197,18 +8624,25 @@ async function monitorPromptAgentPhase(agentId, phase, connectionPayload, reques
         || signal?.aborted
         || chat.id !== state.activeChatId
       ) return;
+      const tokens = llmGeneratedTokenCount(status);
       const characters = Number(status.generated_characters);
-      const progress = Number.isFinite(characters) && characters > 0
-        ? ` · ${characters.toLocaleString()} characters generated`
-        : "";
+      const progress = tokens != null
+        ? ` · ${tokens.toLocaleString()} tokens`
+        : (Number.isFinite(characters) && characters > 0
+          ? ` · ${characters.toLocaleString()} characters`
+          : "");
+      const activity = llmActivityLabel(
+        status,
+        thinkingModeEnablesReasoning(connectionPayload.thinking_mode),
+      );
       setConsultStatus(
         status.busy
-          ? `${phaseLabel}${progress}…`
-          : `${phaseLabel} · waiting for KoboldCpp…`,
+          ? `${phaseLabel} · ${activity}${progress}…`
+          : `${phaseLabel} · ${activity.toLowerCase()} · waiting…`,
         "working",
       );
     } catch (_) {
-      setConsultStatus(`${phaseLabel} · KoboldCpp is still working…`, "working");
+      setConsultStatus(`${phaseLabel} · ${llmActivityLabel({}, thinkingModeEnablesReasoning(connectionPayload.thinking_mode)).toLowerCase()}…`, "working");
     }
   }
 }
@@ -8250,7 +8684,7 @@ async function requestPromptAgentPhase(phase, agent, extra = {}, requestSettings
   const progressMonitor = monitorPromptAgentPhase(
     agent.id,
     phase,
-    connectionPayload,
+    { ...connectionPayload, thinking_mode: generationSettings.thinking_mode },
     requestId,
     signal,
   );
@@ -8673,7 +9107,7 @@ async function startConsultAgent() {
     generationSettings: collectConsultGenerationSettings(),
   };
   const queueSettings = captureGenerationQueueSettings("create", chat);
-  const providerName = requestSettings.connectionPayload.llm_provider === "ollama" ? "Ollama" : "KoboldCpp";
+  const providerName = llmProviderDisplayName(requestSettings.connectionPayload.llm_provider);
   setConsultStatus(`Checking ${providerName} vision support…`, "working");
   try {
     await requireVisionCapability(requestSettings.connectionPayload);
@@ -8753,7 +9187,7 @@ async function continueConsultAgent() {
     generationSettings: collectConsultGenerationSettings(),
   };
   const queueSettings = captureGenerationQueueSettings("create", chat);
-  const providerName = requestSettings.connectionPayload.llm_provider === "ollama" ? "Ollama" : "KoboldCpp";
+  const providerName = llmProviderDisplayName(requestSettings.connectionPayload.llm_provider);
   setConsultStatus(`Checking ${providerName} vision support…`, "working");
   try {
     await requireVisionCapability(requestSettings.connectionPayload);
@@ -10008,6 +10442,15 @@ function renderConsultHistory({ forceEnd = false } = {}) {
     cancel.textContent = "Cancel";
     cancel.addEventListener("click", () => cancelConsultChatJob(chat.id));
     pendingBubble.append(pendingText, cancel);
+    const pendingTokenCount = chat?.consultPendingJob?.token_count;
+    if (pendingTokenCount != null && Number.isFinite(Number(pendingTokenCount))) {
+      const tokens = document.createElement("span");
+      tokens.className = "promptstudio-llm-token-count";
+      tokens.dataset.consultTokenCount = "true";
+      tokens.textContent = `${Math.max(0, Math.trunc(Number(pendingTokenCount))).toLocaleString()} tokens`;
+      tokens.setAttribute("aria-label", tokens.textContent);
+      pendingBubble.appendChild(tokens);
+    }
     history.appendChild(pendingBubble);
   }
   settleViewport();
@@ -10052,13 +10495,25 @@ function waitForConsultRetry() {
   return new Promise((resolve) => window.setTimeout(resolve, 1500));
 }
 
-function setConsultJobProgress(chatId, text) {
+function setConsultJobProgress(chatId, text, tokenCount = null) {
   const chat = state.chats.find((item) => item.id === chatId);
-  if (chat?.consultPendingJob) chat.consultPendingJob.progress = String(text || "");
+  if (chat?.consultPendingJob) {
+    chat.consultPendingJob.progress = String(text || "");
+    if (tokenCount != null && Number.isFinite(Number(tokenCount))) {
+      chat.consultPendingJob.token_count = Math.max(0, Math.trunc(Number(tokenCount)));
+    }
+  }
   if (chatId !== state.activeChatId) return;
   const pending = state.panel?.querySelector("[data-consult-pending]");
   if (pending) pending.textContent = String(text || "");
   else renderConsultHistory();
+  const token = state.panel?.querySelector("[data-consult-token-count]");
+  if (token && chat?.consultPendingJob?.token_count != null) {
+    token.textContent = `${chat.consultPendingJob.token_count.toLocaleString()} tokens`;
+    token.setAttribute("aria-label", token.textContent);
+  } else if (!token && chat?.consultPendingJob?.token_count != null) {
+    renderConsultHistory();
+  }
 }
 
 async function requestConsultResponse(pending, chatId) {
@@ -10097,18 +10552,25 @@ async function requestConsultResponse(pending, chatId) {
   }
 }
 
-function consultJobStatusText(job) {
+function consultJobStatusText(job, pending = null) {
   if (job.status === "queued") return "Consultation request is queued…";
   const provider = job.provider_status || {};
-  if (provider.provider !== "koboldcpp") return `${llmProviderName()} is still working…`;
-  if (provider.reachable === false) return "Consultation is running; KoboldCpp status is temporarily unavailable…";
-  if (provider.busy) {
-    const characters = Number(provider.generated_characters);
-    return Number.isFinite(characters) && characters > 0
-      ? `KoboldCpp is still generating · ${characters.toLocaleString()} characters received…`
-      : "KoboldCpp is still processing the prompt…";
+  const thinkingEnabled = thinkingModeEnablesReasoning(pending?.request?.thinking_mode);
+  const activity = llmActivityLabel(provider, thinkingEnabled);
+  if (provider.provider === "ollama") {
+    const startedAt = Number(pending?.created_at);
+    const elapsed = Number.isFinite(startedAt)
+      ? ` · ${Math.max(1, Math.round((Date.now() - startedAt) / 1000))}s`
+      : "";
+    return `${activity}${elapsed}…`;
   }
-  return "KoboldCpp finished generating; Prompt Studio is processing the response…";
+  if (provider.reachable === false) {
+    return `${activity} · live status temporarily unavailable…`;
+  }
+  if (provider.busy) {
+    return `${activity}…`;
+  }
+  return `${activity} · waiting…`;
 }
 
 async function pollConsultJob(jobId, chatId) {
@@ -10137,7 +10599,12 @@ async function pollConsultJob(jobId, chatId) {
     if (job.status === "complete") return job.result || {};
     if (job.status === "failed") throw new Error(job.error || "Consultation request failed.");
     if (job.status === "cancelled") throw new DOMException("Consultation request was cancelled.", "AbortError");
-    setConsultJobProgress(chatId, consultJobStatusText(job));
+    const pending = state.chats.find((item) => item.id === chatId)?.consultPendingJob;
+    setConsultJobProgress(
+      chatId,
+      consultJobStatusText(job, pending),
+      llmGeneratedTokenCount(job.provider_status || {}),
+    );
   }
 }
 
@@ -10287,7 +10754,7 @@ function regenerateConsultResponse(messageId) {
   chat.consultPendingJob = {
     job_id: jobId, kind: "regenerate", message_id: message.id,
     experiment_mode: experimentMode, experiment_id: activeConsultExperiment(chat)?.id || "",
-    progress: "Waiting for the local language model to regenerate the answer...", created_at: Date.now(),
+    progress: `${llmActivityLabel({}, thinkingModeEnablesReasoning(selectedLlmThinkingMode()))}…`, created_at: Date.now(),
   };
   chat.consultPendingJob.request = consultRequestPayload(
     chat.consultMessages.slice(0, messageIndex), jobId, experimentMode,
@@ -10340,7 +10807,7 @@ function sendConsultMessage() {
   const experimentMode = Boolean(activeConsultExperiment(chat));
   chat.consultPendingJob = {
     job_id: jobId, kind: "send", experiment_mode: experimentMode, experiment_id: experimentId,
-    progress: "Waiting for the local language model...", created_at: now,
+    progress: `${llmActivityLabel({}, thinkingModeEnablesReasoning(selectedLlmThinkingMode()))}…`, created_at: now,
   };
   chat.consultPendingJob.request = consultRequestPayload(chat.consultMessages, jobId, experimentMode);
   chat.updatedAt = now;
@@ -10441,12 +10908,14 @@ async function importDroppedImage(file) {
   clearImageImportTemplates();
   const importFingerprint = controlsFingerprint();
   const captionPayload = collectRevisionPayload("Caption the image", "render", "", "");
-  const providerName = captionPayload.llm_provider === "ollama" ? "Ollama" : "KoboldCpp";
+  const providerName = llmProviderDisplayName(captionPayload.llm_provider);
   const visionPayload = {
     llm_provider: captionPayload.llm_provider,
     kobold_url: captionPayload.kobold_url,
     ollama_url: captionPayload.ollama_url,
     ollama_model: captionPayload.ollama_model,
+    llamacpp_url: captionPayload.llamacpp_url,
+    llamacpp_model: captionPayload.llamacpp_model,
   };
   const preparationId = makeId();
   state.studioPreparations.set(preparationId, { chatId: chat.id, kind: "image-import" });
@@ -11176,8 +11645,10 @@ async function reviseAndMaybeGenerate({
     kobold_url: basePayload.kobold_url,
     ollama_url: basePayload.ollama_url,
     ollama_model: basePayload.ollama_model,
+    llamacpp_url: basePayload.llamacpp_url,
+    llamacpp_model: basePayload.llamacpp_model,
   };
-  const providerName = basePayload.llm_provider === "ollama" ? "Ollama" : "KoboldCpp";
+  const providerName = llmProviderDisplayName(basePayload.llm_provider);
   const operationMessage = createStudioOperation(chat, generationAction, "Submitted…");
   const operationSignal = state.operationControllers.get(operationMessage.operationId)?.signal || null;
   const preparationId = makeId();
@@ -11199,6 +11670,9 @@ async function reviseAndMaybeGenerate({
   updateStudioOperation(operationMessage.id, {
     operationPhase: contextImage ? "checking_vision" : "llm_processing",
     operationStatus: contextImage ? "Checking image support…" : revisionStatus,
+    llmProvider: normalizeLlmProvider(basePayload.llm_provider),
+    llmThinkingEnabled: thinkingModeEnablesReasoning(basePayload.thinking_mode),
+    llmTokenCount: null,
   });
 
   try {
@@ -11498,12 +11972,14 @@ async function queueBackgroundReroll(generationAction = selectedAction()) {
     kobold_url: revisionPayload.kobold_url,
     ollama_url: revisionPayload.ollama_url,
     ollama_model: revisionPayload.ollama_model,
+    llamacpp_url: revisionPayload.llamacpp_url,
+    llamacpp_model: revisionPayload.llamacpp_model,
   };
   const queueSettings = {
     ...captureGenerationQueueSettings(generationAction, chat),
     sourceImage,
   };
-  const providerName = revisionPayload.llm_provider === "ollama" ? "Ollama" : "KoboldCpp";
+  const providerName = llmProviderDisplayName(revisionPayload.llm_provider);
   const preparationId = makeId();
   const operation = createStudioOperation(
     chat,
@@ -11615,12 +12091,22 @@ function undoPrompt() {
 
 async function interrupt() {
   if (activeConsultAgent()?.active) return stopConsultAgent();
+  const provider = selectedLlmProvider();
+  const llmOperationActive = state.busy && !state.generating && !state.queueing;
   state.operationToken += 1;
   state.pollToken += 1;
+  state.operationControllers.forEach((controller) => controller.abort());
   const interruptedPromptId = state.activeGenerationPromptId;
   const consultTarget = state.consultGenerationTarget;
   const studioGenerationActive = state.generationJobs.has(String(interruptedPromptId || ""));
   try {
+    if (llmOperationActive && ["koboldcpp", "llamacpp"].includes(provider)) {
+      await api.fetchApi(LLM_ABORT_ENDPOINT, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(llmConnectionPayload()),
+      });
+    }
     if (state.generating || state.queueing || studioGenerationActive) {
       if (typeof api.interrupt === "function") await api.interrupt();
       else await api.fetchApi("/interrupt", { method: "POST" });
@@ -11761,7 +12247,7 @@ function buildPanel() {
             <div class="promptstudio-kobold-popover">
               <strong class="promptstudio-system-status-heading">System status</strong>
               <section class="promptstudio-system-status-section">
-                <strong id="promptstudio-llm-status-heading">${settings.llm_provider === "ollama" ? "Ollama" : "KoboldCpp"}</strong>
+                <strong id="promptstudio-llm-status-heading">${llmProviderDisplayName(settings.llm_provider)}</strong>
                 <span id="promptstudio-kobold-status-detail" role="status" aria-live="polite">Checking local status…</span>
                 <dl class="promptstudio-kobold-metadata">
                   <div><dt>Model</dt><dd id="promptstudio-kobold-model">Checking…</dd></div>
@@ -11769,6 +12255,12 @@ function buildPanel() {
                 </dl>
                 <button id="promptstudio-kobold-stop" type="button" disabled ${settings.llm_provider === "ollama" ? "hidden" : ""}>Force stop generation</button>
                 <small id="promptstudio-kobold-stop-help" ${settings.llm_provider === "ollama" ? "hidden" : ""}>Stops text generation only. KoboldCpp stays loaded.</small>
+                <div id="promptstudio-llamacpp-process-controls" class="promptstudio-system-status-actions" ${settings.llm_provider === "llamacpp" ? "" : "hidden"}>
+                  <button id="promptstudio-llamacpp-start" type="button" title="Start Llama.cpp server" disabled>Start</button>
+                  <button id="promptstudio-llamacpp-server-stop" type="button" title="Stop managed Llama.cpp server" disabled>Stop</button>
+                  <button id="promptstudio-llamacpp-restart" type="button" title="Restart managed Llama.cpp server" disabled>Restart</button>
+                </div>
+                <small id="promptstudio-llamacpp-process-detail" ${settings.llm_provider === "llamacpp" ? "" : "hidden"}>Checking managed server…</small>
               </section>
               <section class="promptstudio-system-status-section promptstudio-comfy-status-section">
                 <div class="promptstudio-system-status-row"><strong>ComfyUI</strong><span id="promptstudio-comfy-status-detail" data-state="busy" role="status" aria-live="polite">Checking…</span></div>
@@ -11793,7 +12285,7 @@ function buildPanel() {
       <section class="promptstudio-mode-control">
         <label>
           <input id="promptstudio-use-llm-amplification" type="checkbox" ${settings.use_llm_amplification ? "checked" : ""} />
-          <span><strong>Use LLM amplification</strong><small id="promptstudio-llm-amplification-help">Rewrite prompts through ${settings.llm_provider === "ollama" ? "Ollama" : "KoboldCpp"}</small></span>
+          <span><strong>Use LLM amplification</strong><small id="promptstudio-llm-amplification-help">Rewrite prompts through ${llmProviderDisplayName(settings.llm_provider)}</small></span>
         </label>
       </section>
       <section class="promptstudio-control-deck">
@@ -11882,8 +12374,9 @@ function buildPanel() {
             <label class="promptstudio-studio-setting promptstudio-endpoint-control">
               <span class="promptstudio-studio-setting-copy"><strong>LLM provider</strong><small>Choose the local service used to rewrite prompts.</small></span>
               <select id="promptstudio-llm-provider" aria-label="LLM provider">
-                <option value="koboldcpp" ${settings.llm_provider !== "ollama" ? "selected" : ""}>KoboldCpp</option>
                 <option value="ollama" ${settings.llm_provider === "ollama" ? "selected" : ""}>Ollama</option>
+                <option value="koboldcpp" ${settings.llm_provider === "koboldcpp" ? "selected" : ""}>KoboldCpp</option>
+                <option value="llamacpp" ${settings.llm_provider === "llamacpp" ? "selected" : ""}>Llama.cpp</option>
               </select>
             </label>
             <label class="promptstudio-studio-setting promptstudio-studio-setting-toggle">
@@ -11911,6 +12404,32 @@ function buildPanel() {
               <span class="promptstudio-ollama-model-field">
                 <select id="promptstudio-ollama-model" aria-label="Ollama model"></select>
                 <button id="promptstudio-refresh-ollama-models" type="button" title="Refresh Ollama models" aria-label="Refresh Ollama models">â†»</button>
+              </span>
+            </label>
+            <label class="promptstudio-studio-setting promptstudio-endpoint-control" data-llm-provider="llamacpp">
+              <span class="promptstudio-studio-setting-copy"><strong>Llama.cpp endpoint</strong><small>Prompt Studio connects to llama-server here. The usual local endpoint is http://127.0.0.1:8080.</small></span>
+              <input id="promptstudio-llamacpp-url" type="url" inputmode="url" spellcheck="false" aria-label="Llama.cpp endpoint" />
+            </label>
+            <label class="promptstudio-studio-setting promptstudio-endpoint-control" data-llm-provider="llamacpp">
+              <span class="promptstudio-studio-setting-copy"><strong>Llama.cpp model</strong><small>Select the model reported by llama-server. Router mode can expose multiple models.</small></span>
+              <span class="promptstudio-ollama-model-field">
+                <select id="promptstudio-llamacpp-model" aria-label="Llama.cpp model"></select>
+                <button id="promptstudio-refresh-llamacpp-models" type="button" title="Refresh Llama.cpp models" aria-label="Refresh Llama.cpp models">↻</button>
+              </span>
+            </label>
+            <label class="promptstudio-studio-setting promptstudio-endpoint-control" data-llm-provider="llamacpp">
+              <span class="promptstudio-studio-setting-copy"><strong>Llama.cpp executable</strong><small>Absolute path to llama.exe or llama-server.exe. Process controls are local-only and manage only servers started by Prompt Studio.</small></span>
+              <span class="promptstudio-path-field">
+                <input id="promptstudio-llamacpp-executable" type="text" spellcheck="false" placeholder="C:\\path\\to\\llama.exe" aria-label="Llama.cpp executable path" />
+                <button id="promptstudio-browse-llamacpp-executable" type="button">Browse…</button>
+              </span>
+            </label>
+            <label class="promptstudio-studio-setting promptstudio-endpoint-control" data-llm-provider="llamacpp">
+              <span class="promptstudio-studio-setting-copy"><strong>Llama.cpp config file</strong><small>Absolute path to the Prompt Studio Llama.cpp JSON launcher config.</small></span>
+              <span class="promptstudio-path-field promptstudio-config-path-field">
+                <input id="promptstudio-llamacpp-config-path" type="text" spellcheck="false" placeholder="C:\\path\\to\\promptstudio-llamacpp.json" aria-label="Llama.cpp config file path" />
+                <button id="promptstudio-browse-llamacpp-config" type="button">Browse…</button>
+                <button id="promptstudio-build-llamacpp-config" type="button" title="Open the Prompt Studio Llama.cpp config builder">Build…</button>
               </span>
             </label>
             <label class="promptstudio-studio-setting promptstudio-image-scale-control">
@@ -12022,8 +12541,15 @@ function buildPanel() {
               <div class="promptstudio-llm-profile-parameter-heading"><strong>Request settings</strong><span>Shared by the thinking and non-thinking samplers.</span></div>
               <div class="promptstudio-llm-profile-parameter-grid">
                 <label title="Maximum final-answer tokens. Use 0 for the request-specific automatic limit."><span>Response tokens</span><input name="max_response_tokens" type="number" min="0" max="8192" step="1" required /></label>
+                <label title="Llama.cpp only. Use 0 for model-controlled reasoning. A positive value forcibly ends thinking after this many tokens and can reduce answer quality."><span>Llama.cpp reasoning cap</span><input name="llamacpp_reasoning_budget_tokens" type="number" min="0" max="262144" step="1" required /></label>
                 <label title="Use -1 to let the provider choose a random seed."><span>Sampler seed</span><input name="sampler_seed" type="number" min="-1" max="999999" step="1" required /></label>
                 <label><span>Request timeout (seconds)</span><input name="request_timeout" type="number" min="5" max="600" step="1" required /></label>
+              </div>
+            </section>
+            <section class="promptstudio-llm-profile-parameter-group">
+              <div class="promptstudio-llm-profile-parameter-heading"><strong>Available thinking modes</strong><span>Only enabled modes appear in Generation controls.</span></div>
+              <div class="promptstudio-llm-profile-thinking-modes">
+                ${LLM_THINKING_MODE_OPTIONS.map((mode) => `<label><input name="thinking_modes" type="checkbox" value="${mode}" /><span>${mode}</span></label>`).join("")}
               </div>
             </section>
             <section class="promptstudio-llm-profile-parameter-group">
@@ -12039,7 +12565,7 @@ function buildPanel() {
               </div>
             </section>
             <section class="promptstudio-llm-profile-parameter-group">
-              <div class="promptstudio-llm-profile-parameter-heading"><strong>Thinking sampler</strong><span>Used for Minimal, Low, Medium, and High thinking.</span></div>
+              <div class="promptstudio-llm-profile-parameter-heading"><strong>Thinking sampler</strong><span>Used by every available mode except Disabled.</span></div>
               <div class="promptstudio-llm-profile-parameter-grid">
                 <label><span>Temperature</span><input name="thinking_temperature" type="number" min="0" max="5" step="0.05" required /></label>
                 <label><span>Top P</span><input name="thinking_top_p" type="number" min="0" max="1" step="0.01" required /></label>
@@ -12132,7 +12658,7 @@ function buildPanel() {
           <span>Shared by model chat, prompt rewriting, and Prompt Agent</span>
         </div>
         <div class="promptstudio-consult-profile-card">
-          <span><strong id="promptstudio-consult-profile-name">Qwen3.5</strong><small id="promptstudio-consult-profile-summary">Temperature 0.7 · top p 0.9</small></span>
+          <span><strong id="promptstudio-consult-profile-name">Default</strong><small id="promptstudio-consult-profile-summary">Temperature 0.7 · top p 0.9</small></span>
           <button id="promptstudio-consult-edit-llm-profile" type="button">Edit profile</button>
         </div>
         <select id="promptstudio-consult-thinking" aria-hidden="true" hidden><option value="${consultSettings.thinking_mode}">${consultSettings.thinking_mode}</option></select>
@@ -12272,11 +12798,20 @@ function buildPanel() {
   syncLlmProfileControls();
   panel.querySelector("#promptstudio-kobold-url").value = settings.kobold_url;
   panel.querySelector("#promptstudio-ollama-url").value = settings.ollama_url;
+  panel.querySelector("#promptstudio-llamacpp-url").value = settings.llamacpp_url;
+  panel.querySelector("#promptstudio-llamacpp-executable").value = settings.llamacpp_executable;
+  panel.querySelector("#promptstudio-llamacpp-config-path").value = settings.llamacpp_config_path;
   if (settings.ollama_model) {
     const option = document.createElement("option");
     option.value = settings.ollama_model;
     option.textContent = settings.ollama_model;
     panel.querySelector("#promptstudio-ollama-model").appendChild(option);
+  }
+  if (settings.llamacpp_model) {
+    const option = document.createElement("option");
+    option.value = settings.llamacpp_model;
+    option.textContent = settings.llamacpp_model;
+    panel.querySelector("#promptstudio-llamacpp-model").appendChild(option);
   }
   panel.querySelector("#promptstudio-output-length").value = settings.target_output_length;
   panel.querySelector("#promptstudio-output-length").dataset.custom = String(Boolean(settings.output_length_custom));
@@ -12306,7 +12841,9 @@ function buildPanel() {
   panel.querySelector("#promptstudio-toggle-studio-settings").addEventListener("click", () => toggleStudioSettings());
   panel.querySelector("#promptstudio-llm-profile").addEventListener("change", (event) => {
     renderLlmProfileOptions(event.target.value);
+    renderLlmThinkingModeOptions(selectedLlmProfile().thinking_mode);
     syncLlmProfileControls();
+    syncLlmProviderControls();
     saveSettings();
     markControlsChanged();
   });
@@ -12481,7 +13018,10 @@ function buildPanel() {
     retry();
   });
   panel.querySelector("#promptstudio-new-chat").addEventListener("click", createChat);
-  panel.querySelector("#promptstudio-kobold-stop").addEventListener("click", stopKoboldGeneration);
+  panel.querySelector("#promptstudio-kobold-stop").addEventListener("click", stopLlmGeneration);
+  panel.querySelector("#promptstudio-llamacpp-start").addEventListener("click", () => controlLlamacppServer("start"));
+  panel.querySelector("#promptstudio-llamacpp-server-stop").addEventListener("click", () => controlLlamacppServer("stop"));
+  panel.querySelector("#promptstudio-llamacpp-restart").addEventListener("click", () => controlLlamacppServer("restart"));
   panel.querySelector("#promptstudio-comfy-update").addEventListener("click", updateComfyUIFromStatus);
   panel.querySelector("#promptstudio-comfy-restart").addEventListener("click", restartComfyUIFromStatus);
   panel.querySelector("#promptstudio-popout").addEventListener("click", () => togglePopout({ returnToEmbedded: true }));
@@ -12498,12 +13038,7 @@ function buildPanel() {
     event.stopPropagation();
     refreshModelSection({ refresh: true });
   });
-  panel.querySelector("#promptstudio-llm-provider").addEventListener("change", () => {
-    syncLlmProviderControls({ refreshModels: true });
-    markControlsChanged();
-    updateComposeMode();
-    if (!panel.querySelector("#promptstudio-consult").hidden) refreshConsultVisionCapability();
-  });
+  panel.querySelector("#promptstudio-llm-provider").addEventListener("change", handleLlmProviderChange);
   panel.querySelector("#promptstudio-keep-models-loaded").addEventListener("change", () => {
     saveSettings();
     updateLlmHandoffStatus();
@@ -12565,6 +13100,27 @@ function buildPanel() {
     syncLlmProfileControls();
     saveConsultSettings();
   });
+  panel.querySelector("#promptstudio-refresh-llamacpp-models").addEventListener("click", () => loadLlamacppModels({ announce: true }));
+  panel.querySelector("#promptstudio-llamacpp-url").addEventListener("change", () => {
+    saveSettings();
+    if (selectedLlmProvider() === "llamacpp") loadLlamacppModels({ announce: true });
+    refreshLlmStatus();
+    if (!panel.querySelector("#promptstudio-consult").hidden) refreshConsultVisionCapability();
+  });
+  panel.querySelector("#promptstudio-llamacpp-model").addEventListener("change", () => {
+    markControlsChanged();
+    refreshLlmStatus();
+    if (!panel.querySelector("#promptstudio-consult").hidden) refreshConsultVisionCapability();
+  });
+  ["promptstudio-llamacpp-executable", "promptstudio-llamacpp-config-path"].forEach((id) => {
+    panel.querySelector(`#${id}`).addEventListener("change", () => {
+      saveSettings();
+      refreshLlmStatus();
+    });
+  });
+  panel.querySelector("#promptstudio-browse-llamacpp-executable").addEventListener("click", () => browseLlamacppPath("executable"));
+  panel.querySelector("#promptstudio-browse-llamacpp-config").addEventListener("click", () => browseLlamacppPath("config"));
+  panel.querySelector("#promptstudio-build-llamacpp-config").addEventListener("click", openLlamacppConfigBuilder);
   panel.querySelector("#promptstudio-main-prompt").addEventListener("input", (event) => {
     syncMainPromptEditor(event.target.value, { userEdit: true });
   });

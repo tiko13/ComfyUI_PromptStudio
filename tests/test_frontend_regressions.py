@@ -23,6 +23,34 @@ class FrontendRegressionTests(unittest.TestCase):
             render.index("if (!messages.length && !agent)"),
         )
 
+    def test_pending_llm_messages_show_phase_and_live_token_count(self):
+        activity = self.function_source("llmActivityLabel", "llmGeneratedTokenCount")
+        consult = self.source[
+            self.source.index("function consultJobStatusText"):
+            self.source.index("async function pollConsultJob")
+        ]
+        poll = self.source[
+            self.source.index("async function pollConsultJob"):
+            self.source.index("function appendConsultJobFailure")
+        ]
+        consult_render = self.function_source("renderConsultHistory", "selectConsultResponse")
+        progress = self.function_source("renderGenerationProgress", "studioControlChangeLabels")
+        operation_progress = self.source[
+            self.source.index("function updateActiveLlmOperationProgress"):
+            self.source.index("async function stopLlmGeneration")
+        ]
+
+        self.assertIn('return "Thinking"', activity)
+        self.assertIn('return "Generating"', activity)
+        self.assertIn('return "Thinking / generating"', activity)
+        self.assertNotIn("with ${", consult)
+        self.assertIn("llmGeneratedTokenCount(job.provider_status", poll)
+        self.assertIn("promptstudio-llm-token-count", consult_render)
+        self.assertIn("llmTokenCount.toLocaleString()", progress)
+        self.assertNotIn("with ${", operation_progress)
+        self.assertIn(".promptstudio-llm-token-count", self.styles)
+        self.assertIn("bottom: 13px", self.styles)
+
     def test_new_sessions_explicitly_disable_prompt_agent_mode(self):
         create = self.function_source("createChat", "deleteChat")
         exported = self.function_source(
@@ -59,12 +87,80 @@ class FrontendRegressionTests(unittest.TestCase):
 
         self.assertIn('localStorage.getItem(STORAGE_KEY)', remembered)
         self.assertIn('Object.hasOwn(remembered, "llm_provider")', remembered)
-        self.assertIn('remembered.llm_provider === "ollama"', remembered)
+        self.assertIn("normalizeLlmProvider(remembered.llm_provider)", remembered)
         self.assertIn("kobold_url:", remembered)
         self.assertIn("ollama_url:", remembered)
         self.assertIn("ollama_model:", remembered)
+        self.assertIn("llamacpp_url:", remembered)
+        self.assertIn("llamacpp_model:", remembered)
+        self.assertIn("llamacpp_executable:", remembered)
+        self.assertIn("llamacpp_config_path:", remembered)
         self.assertIn("keep_models_loaded:", remembered)
         self.assertIn("applyRememberedLlmConnection(", applied)
+
+    def test_ollama_is_default_and_advanced_providers_warn_once(self):
+        defaults = self.source[
+            self.source.index("const SETTINGS_DEFAULTS"):
+            self.source.index("const LLM_PROFILE_DEFAULTS")
+        ]
+        normalizer = self.function_source("normalizeLlmProvider", "confirmAdvancedLlmProvider")
+        confirmation = self.function_source("confirmAdvancedLlmProvider", "handleLlmProviderChange")
+        change = self.function_source("handleLlmProviderChange", "llmProviderDisplayName")
+
+        self.assertIn('llm_provider: "ollama"', defaults)
+        self.assertIn(': "ollama";', normalizer)
+        self.assertIn("ADVANCED_LLM_ACK_STORAGE_KEY", confirmation)
+        self.assertIn("localStorage.getItem", confirmation)
+        self.assertIn("localStorage.setItem", confirmation)
+        self.assertIn("view?.confirm", confirmation)
+        self.assertIn('select.value = "ollama"', change)
+        self.assertIn('addEventListener("change", handleLlmProviderChange)', self.source)
+        self.assertLess(
+            self.source.index('<option value="ollama"'),
+            self.source.index('<option value="koboldcpp"'),
+        )
+
+    def test_llamacpp_provider_exposes_models_monitoring_and_process_controls(self):
+        provider = self.function_source("normalizeLlmProvider", "llmProviderDisplayName")
+        connection = self.function_source("llmConnectionPayload", "comfyUiIsProcessing")
+        status = self.source[
+            self.source.index("function renderLlmStatus"):
+            self.source.index("async function restartComfyUIFromStatus")
+        ]
+        launcher_configured = self.function_source("llamacppLauncherConfigured", "comfyUiIsProcessing")
+        process_control = self.function_source("controlLlamacppServer", "startLlmStatusMonitor")
+        file_picker = self.function_source("browseLlamacppPath", "startLlmStatusMonitor")
+        config_builder = self.function_source("openLlamacppConfigBuilder", "startLlmStatusMonitor")
+
+        self.assertIn('"llamacpp"', provider)
+        self.assertIn("llamacpp_url:", connection)
+        self.assertIn("llamacpp_model:", connection)
+        self.assertIn("llamacpp_executable:", connection)
+        self.assertIn("llamacpp_config_path:", connection)
+        self.assertIn("llmGeneratedTokenCount(status)", status)
+        self.assertIn("server_process", status)
+        self.assertIn("llamacpp_executable", launcher_configured)
+        self.assertIn("llamacpp_config_path", launcher_configured)
+        self.assertIn("!launcherConfigured", status)
+        self.assertIn("LLAMACPP_SERVER_ENDPOINT", process_control)
+        self.assertIn("!llamacppLauncherConfigured(payload)", process_control)
+        self.assertIn('option value="llamacpp"', self.source)
+        self.assertIn('id="promptstudio-llamacpp-start" type="button" title="Start Llama.cpp server" disabled', self.source)
+        self.assertIn('id="promptstudio-llamacpp-server-stop"', self.source)
+        self.assertIn('id="promptstudio-llamacpp-restart"', self.source)
+        self.assertIn('id="promptstudio-browse-llamacpp-executable"', self.source)
+        self.assertIn('id="promptstudio-browse-llamacpp-config"', self.source)
+        self.assertIn('id="promptstudio-build-llamacpp-config"', self.source)
+        self.assertIn("LLAMACPP_FILE_PICKER_ENDPOINT", file_picker)
+        self.assertIn("LLAMACPP_CONFIG_BUILDER_ENDPOINT", config_builder)
+        self.assertIn('browseLlamacppPath("executable")', self.source)
+        self.assertIn('browseLlamacppPath("config")', self.source)
+        self.assertIn('addEventListener("click", openLlamacppConfigBuilder)', self.source)
+        self.assertIn(".promptstudio-path-field", self.styles)
+        self.assertIn(".promptstudio-config-path-field", self.styles)
+        self.assertIn(".promptstudio-system-status-actions[hidden]", self.styles)
+        self.assertIn("grid-template-columns: repeat(3, minmax(0, 1fr))", self.styles)
+        self.assertIn("white-space: nowrap", self.styles)
 
     def test_prompt_agent_export_updates_visible_main_prompt(self):
         exported = self.function_source(
@@ -347,7 +443,8 @@ class FrontendRegressionTests(unittest.TestCase):
         consultation = self.function_source("collectConsultGenerationSettings", "selectedConsultVariant")
 
         for key in (
-            "thinking_mode", "max_response_tokens", "temperature", "top_p", "top_k", "min_p",
+            "thinking_mode", "max_response_tokens", "llamacpp_reasoning_budget_tokens",
+            "temperature", "top_p", "top_k", "min_p",
             "presence_penalty", "rep_pen", "rep_pen_range", "sampler_seed", "request_timeout",
             "stop_sequence",
         ):
@@ -355,7 +452,7 @@ class FrontendRegressionTests(unittest.TestCase):
         self.assertIn("...llmProfileGenerationSettings()", revision)
         self.assertIn("return llmProfileGenerationSettings();", consultation)
         self.assertIn("const thinkingMode = selectedLlmThinkingMode();", settings)
-        self.assertIn('thinkingMode !== "Disabled"', settings)
+        self.assertIn("thinkingModeEnablesReasoning(thinkingMode)", settings)
         for key in (
             "thinking_temperature", "thinking_top_p", "thinking_top_k", "thinking_min_p",
             "thinking_presence_penalty", "thinking_rep_pen", "thinking_rep_pen_range",
@@ -368,7 +465,7 @@ class FrontendRegressionTests(unittest.TestCase):
         restore = self.function_source("restoreLlmProfileEditorDefaults", "submitLlmProfileEditor")
         delete = self.function_source("deleteLlmProfile", "applyRememberedLlmConnection")
 
-        self.assertIn('name: "Qwen3.5"', self.source)
+        self.assertIn('id: "qwen3.5",\n  name: "Default"', self.source)
         self.assertIn('name: "Qwen 3.8 (27B)"', self.source)
         self.assertIn('id: "qwen3.8-27b"', self.source)
         self.assertIn("presence_penalty: 1.5", self.source)
@@ -377,7 +474,12 @@ class FrontendRegressionTests(unittest.TestCase):
         self.assertIn("thinking_temperature: 1.0", self.source)
         self.assertIn("thinking_top_p: 0.95", self.source)
         self.assertIn("thinking_presence_penalty: 0", self.source)
-        self.assertIn("LLM_PROFILE_STORAGE_VERSION = 3", self.source)
+        self.assertIn('thinking_modes: Object.freeze(["XHigh", "Medium", "Low", "Disabled"])', self.source)
+        self.assertIn('thinking_mode: "XHigh"', self.source)
+        self.assertIn("LLM_PROFILE_STORAGE_VERSION = 6", self.source)
+        self.assertIn("Llama.cpp reasoning cap", self.source)
+        self.assertIn('name="llamacpp_reasoning_budget_tokens"', self.source)
+        self.assertIn('profile?.name === "Qwen3.5"', self.source)
         self.assertIn("storageVersion < LLM_PROFILE_STORAGE_VERSION", self.source)
         self.assertIn("storageVersion < 2", self.source)
         self.assertIn('id: "__default__", name: "Default"', available)
@@ -391,6 +493,9 @@ class FrontendRegressionTests(unittest.TestCase):
         self.assertIn('id="promptstudio-delete-llm-profile"', self.source)
         self.assertIn("Non-thinking sampler", self.source)
         self.assertIn("Thinking sampler", self.source)
+        self.assertIn("Available thinking modes", self.source)
+        self.assertIn('name="thinking_modes" type="checkbox"', self.source)
+        self.assertIn("Select at least one available thinking mode", self.source)
 
         profile_editor_markup = self.source[
             self.source.index('id="promptstudio-llm-profile-editor"'):
@@ -410,6 +515,19 @@ class FrontendRegressionTests(unittest.TestCase):
         self.assertIn("min-height: 0", fields)
         self.assertIn("overflow-y: auto", fields)
         self.assertIn("overscroll-behavior: contain", fields)
+
+    def test_system_status_popover_occludes_sidebar_drag_handles(self):
+        header = self.styles[
+            self.styles.index(".promptstudio-header {"):
+            self.styles.index(".promptstudio-mobile-header,")
+        ]
+        popover = self.styles[
+            self.styles.index(".promptstudio-kobold-popover {"):
+            self.styles.index(".promptstudio-kobold-popover strong {")
+        ]
+
+        self.assertIn("z-index: 10", header)
+        self.assertIn("background: var(--ps-panel)", popover)
 
 
 if __name__ == "__main__":

@@ -8,6 +8,7 @@ import os
 import re
 import secrets
 import struct
+import threading
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -217,6 +218,13 @@ def _allowed_kobold_hosts():
 
 def _allowed_ollama_hosts():
     configured = os.environ.get("PROMPT_STUDIO_OLLAMA_ALLOWED_HOSTS", "").strip()
+    if not configured:
+        return {"localhost", "127.0.0.1", "::1"}
+    return {item.strip().casefold() for item in configured.split(",") if item.strip()}
+
+
+def _allowed_llamacpp_hosts():
+    configured = os.environ.get("PROMPT_STUDIO_LLAMACPP_ALLOWED_HOSTS", "").strip()
     if not configured:
         return {"localhost", "127.0.0.1", "::1"}
     return {item.strip().casefold() for item in configured.split(",") if item.strip()}
@@ -787,6 +795,16 @@ def _post_json(
         headers=request_headers,
         method="POST",
     )
+
+
+def _clean_llamacpp_base_url(url):
+    return _clean_service_base_url(
+        url,
+        "http://localhost:8080",
+        "Llama.cpp",
+        _allowed_llamacpp_hosts(),
+        "PROMPT_STUDIO_LLAMACPP_ALLOWED_HOSTS",
+    )
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
             if response_hook is not None:
@@ -838,6 +856,158 @@ def _list_ollama_models(ollama_url, request_timeout=10):
     return models
 
 
+def _list_llamacpp_models(llamacpp_url, request_timeout=10):
+    base_url = _clean_llamacpp_base_url(llamacpp_url)
+    # /models lists both the active single model and router-mode available models.
+    url = urllib.parse.urljoin(base_url + "/", "models")
+    request = urllib.request.Request(url, headers={"Accept": "application/json"}, method="GET")
+    try:
+        with urllib.request.urlopen(request, timeout=int(request_timeout)) as response:
+            body = response.read().decode("utf-8")
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"Llama.cpp request failed with HTTP {exc.code}: {detail}") from exc
+    except urllib.error.URLError as exc:
+        raise RuntimeError(f"Could not reach Llama.cpp at {url}: {exc.reason}") from exc
+
+    try:
+        data = json.loads(body)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"Llama.cpp returned invalid JSON: {body[:500]}") from exc
+    if not isinstance(data, dict) or not isinstance(data.get("data"), list):
+        raise RuntimeError(f"Unexpected Llama.cpp model-list response: {data}")
+    models = []
+    for item in data["data"]:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("id") or "").strip()
+        if name and name not in models:
+            models.append(name)
+    return models
+
+
+_LLAMACPP_ACTIVE_RESPONSES = {}
+_LLAMACPP_ABORTED_RESPONSES = set()
+_LLAMACPP_RESPONSE_LOCK = threading.Lock()
+
+
+def _abort_llamacpp_generation(llamacpp_url):
+    """Close all live Prompt Studio streams for one llama-server endpoint."""
+    base_url = _clean_llamacpp_base_url(llamacpp_url)
+    with _LLAMACPP_RESPONSE_LOCK:
+        responses = list(_LLAMACPP_ACTIVE_RESPONSES.get(base_url, ()))
+        _LLAMACPP_ABORTED_RESPONSES.update(id(response) for response in responses)
+    closed = 0
+    for response in responses:
+        try:
+            response.close()
+            closed += 1
+        except Exception:
+            pass
+    return {"provider": "llamacpp", "success": closed > 0, "closed_streams": closed}
+
+
+def _post_llamacpp_chat(base_url, payload, timeout, response_hook=None, cancellation_check=None):
+    """Read llama-server's SSE chat stream while keeping it externally cancellable."""
+    data = json.dumps({**payload, "stream": True}).encode("utf-8")
+    request = urllib.request.Request(
+        urllib.parse.urljoin(base_url + "/", "v1/chat/completions"),
+        data=data,
+        headers={"Content-Type": "application/json", "Accept": "text/event-stream"},
+        method="POST",
+    )
+    response = None
+    response_id = None
+    content_parts = []
+    reasoning_parts = []
+    finish_reason = None
+    chunks = []
+    try:
+        response = urllib.request.urlopen(request, timeout=int(timeout))
+        response_id = id(response)
+        with _LLAMACPP_RESPONSE_LOCK:
+            _LLAMACPP_ACTIVE_RESPONSES.setdefault(base_url, set()).add(response)
+        if response_hook is not None:
+            response_hook(response)
+        for raw_line in response:
+            if cancellation_check is not None and cancellation_check():
+                with _LLAMACPP_RESPONSE_LOCK:
+                    _LLAMACPP_ABORTED_RESPONSES.add(response_id)
+                response.close()
+                raise RuntimeError("Llama.cpp request was cancelled")
+            line = raw_line.decode("utf-8", errors="replace").strip()
+            if not line or line.startswith(":"):
+                continue
+            if not line.startswith("data:"):
+                continue
+            event = line[5:].strip()
+            if event == "[DONE]":
+                break
+            try:
+                chunk = json.loads(event)
+            except json.JSONDecodeError as exc:
+                raise RuntimeError(f"Llama.cpp returned invalid stream JSON: {event[:500]}") from exc
+            if isinstance(chunk, dict) and chunk.get("error"):
+                raise RuntimeError(f"Llama.cpp reported an error: {chunk['error']}")
+            chunks.append(chunk)
+            choices = chunk.get("choices") if isinstance(chunk, dict) else None
+            choice = choices[0] if isinstance(choices, list) and choices else None
+            if not isinstance(choice, dict):
+                continue
+            delta = choice.get("delta")
+            if isinstance(delta, dict):
+                if delta.get("content") is not None:
+                    content_parts.append(str(delta["content"]))
+                reasoning = delta.get("reasoning_content")
+                if reasoning is None:
+                    reasoning = delta.get("reasoning")
+                if reasoning is not None:
+                    reasoning_parts.append(str(reasoning))
+            if choice.get("finish_reason") is not None:
+                finish_reason = choice.get("finish_reason")
+        with _LLAMACPP_RESPONSE_LOCK:
+            aborted = response_id in _LLAMACPP_ABORTED_RESPONSES
+        if aborted:
+            raise RuntimeError("Llama.cpp request was cancelled")
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"Llama.cpp request failed with HTTP {exc.code}: {detail}") from exc
+    except urllib.error.URLError as exc:
+        raise RuntimeError(f"Could not reach Llama.cpp at {request.full_url}: {exc.reason}") from exc
+    except (OSError, ValueError) as exc:
+        with _LLAMACPP_RESPONSE_LOCK:
+            aborted = response_id in _LLAMACPP_ABORTED_RESPONSES
+        if aborted:
+            raise RuntimeError("Llama.cpp request was cancelled") from exc
+        raise RuntimeError(f"Llama.cpp stream failed: {exc}") from exc
+    finally:
+        if response_hook is not None and response is not None:
+            response_hook(None)
+        if response is not None:
+            try:
+                response.close()
+            except Exception:
+                pass
+        if response_id is not None:
+            with _LLAMACPP_RESPONSE_LOCK:
+                active = _LLAMACPP_ACTIVE_RESPONSES.get(base_url)
+                if active is not None:
+                    active.discard(response)
+                    if not active:
+                        _LLAMACPP_ACTIVE_RESPONSES.pop(base_url, None)
+                _LLAMACPP_ABORTED_RESPONSES.discard(response_id)
+    return {
+        "choices": [{
+            "message": {
+                "content": "".join(content_parts),
+                "reasoning_content": "".join(reasoning_parts),
+            },
+            "finish_reason": finish_reason,
+        }],
+        "stream_chunks": chunks,
+    }
+
+
 def _get_json(url, timeout):
     request = urllib.request.Request(url, headers={"Accept": "application/json"}, method="GET")
     try:
@@ -871,6 +1041,50 @@ def _server_capabilities(base_url, timeout):
         timeout,
     )
     return data if isinstance(data, dict) else {}
+
+
+def _llamacpp_props(base_url, timeout, model=""):
+    query = urllib.parse.urlencode({"model": str(model).strip()}) if str(model).strip() else ""
+    url = urllib.parse.urljoin(base_url + "/", "props")
+    if query:
+        url = f"{url}?{query}"
+    data = _get_json(url, timeout)
+    return data if isinstance(data, dict) else {}
+
+
+def _llamacpp_context_length(base_url, timeout, model=""):
+    settings = _llamacpp_props(base_url, timeout, model).get("default_generation_settings")
+    if not isinstance(settings, dict):
+        return None
+    try:
+        return int(settings.get("n_ctx"))
+    except (TypeError, ValueError):
+        return None
+
+
+def _llamacpp_token_count(base_url, timeout, messages, model, reasoning_effort, enable_thinking):
+    try:
+        result = _post_json(
+            urllib.parse.urljoin(base_url + "/", "v1/chat/completions/input_tokens"),
+            {
+                "model": model,
+                "messages": messages,
+                "reasoning_effort": reasoning_effort,
+                "chat_template_kwargs": {"enable_thinking": bool(enable_thinking)},
+            },
+            timeout,
+            service_name="Llama.cpp",
+        )
+    except RuntimeError:
+        return None
+    if not isinstance(result, dict):
+        return None
+    for key in ("input_tokens", "tokens"):
+        try:
+            return int(result[key])
+        except (KeyError, TypeError, ValueError):
+            pass
+    return None
 
 
 def _kobold_vision_unavailable_reason(capabilities):
@@ -919,12 +1133,30 @@ def _ollama_vision_unavailable_reason(capabilities, model):
     )
 
 
+def _llamacpp_vision_unavailable_reason(props, model):
+    modalities = props.get("modalities") if isinstance(props, dict) else None
+    if isinstance(modalities, dict) and modalities.get("vision") is True:
+        return ""
+    label = f" for '{model}'" if model else ""
+    if isinstance(modalities, dict) and "vision" in modalities:
+        return (
+            f"Llama.cpp vision is not active{label}. Start llama-server with a supported "
+            "multimodal model and its matching mmproj file."
+        )
+    return (
+        f"Llama.cpp did not advertise vision capability{label}. Update llama.cpp or select a "
+        "server/model whose /props response includes modalities.vision."
+    )
+
+
 def _llm_vision_capability(
     llm_provider,
     *,
     kobold_url="http://localhost:5001",
     ollama_url="http://localhost:11434",
     ollama_model="",
+    llamacpp_url="http://localhost:8080",
+    llamacpp_model="",
     request_timeout=10,
 ):
     provider = str(llm_provider or "koboldcpp").strip().casefold()
@@ -946,7 +1178,22 @@ def _llm_vision_capability(
         capabilities = _ollama_model_capabilities(base_url, model, timeout)
         reason = _ollama_vision_unavailable_reason(capabilities, model)
         return {"available": not reason, "provider": "Ollama", "model": model, "reason": reason}
-    raise ValueError("llm_provider must be koboldcpp or ollama")
+    if provider == "llamacpp":
+        base_url = _clean_llamacpp_base_url(llamacpp_url)
+        model = str(llamacpp_model or "").strip()
+        if not model:
+            models = _list_llamacpp_models(base_url, timeout)
+            model = models[0] if len(models) == 1 else ""
+        if not model:
+            return {
+                "available": False,
+                "provider": "Llama.cpp",
+                "reason": "Select a Llama.cpp model before dropping an image.",
+            }
+        props = _llamacpp_props(base_url, timeout, model)
+        reason = _llamacpp_vision_unavailable_reason(props, model)
+        return {"available": not reason, "provider": "Llama.cpp", "model": model, "reason": reason}
+    raise ValueError("llm_provider must be koboldcpp, ollama, or llamacpp")
 
 
 def _kobold_token_count(
@@ -1011,7 +1258,7 @@ def _chat_generation_budget(
     ``response_tokens`` remains the workflow's final-answer allowance. KoboldCpp counts
     native reasoning and final content in one completion limit. Minimal, Low, and
     Medium receive fixed reasoning allowances while preserving the requested final-answer
-    allowance. High has no reasoning cap and may use the remaining context window.
+    allowance. High and XHigh have no reasoning cap and may use the remaining context window.
     """
     response_tokens = max(1, int(response_tokens))
     effort = _reasoning_effort(thinking_mode)
@@ -1028,7 +1275,7 @@ def _chat_generation_budget(
         desired_reasoning = 1000
         total = response_tokens + desired_reasoning
         thinking_budget = desired_reasoning
-    elif fixed_reasoning_budgets and effort == "high":
+    elif fixed_reasoning_budgets and effort in {"high", "xhigh"}:
         # Normal requests supply safe_limit from KoboldCpp's actual context window.
         # Keep a generous fallback for direct calls if that capability is unavailable.
         total = int(safe_limit) if safe_limit is not None and safe_limit > 0 else response_tokens + 65536
@@ -1038,7 +1285,7 @@ def _chat_generation_budget(
         total = (response_tokens * 10 + 6) // 7
     elif effort == "medium":
         total = (response_tokens * 5 + 1) // 2
-    elif effort == "high":
+    elif effort in {"high", "xhigh"}:
         desired_reasoning = 4096
         total = response_tokens + desired_reasoning
         thinking_budget = desired_reasoning
@@ -1053,6 +1300,42 @@ def _chat_generation_budget(
         # Preserve the requested final allowance whenever the context window permits it.
         thinking_budget = min(thinking_budget, max(0, total - min(response_tokens, total)))
     return total, thinking_budget
+
+
+def _llamacpp_generation_budget(
+    response_tokens,
+    thinking_mode,
+    safe_limit=None,
+    reasoning_budget_tokens=0,
+):
+    """Return llama.cpp's combined output limit and optional hard reasoning cap.
+
+    Qwen-style reasoning effort is a qualitative chat-template control, not a
+    token budget. With no explicit cap, allow the model to use the available
+    context window. A positive cap opts into llama.cpp's forced end-of-thinking
+    mechanism and reserves the requested final-answer allowance when possible.
+    """
+    response_tokens = max(1, int(response_tokens))
+    effort = _reasoning_effort(thinking_mode)
+    safe_limit = int(safe_limit) if safe_limit is not None and safe_limit > 0 else None
+    if effort == "none":
+        total = response_tokens
+        if safe_limit is not None:
+            total = min(total, safe_limit)
+        return max(1, total), None
+
+    requested_cap = max(0, int(reasoning_budget_tokens or 0))
+    if requested_cap > 0:
+        total = response_tokens + requested_cap
+        if safe_limit is not None:
+            total = min(total, safe_limit)
+        total = max(1, total)
+        final_allowance = min(response_tokens, total)
+        applied_cap = min(requested_cap, max(0, total - final_allowance))
+        return total, applied_cap
+
+    total = safe_limit if safe_limit is not None else response_tokens + 65536
+    return max(1, total), None
 
 
 def _split_stop_sequences(value):
@@ -1301,6 +1584,155 @@ def _generate_kcpp(
                 "or increase the KoboldCpp context size."
             )
         raise RuntimeError(f"KoboldCpp returned an empty chat completion: {result}")
+    return content
+
+
+def _generate_llamacpp(
+    prompt,
+    llamacpp_url,
+    llamacpp_model,
+    max_response_tokens,
+    default_max_response_tokens,
+    temperature,
+    top_p,
+    top_k,
+    min_p,
+    rep_pen,
+    rep_pen_range,
+    sampler_seed,
+    thinking_mode,
+    stop_sequence,
+    request_timeout,
+    include_default_continuation_stops=False,
+    image_data_uri=None,
+    messages_override=None,
+    response_hook=None,
+    cancellation_check=None,
+    presence_penalty=0.0,
+    reasoning_budget_tokens=0,
+):
+    def ensure_active():
+        if cancellation_check is not None and cancellation_check():
+            raise RuntimeError("Llama.cpp request was cancelled")
+
+    ensure_active()
+    base_url = _clean_llamacpp_base_url(llamacpp_url)
+    timeout = int(request_timeout)
+    model = str(llamacpp_model or "").strip()
+    if not model:
+        models = _list_llamacpp_models(base_url, timeout)
+        if len(models) == 1:
+            model = models[0]
+        elif not models:
+            raise ValueError("Llama.cpp did not report a loaded or available model")
+        else:
+            raise ValueError("Select a Llama.cpp model in Prompt Studio settings")
+
+    if messages_override is not None:
+        messages = messages_override
+        has_images = any(
+            isinstance(message, dict)
+            and isinstance(message.get("content"), list)
+            and any(
+                isinstance(part, dict) and part.get("type") == "image_url"
+                for part in message["content"]
+            )
+            for message in messages
+        )
+    else:
+        has_images = bool(image_data_uri)
+        user_content = str(prompt or "")
+        if image_data_uri:
+            user_content = [
+                {"type": "text", "text": str(prompt or "")},
+                {"type": "image_url", "image_url": {"url": str(image_data_uri)}},
+            ]
+        messages = [
+            {"role": "system", "content": CHAT_SYSTEM_MESSAGE},
+            {"role": "user", "content": user_content},
+        ]
+    if has_images:
+        reason = _llamacpp_vision_unavailable_reason(
+            _llamacpp_props(base_url, timeout, model),
+            model,
+        )
+        if reason:
+            raise RuntimeError(reason)
+
+    effort = _reasoning_effort(thinking_mode)
+    enable_thinking = effort != "none"
+    prompt_tokens = _llamacpp_token_count(
+        base_url,
+        timeout,
+        messages,
+        model,
+        effort,
+        enable_thinking,
+    )
+    context_length = _llamacpp_context_length(base_url, timeout, model)
+    if context_length is not None and prompt_tokens is not None and prompt_tokens >= context_length - 32:
+        raise RuntimeError(
+            f"The formatted request uses {prompt_tokens} tokens, leaving no usable space in "
+            f"Llama.cpp's {context_length}-token context window. Shorten the instructions or "
+            "increase llama-server's context size."
+        )
+    response_tokens = _requested_response_tokens(max_response_tokens, default_max_response_tokens)
+    max_length, thinking_budget = _llamacpp_generation_budget(
+        response_tokens,
+        thinking_mode,
+        _context_safe_generation_limit(context_length, prompt_tokens),
+        reasoning_budget_tokens,
+    )
+    stop_sequences = _split_stop_sequences(stop_sequence)
+    if include_default_continuation_stops and effort == "none":
+        stop_sequences = _with_default_continuation_stops(stop_sequences)
+    payload = {
+        "model": model,
+        "messages": messages,
+        "max_tokens": max_length,
+        "temperature": float(temperature),
+        "top_p": float(top_p),
+        "top_k": int(top_k),
+        "min_p": float(min_p),
+        "presence_penalty": float(presence_penalty),
+        "repeat_penalty": float(rep_pen),
+        "repeat_last_n": int(rep_pen_range),
+        "seed": int(sampler_seed),
+        "reasoning_effort": effort,
+        "reasoning_format": "auto",
+        "chat_template_kwargs": {"enable_thinking": enable_thinking},
+        "stop": stop_sequences,
+    }
+    if thinking_budget is not None:
+        payload["thinking_budget_tokens"] = thinking_budget
+    ensure_active()
+    result = _post_llamacpp_chat(
+        base_url,
+        payload,
+        timeout,
+        response_hook=response_hook,
+        cancellation_check=cancellation_check,
+    )
+    ensure_active()
+    try:
+        choice = result["choices"][0]
+        message = choice["message"]
+        content = str(message.get("content") or "")
+        finish_reason = choice.get("finish_reason")
+    except (KeyError, IndexError, TypeError) as exc:
+        raise RuntimeError(f"Unexpected Llama.cpp response: {result}") from exc
+    if finish_reason == "length":
+        raise RuntimeError(
+            f"Llama.cpp exhausted the {max_length}-token completion budget before finishing. "
+            "Increase max_response_tokens or llama-server's context size."
+        )
+    if not content.strip():
+        if message.get("reasoning_content"):
+            raise RuntimeError(
+                "Llama.cpp returned reasoning but no final answer. Increase max_response_tokens "
+                "or llama-server's context size."
+            )
+        raise RuntimeError(f"Llama.cpp returned an empty chat completion: {result}")
     return content
 
 
@@ -1639,7 +2071,7 @@ def _reasoning_effort(thinking_mode):
     mode = str(thinking_mode or "Disabled").strip().lower()
     if mode == "disabled":
         return "none"
-    if mode in {"minimal", "low", "medium", "high"}:
+    if mode in {"minimal", "low", "medium", "high", "xhigh"}:
         return mode
     return "none"
 
@@ -1692,6 +2124,7 @@ def _thinking_instruction(thinking_mode):
         "low": "Check the subject, setting, composition, and requested output format.",
         "medium": "Make one concise pass: check the central subject, active style or framing, and requested output format, then answer without starting a second review pass.",
         "high": "Carefully verify every preserved detail, active style and framing constraint, forbidden addition, and output-format requirement.",
+        "xhigh": "Thoroughly analyze and verify every preserved detail, active style and framing constraint, forbidden addition, interaction, and output-format requirement before answering.",
     }.get(effort, "")
     if not focus:
         return "Do not expose analysis, reasoning, scratchpad notes, or thinking tags in the final answer."
@@ -1752,6 +2185,7 @@ def _revision_thinking_instruction(thinking_mode):
         "low": "Identify the target, conflicting old details, and protected content.",
         "medium": "Make one concise pass: identify the edit target, replace its conflicting value, preserve everything else, then answer without starting a second review pass.",
         "high": "Carefully map the smallest sufficient edit scope, locate every obsolete or conflicting reference, preserve unrelated wording and tag order, and check for collateral changes.",
+        "xhigh": "Thoroughly map the smallest sufficient edit scope, locate every obsolete or conflicting reference, preserve all unrelated wording and tag order, and verify the result for subtle collateral changes.",
     }.get(effort, "")
     if not focus:
         return "Analyze the edit scope silently and do not expose reasoning or change notes in the final answer."

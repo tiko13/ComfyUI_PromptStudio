@@ -134,6 +134,33 @@ class RegressionTests(unittest.TestCase):
         self.assertEqual(status["model"], "koboldcpp/Qwen2.5-VL-7B-Q4_K_M")
         self.assertIs(status["vision"], True)
 
+    def test_kobold_status_reports_live_tokens_and_thinking_phase(self):
+        def get_json(url, _timeout):
+            if url.endswith("/api/extra/perf"):
+                return {"idle": 0, "queue": 0}
+            if url.endswith("/api/v1/model"):
+                return {"result": "test-model"}
+            if url.endswith("/api/extra/version"):
+                return {"vision": False}
+            return None
+
+        with (
+            mock.patch.object(self.routes, "_get_json", side_effect=get_json),
+            mock.patch.object(
+                self.routes,
+                "_post_json",
+                return_value={"results": [{"text": "<think>working"}]},
+            ),
+            mock.patch.object(self.routes, "_kobold_token_count", return_value=3),
+        ):
+            status = self.routes._kobold_generation_status({
+                "kobold_url": "http://localhost:5001",
+                "thinking_mode": "Medium",
+            })
+
+        self.assertEqual(status["generated_tokens"], 3)
+        self.assertEqual(status["generation_phase"], "thinking")
+
     def test_llm_status_uses_selected_ollama_backend(self):
         with (
             mock.patch.object(self.routes, "_list_ollama_models", return_value=["gemma3:4b"]),
@@ -155,6 +182,227 @@ class RegressionTests(unittest.TestCase):
         self.assertEqual(status["model"], "gemma3:4b")
         self.assertIs(status["reachable"], True)
         self.assertIs(status["vision"], True)
+
+    def test_llm_status_reports_llamacpp_slots_model_and_vision(self):
+        def get_json(url, _timeout):
+            if url.endswith("/health"):
+                return {"status": "ok"}
+            if url.endswith("/slots"):
+                return [
+                    {
+                        "id": 0,
+                        "is_processing": True,
+                        "next_token": [{"has_next_token": True, "n_decoded": 37}],
+                    }
+                ]
+            return None
+
+        with (
+            mock.patch.object(self.routes, "_get_json", side_effect=get_json),
+            mock.patch.object(
+                self.routes,
+                "_llamacpp_props",
+                return_value={"modalities": {"vision": True}},
+            ),
+            mock.patch.object(
+                self.routes,
+                "_list_llamacpp_models",
+                return_value=["Qwen3.8-27B-UD-Q4_K_XL.gguf"],
+            ),
+        ):
+            status = self.routes._llamacpp_generation_status({
+                "llamacpp_url": "http://127.0.0.1:8080",
+                "llamacpp_model": "Qwen3.8-27B-UD-Q4_K_XL.gguf",
+            })
+
+        self.assertEqual(status["provider"], "llamacpp")
+        self.assertIs(status["reachable"], True)
+        self.assertIs(status["busy"], True)
+        self.assertEqual(status["active_slots"], 1)
+        self.assertEqual(status["generated_tokens"], 37)
+        self.assertEqual(status["generation_phase"], "generating")
+        self.assertIs(status["vision"], True)
+
+    def test_llamacpp_stream_is_assembled_and_can_be_registered_for_stop(self):
+        class StreamResponse:
+            def __init__(self):
+                self.closed = False
+                self.lines = iter([
+                    b'data: {"choices":[{"delta":{"reasoning_content":"think"}}]}\n',
+                    b'data: {"choices":[{"delta":{"content":"hello "}}]}\n',
+                    b'data: {"choices":[{"delta":{"content":"world"},"finish_reason":"stop"}]}\n',
+                    b'data: [DONE]\n',
+                ])
+
+            def __iter__(self):
+                return self
+
+            def __next__(self):
+                return next(self.lines)
+
+            def close(self):
+                self.closed = True
+
+        response = StreamResponse()
+        seen = []
+        with mock.patch.object(self.nodes.urllib.request, "urlopen", return_value=response):
+            result = self.nodes._post_llamacpp_chat(
+                "http://127.0.0.1:8080",
+                {"model": "test", "messages": []},
+                10,
+                response_hook=seen.append,
+            )
+
+        self.assertEqual(result["choices"][0]["message"]["content"], "hello world")
+        self.assertEqual(result["choices"][0]["message"]["reasoning_content"], "think")
+        self.assertEqual(result["choices"][0]["finish_reason"], "stop")
+        self.assertEqual(seen, [response, None])
+        self.assertTrue(response.closed)
+
+    def test_llamacpp_launcher_config_maps_all_launcher_controls_without_shell(self):
+        root = Path(self.temp.name)
+        executable = root / "llama.exe"
+        model = root / "model.gguf"
+        mmproj = root / "mmproj.gguf"
+        config_path = root / "llamacpp.json"
+        executable.write_bytes(b"")
+        model.write_bytes(b"")
+        mmproj.write_bytes(b"")
+        config_path.write_text(json.dumps({
+            "model_gguf": str(model),
+            "mmproj_gguf": str(mmproj),
+            "context_size": 32768,
+            "gpu_layers": "all",
+            "parallel_slots": 2,
+            "cuda_devices": "CUDA0,CUDA1",
+            "split_mode": "layer",
+            "main_gpu": 1,
+            "tensor_split": "0,1",
+            "auto_fit": "on",
+            "flash_attention": "auto",
+            "kv_cache_k": "f16",
+            "kv_cache_v": "q8_0",
+            "mtp_enabled": "on",
+            "mtp_draft_tokens": 4,
+            "mtp_min_draft_tokens": 1,
+            "mtp_min_probability": 0.5,
+            "mtp_gpu_layers": "all",
+            "mtp_device": "CUDA1",
+            "mtp_kv_cache_k": "f16",
+            "mtp_kv_cache_v": "f16",
+            "host": "127.0.0.1",
+            "port": 8080,
+            "extra_args": ["--metrics"],
+        }), encoding="utf-8")
+
+        launcher = self.routes._load_llamacpp_launcher_config({
+            "llamacpp_executable": str(executable),
+            "llamacpp_config_path": str(config_path),
+        })
+
+        command = launcher["command"]
+        self.assertEqual(command[:2], [str(executable), "serve"])
+        for flag in (
+            "--model", "--mmproj", "--ctx-size", "--gpu-layers", "--parallel",
+            "--device", "--split-mode", "--main-gpu", "--tensor-split",
+            "--fit", "--flash-attn", "--cache-type-k", "--cache-type-v", "--slots", "--metrics",
+            "--spec-type", "--spec-draft-n-max", "--spec-draft-n-min",
+            "--spec-draft-p-min", "--spec-draft-ngl", "--spec-draft-device",
+            "--spec-draft-type-k", "--spec-draft-type-v",
+        ):
+            self.assertIn(flag, command)
+        self.assertEqual(command[command.index("--spec-type") + 1], "draft-mtp")
+        self.assertEqual(command[command.index("--spec-draft-n-max") + 1], "4")
+        self.assertEqual(launcher["url"], "http://127.0.0.1:8080")
+
+    def test_llamacpp_launcher_omits_disabled_mtp_and_validates_draft_range(self):
+        root = Path(self.temp.name)
+        executable = root / "llama-server.exe"
+        model = root / "model.gguf"
+        config_path = root / "llamacpp.json"
+        executable.write_bytes(b"")
+        model.write_bytes(b"")
+        config = {
+            "model_gguf": str(model),
+            "mtp_enabled": "off",
+        }
+        config_path.write_text(json.dumps(config), encoding="utf-8")
+        data = {
+            "llamacpp_executable": str(executable),
+            "llamacpp_config_path": str(config_path),
+        }
+
+        launcher = self.routes._load_llamacpp_launcher_config(data)
+
+        self.assertNotIn("--spec-type", launcher["command"])
+
+        config.update({
+            "mtp_enabled": "on",
+            "mtp_draft_tokens": 2,
+            "mtp_min_draft_tokens": 3,
+        })
+        config_path.write_text(json.dumps(config), encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "must not exceed"):
+            self.routes._load_llamacpp_launcher_config(data)
+
+    def test_llamacpp_config_builder_uses_configured_or_local_json_path(self):
+        root = Path(self.temp.name)
+        configured = root / "custom.json"
+        self.assertEqual(
+            self.routes._llamacpp_builder_config_path(str(configured)),
+            str(configured),
+        )
+        self.assertEqual(
+            self.routes._llamacpp_builder_config_path(""),
+            str(Path(self.routes.BASE_DIR) / "llamacpp_server.json"),
+        )
+        with self.assertRaisesRegex(ValueError, "must be a JSON file"):
+            self.routes._llamacpp_builder_config_path(str(root / "custom.txt"))
+
+    def test_llamacpp_config_builder_launches_fixed_script_without_shell(self):
+        root = Path(self.temp.name)
+        config_path = root / "llamacpp.json"
+        config_path.write_text("{}", encoding="utf-8")
+        process = mock.Mock(pid=321)
+        with mock.patch.object(self.routes.os, "name", "nt"), mock.patch.object(
+            self.routes.os.path, "isfile", return_value=True,
+        ), mock.patch.object(
+            self.routes.shutil, "which", return_value=r"C:\Windows\powershell.exe",
+        ), mock.patch.object(
+            self.routes.subprocess, "Popen", return_value=process,
+        ) as popen:
+            result = self.routes._launch_llamacpp_config_builder({
+                "llamacpp_config_path": str(config_path),
+            })
+
+        self.assertEqual(result["config_path"], str(config_path))
+        self.assertEqual(result["pid"], 321)
+        command = popen.call_args.args[0]
+        self.assertIn("-STA", command)
+        self.assertIn(str(config_path), command)
+        self.assertEqual(popen.call_args.kwargs["shell"], False)
+
+    def test_llamacpp_file_picker_accepts_only_expected_file_types(self):
+        root = Path(self.temp.name)
+        executable = root / "llama.exe"
+        config = root / "llamacpp.json"
+        other_executable = root / "other.exe"
+        other_config = root / "llamacpp.txt"
+        for path in (executable, config, other_executable, other_config):
+            path.write_bytes(b"")
+
+        self.assertEqual(
+            self.routes._validate_llamacpp_picker_selection("executable", str(executable)),
+            str(executable),
+        )
+        self.assertEqual(
+            self.routes._validate_llamacpp_picker_selection("config", str(config)),
+            str(config),
+        )
+        with self.assertRaisesRegex(ValueError, "llama.exe or llama-server.exe"):
+            self.routes._validate_llamacpp_picker_selection("executable", str(other_executable))
+        with self.assertRaisesRegex(ValueError, "JSON launcher config"):
+            self.routes._validate_llamacpp_picker_selection("config", str(other_config))
 
     def test_llm_status_preserves_failed_shared_gpu_handoff_until_success(self):
         payload = {
@@ -1270,6 +1518,61 @@ class RegressionTests(unittest.TestCase):
         self.assertEqual(ollama.call_args.args[1:3], ("http://localhost:11434", "qwen3:8b"))
         kobold.assert_not_called()
 
+    def test_prompt_studio_can_route_revisions_through_llamacpp(self):
+        payload = {
+            "llm_provider": "llamacpp",
+            "llamacpp_url": "http://127.0.0.1:8080",
+            "llamacpp_model": "Qwen3.8-27B-UD-Q4_K_XL.gguf",
+            "model_profile": "General Natural Language",
+            "style_preset": "None",
+            "framing_preset": "None",
+            "thinking_mode": "Disabled",
+            "llamacpp_reasoning_budget_tokens": 1234,
+            "embellishment_level": "None",
+            "revision": "A quiet forest",
+            "mode": "render",
+        }
+        with (
+            mock.patch.object(
+                self.routes,
+                "_generate_llamacpp",
+                return_value="Final prompt: A quiet forest",
+            ) as llamacpp,
+            mock.patch.object(self.routes, "_generate_kcpp") as kobold,
+            mock.patch.object(self.routes, "_generate_ollama") as ollama,
+        ):
+            rendered = self.routes._revise(payload)
+
+        self.assertEqual(rendered, "A quiet forest")
+        self.assertEqual(
+            llamacpp.call_args.args[1:3],
+            ("http://127.0.0.1:8080", "Qwen3.8-27B-UD-Q4_K_XL.gguf"),
+        )
+        self.assertEqual(llamacpp.call_args.kwargs["reasoning_budget_tokens"], 1234)
+        kobold.assert_not_called()
+        ollama.assert_not_called()
+
+    def test_prompt_studio_accepts_xhigh_reasoning_effort(self):
+        payload = {
+            "kobold_url": "http://localhost:5001",
+            "model_profile": "General Natural Language",
+            "style_preset": "None",
+            "framing_preset": "None",
+            "thinking_mode": "XHigh",
+            "embellishment_level": "None",
+            "revision": "A quiet forest",
+            "mode": "render",
+        }
+        with mock.patch.object(
+            self.routes,
+            "_generate_kcpp",
+            return_value="Final prompt: A quiet forest",
+        ) as generate:
+            rendered = self.routes._revise(payload)
+
+        self.assertEqual(rendered, "A quiet forest")
+        self.assertEqual(generate.call_args.args[11], "XHigh")
+
     def test_prompt_studio_revision_can_use_latest_generated_image_context(self):
         path = Path(self.temp.name) / "latest-result.png"
         Image.new("RGB", (96, 64), color="teal").save(path)
@@ -1395,6 +1698,93 @@ class RegressionTests(unittest.TestCase):
         self.assertEqual(budget(300, "Medium", fixed_reasoning_budgets=True), (1300, 1000))
         self.assertEqual(budget(300, "Medium", 900, fixed_reasoning_budgets=True), (900, 600))
         self.assertEqual(budget(300, "High", 6000, fixed_reasoning_budgets=True), (6000, None))
+        self.assertEqual(budget(300, "XHigh", 6000, fixed_reasoning_budgets=True), (6000, None))
+        self.assertEqual(self.nodes._reasoning_effort("XHigh"), "xhigh")
+        self.assertEqual(self.nodes._ollama_thinking_value("XHigh"), "xhigh")
+
+    def test_llamacpp_budget_keeps_effort_qualitative_unless_cap_is_set(self):
+        budget = self.nodes._llamacpp_generation_budget
+        self.assertEqual(budget(300, "Disabled", 6000), (300, None))
+        self.assertEqual(budget(300, "Low", 6000), (6000, None))
+        self.assertEqual(budget(300, "Medium", 6000), (6000, None))
+        self.assertEqual(budget(300, "XHigh", 6000), (6000, None))
+        self.assertEqual(budget(300, "XHigh", 6000, 1000), (1300, 1000))
+        self.assertEqual(budget(300, "XHigh", 900, 1000), (900, 600))
+
+    def test_llamacpp_generation_requests_separate_reasoning_without_implicit_cap(self):
+        response = {
+            "choices": [{
+                "message": {"content": "A finished image prompt.", "reasoning_content": "private"},
+                "finish_reason": "stop",
+            }],
+        }
+        with (
+            mock.patch.object(self.nodes, "_llamacpp_token_count", return_value=250),
+            mock.patch.object(self.nodes, "_llamacpp_context_length", return_value=8192),
+            mock.patch.object(self.nodes, "_post_llamacpp_chat", return_value=response) as post,
+        ):
+            result = self.nodes._generate_llamacpp(
+                "Rewrite this prompt",
+                "http://localhost:8080",
+                "Qwen3.8-27B.gguf",
+                0,
+                300,
+                1.0,
+                0.95,
+                20,
+                0.0,
+                1.0,
+                360,
+                -1,
+                "XHigh",
+                "",
+                120,
+            )
+
+        self.assertEqual(result, "A finished image prompt.")
+        payload = post.call_args.args[1]
+        self.assertEqual(payload["max_tokens"], 6552)
+        self.assertEqual(payload["reasoning_effort"], "xhigh")
+        self.assertEqual(payload["reasoning_format"], "auto")
+        self.assertTrue(payload["chat_template_kwargs"]["enable_thinking"])
+        self.assertNotIn("thinking_budget_tokens", payload)
+
+    def test_llamacpp_generation_applies_explicit_reasoning_cap(self):
+        response = {
+            "choices": [{
+                "message": {"content": "A finished image prompt.", "reasoning_content": "private"},
+                "finish_reason": "stop",
+            }],
+        }
+        with (
+            mock.patch.object(self.nodes, "_llamacpp_token_count", return_value=250),
+            mock.patch.object(self.nodes, "_llamacpp_context_length", return_value=8192),
+            mock.patch.object(self.nodes, "_post_llamacpp_chat", return_value=response) as post,
+        ):
+            self.nodes._generate_llamacpp(
+                "Rewrite this prompt",
+                "http://localhost:8080",
+                "Qwen3.8-27B.gguf",
+                300,
+                300,
+                1.0,
+                0.95,
+                20,
+                0.0,
+                1.0,
+                360,
+                -1,
+                "Medium",
+                "",
+                120,
+                reasoning_budget_tokens=1000,
+            )
+
+        payload = post.call_args.args[1]
+        self.assertEqual(payload["max_tokens"], 1300)
+        self.assertEqual(payload["thinking_budget_tokens"], 1000)
+        self.assertEqual(payload["reasoning_effort"], "medium")
+        self.assertEqual(payload["reasoning_format"], "auto")
 
     def test_high_thinking_length_failure_is_not_retried_without_thinking(self):
         response = {
@@ -1661,6 +2051,21 @@ class RegressionTests(unittest.TestCase):
         self.assertEqual(result["route"], "mutate_now")
         self.assertEqual(result["warning"], routed_json.warning)
         self.assertFalse(consult.call_args.kwargs["allow_partial"])
+
+    def test_initial_turn_router_uses_llamacpp_supported_low_effort(self):
+        routed_json = '{"route":"mutate_now","confidence":0.9,"resolved_instruction":"make it blue"}'
+        with mock.patch.object(self.routes, "_consult", return_value=routed_json) as consult:
+            result = self.routes._studio_turn_route({
+                "user_text": "make it blue",
+                "chat_initialized": False,
+                "llm_provider": "llamacpp",
+                "thinking_mode": "Low",
+            })
+
+        self.assertEqual(result["route"], "mutate_now")
+        request_data = consult.call_args.args[0]
+        self.assertEqual(request_data["thinking_mode"], "Low")
+        self.assertEqual(request_data["max_response_tokens"], 320)
 
     def test_ollama_generation_does_not_start_after_setup_is_cancelled(self):
         checks = iter([False, True])

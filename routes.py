@@ -12,6 +12,7 @@ import os
 import re
 import secrets
 import shutil
+import subprocess
 import threading
 import time
 import urllib.parse
@@ -37,20 +38,25 @@ from .nodes import (
     _build_revision_prompt,
     _chat_image_vision_payload,
     _chat_image_dimensions,
+    _clean_llamacpp_base_url,
     _clean_base_url,
     _density_count,
     _diffusion_model_names_for_type,
     _generate_kcpp,
+    _generate_llamacpp,
     _generate_ollama,
     _get_json,
     _get_framing_template,
     _get_profile,
     _get_style_template,
+    _kobold_token_count,
     _load_framing_templates,
     _load_known_references,
     _load_profiles,
     _load_style_templates,
     _list_ollama_models,
+    _list_llamacpp_models,
+    _llamacpp_props,
     _lora_names_for_type,
     _llm_vision_capability,
     _needs_expansion_retry,
@@ -64,6 +70,7 @@ from .nodes import (
     _target_length_response_tokens,
     _target_output_length,
     _unload_ollama_model,
+    _abort_llamacpp_generation,
 )
 
 
@@ -85,6 +92,7 @@ MAX_VISION_REQUEST_BYTES = 32 * 1024
 MAX_IMAGE_UPLOAD_BYTES = 20 * 1024 * 1024
 MAX_IMAGE_UPLOAD_REQUEST_BYTES = MAX_IMAGE_UPLOAD_BYTES + 1024 * 1024
 STANDALONE_PAGE_PATH = os.path.join(BASE_DIR, "web", "prompt_studio.html")
+LLAMACPP_CONFIG_BUILDER_PATH = os.path.join(BASE_DIR, "llamacpp_config_builder.ps1")
 STANDALONE_ALIAS_PATH = "/PromptStudio"
 
 LLM_PRIORITY_STUDIO = 0
@@ -113,6 +121,11 @@ _ACTIVE_SHARED_LLM = None
 _KOBOLD_ADMIN_UNLOADED = set()
 _PENDING_COMFY_HANDOFFS = {}
 _LLM_HANDOFF_ERRORS = {}
+_LLAMACPP_PROCESS_LOCK = threading.RLock()
+_LLAMACPP_PROCESS = None
+_LLAMACPP_PROCESS_DETAILS = {}
+_LLAMACPP_PICKER_LOCK = threading.Lock()
+MAX_LLAMACPP_CONFIG_BYTES = 64 * 1024
 
 
 def _keep_models_loaded(data):
@@ -122,6 +135,436 @@ def _keep_models_loaded(data):
     if isinstance(value, str):
         return value.strip().casefold() in {"1", "true", "yes", "on"}
     return bool(value)
+
+
+def _provider_display_name(provider):
+    return {
+        "koboldcpp": "KoboldCpp",
+        "ollama": "Ollama",
+        "llamacpp": "Llama.cpp",
+    }.get(str(provider or "").strip().casefold(), "Local LLM")
+
+
+def _validate_llamacpp_picker_selection(kind, path):
+    kind = _text(kind).strip().casefold()
+    selected = os.path.abspath(_text(path).strip()) if _text(path).strip() else ""
+    if kind not in {"executable", "config"}:
+        raise ValueError("Llama.cpp file-picker kind must be executable or config")
+    if not selected:
+        return ""
+    if not os.path.isfile(selected):
+        raise ValueError(f"Selected file was not found: {selected}")
+    if kind == "executable" and os.path.basename(selected).casefold() not in {
+        "llama.exe", "llama-server.exe",
+    }:
+        raise ValueError("Select llama.exe or llama-server.exe")
+    if kind == "config" and os.path.splitext(selected)[1].casefold() != ".json":
+        raise ValueError("Select a JSON launcher config file")
+    return selected
+
+
+def _pick_llamacpp_file(kind, current_path=""):
+    if os.name != "nt":
+        raise RuntimeError("The Llama.cpp file picker is currently available on Windows only")
+    kind = _text(kind).strip().casefold()
+    if kind not in {"executable", "config"}:
+        raise ValueError("Llama.cpp file-picker kind must be executable or config")
+    if not _LLAMACPP_PICKER_LOCK.acquire(blocking=False):
+        raise RuntimeError("A Llama.cpp file picker is already open")
+    root = None
+    try:
+        import tkinter
+        from tkinter import filedialog
+
+        current = _text(current_path).strip()
+        current_directory = os.path.dirname(os.path.abspath(current)) if current else BASE_DIR
+        if not os.path.isdir(current_directory):
+            current_directory = BASE_DIR
+        options = {
+            "title": "Select the Llama.cpp server executable" if kind == "executable"
+            else "Select the Llama.cpp launcher config",
+            "initialdir": current_directory,
+            "filetypes": [
+                ("Llama.cpp server", "llama.exe llama-server.exe"),
+                ("Executable files", "*.exe"),
+                ("All files", "*.*"),
+            ] if kind == "executable" else [
+                ("JSON files", "*.json"),
+                ("All files", "*.*"),
+            ],
+        }
+        if current and os.path.basename(current):
+            options["initialfile"] = os.path.basename(current)
+        root = tkinter.Tk()
+        root.withdraw()
+        root.attributes("-topmost", True)
+        root.update_idletasks()
+        selected = filedialog.askopenfilename(parent=root, **options)
+        return _validate_llamacpp_picker_selection(kind, selected)
+    except ImportError as exc:
+        raise RuntimeError("This Python installation does not provide the native file picker") from exc
+    finally:
+        if root is not None:
+            root.destroy()
+        _LLAMACPP_PICKER_LOCK.release()
+
+
+def _llamacpp_builder_config_path(value=""):
+    requested = _text(value).strip()
+    config_path = os.path.abspath(requested) if requested else os.path.join(BASE_DIR, "llamacpp_server.json")
+    if os.path.splitext(config_path)[1].casefold() != ".json":
+        raise ValueError("The Prompt Studio Llama.cpp config must be a JSON file")
+    config_directory = os.path.dirname(config_path)
+    if not os.path.isdir(config_directory):
+        raise ValueError(f"The Llama.cpp config directory was not found: {config_directory}")
+    if os.path.isfile(config_path) and os.path.getsize(config_path) > MAX_LLAMACPP_CONFIG_BYTES:
+        raise ValueError("Llama.cpp config file exceeds the 64 KB limit")
+    return config_path
+
+
+def _launch_llamacpp_config_builder(data):
+    if os.name != "nt":
+        raise RuntimeError("The Llama.cpp config builder is currently available on Windows only")
+    if not os.path.isfile(LLAMACPP_CONFIG_BUILDER_PATH):
+        raise RuntimeError("The Prompt Studio Llama.cpp config builder script is missing")
+    config_path = _llamacpp_builder_config_path(data.get("llamacpp_config_path"))
+    powershell = shutil.which("powershell.exe")
+    if not powershell:
+        system_root = os.environ.get("SystemRoot", r"C:\Windows")
+        candidate = os.path.join(
+            system_root, "System32", "WindowsPowerShell", "v1.0", "powershell.exe",
+        )
+        powershell = candidate if os.path.isfile(candidate) else ""
+    if not powershell:
+        raise RuntimeError("Windows PowerShell was not found")
+    command = [
+        powershell,
+        "-NoProfile",
+        "-STA",
+        "-ExecutionPolicy", "Bypass",
+        "-File", LLAMACPP_CONFIG_BUILDER_PATH,
+        "-ConfigPath", config_path,
+    ]
+    try:
+        process = subprocess.Popen(
+            command,
+            cwd=BASE_DIR,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            shell=False,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+    except OSError as exc:
+        raise RuntimeError(f"Could not open the Llama.cpp config builder: {exc}") from exc
+    return {"opened": True, "pid": process.pid, "config_path": config_path}
+
+
+def _llamacpp_launcher_paths(data):
+    executable = os.path.abspath(_text(data.get("llamacpp_executable")).strip())
+    config_path = os.path.abspath(_text(data.get("llamacpp_config_path")).strip())
+    if not _text(data.get("llamacpp_executable")).strip():
+        raise ValueError("Set the Llama.cpp executable path in Prompt Studio settings")
+    if not _text(data.get("llamacpp_config_path")).strip():
+        raise ValueError("Set the Llama.cpp JSON config path in Prompt Studio settings")
+    if not os.path.isfile(executable):
+        raise ValueError(f"Llama.cpp executable was not found: {executable}")
+    if os.path.basename(executable).casefold() not in {
+        "llama.exe", "llama", "llama-server.exe", "llama-server",
+    }:
+        raise ValueError("Llama.cpp executable must be llama.exe or llama-server.exe")
+    if not os.path.isfile(config_path):
+        raise ValueError(f"Llama.cpp config file was not found: {config_path}")
+    if os.path.getsize(config_path) > MAX_LLAMACPP_CONFIG_BYTES:
+        raise ValueError("Llama.cpp config file exceeds the 64 KB limit")
+    return executable, config_path
+
+
+def _load_llamacpp_launcher_config(data):
+    executable, config_path = _llamacpp_launcher_paths(data)
+    try:
+        with open(config_path, "r", encoding="utf-8-sig") as handle:
+            config = json.load(handle)
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError(f"Could not read Llama.cpp config JSON: {exc}") from exc
+    if not isinstance(config, dict):
+        raise ValueError("Llama.cpp config JSON must contain an object at the root")
+
+    def first(*keys, default=None):
+        for key in keys:
+            if key in config:
+                return config[key]
+        return default
+
+    def integer(label, *keys, default, minimum, maximum):
+        try:
+            value = int(first(*keys, default=default))
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"Llama.cpp config '{label}' must be an integer") from exc
+        if value < minimum or value > maximum:
+            raise ValueError(f"Llama.cpp config '{label}' must be between {minimum} and {maximum}")
+        return value
+
+    def number(label, *keys, default, minimum, maximum):
+        try:
+            value = float(first(*keys, default=default))
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"Llama.cpp config '{label}' must be a number") from exc
+        if not math.isfinite(value) or value < minimum or value > maximum:
+            raise ValueError(
+                f"Llama.cpp config '{label}' must be between {minimum} and {maximum}"
+            )
+        return value
+
+    model = os.path.abspath(_text(first("model", "model_gguf")).strip())
+    if not _text(first("model", "model_gguf")).strip() or not os.path.isfile(model):
+        raise ValueError(f"Llama.cpp model GGUF was not found: {model}")
+    mmproj_value = _text(first("mmproj", "mmproj_gguf")).strip()
+    mmproj = os.path.abspath(mmproj_value) if mmproj_value else ""
+    if mmproj and not os.path.isfile(mmproj):
+        raise ValueError(f"Llama.cpp MMProj GGUF was not found: {mmproj}")
+    gpu_layers_value = first("gpu_layers", "n_gpu_layers", default="all")
+    gpu_layers = _text(gpu_layers_value).strip().casefold()
+    if gpu_layers != "all":
+        try:
+            gpu_layers = str(int(gpu_layers_value))
+        except (TypeError, ValueError) as exc:
+            raise ValueError("Llama.cpp config 'gpu_layers' must be an integer or 'all'") from exc
+    split_mode = _text(first("split_mode", default="layer")).strip().casefold()
+    if split_mode not in {"none", "layer", "row", "tensor"}:
+        raise ValueError("Llama.cpp config 'split_mode' must be none, layer, row, or tensor")
+    flash_attention = _text(first("flash_attention", "flash_attn", default="auto")).strip().casefold()
+    if flash_attention not in {"auto", "on", "off"}:
+        raise ValueError("Llama.cpp config 'flash_attention' must be auto, on, or off")
+    auto_fit = _text(first("auto_fit", "fit", default="default")).strip().casefold()
+    if auto_fit not in {"default", "on", "off"}:
+        raise ValueError("Llama.cpp config 'auto_fit' must be default, on, or off")
+    cache_type_k = _text(first("kv_cache_k", "cache_type_k", default="f16")).strip()
+    cache_type_v = _text(first("kv_cache_v", "cache_type_v", default="f16")).strip()
+    if not cache_type_k or not cache_type_v:
+        raise ValueError("Llama.cpp KV cache types must not be empty")
+    mtp_value = first("mtp_enabled", "mtp", default="off")
+    if isinstance(mtp_value, bool):
+        mtp_enabled = mtp_value
+    else:
+        normalized_mtp = _text(mtp_value).strip().casefold()
+        if normalized_mtp not in {"on", "off"}:
+            raise ValueError("Llama.cpp config 'mtp_enabled' must be on or off")
+        mtp_enabled = normalized_mtp == "on"
+    mtp_draft_tokens = integer(
+        "mtp_draft_tokens", "mtp_draft_tokens", "spec_draft_n_max",
+        default=3, minimum=1, maximum=1024,
+    )
+    mtp_min_draft_tokens = integer(
+        "mtp_min_draft_tokens", "mtp_min_draft_tokens", "spec_draft_n_min",
+        default=0, minimum=0, maximum=1024,
+    )
+    if mtp_min_draft_tokens > mtp_draft_tokens:
+        raise ValueError(
+            "Llama.cpp config 'mtp_min_draft_tokens' must not exceed 'mtp_draft_tokens'"
+        )
+    mtp_min_probability = number(
+        "mtp_min_probability", "mtp_min_probability", "spec_draft_p_min",
+        default=0.0, minimum=0.0, maximum=1.0,
+    )
+    mtp_gpu_layers_value = first(
+        "mtp_gpu_layers", "spec_draft_gpu_layers", default="auto",
+    )
+    mtp_gpu_layers = _text(mtp_gpu_layers_value).strip().casefold()
+    if mtp_gpu_layers not in {"auto", "all"}:
+        try:
+            mtp_gpu_layers = str(int(mtp_gpu_layers_value))
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                "Llama.cpp config 'mtp_gpu_layers' must be an integer, 'auto', or 'all'"
+            ) from exc
+        if int(mtp_gpu_layers) < 0:
+            raise ValueError(
+                "Llama.cpp config 'mtp_gpu_layers' must be non-negative, 'auto', or 'all'"
+            )
+    mtp_device = _text(first("mtp_device", "spec_draft_device", default="")).strip()
+    mtp_cache_type_k = _text(first(
+        "mtp_kv_cache_k", "spec_draft_cache_type_k", default="f16",
+    )).strip()
+    mtp_cache_type_v = _text(first(
+        "mtp_kv_cache_v", "spec_draft_cache_type_v", default="f16",
+    )).strip()
+    if not mtp_cache_type_k or not mtp_cache_type_v:
+        raise ValueError("Llama.cpp MTP KV cache types must not be empty")
+    host = _text(first("host", default="127.0.0.1")).strip() or "127.0.0.1"
+    if any(character.isspace() for character in host):
+        raise ValueError("Llama.cpp config 'host' is invalid")
+    port = integer("port", "port", default=8080, minimum=1, maximum=65535)
+    parallel = integer("parallel_slots", "parallel", default=1, minimum=1, maximum=1024)
+    context_size = integer("context_size", "ctx_size", default=32768, minimum=128, maximum=16_777_216)
+    main_gpu = integer("main_gpu", "main_gpu_index", default=0, minimum=0, maximum=1024)
+    tensor_split = _text(first("tensor_split", default="")).strip()
+    cuda_devices = _text(first("cuda_devices", default="")).strip()
+    cuda_visible_devices = _text(first("cuda_visible_devices", default="")).strip()
+    extra_args = first("extra_args", default=[])
+    if not isinstance(extra_args, list) or not all(isinstance(value, str) for value in extra_args):
+        raise ValueError("Llama.cpp config 'extra_args' must be a list of strings")
+    if len(extra_args) > 128 or any("\x00" in value or len(value) > 4096 for value in extra_args):
+        raise ValueError("Llama.cpp config 'extra_args' is too large or contains invalid values")
+
+    command = [executable]
+    if os.path.basename(executable).casefold() in {"llama.exe", "llama"}:
+        command.append("serve")
+    command.extend(["--model", model])
+    if mmproj:
+        command.extend(["--mmproj", mmproj])
+    command.extend([
+        "--ctx-size", str(context_size),
+        "--gpu-layers", gpu_layers,
+        "--split-mode", split_mode,
+        "--main-gpu", str(main_gpu),
+        "--flash-attn", flash_attention,
+        "--cache-type-k", cache_type_k,
+        "--cache-type-v", cache_type_v,
+        "--parallel", str(parallel),
+        "--host", host,
+        "--port", str(port),
+        "--slots",
+    ])
+    if tensor_split:
+        command.extend(["--tensor-split", tensor_split])
+    if cuda_devices:
+        command.extend(["--device", cuda_devices])
+    if auto_fit != "default":
+        command.extend(["--fit", auto_fit])
+    if mtp_enabled:
+        command.extend([
+            "--spec-type", "draft-mtp",
+            "--spec-draft-n-max", str(mtp_draft_tokens),
+            "--spec-draft-n-min", str(mtp_min_draft_tokens),
+            "--spec-draft-p-min", format(mtp_min_probability, ".15g"),
+            "--spec-draft-ngl", mtp_gpu_layers,
+            "--spec-draft-type-k", mtp_cache_type_k,
+            "--spec-draft-type-v", mtp_cache_type_v,
+        ])
+        if mtp_device:
+            command.extend(["--spec-draft-device", mtp_device])
+    command.extend(extra_args)
+    url_host = f"[{host}]" if ":" in host and not host.startswith("[") else host
+    return {
+        "executable": executable,
+        "config_path": config_path,
+        "command": command,
+        "environment": {"CUDA_VISIBLE_DEVICES": cuda_visible_devices} if cuda_visible_devices else {},
+        "host": host,
+        "port": port,
+        "url": f"http://{url_host}:{port}",
+    }
+
+
+def _llamacpp_managed_process_status(data=None):
+    global _LLAMACPP_PROCESS
+    with _LLAMACPP_PROCESS_LOCK:
+        process = _LLAMACPP_PROCESS
+        details = dict(_LLAMACPP_PROCESS_DETAILS)
+        if process is None:
+            running = False
+            return_code = details.get("return_code")
+        else:
+            return_code = process.poll()
+            running = return_code is None
+            if not running:
+                details["return_code"] = return_code
+                _LLAMACPP_PROCESS_DETAILS.update(details)
+                _LLAMACPP_PROCESS = None
+        status = {
+            "managed": process is not None or bool(details.get("started_at")),
+            "running": running,
+            "pid": process.pid if running else None,
+            "return_code": return_code,
+        }
+        for key in ("url", "executable", "config_path", "started_at"):
+            if details.get(key) is not None:
+                status[key] = details[key]
+        if data:
+            status["configured"] = bool(
+                _text(data.get("llamacpp_executable")).strip()
+                and _text(data.get("llamacpp_config_path")).strip()
+            )
+        return status
+
+
+def _start_llamacpp_server(data):
+    global _LLAMACPP_PROCESS, _LLAMACPP_PROCESS_DETAILS
+    launcher = _load_llamacpp_launcher_config(data)
+    with _LLAMACPP_PROCESS_LOCK:
+        current = _LLAMACPP_PROCESS
+        if current is not None and current.poll() is None:
+            return {**_llamacpp_managed_process_status(data), "already_running": True}
+        if isinstance(_get_json(urllib.parse.urljoin(launcher["url"] + "/", "health"), 2), dict):
+            return {
+                "managed": False,
+                "running": True,
+                "already_running": True,
+                "external": True,
+                "url": launcher["url"],
+            }
+        environment = os.environ.copy()
+        environment.update(launcher["environment"])
+        creation_flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        try:
+            process = subprocess.Popen(
+                launcher["command"],
+                cwd=os.path.dirname(launcher["executable"]),
+                env=environment,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                shell=False,
+                creationflags=creation_flags,
+            )
+        except OSError as exc:
+            raise RuntimeError(f"Could not start Llama.cpp: {exc}") from exc
+        _LLAMACPP_PROCESS = process
+        _LLAMACPP_PROCESS_DETAILS = {
+            "url": launcher["url"],
+            "executable": launcher["executable"],
+            "config_path": launcher["config_path"],
+            "started_at": time.time(),
+        }
+        return _llamacpp_managed_process_status(data)
+
+
+def _stop_llamacpp_server(data=None):
+    global _LLAMACPP_PROCESS
+    with _LLAMACPP_PROCESS_LOCK:
+        process = _LLAMACPP_PROCESS
+        if process is None or process.poll() is not None:
+            _LLAMACPP_PROCESS = None
+            return {**_llamacpp_managed_process_status(data), "stopped": False}
+        process.terminate()
+    try:
+        process.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait(timeout=5)
+    with _LLAMACPP_PROCESS_LOCK:
+        _LLAMACPP_PROCESS_DETAILS["return_code"] = process.returncode
+        _LLAMACPP_PROCESS = None
+        return {**_llamacpp_managed_process_status(data), "stopped": True}
+
+
+def _restart_llamacpp_server(data):
+    _stop_llamacpp_server(data)
+    return _start_llamacpp_server(data)
+
+
+def _require_loopback_server_control(request):
+    remote = str(getattr(request, "remote", "") or "").strip()
+    if not remote:
+        return
+    remote = remote.split("%", 1)[0]
+    try:
+        allowed = ipaddress.ip_address(remote).is_loopback
+    except ValueError:
+        allowed = remote.casefold() == "localhost"
+    if not allowed:
+        raise PermissionError("Llama.cpp process controls are available only from this computer")
 
 
 def _llm_provider_settings(data):
@@ -137,7 +580,13 @@ def _llm_provider_settings(data):
             "llm_provider": "koboldcpp",
             "kobold_url": _text(data.get("kobold_url"), "http://localhost:5001"),
         }
-    raise ValueError("llm_provider must be koboldcpp or ollama")
+    if provider == "llamacpp":
+        return {
+            "llm_provider": "llamacpp",
+            "llamacpp_url": _text(data.get("llamacpp_url"), "http://localhost:8080"),
+            "llamacpp_model": _text(data.get("llamacpp_model")).strip(),
+        }
+    raise ValueError("llm_provider must be koboldcpp, ollama, or llamacpp")
 
 
 def _llm_provider_key(data):
@@ -147,6 +596,12 @@ def _llm_provider_key(data):
             "ollama",
             settings["ollama_url"].strip(),
             settings["ollama_model"],
+        )
+    if settings["llm_provider"] == "llamacpp":
+        return (
+            "llamacpp",
+            settings["llamacpp_url"].strip(),
+            settings["llamacpp_model"],
         )
     return ("koboldcpp", settings["kobold_url"].strip())
 
@@ -339,11 +794,44 @@ def _reload_kobold_model_if_needed(data):
     _KOBOLD_ADMIN_UNLOADED.discard(base_url)
 
 
+def _unload_llamacpp_model(llamacpp_url, llamacpp_model, request_timeout=15):
+    """Unload a llama-server router model before ComfyUI takes the shared GPU."""
+    base_url = _clean_llamacpp_base_url(llamacpp_url)
+    model = _text(llamacpp_model).strip()
+    if not model:
+        models = _list_llamacpp_models(base_url, request_timeout)
+        if len(models) == 1:
+            model = models[0]
+        else:
+            raise ValueError("Select a Llama.cpp model in Prompt Studio settings")
+    try:
+        result = _post_json(
+            urllib.parse.urljoin(base_url + "/", "models/unload"),
+            {"model": model},
+            int(request_timeout),
+            "Llama.cpp",
+        )
+    except RuntimeError as exc:
+        raise RuntimeError(
+            "Llama.cpp shared-GPU handoff requires llama-server router mode so Prompt Studio "
+            "can call /models/unload. Start llama-server with --models-dir, or enable Keep models "
+            "loaded only when Llama.cpp and ComfyUI use separate GPUs."
+        ) from exc
+    if not isinstance(result, dict) or result.get("success") is not True:
+        raise RuntimeError(f"Llama.cpp could not unload '{model}': {result}")
+    return {"provider": "llamacpp", "model": model, "unloaded": True}
+
+
 def _unload_llm_provider(data):
     settings = _llm_provider_settings(data)
     if settings["llm_provider"] == "ollama":
         _unload_ollama_model(settings["ollama_url"], settings["ollama_model"])
         return {"provider": "ollama", "unloaded": True}
+    if settings["llm_provider"] == "llamacpp":
+        return _unload_llamacpp_model(
+            settings["llamacpp_url"],
+            settings["llamacpp_model"],
+        )
     return _unload_kobold_model(settings)
 
 
@@ -398,6 +886,12 @@ def _llm_queue_key(data):
             provider,
             _text(data.get("ollama_url"), "http://localhost:11434").strip(),
             _text(data.get("ollama_model")).strip(),
+        )
+    if provider == "llamacpp":
+        return (
+            provider,
+            _text(data.get("llamacpp_url"), "http://localhost:8080").strip(),
+            _text(data.get("llamacpp_model")).strip(),
         )
     return ("koboldcpp", _text(data.get("kobold_url"), "http://localhost:5001").strip())
 
@@ -481,8 +975,25 @@ def _kobold_generation_status(data):
             first = results[0] if isinstance(results, list) and results else None
             text = str(first.get("text") or "") if isinstance(first, dict) else ""
             status["generated_characters"] = len(text) if isinstance(first, dict) else None
+            if text:
+                status["generated_tokens"] = _kobold_token_count(
+                    base_url,
+                    3,
+                    prompt=text,
+                )
+                thinking_open = re.search(r"<(?:think|thinking)\b[^>]*>", text, re.IGNORECASE)
+                thinking_closed = re.search(r"</(?:think|thinking)>", text, re.IGNORECASE)
+                if thinking_open and not thinking_closed:
+                    status["generation_phase"] = "thinking"
+                else:
+                    status["generation_phase"] = "generating"
         except (RuntimeError, AttributeError, IndexError, KeyError, TypeError):
             status["generated_characters"] = None
+    if busy and not status.get("generation_phase"):
+        status["generation_phase"] = (
+            "thinking" if _text(data.get("thinking_mode"), "Disabled").strip().casefold()
+            not in {"disabled", "none"} else "generating"
+        )
     return status
 
 
@@ -518,14 +1029,94 @@ def _ollama_generation_status(data):
     return status
 
 
+def _llamacpp_generation_status(data):
+    """Return llama-server health, slot activity, model, and vision information."""
+    base_url = _clean_llamacpp_base_url(data.get("llamacpp_url"))
+    selected_model = _text(data.get("llamacpp_model")).strip()
+    health = _get_json(urllib.parse.urljoin(base_url + "/", "health"), 3)
+    if not isinstance(health, dict):
+        return {
+            "provider": "llamacpp",
+            "reachable": False,
+            "busy": None,
+            "server_process": _llamacpp_managed_process_status(data),
+        }
+    models = _list_llamacpp_models(base_url, request_timeout=3)
+    model = selected_model or (models[0] if len(models) == 1 else "")
+    slots = _get_json(urllib.parse.urljoin(base_url + "/", "slots"), 3)
+    busy = None
+    active_slots = 0
+    generated_tokens = None
+    if isinstance(slots, list):
+        processing = [slot for slot in slots if isinstance(slot, dict) and slot.get("is_processing") is True]
+        active_slots = len(processing)
+        busy = active_slots > 0
+        decoded = []
+        for slot in processing:
+            next_token = slot.get("next_token")
+            if isinstance(next_token, dict):
+                value = next_token.get("n_decoded")
+            elif isinstance(next_token, list):
+                speculative_counts = []
+                for token_state in next_token:
+                    if not isinstance(token_state, dict):
+                        continue
+                    try:
+                        speculative_counts.append(max(0, int(token_state.get("n_decoded"))))
+                    except (TypeError, ValueError):
+                        pass
+                value = max(speculative_counts) if speculative_counts else slot.get("n_decoded")
+            else:
+                value = slot.get("n_decoded")
+            try:
+                decoded.append(max(0, int(value)))
+            except (TypeError, ValueError):
+                pass
+        if decoded:
+            generated_tokens = sum(decoded)
+    props = _llamacpp_props(base_url, 3, model) if model else {}
+    modalities = props.get("modalities") if isinstance(props, dict) else None
+    vision = modalities.get("vision") if isinstance(modalities, dict) else None
+    status = {
+        "provider": "llamacpp",
+        "reachable": True,
+        "busy": busy,
+        "active_slots": active_slots if isinstance(slots, list) else None,
+        "generated_tokens": generated_tokens,
+        "model": model or None,
+        "model_installed": model in models if model else None,
+        "vision": vision if isinstance(vision, bool) else None,
+        "server_process": _llamacpp_managed_process_status(data),
+    }
+    if busy:
+        thinking_enabled = _text(data.get("thinking_mode"), "Disabled").strip().casefold() not in {
+            "disabled", "none",
+        }
+        # The slots endpoint exposes decoded-token progress but does not separate
+        # private reasoning from final-answer tokens.
+        status["generation_phase"] = "thinking_or_generating" if thinking_enabled else "generating"
+    health_status = _text(health.get("status")).strip()
+    if health_status and health_status != "ok":
+        status["message"] = f"Llama.cpp: {health_status}."
+    elif not model:
+        status["message"] = "Llama.cpp is online. Select a model to use it."
+    elif model not in models:
+        status["message"] = f"Llama.cpp is online, but '{model}' is not available."
+    elif not isinstance(slots, list):
+        status["message"] = "Llama.cpp is ready. Start llama-server with --slots to monitor active generation."
+    return status
+
+
 def _llm_generation_status(data):
     provider = _text(data.get("llm_provider"), "koboldcpp").strip().casefold()
     if provider == "koboldcpp":
         status = dict(_kobold_generation_status(data))
     elif provider == "ollama":
         status = dict(_ollama_generation_status(data))
+    elif provider == "llamacpp":
+        status = dict(_llamacpp_generation_status(data))
     else:
-        raise ValueError("llm_provider must be koboldcpp or ollama")
+        raise ValueError("llm_provider must be koboldcpp, ollama, or llamacpp")
     handoff_error = _llm_handoff_error(data)
     if handoff_error:
         status["handoff_error"] = handoff_error
@@ -545,6 +1136,17 @@ def _abort_kobold_generation(data):
         "provider": "koboldcpp",
         "success": isinstance(result, dict) and result.get("success") is True,
     }
+
+
+def _abort_llm_generation(data):
+    provider = _text(data.get("llm_provider"), "koboldcpp").strip().casefold()
+    if provider == "koboldcpp":
+        return _abort_kobold_generation(data)
+    if provider == "llamacpp":
+        return _abort_llamacpp_generation(
+            _text(data.get("llamacpp_url"), "http://localhost:8080")
+        )
+    raise ValueError(f"{provider or 'Selected provider'} does not expose a force-stop operation")
 
 
 def _prune_prompt_agent_requests():
@@ -599,6 +1201,7 @@ def _register_prompt_agent_request(request_id, data):
         record["agent_id"] = _prompt_agent_agent_id(data.get("agent_id"))
         record["kobold_url"] = data.get("kobold_url")
         record["ollama_url"] = data.get("ollama_url")
+        record["llamacpp_url"] = data.get("llamacpp_url")
         return record
 
 
@@ -697,10 +1300,13 @@ def _cancel_prompt_agent_request_id(request_id):
             record["finished_at"] = time.time()
         provider = record.get("provider")
         kobold_url = record.get("kobold_url")
+        llamacpp_url = record.get("llamacpp_url")
         response = record.get("response")
     provider_aborted = False
     if previous_status == "running" and provider == "koboldcpp":
         provider_aborted = _abort_kobold_generation({"kobold_url": kobold_url}).get("success") is True
+    elif previous_status == "running" and provider == "llamacpp":
+        provider_aborted = _abort_llamacpp_generation(llamacpp_url).get("success") is True
     connection_closed = False
     if previous_status == "running" and response is not None:
         try:
@@ -803,7 +1409,12 @@ def _start_consult_job(data):
         "created_at": time.time(),
         "provider_settings": {
             "llm_provider": data.get("llm_provider"),
+            "thinking_mode": data.get("thinking_mode"),
             "kobold_url": data.get("kobold_url"),
+            "ollama_url": data.get("ollama_url"),
+            "ollama_model": data.get("ollama_model"),
+            "llamacpp_url": data.get("llamacpp_url"),
+            "llamacpp_model": data.get("llamacpp_model"),
         },
     }
     task = asyncio.create_task(_run_consult_job(job_id, data))
@@ -824,9 +1435,10 @@ async def _cancel_consult_job(job_id):
     task = job.get("task")
     if previous_status == "queued" and task and not task.done():
         task.cancel()
-    if previous_status == "running" and str(job.get("provider_settings", {}).get("llm_provider") or "koboldcpp").casefold() == "koboldcpp":
+    provider = str(job.get("provider_settings", {}).get("llm_provider") or "koboldcpp").casefold()
+    if previous_status == "running" and provider in {"koboldcpp", "llamacpp"}:
         try:
-            await asyncio.to_thread(_abort_kobold_generation, job["provider_settings"])
+            await asyncio.to_thread(_abort_llm_generation, job["provider_settings"])
         except Exception:
             pass
     return {"job_id": job_id, "status": "cancelled"}
@@ -1823,12 +2435,15 @@ def _revise(data):
     framing_template = _get_framing_template(_text(data.get("framing_preset"), "None"))
     thinking_mode = _text(data.get("thinking_mode"), "Disabled")
     embellishment_level = _text(data.get("embellishment_level"), "Clean")
-    if thinking_mode not in {"Disabled", "Minimal", "Low", "Medium", "High"}:
+    if thinking_mode not in {"Disabled", "Minimal", "Low", "Medium", "High", "XHigh"}:
         raise ValueError("Invalid thinking_mode")
     if embellishment_level not in {"None", "Minimal", "Clean", "Detailed", "Rich", "Maximum", "Ultra Maximum"}:
         raise ValueError("Invalid embellishment_level")
 
     max_response_tokens = _bounded_number(data.get("max_response_tokens"), 0, 0, 8192, integer=True)
+    llamacpp_reasoning_budget_tokens = _bounded_number(
+        data.get("llamacpp_reasoning_budget_tokens"), 0, 0, 262144, integer=True
+    )
     target_output_length = _target_output_length(
         data.get("target_output_length"),
         profile,
@@ -1844,11 +2459,13 @@ def _revise(data):
     sampler_seed = _bounded_number(data.get("sampler_seed"), -1, -1, 999999, integer=True)
     request_timeout = _bounded_number(data.get("request_timeout"), 120, 5, 600, integer=True)
     llm_provider = _text(data.get("llm_provider"), "koboldcpp").strip().casefold()
-    if llm_provider not in {"koboldcpp", "ollama"}:
-        raise ValueError("llm_provider must be koboldcpp or ollama")
+    if llm_provider not in {"koboldcpp", "ollama", "llamacpp"}:
+        raise ValueError("llm_provider must be koboldcpp, ollama, or llamacpp")
     kobold_url = _text(data.get("kobold_url"), "http://localhost:5001")
     ollama_url = _text(data.get("ollama_url"), "http://localhost:11434")
     ollama_model = _text(data.get("ollama_model")).strip()
+    llamacpp_url = _text(data.get("llamacpp_url"), "http://localhost:8080")
+    llamacpp_model = _text(data.get("llamacpp_model")).strip()
     stop_sequence = _text(data.get("stop_sequence"))
     style_modifier = _text(data.get("style_modifier"))
     framing_modifier = _text(data.get("framing_modifier"))
@@ -1932,6 +2549,28 @@ def _revise(data):
             )
             _record_generation_warning(data, generated)
             return generated
+        if llm_provider == "llamacpp":
+            return _generate_llamacpp(
+                request_prompt,
+                llamacpp_url,
+                llamacpp_model,
+                max_response_tokens,
+                default_max_response_tokens,
+                temperature,
+                top_p,
+                top_k,
+                min_p,
+                rep_pen,
+                rep_pen_range,
+                seed,
+                thinking_mode,
+                stop_sequence,
+                request_timeout,
+                include_default_continuation_stops=True,
+                image_data_uri=image_data_uri,
+                presence_penalty=presence_penalty,
+                reasoning_budget_tokens=llamacpp_reasoning_budget_tokens,
+            )
         return _generate_kcpp(
             request_prompt,
             kobold_url,
@@ -1974,8 +2613,7 @@ def _revise(data):
         if retry and _density_count(retry, profile) > _density_count(revised, profile):
             revised = retry
     if not revised:
-        provider_name = "Ollama" if llm_provider == "ollama" else "KoboldCpp"
-        raise RuntimeError(f"{provider_name} returned an empty prompt")
+        raise RuntimeError(f"{_provider_display_name(llm_provider)} returned an empty prompt")
     if mode == "revise_main":
         return revised
     return _apply_profile_wrappers(revised, profile)
@@ -2112,10 +2750,10 @@ def _consult_provider_messages(data, provider, system_message=None):
 
 def _consult(data, system_message=None, allow_partial=True):
     llm_provider = _text(data.get("llm_provider"), "koboldcpp").strip().casefold()
-    if llm_provider not in {"koboldcpp", "ollama"}:
-        raise ValueError("llm_provider must be koboldcpp or ollama")
+    if llm_provider not in {"koboldcpp", "ollama", "llamacpp"}:
+        raise ValueError("llm_provider must be koboldcpp, ollama, or llamacpp")
     thinking_mode = _text(data.get("thinking_mode"), "Disabled")
-    if thinking_mode not in {"Disabled", "Minimal", "Low", "Medium", "High"}:
+    if thinking_mode not in {"Disabled", "Minimal", "Low", "Medium", "High", "XHigh"}:
         raise ValueError("Invalid thinking_mode")
 
     max_response_tokens = _bounded_number(
@@ -2124,6 +2762,9 @@ def _consult(data, system_message=None, allow_partial=True):
         0,
         PROMPT_AGENT_MAX_RESPONSE_TOKENS,
         integer=True,
+    )
+    llamacpp_reasoning_budget_tokens = _bounded_number(
+        data.get("llamacpp_reasoning_budget_tokens"), 0, 0, 262144, integer=True
     )
     temperature = _bounded_number(data.get("temperature"), 0.7, 0.0, 5.0)
     top_p = _bounded_number(data.get("top_p"), 0.9, 0.0, 1.0)
@@ -2157,6 +2798,27 @@ def _consult(data, system_message=None, allow_partial=True):
             allow_partial=allow_partial,
             keep_alive=_ollama_keep_alive(data),
             presence_penalty=presence_penalty,
+        )
+    if llm_provider == "llamacpp":
+        return _generate_llamacpp(
+            "",
+            _text(data.get("llamacpp_url"), "http://localhost:8080"),
+            _text(data.get("llamacpp_model")).strip(),
+            max_response_tokens,
+            800,
+            temperature,
+            top_p,
+            top_k,
+            min_p,
+            rep_pen,
+            rep_pen_range,
+            sampler_seed,
+            thinking_mode,
+            "",
+            request_timeout,
+            messages_override=messages,
+            presence_penalty=presence_penalty,
+            reasoning_budget_tokens=llamacpp_reasoning_budget_tokens,
         )
     return _generate_kcpp(
         "",
@@ -2494,9 +3156,16 @@ def _studio_turn_route(data):
         "pending_proposal": normalized_pending,
         "recent_discussion": history,
     }
+    # The router intentionally uses the cheapest reasoning level, but Qwen3.8's
+    # llama.cpp chat template accepts low/medium/xhigh rather than minimal.
+    router_thinking_mode = (
+        "Low"
+        if _text(data.get("llm_provider"), "koboldcpp").strip().casefold() == "llamacpp"
+        else "Minimal"
+    )
     request_data = {
         **data,
-        "thinking_mode": "Minimal",
+        "thinking_mode": router_thinking_mode,
         "max_response_tokens": 320,
         "temperature": 0.0,
         "top_p": 1.0,
@@ -2925,10 +3594,10 @@ def _prompt_agent(data, response_hook=None, cancellation_check=None):
     if phase not in {"compile", "architect", "evaluate"}:
         raise ValueError("Prompt Agent phase must be compile, architect, or evaluate")
     provider = _text(data.get("llm_provider"), "koboldcpp").strip().casefold()
-    if provider not in {"koboldcpp", "ollama"}:
-        raise ValueError("llm_provider must be koboldcpp or ollama")
+    if provider not in {"koboldcpp", "ollama", "llamacpp"}:
+        raise ValueError("llm_provider must be koboldcpp, ollama, or llamacpp")
     thinking_mode = _text(data.get("thinking_mode"), "Disabled")
-    if thinking_mode not in {"Disabled", "Minimal", "Low", "Medium", "High"}:
+    if thinking_mode not in {"Disabled", "Minimal", "Low", "Medium", "High", "XHigh"}:
         raise ValueError("Invalid thinking_mode")
     goal = _prompt_agent_string(
         data.get("goal"),
@@ -2995,6 +3664,9 @@ def _prompt_agent(data, response_hook=None, cancellation_check=None):
         8192,
         integer=True,
     )
+    llamacpp_reasoning_budget_tokens = _bounded_number(
+        data.get("llamacpp_reasoning_budget_tokens"), 0, 0, 262144, integer=True
+    )
     requested_temperature = _bounded_number(data.get("temperature"), 0.7, 0.0, 5.0)
     temperature = min(requested_temperature, 0.2) if phase in {"compile", "evaluate"} else requested_temperature
     top_p = _bounded_number(data.get("top_p"), 0.9, 0.0, 1.0)
@@ -3036,6 +3708,29 @@ def _prompt_agent(data, response_hook=None, cancellation_check=None):
                 allow_partial=False,
                 keep_alive=_ollama_keep_alive(data),
                 presence_penalty=presence_penalty,
+            )
+        if provider == "llamacpp":
+            return _generate_llamacpp(
+                "",
+                _text(data.get("llamacpp_url"), "http://localhost:8080"),
+                _text(data.get("llamacpp_model")).strip(),
+                response_tokens,
+                PROMPT_AGENT_DEFAULT_RESPONSE_TOKENS,
+                temperature,
+                top_p,
+                top_k,
+                min_p,
+                rep_pen,
+                rep_pen_range,
+                sampler_seed,
+                thinking_mode,
+                "",
+                request_timeout,
+                messages_override=messages,
+                response_hook=response_hook,
+                cancellation_check=cancellation_check,
+                presence_penalty=presence_penalty,
+                reasoning_budget_tokens=llamacpp_reasoning_budget_tokens,
             )
         return _generate_kcpp(
             "",
@@ -3145,6 +3840,8 @@ def _vision_capability(data):
         kobold_url=_text(data.get("kobold_url"), "http://localhost:5001"),
         ollama_url=_text(data.get("ollama_url"), "http://localhost:11434"),
         ollama_model=_text(data.get("ollama_model")).strip(),
+        llamacpp_url=_text(data.get("llamacpp_url"), "http://localhost:8080"),
+        llamacpp_model=_text(data.get("llamacpp_model")).strip(),
         request_timeout=request_timeout,
     )
 
@@ -3156,10 +3853,13 @@ def _caption_image(data):
 
     profile = _get_profile(_text(data.get("model_profile"), "General Natural Language"))
     thinking_mode = _text(data.get("thinking_mode"), "Disabled")
-    if thinking_mode not in {"Disabled", "Minimal", "Low", "Medium", "High"}:
+    if thinking_mode not in {"Disabled", "Minimal", "Low", "Medium", "High", "XHigh"}:
         raise ValueError("Invalid thinking_mode")
 
     max_response_tokens = _bounded_number(data.get("max_response_tokens"), 0, 0, 8192, integer=True)
+    llamacpp_reasoning_budget_tokens = _bounded_number(
+        data.get("llamacpp_reasoning_budget_tokens"), 0, 0, 262144, integer=True
+    )
     temperature = _bounded_number(data.get("temperature"), 0.7, 0.0, 5.0)
     top_p = _bounded_number(data.get("top_p"), 0.9, 0.0, 1.0)
     top_k = _bounded_number(data.get("top_k"), 100, 0, 200, integer=True)
@@ -3170,8 +3870,8 @@ def _caption_image(data):
     sampler_seed = _bounded_number(data.get("sampler_seed"), -1, -1, 999999, integer=True)
     request_timeout = _bounded_number(data.get("request_timeout"), 120, 5, 600, integer=True)
     llm_provider = _text(data.get("llm_provider"), "koboldcpp").strip().casefold()
-    if llm_provider not in {"koboldcpp", "ollama"}:
-        raise ValueError("llm_provider must be koboldcpp or ollama")
+    if llm_provider not in {"koboldcpp", "ollama", "llamacpp"}:
+        raise ValueError("llm_provider must be koboldcpp, ollama, or llamacpp")
 
     image_base64, image_data_uri = _chat_image_vision_payload(json.dumps(image_reference))
     default_max_response_tokens = int(
@@ -3202,6 +3902,17 @@ def _caption_image(data):
             keep_alive=_ollama_keep_alive(data),
             presence_penalty=presence_penalty,
         )
+    elif llm_provider == "llamacpp":
+        raw = _generate_llamacpp(
+            VISION_CAPTION_PROMPT,
+            _text(data.get("llamacpp_url"), "http://localhost:8080"),
+            _text(data.get("llamacpp_model")).strip(),
+            *common_args,
+            include_default_continuation_stops=True,
+            image_data_uri=image_data_uri,
+            presence_penalty=presence_penalty,
+            reasoning_budget_tokens=llamacpp_reasoning_budget_tokens,
+        )
     else:
         raw = _generate_kcpp(
             VISION_CAPTION_PROMPT,
@@ -3214,8 +3925,7 @@ def _caption_image(data):
 
     caption = _strip_response(raw)
     if not caption:
-        provider_name = "Ollama" if llm_provider == "ollama" else "KoboldCpp"
-        raise RuntimeError(f"{provider_name} returned an empty image caption")
+        raise RuntimeError(f"{_provider_display_name(llm_provider)} returned an empty image caption")
     return caption
 
 
@@ -3294,7 +4004,7 @@ async def prompt_studio_config(request):
                 for template in framing_templates
             ],
             "known_reference_names": [reference["name"] for reference in known_references],
-            "thinking_modes": ["Disabled", "Minimal", "Low", "Medium", "High"],
+            "thinking_modes": ["Disabled", "Minimal", "Low", "Medium", "High", "XHigh"],
             "embellishment_levels": [
                 "None",
                 "Minimal",
@@ -3582,6 +4292,23 @@ async def prompt_studio_route_turn(request):
         return web.json_response({"error": str(exc)}, status=502)
 
 
+@PromptServer.instance.routes.post("/promptstudio/prompt-studio/llamacpp-models")
+async def prompt_studio_llamacpp_models(request):
+    try:
+        if request.content_length is not None and request.content_length > MAX_LLM_CONFIG_REQUEST_BYTES:
+            raise ValueError("Prompt Studio LLM configuration request exceeds the 16 KB limit")
+        data = await request.json()
+        if not isinstance(data, dict):
+            raise ValueError("JSON body must be an object")
+        llamacpp_url = _text(data.get("llamacpp_url"), "http://localhost:8080")
+        models = await asyncio.to_thread(_list_llamacpp_models, llamacpp_url, 10)
+        return web.json_response({"models": models})
+    except (ValueError, json.JSONDecodeError) as exc:
+        return web.json_response({"error": str(exc)}, status=400)
+    except Exception as exc:
+        return web.json_response({"error": str(exc)}, status=502)
+
+
 @PromptServer.instance.routes.post("/promptstudio/prompt-studio/discuss")
 async def prompt_studio_discuss(request):
     try:
@@ -3629,22 +4356,15 @@ async def prompt_studio_chat_status(request):
     response = {"status": job["status"]}
     if job["status"] == "running":
         provider = _text(job["provider_settings"].get("llm_provider"), "koboldcpp").strip().casefold()
-        if provider == "koboldcpp":
-            try:
-                response["provider_status"] = await asyncio.to_thread(
-                    _kobold_generation_status,
-                    job["provider_settings"],
-                )
-            except Exception:
-                response["provider_status"] = {
-                    "provider": "koboldcpp",
-                    "reachable": False,
-                    "busy": None,
-                }
-        else:
+        try:
+            response["provider_status"] = await asyncio.to_thread(
+                _llm_generation_status,
+                job["provider_settings"],
+            )
+        except Exception:
             response["provider_status"] = {
                 "provider": provider,
-                "reachable": None,
+                "reachable": False,
                 "busy": None,
             }
     elif job["status"] == "complete":
@@ -3832,6 +4552,100 @@ async def prompt_studio_agent_cancel(request):
         if not isinstance(data, dict):
             raise ValueError("JSON body must be an object")
         return web.json_response(await asyncio.to_thread(_cancel_prompt_agent_request, data))
+    except (ValueError, json.JSONDecodeError) as exc:
+        return web.json_response({"error": str(exc)}, status=400)
+    except Exception as exc:
+        return web.json_response({"error": str(exc)}, status=502)
+
+
+@PromptServer.instance.routes.post("/promptstudio/prompt-studio/llm/abort")
+async def prompt_studio_llm_abort(request):
+    try:
+        if request.content_length is not None and request.content_length > MAX_LLM_CONFIG_REQUEST_BYTES:
+            raise ValueError("LLM abort request is too large")
+        data = await request.json()
+        if not isinstance(data, dict):
+            raise ValueError("JSON body must be an object")
+        return web.json_response(await asyncio.to_thread(_abort_llm_generation, data))
+    except (ValueError, json.JSONDecodeError) as exc:
+        return web.json_response({"error": str(exc)}, status=400)
+    except Exception as exc:
+        return web.json_response({"error": str(exc)}, status=502)
+
+
+async def _prompt_studio_llamacpp_process_action(request, action):
+    try:
+        _require_loopback_server_control(request)
+        if request.content_length is not None and request.content_length > MAX_LLM_CONFIG_REQUEST_BYTES:
+            raise ValueError("Llama.cpp server-control request is too large")
+        data = await request.json()
+        if not isinstance(data, dict):
+            raise ValueError("JSON body must be an object")
+        operation = {
+            "start": _start_llamacpp_server,
+            "stop": _stop_llamacpp_server,
+            "restart": _restart_llamacpp_server,
+        }[action]
+        return web.json_response(await asyncio.to_thread(operation, data))
+    except PermissionError as exc:
+        return web.json_response({"error": str(exc)}, status=403)
+    except (ValueError, json.JSONDecodeError) as exc:
+        return web.json_response({"error": str(exc)}, status=400)
+    except Exception as exc:
+        return web.json_response({"error": str(exc)}, status=502)
+
+
+@PromptServer.instance.routes.post("/promptstudio/prompt-studio/llamacpp/server/start")
+async def prompt_studio_llamacpp_server_start(request):
+    return await _prompt_studio_llamacpp_process_action(request, "start")
+
+
+@PromptServer.instance.routes.post("/promptstudio/prompt-studio/llamacpp/server/stop")
+async def prompt_studio_llamacpp_server_stop(request):
+    return await _prompt_studio_llamacpp_process_action(request, "stop")
+
+
+@PromptServer.instance.routes.post("/promptstudio/prompt-studio/llamacpp/server/restart")
+async def prompt_studio_llamacpp_server_restart(request):
+    return await _prompt_studio_llamacpp_process_action(request, "restart")
+
+
+@PromptServer.instance.routes.post("/promptstudio/prompt-studio/llamacpp/config-builder")
+async def prompt_studio_llamacpp_config_builder(request):
+    try:
+        _require_loopback_server_control(request)
+        if request.content_length is not None and request.content_length > MAX_LLM_CONFIG_REQUEST_BYTES:
+            raise ValueError("Llama.cpp config-builder request is too large")
+        data = await request.json()
+        if not isinstance(data, dict):
+            raise ValueError("JSON body must be an object")
+        result = await asyncio.to_thread(_launch_llamacpp_config_builder, data)
+        return web.json_response(result)
+    except PermissionError as exc:
+        return web.json_response({"error": str(exc)}, status=403)
+    except (ValueError, json.JSONDecodeError) as exc:
+        return web.json_response({"error": str(exc)}, status=400)
+    except Exception as exc:
+        return web.json_response({"error": str(exc)}, status=502)
+
+
+@PromptServer.instance.routes.post("/promptstudio/prompt-studio/llamacpp/pick-file")
+async def prompt_studio_llamacpp_pick_file(request):
+    try:
+        _require_loopback_server_control(request)
+        if request.content_length is not None and request.content_length > MAX_LLM_CONFIG_REQUEST_BYTES:
+            raise ValueError("Llama.cpp file-picker request is too large")
+        data = await request.json()
+        if not isinstance(data, dict):
+            raise ValueError("JSON body must be an object")
+        selected = await asyncio.to_thread(
+            _pick_llamacpp_file,
+            data.get("kind"),
+            data.get("current_path"),
+        )
+        return web.json_response({"path": selected})
+    except PermissionError as exc:
+        return web.json_response({"error": str(exc)}, status=403)
     except (ValueError, json.JSONDecodeError) as exc:
         return web.json_response({"error": str(exc)}, status=400)
     except Exception as exc:

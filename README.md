@@ -1,6 +1,6 @@
 # ComfyUI_PromptStudio
 
-Create, refine, edit, and upscale ComfyUI images in a chat-first studio powered by your local KoboldCpp or Ollama model.
+Create, refine, edit, and upscale ComfyUI images in a chat-first studio powered by your local KoboldCpp, Ollama, or Llama.cpp model.
 
 ## Browser setup wizard
 
@@ -82,11 +82,11 @@ The sections below cover setup, everyday use, workflow contracts, nodes, presets
 7. Select the saved workflow under **ComfyUI workflows** in Prompt Studio settings, then describe the image you want.
 8. Click **Create & Generate**. After the first result, ask for changes such as `use a wider composition`, `replace the coat with a red rain jacket`, or `make the lighting softer`.
 
-Prompt Studio uses KoboldCpp at `http://localhost:5001` by default. Open Prompt Studio settings to select **KoboldCpp** or **Ollama** as the LLM provider. Ollama defaults to `http://localhost:11434`; select one of the locally installed models discovered from `/api/tags`. For safety, both providers accept loopback hosts only by default.
+Prompt Studio uses Ollama at `http://localhost:11434` by default. Open Prompt Studio settings to select **Ollama**, **KoboldCpp**, or **Llama.cpp** as the LLM provider; the latter two are advanced options that require a separately configured local server. The first time either advanced option is selected, Prompt Studio displays a confirmation that is remembered after acceptance. KoboldCpp defaults to `http://localhost:5001`; Llama.cpp defaults to `http://127.0.0.1:8080`. Select a model discovered from the provider's model-list endpoint. For safety, all providers accept loopback hosts only by default.
 
 **Settings → General → Keep models loaded** is off by default. In this shared-GPU mode, Prompt Studio keeps ComfyUI's models resident after image generation so reruns and already-queued work remain fast. Only when the next LLM operation begins does it wait for the ComfyUI queue to become idle, unload ComfyUI's models, and free its allocator cache. The LLM remains available across routing, rewriting, discussion, and consultation stages; immediately before Prompt Studio queues another ComfyUI workflow, it unloads the active LLM and hands the GPU back to ComfyUI. This transition is serialized so background LLM work cannot overlap ComfyUI inference on the shared device.
 
-Enable **Keep models loaded** only when ComfyUI and the LLM use separate GPUs. It disables both sides of the handoff and asks Ollama to keep its selected model resident indefinitely. Enabling it while both services use the same full GPU can cause an out-of-memory failure.
+Enable **Keep models loaded** only when ComfyUI and the LLM use separate GPUs. It disables both sides of the handoff, asks Ollama to keep its selected model resident indefinitely, and leaves KoboldCpp or Llama.cpp loaded. Enabling it while both services use the same full GPU can cause an out-of-memory failure.
 
 Shared-GPU KoboldCpp operation requires KoboldCpp Admin Mode and an Admin Directory. Prompt Studio uses the admin API to switch to `unload_model`, then restores `initial_model` before the next LLM request. If KoboldCpp has an Admin Password, set it in ComfyUI's environment before startup:
 
@@ -96,14 +96,19 @@ When a shared-GPU handoff fails, the system-status dot turns red and the provide
 $env:PROMPT_STUDIO_KOBOLD_ADMIN_PASSWORD = "your-admin-password"
 ```
 
-**Settings → General → LLM Profiles** stores model-specific thinking, response-token, sampler,
-stop-sequence, and request-timeout values. The shipped editable profiles are **Qwen3.5** and
+**Settings → General → LLM Profiles** stores model-specific thinking, response-token, optional Llama.cpp reasoning-cap, sampler,
+stop-sequence, and request-timeout values. The shipped editable profiles are **Default** and
 **Qwen 3.8 (27B)**; the latter stores Unsloth's separate recommended sampler values for thinking
 and non-thinking operation and switches between them from the Generation controls' Thinking selector. Profiles can
 be added, renamed, edited, restored to their shipped parameter defaults, or deleted. When no user
 profiles remain, Prompt Studio exposes an immutable **Default** profile with the shipped values so
 local-LLM features remain usable. The selected profile is shared by prompt rewriting, local model
 chat, image discussion, and Prompt Agent.
+
+Profiles can also limit the modes shown by the Generation controls' **Thinking** selector. Existing
+and newly added profiles default to **Disabled**, **Minimal**, **Low**, **Medium**, and **High**.
+**Qwen 3.8 (27B)** instead provides **XHigh** (its default), **Medium**, **Low**, and **Disabled**;
+Disabled is sent to the model as `reasoning_effort: none`.
 
 For **Qwen 3.8 (27B)**, Disabled thinking uses temperature `0.7`, `top_p` `0.8`, `top_k` `20`,
 `min_p` `0`, presence penalty `1.5`, and repetition penalty `1.0`. Any enabled thinking level uses
@@ -113,6 +118,14 @@ penalty `1.0`. Both sampler groups remain editable in the profile dialog.
 Prompt rewriting uses KoboldCpp's OpenAI-compatible Chat Completions endpoint and the model's native GGUF chat template. Enable **Use Jinja** in KoboldCpp and restart its server after changing that setting. The backend checks this capability and stops with a clear error instead of silently using generic chat formatting. KoboldCpp 1.117.1 or newer is recommended and is the version used for integration testing.
 
 With Ollama selected, Prompt Studio uses Ollama's native, non-streaming `/api/chat` endpoint. Sampling controls are translated to Ollama options, and the Thinking control uses Ollama's separate `think` response channel. **Minimal** and **Low** both request Ollama's `low` thinking level. If a constrained model spends the initial routing budget on reasoning, Prompt Studio retries that decision once with Thinking disabled and displays a warning instead of failing the Studio turn. A non-structured response that reaches its limit but contains usable text is retained with an incomplete-result warning. In shared-GPU mode Ollama stays loaded briefly across related LLM stages and is explicitly unloaded at the LLM-to-ComfyUI transition. The ComfyUI canvas nodes remain named KoboldCpp Prompt Slot/Amplify for workflow compatibility; in interactive Prompt Studio, they act as prompt handoff nodes and the provider selected in settings performs the rewrite.
+
+With Llama.cpp selected, Prompt Studio uses llama-server's streaming OpenAI-compatible `/v1/chat/completions` endpoint. It explicitly requests `reasoning_format: auto`, so native thinking is returned separately in `reasoning_content` and only final `content` reaches the image workflow. The system-status popover reads `/health`, `/models`, `/props`, and `/slots`, including model, vision, active-slot, and token progress. **Force stop generation** closes Prompt Studio's live llama-server streams; chat and Prompt Agent cancellation use the same mechanism. Start llama-server with its default `--slots` support (Prompt Studio adds `--slots` when it launches the server).
+
+Llama.cpp treats model-native `reasoning_effort` and its server-side token cutoff as separate controls. With the profile's **Llama.cpp reasoning cap** set to `0`, Prompt Studio passes the selected qualitative effort to the model's Jinja template and allows thinking to use the available server context window. A positive cap opts into llama-server's `thinking_budget_tokens` cutoff; Prompt Studio then requests the cap plus the final-answer allowance, bounded by the available context. Reaching that cap forcibly ends thinking, which can reduce answer quality, so the shipped profiles leave it at `0`. Prompt Studio does not retain or resend private reasoning from earlier turns.
+
+Prompt Studio can also start, stop, and restart Llama.cpp itself. In **Settings → General**, use the native **Browse…** buttons to select `llama.exe` or `llama-server.exe` and an existing launcher JSON file; the paths can still be edited manually. **Build…** opens the included Windows PowerShell config builder, loads the selected file when it already exists, and saves back to that Prompt Studio Llama.cpp config. When no path is set, it creates the ignored local `llamacpp_server.json`. [`llamacpp_server.example.json`](llamacpp_server.example.json) includes every setting shown by the builder: model GGUF, MMProj GGUF, context size, GPU layers, parallel slots, CUDA devices (`--device`), CUDA-visible devices, split mode, main GPU, tensor split, auto-fit, flash attention, K/V cache types, MTP speculative decoding, host, port, and optional extra arguments. MTP controls its draft-token range and probability cutoff plus the draft context's GPU layers, device, and K/V cache types; it requires an MTP-capable GGUF and a recent llama.cpp build. `llama.exe` is started with the `serve` subcommand; `llama-server.exe` is started directly. File pickers, the config builder, and process actions are accepted only from a loopback browser connection, and Prompt Studio only stops the exact child process it created. An already-running server at `127.0.0.1:8080` remains externally managed, while generation monitoring and stream cancellation still work.
+
+Shared-GPU Llama.cpp handoff requires llama-server router mode (`--models-dir`) because only router mode exposes `/models/unload`; normal chat requests autoload the selected model again. For a single-model llama-server process, use separate GPUs and enable **Keep models loaded**, or let the external launcher own the GPU transition.
 
 > Want to use the chat UI without an LLM? Turn off **Use LLM amplification**. The composer becomes a direct-prompt editor, the main and final prompts stay identical, and **Generate** sends that text straight to ComfyUI.
 
@@ -174,7 +187,7 @@ On direct navigation or refresh, it reconnects to an open ComfyUI tab when possi
 ### Local model consultation chat
 
 The standalone interface adds a chat-bubble button beside its header controls. It opens a normal,
-session-specific conversation with the local KoboldCpp or Ollama model selected in Prompt Studio
+session-specific conversation with the local KoboldCpp, Ollama, or Llama.cpp model selected in Prompt Studio
 settings. This assistant chat is separate from prompt rewriting: responses are conversational and
 never modify the main prompt, final prompt, or generation controls automatically.
 
@@ -422,6 +435,10 @@ $env:PROMPT_STUDIO_OLLAMA_ALLOWED_HOSTS = "192.168.1.30,ollama.example.internal"
 
 Do not include URL schemes or ports in the allowlist. `*` permits every host and should be used only in a trusted environment. Prompt Studio currently targets the local Ollama API and does not send Ollama cloud credentials.
 
+### Remote Llama.cpp hosts
+
+Llama.cpp URLs are loopback-only by default. To permit a known remote llama-server, set `PROMPT_STUDIO_LLAMACPP_ALLOWED_HOSTS` to a comma-separated list of exact hostnames or IP addresses before starting ComfyUI. The start/stop/restart process controls remain loopback-client-only even when a remote inference host is allowed.
+
 ### Remote KoboldCpp hosts
 
 The backend rejects non-loopback KoboldCpp URLs by default to prevent a saved workflow or browser request from making arbitrary outbound HTTP calls. To permit a known remote server, set `PROMPT_STUDIO_KOBOLD_ALLOWED_HOSTS` before starting ComfyUI. It accepts a comma-separated list of exact hostnames or IP addresses:
@@ -605,7 +622,7 @@ POST /promptstudio/prompt-studio/agent
 
 The browser uses `revise_main` to precision-edit model-neutral intent, `revise` to precision-edit the existing final prompt, and `render` to build a fresh final prompt after prompt-shaping controls change. Ordinary revisions run the two precision edits independently; a control change renders only from the updated main prompt. Revision requests may include one stored `context_image` reference when the user enables latest-image context.
 
-KoboldCpp and Ollama requests remain on the Python side, so the browser does not need direct access to the local model server.
+KoboldCpp, Ollama, and Llama.cpp requests remain on the Python side, so the browser does not need direct access to the local model server.
 
 ## Updating and troubleshooting
 
@@ -613,7 +630,7 @@ KoboldCpp and Ollama requests remain on the Python side, so the browser does not
 - Refresh the browser after frontend-only changes.
 - If Prompt Studio does not list a workflow, make sure its saved ComfyUI filename starts with `[PS]` and that it meets all four validation rules above.
 - If a workflow is marked **cached**, hover the workflow status for the validation error, correct the saved workflow in ComfyUI, and refresh it.
-- If prompt creation fails, confirm that the selected LLM provider is running, its endpoint is correct, and an Ollama model is selected when using Ollama. The defaults are `http://localhost:5001` for KoboldCpp and `http://localhost:11434` for Ollama.
+- If prompt creation fails, confirm that the selected LLM provider is running, its endpoint is correct, and a discovered model is selected for Ollama or Llama.cpp. The defaults are `http://localhost:5001` for KoboldCpp, `http://localhost:11434` for Ollama, and `http://127.0.0.1:8080` for Llama.cpp.
 - If shared-GPU generation reaches the KoboldCpp admin error, enable Admin Mode, configure a valid Admin Directory, and restart KoboldCpp. Set `PROMPT_STUDIO_KOBOLD_ADMIN_PASSWORD` before ComfyUI starts when the admin API is password-protected.
 - If prompt creation succeeds but no image appears, queue the workflow normally in ComfyUI and fix any disconnected or invalid generation nodes first.
 - If Prompt Studio reports a save conflict, reload it to obtain the newest chat or workflow-cache revision before making further changes.

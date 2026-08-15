@@ -64,6 +64,7 @@ prompt_studio_chats.json.tmp
 prompt_studio_chats/
 prompt_studio_workflows.json
 prompt_studio_workflows.json.tmp
+llamacpp_server.json
 protected_words.txt
 
 # User-owned presets (copy the tracked examples from presets/examples/)
