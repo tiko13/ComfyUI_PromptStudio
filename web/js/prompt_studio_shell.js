@@ -6,7 +6,7 @@ const VIDEO_INSTALL_ENDPOINT = "/customnode/install/git_url";
 const COMFY_RESTART_ENDPOINTS = ["/v2/manager/reboot", "/manager/reboot"];
 const IMAGE_ICON_URL = new URL("../prompt-studio-icon.svg", import.meta.url).href;
 const VIDEO_ICON_URL = "/extensions/PromptStudio_Video/prompt-studio-video-favicon.svg";
-const VIDEO_STYLESHEET_URL = "/extensions/PromptStudio_Video/css/promptstudio_video_studio.css?v=5";
+const VIDEO_STYLESHEET_URL = "/extensions/PromptStudio_Video/css/promptstudio_video_studio.css?v=6";
 const requestId = globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(36).slice(2)}`;
 const status = document.querySelector("#promptstudio-standalone-status");
 const embeddedHost = document.querySelector("#promptstudio-standalone-host");

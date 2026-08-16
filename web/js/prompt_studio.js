@@ -173,6 +173,16 @@ const RENDER_CONTROL_IDS = [
   "promptstudio-embellishment",
   "promptstudio-output-length",
 ];
+const RENDER_CONTROL_SETTINGS = Object.freeze([
+  ["promptstudio-profile", "model_profile", "Model profile"],
+  ["promptstudio-style", "style_preset", "Style"],
+  ["promptstudio-framing", "framing_preset", "Framing"],
+  ["promptstudio-style-modifier", "style_modifier", "Style modifier"],
+  ["promptstudio-framing-modifier", "framing_modifier", "Framing modifier"],
+  ["promptstudio-additional-instructions", "additional_instructions", "Additional instructions"],
+  ["promptstudio-embellishment", "embellishment_level", "Embellishment"],
+  ["promptstudio-output-length", "target_output_length", "Target length"],
+]);
 const DISCONNECTED_CONTROL_SELECTOR = "input, textarea, select, button";
 const DISCONNECTED_ALLOWED_CONTROL_IDS = [
   "promptstudio-close",
@@ -2494,6 +2504,18 @@ function studioSettingsFromControlsFingerprint(value) {
   return { schema: "", values: {} };
 }
 
+function controlsFingerprintFromSettings(settings, overrides = {}) {
+  const source = { ...normalizeStudioSettings(settings), ...overrides };
+  return JSON.stringify(RENDER_CONTROL_SETTINGS.map(([, key]) => String(source[key] ?? "")));
+}
+
+function normalizeStoredControlsFingerprint(value, settings) {
+  if (!String(value || "").trim()) return "";
+  const parsed = studioSettingsFromControlsFingerprint(value);
+  if (!parsed.schema) return controlsFingerprintFromSettings(settings);
+  return controlsFingerprintFromSettings(settings, parsed.values);
+}
+
 function migratedStudioSettings(chat, messages) {
   const hasStoredSettings = chat?.studioSettings && typeof chat.studioSettings === "object"
     && !Array.isArray(chat.studioSettings);
@@ -2710,18 +2732,32 @@ function normalizeChat(chat) {
   const versionIndex = Number.isFinite(requestedIndex)
     ? Math.max(0, Math.min(requestedIndex, versions.length - 1))
     : versions.length - 1;
+  const studioSettings = migratedStudioSettings(chat, messages);
+  const storedControlsFingerprint = String(chat?.controlsFingerprint || latestGeneration?.controlsFingerprint || "");
+  const controlsFingerprint = normalizeStoredControlsFingerprint(storedControlsFingerprint, studioSettings);
+  const renderedMainPrompt = String(
+    chat?.renderedMainPrompt
+    ?? (chat?.mainPromptDirty ? latestGeneration?.mainPrompt ?? "" : mainPrompt),
+  );
+  const renderedFinalPrompt = String(
+    chat?.renderedFinalPrompt
+    ?? (chat?.finalPromptManuallyEdited ? latestGeneration?.canonicalPrompt ?? "" : finalPrompt),
+  );
   return {
     id: String(chat?.id || makeId()),
     createdAt,
     updatedAt,
     initialized: recoverGeneratedPrompt || (chat?.initialized == null ? Boolean(finalPrompt) : Boolean(chat.initialized)),
     mainPrompt,
-    mainPromptDirty: Boolean(chat?.mainPromptDirty),
+    renderedMainPrompt,
+    mainPromptDirty: mainPrompt !== renderedMainPrompt,
     finalPrompt,
+    renderedFinalPrompt,
+    finalPromptManuallyEdited: finalPrompt !== renderedFinalPrompt,
     currentPrompt: finalPrompt,
     versions,
     versionIndex,
-    controlsFingerprint: String(chat?.controlsFingerprint || latestGeneration?.controlsFingerprint || ""),
+    controlsFingerprint,
     createWorkflowId: String(chat?.createWorkflowId || ""),
     editWorkflowId: String(chat?.editWorkflowId || ""),
     upscaleWorkflowId: String(chat?.upscaleWorkflowId || ""),
@@ -2729,7 +2765,7 @@ function normalizeChat(chat) {
     selectedSource: normalizeImageReference(chat?.selectedSource),
     lastGeneration: normalizeLastGeneration(chat?.lastGeneration),
     pendingGeneration: normalizePendingGeneration(chat?.pendingGeneration),
-    studioSettings: migratedStudioSettings(chat, messages),
+    studioSettings,
     messages,
     consultClearedAt,
     consultMessages,
@@ -2940,6 +2976,7 @@ function applyChatStoreSnapshot(stored, { preserveActive = true } = {}) {
     restoreChatState(chat);
     refreshWorkflowControls();
     refreshSecondaryInstructionsControl();
+    refreshStudioStatus();
   }
   renderChatHistory();
   renderConsultHistory();
@@ -3261,6 +3298,8 @@ function syncActiveChat() {
   chat.mainPrompt = state.mainPrompt;
   chat.finalPrompt = state.currentPrompt;
   chat.currentPrompt = state.currentPrompt;
+  chat.mainPromptDirty = chat.mainPrompt !== String(chat.renderedMainPrompt ?? "");
+  chat.finalPromptManuallyEdited = chat.finalPrompt !== String(chat.renderedFinalPrompt ?? "");
   chat.versions = [...state.versions];
   chat.versionIndex = state.versionIndex;
   chat.initialized = Boolean(chat.initialized);
@@ -3649,6 +3688,26 @@ function controlsFingerprint() {
   return JSON.stringify(RENDER_CONTROL_IDS.map((id) => state.panel.querySelector(`#${id}`)?.value ?? ""));
 }
 
+function controlsFingerprintValues(value) {
+  try {
+    const parsed = JSON.parse(String(value || ""));
+    return Array.isArray(parsed) && parsed.length === RENDER_CONTROL_IDS.length
+      ? parsed.map((item) => String(item ?? ""))
+      : null;
+  } catch (_) {
+    return null;
+  }
+}
+
+function changedRenderControlLabels(chat = activeChat()) {
+  const baseline = controlsFingerprintValues(chat?.controlsFingerprint);
+  const current = controlsFingerprintValues(controlsFingerprint());
+  if (!baseline || !current) return chat?.initialized ? ["Generation controls"] : [];
+  return RENDER_CONTROL_SETTINGS
+    .filter((_, index) => baseline[index] !== current[index])
+    .map(([, , label]) => label);
+}
+
 function useLlmAmplification() {
   return state.panel?.querySelector("#promptstudio-use-llm-amplification")?.checked !== false;
 }
@@ -3709,31 +3768,92 @@ function llmProviderName() {
 
 function controlsNeedApply() {
   const chat = activeChat();
-  return Boolean(useLlmAmplification() && chat?.initialized && chat.controlsFingerprint !== controlsFingerprint());
+  return Boolean(useLlmAmplification() && chat?.initialized && changedRenderControlLabels(chat).length);
 }
 
 function mainPromptNeedsRender() {
   const chat = activeChat();
-  return Boolean(useLlmAmplification() && chat?.initialized && chat.mainPromptDirty);
+  if (!chat) return false;
+  chat.mainPromptDirty = chat.mainPrompt !== String(chat.renderedMainPrompt ?? "");
+  return Boolean(useLlmAmplification() && chat.initialized && chat.mainPromptDirty);
 }
 
 function promptNeedsRender() {
   return mainPromptNeedsRender() || controlsNeedApply();
 }
 
+function activeStudioOperationStatus(chat = activeChat()) {
+  return [...(chat?.messages || [])].reverse().find((message) => (
+    message.operationId && message.operationPhase
+    && !["complete", "error", "cancelled"].includes(message.operationPhase)
+  ))?.operationStatus || "";
+}
+
+function latestStudioOperationFailure(chat = activeChat()) {
+  const failure = [...(chat?.messages || [])].reverse().find((message) => message.operationPhase === "error");
+  return failure && Number(failure.updatedAt || 0) >= Number(chat?.updatedAt || 0) ? failure : null;
+}
+
+function currentStudioStatus() {
+  if (!state.apiConnected) return { text: "ComfyUI disconnected — Prompt Studio is frozen.", kind: "error" };
+  const chat = activeChat();
+  const operationStatus = activeStudioOperationStatus(chat);
+  if (operationStatus) return { text: operationStatus, kind: "working" };
+  const operationFailure = latestStudioOperationFailure(chat);
+  if (operationFailure) {
+    return { text: operationFailure.text || operationFailure.operationStatus || "Operation failed.", kind: "error" };
+  }
+  if (state.studioTurnBusyChatIds.has(state.activeChatId)) {
+    return { text: `Understanding your request with ${llmProviderName()}…`, kind: "working" };
+  }
+  const action = selectedAction();
+  const profile = selectedWorkflowProfile(action);
+  const role = action === "edit" ? "editing" : "creation";
+  const verb = action === "edit" ? "Edit" : "Create";
+  if (!profile) return { text: `No compatible [PS] ${role} workflow is available.`, kind: "warning" };
+  if (!useLlmAmplification()) {
+    return { text: `Direct prompt mode. ${llmProviderName()} will not be used.`, kind: "ready" };
+  }
+  if (!chat?.initialized) {
+    return state.mainPastedImage
+      ? { text: "Reference image attached. Add a description or send to create the first prompt.", kind: "ready" }
+      : { text: "Describe an image to create the first prompt.", kind: "ready" };
+  }
+  if (!chat.mainPrompt.trim()) return { text: "The main prompt is empty.", kind: "warning" };
+  if (!chat.finalPrompt.trim()) return { text: "The final prompt is empty.", kind: "warning" };
+  if (mainPromptNeedsRender()) {
+    return { text: `Main prompt changed. ${llmProviderName()} will rebuild the final prompt before generation.`, kind: "warning" };
+  }
+  const changedControls = changedRenderControlLabels(chat);
+  if (changedControls.length) {
+    const summary = changedControls.length <= 2
+      ? changedControls.join(" and ")
+      : `${changedControls.slice(0, 2).join(", ")} and ${changedControls.length - 2} more controls`;
+    return { text: `${summary} changed. ${llmProviderName()} will rebuild the final prompt before generation.`, kind: "warning" };
+  }
+  if (chat.finalPromptManuallyEdited) {
+    return { text: `Final prompt edited manually. ComfyUI will use it directly without ${llmProviderName()}.`, kind: "ready" };
+  }
+  const discussion = activeStudioDiscussion(chat);
+  if (discussion?.pendingProposal?.status === "ready") {
+    return { text: "Suggestion ready to apply.", kind: "ready" };
+  }
+  if (state.mainPastedImage) return { text: "Reference image attached to the next request.", kind: "ready" };
+  if (profile.stale) {
+    return { text: `“${profile.name}” is invalid in ComfyUI. Prompt Studio will use its last working cache.`, kind: "warning" };
+  }
+  return { text: `${verb} is ready with “${profile.name}”.`, kind: "ready" };
+}
+
+function refreshStudioStatus() {
+  if (!state.panel) return;
+  const status = currentStudioStatus();
+  setStatus(status.text, status.kind);
+}
+
 function markControlsChanged() {
   saveSettings();
-  if (!useLlmAmplification()) {
-    setStatus(`Direct prompt mode. ${llmProviderName()} will not be used.`, "ready");
-  } else if (!activeChat()?.initialized) {
-    setStatus("Describe an image to create the first prompt.", "ready");
-  } else if (mainPromptNeedsRender()) {
-    setStatus(`Main prompt changed. ${llmProviderName()} will rebuild the final prompt before generation.`, "warning");
-  } else if (controlsNeedApply()) {
-    setStatus(`Generation controls changed. ${llmProviderName()} will update the prompt before generation.`, "warning");
-  } else if (selectedWorkflowProfile(selectedAction())) {
-    announceWorkflowSelection(selectedAction());
-  }
+  refreshStudioStatus();
 }
 
 function chatTitle(timestamp) {
@@ -4019,10 +4139,17 @@ function updateAmplificationMode({ announce = true, persist = true } = {}) {
 function syncManualPrompt(value) {
   if (useLlmAmplification()) return;
   const chat = activeChat();
-  if (chat) chat.initialized = Boolean(value.trim());
+  if (chat) {
+    chat.initialized = Boolean(value.trim());
+    chat.renderedMainPrompt = value;
+    chat.renderedFinalPrompt = value;
+    chat.mainPromptDirty = false;
+    chat.finalPromptManuallyEdited = false;
+  }
   updatePromptEditors(value, value);
   syncActiveChat();
   refreshEmptyImageDropZone();
+  refreshStudioStatus();
 }
 
 function createChat() {
@@ -4106,19 +4233,7 @@ function activateChat(chatId) {
   renderConsultHistory({ forceEnd: true });
   renderChatList();
   refreshSecondaryInstructionsControl();
-  if (!selectedWorkflowProfile(selectedAction())) {
-    setStatus("No compatible [PS] workflow is selected for this action.", "warning");
-  } else if (!useLlmAmplification()) {
-    setStatus(`Direct prompt mode. ${llmProviderName()} will not be used.`, "ready");
-  } else if (!chat.initialized) {
-    setStatus("Describe an image to create the first prompt.", "ready");
-  } else if (mainPromptNeedsRender()) {
-    setStatus(`Main prompt changed. ${llmProviderName()} will rebuild the final prompt before generation.`, "warning");
-  } else if (controlsNeedApply()) {
-    setStatus(`Generation controls differ from this prompt. ${llmProviderName()} will update it before generation.`, "warning");
-  } else {
-    announceWorkflowSelection(selectedAction());
-  }
+  refreshStudioStatus();
   const undo = state.panel?.querySelector("#promptstudio-undo");
   if (undo) undo.disabled = state.versionIndex <= 0 || state.busy;
   setPanelDrawer("chats", false);
@@ -4567,6 +4682,10 @@ function announceWorkflowSelection(action, { persist = true } = {}) {
   refreshSecondaryInstructionsControl();
   refreshLoraSection();
   refreshModelSection();
+  if (action === selectedAction()) {
+    refreshStudioStatus();
+    return;
+  }
   const role = action === "upscale" ? "upscaling" : action === "edit" ? "editing" : "creation";
   const verb = action === "upscale" ? "Upscale" : action === "edit" ? "Edit" : "Create";
   if (!profile) {
@@ -4716,7 +4835,7 @@ function setApiConnected(connected, { announce = true } = {}) {
   }
   state.disconnectedControls.clear();
   if (announce) {
-    setStatus("ComfyUI reconnected. Prompt Studio is ready.", "ready");
+    refreshStudioStatus();
     if (!state.consultBusy) setConsultStatus("Ready", "ready");
   }
 }
@@ -4961,8 +5080,13 @@ function restoreStoredCanonicalPrompt(data) {
   const chat = activeChat();
   if (chat) {
     chat.initialized = true;
-    chat.controlsFingerprint = data.llmAmplified ? String(data.controlsFingerprint || "") : "";
+    chat.controlsFingerprint = data.llmAmplified
+      ? normalizeStoredControlsFingerprint(data.controlsFingerprint, chat.studioSettings)
+      : "";
+    chat.renderedMainPrompt = mainPrompt;
+    chat.renderedFinalPrompt = finalPrompt;
     chat.mainPromptDirty = false;
+    chat.finalPromptManuallyEdited = false;
     chat.pendingGeneration = null;
   }
   updatePromptEditors(mainPrompt, finalPrompt);
@@ -5835,7 +5959,10 @@ function updateStudioOperation(messageId, changes = {}) {
   record.chat.updatedAt = record.message.updatedAt;
   saveChats({ immediate: ["cancelled", "error", "complete"].includes(record.message.operationPhase) });
   renderChatList();
-  if (record.chat.id === state.activeChatId) renderChatHistory();
+  if (record.chat.id === state.activeChatId) {
+    renderChatHistory();
+    refreshStudioStatus();
+  }
   queueMicrotask(syncBackgroundActivityIndicator);
   return record.message;
 }
@@ -5852,6 +5979,7 @@ function createStudioOperation(chat, kind, status = "Submitted…") {
     operationStatus: status,
   });
   const message = [...chat.messages].reverse().find((item) => item.operationId === operationId);
+  if (chat.id === state.activeChatId) refreshStudioStatus();
   return message || null;
 }
 
@@ -6003,18 +6131,13 @@ function syncMainPromptEditor(prompt, { userEdit = false } = {}) {
   if (!chat) return;
   chat.mainPrompt = prompt;
   if (userEdit) {
-    chat.mainPromptDirty = true;
+    chat.mainPromptDirty = prompt !== String(chat.renderedMainPrompt ?? "");
     chat.pendingGeneration = null;
   }
   chat.updatedAt = Date.now();
   saveChats();
   refreshEmptyImageDropZone();
-  if (!userEdit || !chat.initialized) return;
-  if (!prompt.trim()) {
-    setStatus("The main prompt is empty.", "warning");
-  } else {
-    setStatus(`Main prompt changed. ${llmProviderName()} will rebuild the final prompt before generation.`, "warning");
-  }
+  if (userEdit) refreshStudioStatus();
 }
 
 function syncCanonicalEditor(prompt, { userEdit = false } = {}) {
@@ -6025,19 +6148,16 @@ function syncCanonicalEditor(prompt, { userEdit = false } = {}) {
   chat.currentPrompt = prompt;
   chat.initialized = Boolean(prompt.trim());
   if (userEdit) {
+    chat.renderedMainPrompt = chat.mainPrompt;
     chat.mainPromptDirty = false;
+    chat.finalPromptManuallyEdited = prompt !== String(chat.renderedFinalPrompt ?? "");
     chat.controlsFingerprint = controlsFingerprint();
     chat.pendingGeneration = null;
   }
   chat.updatedAt = Date.now();
   saveChats();
   updateComposeMode();
-  if (!userEdit) return;
-  if (!prompt.trim()) {
-    setStatus("The final prompt is empty.", "warning");
-  } else {
-    setStatus(`Final prompt changed. ComfyUI will generate directly without ${llmProviderName()}.`, "ready");
-  }
+  if (userEdit) refreshStudioStatus();
 }
 
 function commitPromptEditorVersion() {
@@ -6617,6 +6737,7 @@ function setStudioGenerationState(promptId, generationState) {
     if (history) keepHistoryViewportStable(history, wasNearEnd, previousScrollTop);
   }
   updateComposeMode();
+  if (record.chat.id === state.activeChatId) refreshStudioStatus();
   queueMicrotask(syncBackgroundActivityIndicator);
 }
 
@@ -7739,7 +7860,10 @@ async function generateDirectPrompt(action = selectedAction()) {
   const chat = activeChat();
   if (chat) {
     chat.initialized = true;
+    chat.renderedMainPrompt = prompt;
+    chat.renderedFinalPrompt = prompt;
     chat.mainPromptDirty = false;
+    chat.finalPromptManuallyEdited = false;
   }
   input.value = prompt;
   updatePromptEditors(prompt, prompt);
@@ -8309,7 +8433,10 @@ function updateActiveLlmOperationProgress(status = {}) {
       activeChatChanged ||= chat.id === state.activeChatId;
     }
   }
-  if (activeChatChanged) renderChatHistory();
+  if (activeChatChanged) {
+    renderChatHistory();
+    refreshStudioStatus();
+  }
 }
 
 async function stopLlmGeneration() {
@@ -9585,7 +9712,10 @@ function promotePromptAgentIteration(iterationId) {
   syncCanonicalEditor(iteration.candidate.prompt, { userEdit: iteration.candidate.prompt !== state.currentPrompt });
   const chat = activeChat();
   if (chat) {
+    chat.renderedMainPrompt = effectiveGoal;
+    chat.renderedFinalPrompt = iteration.candidate.prompt;
     chat.mainPromptDirty = false;
+    chat.finalPromptManuallyEdited = false;
     chat.controlsFingerprint = exportedControlsFingerprint;
     chat.pendingGeneration = null;
   }
@@ -11216,7 +11346,10 @@ async function importDroppedImage(file) {
     targetChat.versions = [promptVersion(mainPrompt, finalPrompt)];
     targetChat.versionIndex = 0;
     targetChat.initialized = true;
+    targetChat.renderedMainPrompt = mainPrompt;
+    targetChat.renderedFinalPrompt = finalPrompt;
     targetChat.mainPromptDirty = false;
+    targetChat.finalPromptManuallyEdited = false;
     targetChat.controlsFingerprint = importFingerprint;
     targetChat.pendingGeneration = null;
     targetChat.selectedSource = reference;
@@ -12175,7 +12308,10 @@ function applyPreparedPromptToChat(
   chat.finalPrompt = finalPrompt;
   chat.currentPrompt = finalPrompt;
   chat.initialized = true;
+  chat.renderedMainPrompt = mainPrompt;
+  chat.renderedFinalPrompt = finalPrompt;
   chat.mainPromptDirty = false;
+  chat.finalPromptManuallyEdited = false;
   chat.controlsFingerprint = queueSettings.controlsFingerprintOverride;
   if (!promptVersionsEqual(chat.versions[chat.versionIndex], version)) {
     chat.versions = chat.versions.slice(0, chat.versionIndex + 1);
@@ -12340,7 +12476,10 @@ function undoPrompt() {
   const version = state.versions[state.versionIndex];
   const chat = activeChat();
   if (chat) {
+    chat.renderedMainPrompt = version.mainPrompt;
+    chat.renderedFinalPrompt = version.finalPrompt;
     chat.mainPromptDirty = false;
+    chat.finalPromptManuallyEdited = false;
     chat.pendingGeneration = null;
   }
   updatePromptEditors(version.mainPrompt, version.finalPrompt);
@@ -12348,6 +12487,7 @@ function undoPrompt() {
   updateComposeMode();
   appendMessage("system", `Restored prompt version ${state.versionIndex + 1}.`);
   state.panel.querySelector("#promptstudio-undo").disabled = state.versionIndex <= 0;
+  refreshStudioStatus();
 }
 
 async function interrupt() {
@@ -13447,6 +13587,9 @@ function buildPanel() {
   });
   panel.querySelectorAll(".promptstudio-settings input, .promptstudio-settings select, .promptstudio-settings textarea")
     .forEach((element) => element.addEventListener("change", markControlsChanged));
+  RENDER_CONTROL_IDS.forEach((id) => {
+    panel.querySelector(`#${id}`)?.addEventListener("input", refreshStudioStatus);
+  });
   panel.querySelector("#promptstudio-kobold-url").addEventListener("change", () => {
     markControlsChanged();
     refreshLlmStatus();
@@ -13711,7 +13854,9 @@ async function togglePanel(force) {
     await refreshWorkflowTemplates({ announce: false });
   } catch (error) {
     setStatus(error.message || String(error), "error");
+    return;
   }
+  refreshStudioStatus();
   if (history && state.historyWasNearEnd) scrollHistoryToEnd({ instant: true });
 }
 
@@ -13746,6 +13891,7 @@ app.registerExtension({
     resumeSyncedGeneration();
     buildLauncher();
     refreshWorkflowControls();
+    refreshStudioStatus();
     setupStandaloneBridge();
     setupVideoStudioBridge();
   },

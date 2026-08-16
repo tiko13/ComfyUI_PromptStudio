@@ -195,10 +195,33 @@ class FrontendRegressionTests(unittest.TestCase):
         ]
 
         self.assertIn("chat.mainPrompt = prompt;", sync)
-        self.assertIn("chat.mainPromptDirty = true;", sync)
-        self.assertIn("chat?.initialized && chat.mainPromptDirty", render_state)
+        self.assertIn('prompt !== String(chat.renderedMainPrompt ?? "")', sync)
+        self.assertIn('chat.mainPrompt !== String(chat.renderedMainPrompt ?? "")', render_state)
         self.assertIn("mainPrompt = previousMainPrompt;", revise)
         self.assertIn('payloadFor(mainPrompt, "render", "", previousFinalPrompt)', revise)
+
+    def test_info_pill_is_derived_from_current_prompt_and_control_state(self):
+        changed_controls = self.function_source("changedRenderControlLabels", "useLlmAmplification")
+        status = self.function_source("currentStudioStatus", "refreshStudioStatus")
+        control_handler = self.function_source("markControlsChanged", "chatTitle")
+        operation = self.function_source("updateStudioOperation", "createStudioOperation")
+
+        self.assertIn("baseline[index] !== current[index]", changed_controls)
+        self.assertIn("mainPromptNeedsRender()", status)
+        self.assertIn("changedRenderControlLabels(chat)", status)
+        self.assertIn("activeStudioOperationStatus(chat)", status)
+        self.assertIn("refreshStudioStatus();", control_handler)
+        self.assertIn("refreshStudioStatus();", operation)
+        self.assertNotIn("Generation controls changed.", self.source)
+
+    def test_legacy_control_fingerprints_are_normalized_before_comparison(self):
+        normalizer = self.function_source("normalizeStoredControlsFingerprint", "migratedStudioSettings")
+        chat = self.function_source("normalizeChat", "normalizeImageReference")
+
+        self.assertIn("studioSettingsFromControlsFingerprint(value)", normalizer)
+        self.assertIn("controlsFingerprintFromSettings(settings, parsed.values)", normalizer)
+        self.assertIn("normalizeStoredControlsFingerprint(storedControlsFingerprint, studioSettings)", chat)
+        self.assertIn("renderedMainPrompt", chat)
 
     def test_main_prompt_known_references_use_a_synchronized_highlight_layer(self):
         ranges = self.function_source(
