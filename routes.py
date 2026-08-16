@@ -93,6 +93,7 @@ MAX_IMAGE_UPLOAD_BYTES = 20 * 1024 * 1024
 MAX_IMAGE_UPLOAD_REQUEST_BYTES = MAX_IMAGE_UPLOAD_BYTES + 1024 * 1024
 STANDALONE_PAGE_PATH = os.path.join(BASE_DIR, "web", "prompt_studio.html")
 LLAMACPP_CONFIG_BUILDER_PATH = os.path.join(BASE_DIR, "llamacpp_config_builder.ps1")
+LLAMACPP_CONFIG_DIRECTORY = os.path.join(BASE_DIR, "config", "LlamaCPP")
 STANDALONE_ALIAS_PATH = "/PromptStudio"
 
 LLM_PRIORITY_STUDIO = 0
@@ -148,18 +149,14 @@ def _provider_display_name(provider):
 def _validate_llamacpp_picker_selection(kind, path):
     kind = _text(kind).strip().casefold()
     selected = os.path.abspath(_text(path).strip()) if _text(path).strip() else ""
-    if kind not in {"executable", "config"}:
-        raise ValueError("Llama.cpp file-picker kind must be executable or config")
+    if kind != "executable":
+        raise ValueError("Llama.cpp picker kind must be executable")
     if not selected:
         return ""
     if not os.path.isfile(selected):
         raise ValueError(f"Selected file was not found: {selected}")
-    if kind == "executable" and os.path.basename(selected).casefold() not in {
-        "llama.exe", "llama-server.exe",
-    }:
+    if os.path.basename(selected).casefold() not in {"llama.exe", "llama-server.exe"}:
         raise ValueError("Select llama.exe or llama-server.exe")
-    if kind == "config" and os.path.splitext(selected)[1].casefold() != ".json":
-        raise ValueError("Select a JSON launcher config file")
     return selected
 
 
@@ -167,8 +164,8 @@ def _pick_llamacpp_file(kind, current_path=""):
     if os.name != "nt":
         raise RuntimeError("The Llama.cpp file picker is currently available on Windows only")
     kind = _text(kind).strip().casefold()
-    if kind not in {"executable", "config"}:
-        raise ValueError("Llama.cpp file-picker kind must be executable or config")
+    if kind != "executable":
+        raise ValueError("Llama.cpp picker kind must be executable")
     if not _LLAMACPP_PICKER_LOCK.acquire(blocking=False):
         raise RuntimeError("A Llama.cpp file picker is already open")
     root = None
@@ -181,15 +178,11 @@ def _pick_llamacpp_file(kind, current_path=""):
         if not os.path.isdir(current_directory):
             current_directory = BASE_DIR
         options = {
-            "title": "Select the Llama.cpp server executable" if kind == "executable"
-            else "Select the Llama.cpp launcher config",
             "initialdir": current_directory,
+            "title": "Select the Llama.cpp server executable",
             "filetypes": [
                 ("Llama.cpp server", "llama.exe llama-server.exe"),
                 ("Executable files", "*.exe"),
-                ("All files", "*.*"),
-            ] if kind == "executable" else [
-                ("JSON files", "*.json"),
                 ("All files", "*.*"),
             ],
         }
@@ -209,14 +202,54 @@ def _pick_llamacpp_file(kind, current_path=""):
         _LLAMACPP_PICKER_LOCK.release()
 
 
-def _llamacpp_builder_config_path(value=""):
-    requested = _text(value).strip()
-    config_path = os.path.abspath(requested) if requested else os.path.join(BASE_DIR, "llamacpp_server.json")
-    if os.path.splitext(config_path)[1].casefold() != ".json":
-        raise ValueError("The Prompt Studio Llama.cpp config must be a JSON file")
-    config_directory = os.path.dirname(config_path)
-    if not os.path.isdir(config_directory):
-        raise ValueError(f"The Llama.cpp config directory was not found: {config_directory}")
+def _llamacpp_config_profile(value, default=""):
+    profile = _text(value).strip() or default
+    if not profile:
+        raise ValueError("Select a Llama.cpp config profile")
+    if profile != os.path.basename(profile) or os.path.splitext(profile)[1].casefold() != ".json":
+        raise ValueError("Llama.cpp config profile must be a JSON filename")
+    if profile in {".", ".."} or len(profile) > 255 or "\x00" in profile:
+        raise ValueError("Llama.cpp config profile name is invalid")
+    return profile
+
+
+def _llamacpp_config_directory():
+    directory = os.path.abspath(LLAMACPP_CONFIG_DIRECTORY)
+    try:
+        os.makedirs(directory, exist_ok=True)
+    except OSError as exc:
+        raise ValueError(f"Could not create the Llama.cpp config profiles folder: {exc}") from exc
+    return directory
+
+
+def _list_llamacpp_config_profiles():
+    config_directory = _llamacpp_config_directory()
+    profiles = []
+    try:
+        entries = os.scandir(config_directory)
+        with entries:
+            for entry in entries:
+                if entry.is_file() and os.path.splitext(entry.name)[1].casefold() == ".json":
+                    profiles.append(entry.name)
+    except OSError as exc:
+        raise ValueError(f"Could not read the Llama.cpp config profiles folder: {exc}") from exc
+    return sorted(profiles, key=str.casefold)
+
+
+def _llamacpp_resolve_config_path(profile, *, default_profile=""):
+    config_directory = _llamacpp_config_directory()
+    config_profile = _llamacpp_config_profile(profile, default_profile)
+    config_path = os.path.abspath(os.path.join(config_directory, config_profile))
+    if os.path.dirname(config_path) != config_directory:
+        raise ValueError("Llama.cpp config profile must stay inside the configured folder")
+    return config_path
+
+
+def _llamacpp_builder_config_path(profile=""):
+    config_path = _llamacpp_resolve_config_path(
+        profile,
+        default_profile="llamacpp_server.json",
+    )
     if os.path.isfile(config_path) and os.path.getsize(config_path) > MAX_LLAMACPP_CONFIG_BYTES:
         raise ValueError("Llama.cpp config file exceeds the 64 KB limit")
     return config_path
@@ -227,7 +260,9 @@ def _launch_llamacpp_config_builder(data):
         raise RuntimeError("The Llama.cpp config builder is currently available on Windows only")
     if not os.path.isfile(LLAMACPP_CONFIG_BUILDER_PATH):
         raise RuntimeError("The Prompt Studio Llama.cpp config builder script is missing")
-    config_path = _llamacpp_builder_config_path(data.get("llamacpp_config_path"))
+    config_path = _llamacpp_builder_config_path(
+        data.get("llamacpp_config_profile"),
+    )
     powershell = shutil.which("powershell.exe")
     if not powershell:
         system_root = os.environ.get("SystemRoot", r"C:\Windows")
@@ -257,22 +292,29 @@ def _launch_llamacpp_config_builder(data):
         )
     except OSError as exc:
         raise RuntimeError(f"Could not open the Llama.cpp config builder: {exc}") from exc
-    return {"opened": True, "pid": process.pid, "config_path": config_path}
+    return {
+        "opened": True,
+        "pid": process.pid,
+        "config_path": config_path,
+        "config_profile": os.path.basename(config_path),
+    }
 
 
 def _llamacpp_launcher_paths(data):
     executable = os.path.abspath(_text(data.get("llamacpp_executable")).strip())
-    config_path = os.path.abspath(_text(data.get("llamacpp_config_path")).strip())
     if not _text(data.get("llamacpp_executable")).strip():
         raise ValueError("Set the Llama.cpp executable path in Prompt Studio settings")
-    if not _text(data.get("llamacpp_config_path")).strip():
-        raise ValueError("Set the Llama.cpp JSON config path in Prompt Studio settings")
     if not os.path.isfile(executable):
         raise ValueError(f"Llama.cpp executable was not found: {executable}")
     if os.path.basename(executable).casefold() not in {
         "llama.exe", "llama", "llama-server.exe", "llama-server",
     }:
         raise ValueError("Llama.cpp executable must be llama.exe or llama-server.exe")
+    profile_value = _text(data.get("llamacpp_config_profile")).strip()
+    legacy_path = _text(data.get("llamacpp_config_path")).strip()
+    if not profile_value and legacy_path:
+        profile_value = profile_value or os.path.basename(legacy_path)
+    config_path = _llamacpp_resolve_config_path(profile_value)
     if not os.path.isfile(config_path):
         raise ValueError(f"Llama.cpp config file was not found: {config_path}")
     if os.path.getsize(config_path) > MAX_LLAMACPP_CONFIG_BYTES:
@@ -478,13 +520,16 @@ def _llamacpp_managed_process_status(data=None):
             "pid": process.pid if running else None,
             "return_code": return_code,
         }
-        for key in ("url", "executable", "config_path", "started_at"):
+        for key in ("url", "executable", "config_path", "config_profile", "started_at"):
             if details.get(key) is not None:
                 status[key] = details[key]
         if data:
             status["configured"] = bool(
                 _text(data.get("llamacpp_executable")).strip()
-                and _text(data.get("llamacpp_config_path")).strip()
+                and (
+                    _text(data.get("llamacpp_config_profile")).strip()
+                    or _text(data.get("llamacpp_config_path")).strip()
+                )
             )
         return status
 
@@ -525,6 +570,7 @@ def _start_llamacpp_server(data):
             "url": launcher["url"],
             "executable": launcher["executable"],
             "config_path": launcher["config_path"],
+            "config_profile": os.path.basename(launcher["config_path"]),
             "started_at": time.time(),
         }
         return _llamacpp_managed_process_status(data)
@@ -2748,7 +2794,14 @@ def _consult_provider_messages(data, provider, system_message=None):
     return messages
 
 
-def _consult(data, system_message=None, allow_partial=True):
+def _generate_provider_messages(
+    data,
+    messages,
+    *,
+    allow_partial=True,
+    default_max_response_tokens=800,
+    maximum_request_timeout=600,
+):
     llm_provider = _text(data.get("llm_provider"), "koboldcpp").strip().casefold()
     if llm_provider not in {"koboldcpp", "ollama", "llamacpp"}:
         raise ValueError("llm_provider must be koboldcpp, ollama, or llamacpp")
@@ -2774,8 +2827,9 @@ def _consult(data, system_message=None, allow_partial=True):
     rep_pen = _bounded_number(data.get("rep_pen"), 1.05, 0.5, 3.0)
     rep_pen_range = _bounded_number(data.get("rep_pen_range"), 360, 0, 4096, integer=True)
     sampler_seed = _bounded_number(data.get("sampler_seed"), -1, -1, 999999, integer=True)
-    request_timeout = _bounded_number(data.get("request_timeout"), 120, 5, 600, integer=True)
-    messages = _consult_provider_messages(data, llm_provider, system_message)
+    request_timeout = _bounded_number(
+        data.get("request_timeout"), 120, 5, maximum_request_timeout, integer=True
+    )
 
     if llm_provider == "ollama":
         return _generate_ollama(
@@ -2783,7 +2837,7 @@ def _consult(data, system_message=None, allow_partial=True):
             _text(data.get("ollama_url"), "http://localhost:11434"),
             _text(data.get("ollama_model")).strip(),
             max_response_tokens,
-            800,
+            default_max_response_tokens,
             temperature,
             top_p,
             top_k,
@@ -2805,7 +2859,7 @@ def _consult(data, system_message=None, allow_partial=True):
             _text(data.get("llamacpp_url"), "http://localhost:8080"),
             _text(data.get("llamacpp_model")).strip(),
             max_response_tokens,
-            800,
+            default_max_response_tokens,
             temperature,
             top_p,
             top_k,
@@ -2824,7 +2878,7 @@ def _consult(data, system_message=None, allow_partial=True):
         "",
         _text(data.get("kobold_url"), "http://localhost:5001"),
         max_response_tokens,
-        800,
+        default_max_response_tokens,
         temperature,
         top_p,
         top_k,
@@ -2838,6 +2892,87 @@ def _consult(data, system_message=None, allow_partial=True):
         messages_override=messages,
         presence_penalty=presence_penalty,
     )
+
+
+def shared_llm_generate(data, messages, images=None):
+    """Run a companion Studio request through Prompt Studio's provider implementation."""
+    if not isinstance(data, dict):
+        raise ValueError("shared LLM settings must be an object")
+    if not isinstance(messages, list) or not messages:
+        raise ValueError("shared LLM messages must be a non-empty list")
+    if len(messages) > 64:
+        raise ValueError("shared LLM request contains too many messages")
+    normalized = []
+    total_chars = 0
+    for index, message in enumerate(messages):
+        if not isinstance(message, dict):
+            raise ValueError(f"shared LLM messages[{index}] must be an object")
+        role = _text(message.get("role")).strip().casefold()
+        content = message.get("content")
+        if role not in {"system", "user", "assistant"} or not isinstance(content, str):
+            raise ValueError("shared LLM messages require system, user, or assistant text roles")
+        total_chars += len(content)
+        if total_chars > MAX_CONSULT_TEXT_CHARS:
+            raise ValueError("shared LLM message text is too large")
+        normalized.append({"role": role, "content": content})
+
+    images = images or []
+    if not isinstance(images, list) or len(images) > MAX_CONSULT_IMAGES_PER_MESSAGE:
+        raise ValueError(
+            f"shared LLM requests may attach at most {MAX_CONSULT_IMAGES_PER_MESSAGE} images"
+        )
+    if images:
+        user_index = next(
+            (index for index in range(len(normalized) - 1, -1, -1)
+             if normalized[index]["role"] == "user"),
+            -1,
+        )
+        if user_index < 0:
+            raise ValueError("shared LLM vision request has no user message")
+        provider = _text(data.get("llm_provider"), "koboldcpp").strip().casefold()
+        data_uris = []
+        base64_images = []
+        for image in images:
+            if not isinstance(image, dict):
+                raise ValueError("shared LLM images must be objects")
+            data_uri = _text(image.get("data_uri")).strip()
+            base64_data = _text(image.get("base64")).strip()
+            if not data_uri.startswith("data:image/") or not base64_data:
+                raise ValueError("shared LLM images require sanitized data_uri and base64 values")
+            data_uris.append(data_uri)
+            base64_images.append(base64_data)
+        if provider == "ollama":
+            normalized[user_index]["images"] = base64_images
+        else:
+            text = normalized[user_index]["content"]
+            normalized[user_index]["content"] = [
+                {"type": "text", "text": text},
+                *[
+                    {"type": "image_url", "image_url": {"url": data_uri}}
+                    for data_uri in data_uris
+                ],
+            ]
+    return _generate_provider_messages(
+        data,
+        normalized,
+        allow_partial=False,
+        default_max_response_tokens=4096,
+        maximum_request_timeout=3600,
+    )
+
+
+def shared_llm_status(data):
+    return _llm_generation_status(data)
+
+
+def shared_llm_abort(data):
+    return _abort_llm_generation(data)
+
+
+def _consult(data, system_message=None, allow_partial=True):
+    provider = _text(data.get("llm_provider"), "koboldcpp").strip().casefold()
+    messages = _consult_provider_messages(data, provider, system_message)
+    return _generate_provider_messages(data, messages, allow_partial=allow_partial)
 
 
 def _prompt_agent_json_object(value):
@@ -3156,16 +3291,11 @@ def _studio_turn_route(data):
         "pending_proposal": normalized_pending,
         "recent_discussion": history,
     }
-    # The router intentionally uses the cheapest reasoning level, but Qwen3.8's
-    # llama.cpp chat template accepts low/medium/xhigh rather than minimal.
-    router_thinking_mode = (
-        "Low"
-        if _text(data.get("llm_provider"), "koboldcpp").strip().casefold() == "llamacpp"
-        else "Minimal"
-    )
+    # This is a small constrained classification task. Keep it deterministic and
+    # avoid spending the routing budget on model-specific private reasoning.
     request_data = {
         **data,
-        "thinking_mode": router_thinking_mode,
+        "thinking_mode": "Disabled",
         "max_response_tokens": 320,
         "temperature": 0.0,
         "top_p": 1.0,
@@ -4621,6 +4751,25 @@ async def prompt_studio_llamacpp_config_builder(request):
             raise ValueError("JSON body must be an object")
         result = await asyncio.to_thread(_launch_llamacpp_config_builder, data)
         return web.json_response(result)
+    except PermissionError as exc:
+        return web.json_response({"error": str(exc)}, status=403)
+    except (ValueError, json.JSONDecodeError) as exc:
+        return web.json_response({"error": str(exc)}, status=400)
+    except Exception as exc:
+        return web.json_response({"error": str(exc)}, status=502)
+
+
+@PromptServer.instance.routes.post("/promptstudio/prompt-studio/llamacpp/config-profiles")
+async def prompt_studio_llamacpp_config_profiles(request):
+    try:
+        _require_loopback_server_control(request)
+        if request.content_length is not None and request.content_length > MAX_LLM_CONFIG_REQUEST_BYTES:
+            raise ValueError("Llama.cpp config-profile request is too large")
+        data = await request.json()
+        if not isinstance(data, dict):
+            raise ValueError("JSON body must be an object")
+        profiles = await asyncio.to_thread(_list_llamacpp_config_profiles)
+        return web.json_response({"profiles": profiles})
     except PermissionError as exc:
         return web.json_response({"error": str(exc)}, status=403)
     except (ValueError, json.JSONDecodeError) as exc:

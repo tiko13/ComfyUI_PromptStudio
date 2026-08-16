@@ -88,13 +88,45 @@
       "name": "Character Sheet",
       "instruction": "Frame the subject like a character blueprint or design reference, Always include front, side, and rear view. Character sheet overrides the original prompt - extract only the subject and put it on a plain background, standing upright and relaxed. Ignore anything that is not directly related to subject (such as any other objects/items in the scene.)"
     },
-	{
+    {
       "name": "First-Person Downward View",
       "instruction": "The scene is viewed from the first-person perspective of the subject. Frame the scene such as 'first-person perspective of a woman looking down on her legs'. This being a FIRST PERSON perspective, remove any mention of subject's head, face or anything the subject cannot see from their point of view, and don't mention it in the prompt at all."
     },
-	{
+    {
       "name": "CCTV Footage",
-      "instruction": "Use a high angle far-from-subject composition. Rephrase the prompt to feel like a CCTV footage, do not just add a tag. Subjects are not aware of the camera. The full room/place is usually in the picture, not just the subject. The subject is also usually not centered."
+      "instruction": "Frame the scene as generic CCTV footage from a high angle and far from the subject. Show broad coverage of the room or location, keep subjects relatively small and usually off-center, and make them unaware of the camera. Change the viewpoint and composition rather than merely adding a CCTV tag; do not invent suspicious behavior or new events."
+    },
+    {
+      "name": "Fixed Ceiling CCTV",
+      "instruction": "Frame the scene from a fixed ceiling-mounted security camera in a high corner. Use a very wide lens with mild barrel distortion, deep room coverage, and distant off-center subjects when compatible. Add flat automatic exposure, muted color, modest sensor noise, low-bitrate compression blocks, slight oversharpening, and subtle timestamp-like interface residue without readable text. Preserve the actual subjects and event; do not invent suspicious behavior."
+    },
+    {
+      "name": "Hidden Pinhole Camera",
+      "instruction": "Frame the scene as if captured unknowingly by a tiny concealed pinhole camera. Use an awkward off-center or low placement, a narrow partially obstructed view, and strong edge vignetting. Add soft miniature optics, uneven focus, dim available light, poor dynamic range, muted color, digital noise, and compressed detail. Preserve the requested scene and do not add a voyeur, camera device, or new activity."
+    },
+    {
+      "name": "Doorbell Camera",
+      "instruction": "Frame the scene from a fixed chest-height smart doorbell camera with strong fisheye distortion, broad near-field coverage, sharp central detail, and compressed peripheral forms. Add aggressive automatic HDR, slightly cool color, video sharpening, motion artifacts, and minimal interface-like residue without readable labels. Do not add a doorway, visitor, package, or homeowner unless present in the prompt."
+    },
+    {
+      "name": "Body-Worn Camera",
+      "instruction": "Frame the scene from a chest-height first-person body-worn camera. Favor an ultra-wide rectilinear view, urgent imperfect framing, natural body movement, and partial foreground occlusion only when supported by the action. Add rolling-shutter skew, mixed exposure, hard practical light, and compressed video texture. Do not invent an officer, uniform, confrontation, or crime."
+    },
+    {
+      "name": "Dashcam Footage",
+      "instruction": "Frame the scene from a fixed forward-facing dashcam with a low centered viewpoint and very wide road-oriented coverage when compatible. Include windshield reflections and subtle dashboard-edge occlusion only if a vehicle is already implied. Add automatic exposure, headlight or streetlight bloom, motion compression, sensor noise, and timestamp-like marks without readable text. Preserve the requested event and setting."
+    },
+    {
+      "name": "Elevator Security Camera",
+      "instruction": "Frame the scene from an elevator security camera at an extreme upper-corner angle, using a compact enclosed composition, wide-lens distortion, and a blind area directly beneath the camera. Add flat overhead illumination, desaturated color, and compressed low-frame-rate video texture. Use reflective surfaces and repeating panel geometry only when compatible with the setting; do not invent an elevator or additional occupants."
+    },
+    {
+      "name": "Trail Camera",
+      "instruction": "Frame the scene from a fixed waist-height unattended trail camera with rough utilitarian composition and deep outdoor focus when compatible. Use foreground vegetation occlusion only when supported by the scene. Add harsh white flash or monochrome infrared illumination, abrupt falloff into darkness, high ISO noise, limited resolution, and a stark frozen instant. Do not add wildlife or a forest unless requested."
+    },
+    {
+      "name": "Aerial Surveillance Camera",
+      "instruction": "Frame the scene as stabilized aerial surveillance imagery from directly overhead or a steep oblique angle. Favor distant compressed perspective and broad environmental coverage. Add restrained color, atmospheric haze, high digital sharpening, slight transmission artifacts, and tracking-box-like geometry without targeting claims or readable text. Do not add a drone, aircraft, pursuit, or military context."
     }
   ]
 }

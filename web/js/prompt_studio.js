@@ -36,11 +36,12 @@ const KOBOLD_ABORT_ENDPOINT = "/promptstudio/prompt-studio/kobold/abort";
 const LLAMACPP_SERVER_ENDPOINT = "/promptstudio/prompt-studio/llamacpp/server";
 const LLAMACPP_FILE_PICKER_ENDPOINT = "/promptstudio/prompt-studio/llamacpp/pick-file";
 const LLAMACPP_CONFIG_BUILDER_ENDPOINT = "/promptstudio/prompt-studio/llamacpp/config-builder";
+const LLAMACPP_CONFIG_PROFILES_ENDPOINT = "/promptstudio/prompt-studio/llamacpp/config-profiles";
 const MUTATION_CONFIG_ENDPOINT = "/promptstudio/prompt-studio/mutation-config";
 const COMFY_RESTART_ENDPOINTS = ["/v2/manager/reboot", "/manager/reboot"];
-const COMFY_UPDATE_ENDPOINT = "/manager/queue/update_comfyui";
-const MANAGER_UPDATE_ALL_ENDPOINT = "/manager/queue/update_all";
-const MANAGER_QUEUE_START_ENDPOINT = "/manager/queue/start";
+const COMFY_UPDATE_ENDPOINTS = ["/v2/manager/queue/update_comfyui", "/manager/queue/update_comfyui"];
+const MANAGER_UPDATE_ALL_ENDPOINTS = ["/v2/manager/queue/update_all", "/manager/queue/update_all"];
+const MANAGER_QUEUE_START_ENDPOINTS = ["/v2/manager/queue/start", "/manager/queue/start"];
 const CONSULT_JOB_POLL_MS = 1000;
 const CONSULT_STATUS_RETRY_LIMIT = 3;
 const KOBOLD_STATUS_POLL_MS = 3000;
@@ -78,7 +79,7 @@ const SETTINGS_DEFAULTS = Object.freeze({
   llamacpp_url: "http://127.0.0.1:8080",
   llamacpp_model: "",
   llamacpp_executable: "",
-  llamacpp_config_path: "",
+  llamacpp_config_profile: "",
   keep_models_loaded: false,
   llm_profile: "qwen3.5",
   model_profile: "General Natural Language",
@@ -310,6 +311,10 @@ const state = {
   comfyUpdateError: false,
   comfyUpdateMessage: "",
   comfyUpdateNeedsRestart: false,
+  comfyUpdateDoneCount: 0,
+  comfyUpdateTotalCount: 0,
+  comfyUpdateRequestId: "",
+  comfyUpdateResults: new Map(),
   koboldAbortBusy: false,
   llamacppProcessBusy: false,
   consultVisionAvailable: null,
@@ -478,9 +483,24 @@ function consumeInstallerSettings() {
 
 consumeInstallerSettings();
 
+function migrateLlamacppConfigLocation(value) {
+  const settings = value && typeof value === "object" && !Array.isArray(value) ? { ...value } : {};
+  const legacyPath = String(settings.llamacpp_config_path || "").trim();
+  if (!settings.llamacpp_config_profile && legacyPath) {
+    const separator = Math.max(legacyPath.lastIndexOf("/"), legacyPath.lastIndexOf("\\"));
+    settings.llamacpp_config_profile = separator >= 0 ? legacyPath.slice(separator + 1) : legacyPath;
+  }
+  delete settings.llamacpp_config_directory;
+  delete settings.llamacpp_config_path;
+  return settings;
+}
+
 function getSettings() {
   try {
-    return { ...SETTINGS_DEFAULTS, ...JSON.parse(localStorage.getItem(STORAGE_KEY) || "{}") };
+    return {
+      ...SETTINGS_DEFAULTS,
+      ...migrateLlamacppConfigLocation(JSON.parse(localStorage.getItem(STORAGE_KEY) || "{}")),
+    };
   } catch (_) {
     return { ...SETTINGS_DEFAULTS };
   }
@@ -880,6 +900,8 @@ function applyRememberedLlmConnection(settings) {
   }
   if (!remembered || typeof remembered !== "object" || Array.isArray(remembered)
       || !Object.hasOwn(remembered, "llm_provider")) return settings;
+  remembered = migrateLlamacppConfigLocation(remembered);
+  settings = migrateLlamacppConfigLocation(settings);
   return {
     ...settings,
     llm_provider: normalizeLlmProvider(remembered.llm_provider),
@@ -890,7 +912,7 @@ function applyRememberedLlmConnection(settings) {
     llamacpp_url: String(remembered.llamacpp_url ?? settings.llamacpp_url ?? SETTINGS_DEFAULTS.llamacpp_url),
     llamacpp_model: String(remembered.llamacpp_model ?? settings.llamacpp_model ?? ""),
     llamacpp_executable: String(remembered.llamacpp_executable ?? settings.llamacpp_executable ?? ""),
-    llamacpp_config_path: String(remembered.llamacpp_config_path ?? settings.llamacpp_config_path ?? ""),
+    llamacpp_config_profile: String(remembered.llamacpp_config_profile ?? settings.llamacpp_config_profile ?? ""),
     keep_models_loaded: remembered.keep_models_loaded == null
       ? Boolean(settings.keep_models_loaded)
       : Boolean(remembered.keep_models_loaded),
@@ -913,7 +935,7 @@ function saveSettings() {
       llamacpp_url: value("promptstudio-llamacpp-url"),
       llamacpp_model: value("promptstudio-llamacpp-model"),
       llamacpp_executable: value("promptstudio-llamacpp-executable"),
-      llamacpp_config_path: value("promptstudio-llamacpp-config-path"),
+      llamacpp_config_profile: value("promptstudio-llamacpp-config-profile"),
       keep_models_loaded: checked("promptstudio-keep-models-loaded"),
       model_profile: value("promptstudio-profile"),
       style_preset: value("promptstudio-style"),
@@ -1374,9 +1396,32 @@ function toggleStudioSettings(force) {
   if (show) startMutationConfigMonitor();
   else {
     stopMutationConfigMonitor();
+    closeBackendSettings({ restoreFocus: false });
     closeMutationManager({ restoreFocus: false });
     closeLlmProfileEditor({ restoreFocus: false });
   }
+}
+
+function openBackendSettings() {
+  const dialog = state.panel?.querySelector("#promptstudio-backend-settings-dialog");
+  if (!dialog) return;
+  dialog.hidden = false;
+  syncLlmProviderControls();
+  const provider = selectedLlmProvider();
+  if (provider === "ollama") loadOllamaModels({ announce: false });
+  if (provider === "llamacpp") {
+    loadLlamacppModels({ announce: false });
+    loadLlamacppConfigProfiles({ announce: false });
+  }
+  dialog.querySelector("#promptstudio-close-backend-settings")?.focus({ preventScroll: true });
+}
+
+function closeBackendSettings({ restoreFocus = true } = {}) {
+  const dialog = state.panel?.querySelector("#promptstudio-backend-settings-dialog");
+  if (!dialog || dialog.hidden) return;
+  dialog.hidden = true;
+  saveSettings();
+  if (restoreFocus) state.panel?.querySelector("#promptstudio-open-backend-settings")?.focus({ preventScroll: true });
 }
 
 function getConsultSettings() {
@@ -2331,7 +2376,7 @@ function normalizeStudioSettings(value, fallback = getSettings()) {
     llamacpp_url: text("llamacpp_url"),
     llamacpp_model: text("llamacpp_model"),
     llamacpp_executable: text("llamacpp_executable"),
-    llamacpp_config_path: text("llamacpp_config_path"),
+    llamacpp_config_profile: text("llamacpp_config_profile"),
     keep_models_loaded: checked("keep_models_loaded"),
     model_profile: requiredText("model_profile"),
     style_preset: requiredText("style_preset"),
@@ -2378,7 +2423,7 @@ function newChatStudioSettings(value = getSettings()) {
     llamacpp_url: previous.llamacpp_url,
     llamacpp_model: previous.llamacpp_model,
     llamacpp_executable: previous.llamacpp_executable,
-    llamacpp_config_path: previous.llamacpp_config_path,
+    llamacpp_config_profile: previous.llamacpp_config_profile,
     keep_models_loaded: previous.keep_models_loaded,
     thinking_mode: previous.thinking_mode,
     embellishment_level: previous.embellishment_level,
@@ -3075,7 +3120,7 @@ function captureStudioSettings(chat = activeChat()) {
     llamacpp_url: value("llamacpp_url", "promptstudio-llamacpp-url"),
     llamacpp_model: value("llamacpp_model", "promptstudio-llamacpp-model"),
     llamacpp_executable: value("llamacpp_executable", "promptstudio-llamacpp-executable"),
-    llamacpp_config_path: value("llamacpp_config_path", "promptstudio-llamacpp-config-path"),
+    llamacpp_config_profile: value("llamacpp_config_profile", "promptstudio-llamacpp-config-profile"),
     keep_models_loaded: checked("keep_models_loaded", "promptstudio-keep-models-loaded"),
     model_profile: value("model_profile", "promptstudio-profile"),
     style_preset: value("style_preset", "promptstudio-style"),
@@ -3142,7 +3187,7 @@ function applyStudioSettings(chat) {
     ["promptstudio-ollama-url", settings.ollama_url],
     ["promptstudio-llamacpp-url", settings.llamacpp_url],
     ["promptstudio-llamacpp-executable", settings.llamacpp_executable],
-    ["promptstudio-llamacpp-config-path", settings.llamacpp_config_path],
+    ["promptstudio-llamacpp-config-profile", settings.llamacpp_config_profile],
     ["promptstudio-profile", settings.model_profile],
     ["promptstudio-style", settings.style_preset],
     ["promptstudio-framing", settings.framing_preset],
@@ -3644,6 +3689,7 @@ function handleLlmProviderChange() {
   const requested = normalizeLlmProvider(select.value);
   if (!confirmAdvancedLlmProvider(requested)) select.value = "ollama";
   syncLlmProviderControls({ refreshModels: true });
+  if (selectedLlmProvider() === "llamacpp") loadLlamacppConfigProfiles({ announce: false });
   markControlsChanged();
   updateComposeMode();
   if (!state.panel.querySelector("#promptstudio-consult").hidden) refreshConsultVisionCapability();
@@ -6180,6 +6226,45 @@ async function loadLlamacppModels({ announce = false } = {}) {
   }
 }
 
+async function loadLlamacppConfigProfiles({ announce = false, preferred = "" } = {}) {
+  const select = state.panel?.querySelector("#promptstudio-llamacpp-config-profile");
+  const button = state.panel?.querySelector("#promptstudio-refresh-llamacpp-configs");
+  if (!select) return;
+  const selected = preferred || select.value || getSettings().llamacpp_config_profile;
+  select.disabled = true;
+  if (button) button.disabled = true;
+  try {
+    const response = await api.fetchApi(LLAMACPP_CONFIG_PROFILES_ENDPOINT, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({}),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.error || `Could not load Llama.cpp config profiles (${response.status}).`);
+    const profiles = Array.isArray(data.profiles) ? data.profiles.map(String).filter(Boolean) : [];
+    setOptions("promptstudio-llamacpp-config-profile", profiles, selected);
+    if (!profiles.length) {
+      select.appendChild(new Option("No JSON profiles found", ""));
+    } else if (!profiles.includes(selected)) {
+      select.value = profiles[0];
+    }
+    saveSettings();
+    refreshLlmStatus();
+    if (announce) {
+      setStatus(
+        `Loaded ${profiles.length} Llama.cpp config profile${profiles.length === 1 ? "" : "s"}.`,
+        profiles.length ? "ready" : "warning",
+      );
+    }
+  } catch (error) {
+    select.replaceChildren(new Option("Config folder unavailable", ""));
+    if (announce) setStatus(error.message || String(error), "warning");
+  } finally {
+    select.disabled = false;
+    if (button) button.disabled = false;
+  }
+}
+
 function syncLlmProviderControls({ refreshModels = false } = {}) {
   const provider = selectedLlmProvider();
   state.panel?.querySelectorAll("[data-llm-provider]").forEach((element) => {
@@ -6214,7 +6299,10 @@ async function loadConfig() {
   applyStudioSettings(activeChat());
   renderKnownReferenceHighlights();
   if (selectedLlmProvider() === "ollama") await loadOllamaModels({ announce: false });
-  if (selectedLlmProvider() === "llamacpp") await loadLlamacppModels({ announce: false });
+  if (selectedLlmProvider() === "llamacpp") {
+    await loadLlamacppConfigProfiles({ announce: false, preferred: settings.llamacpp_config_profile });
+    await loadLlamacppModels({ announce: false });
+  }
 }
 
 function collectRevisionPayload(
@@ -6237,7 +6325,7 @@ function collectRevisionPayload(
     llamacpp_url: value("promptstudio-llamacpp-url"),
     llamacpp_model: value("promptstudio-llamacpp-model"),
     llamacpp_executable: value("promptstudio-llamacpp-executable"),
-    llamacpp_config_path: value("promptstudio-llamacpp-config-path"),
+    llamacpp_config_profile: value("promptstudio-llamacpp-config-profile"),
     keep_models_loaded: Boolean(state.panel.querySelector("#promptstudio-keep-models-loaded")?.checked),
     ...llmProfileGenerationSettings(),
     model_profile: value("promptstudio-profile"),
@@ -7747,7 +7835,7 @@ function llmConnectionPayload() {
     llamacpp_url: value("promptstudio-llamacpp-url"),
     llamacpp_model: value("promptstudio-llamacpp-model"),
     llamacpp_executable: value("promptstudio-llamacpp-executable"),
-    llamacpp_config_path: value("promptstudio-llamacpp-config-path"),
+    llamacpp_config_profile: value("promptstudio-llamacpp-config-profile"),
     keep_models_loaded: Boolean(state.panel.querySelector("#promptstudio-keep-models-loaded")?.checked),
   };
 }
@@ -7755,7 +7843,7 @@ function llmConnectionPayload() {
 function llamacppLauncherConfigured(payload = llmConnectionPayload()) {
   return Boolean(
     String(payload.llamacpp_executable || "").trim()
-    && String(payload.llamacpp_config_path || "").trim()
+    && String(payload.llamacpp_config_profile || "").trim()
   );
 }
 
@@ -7779,9 +7867,10 @@ function renderSystemStatusSummary() {
   const control = state.panel?.querySelector("#promptstudio-kobold-control");
   const label = control?.querySelector("#promptstudio-kobold-status-label");
   const comfyDetail = control?.querySelector("#promptstudio-comfy-status-detail");
+  const updateProgress = control?.querySelector("#promptstudio-comfy-update-progress");
   const update = control?.querySelector("#promptstudio-comfy-update");
   const restart = control?.querySelector("#promptstudio-comfy-restart");
-  if (!control || !label || !comfyDetail || !update || !restart) return;
+  if (!control || !label || !comfyDetail || !updateProgress || !update || !restart) return;
 
   const llm = state.llmStatusSnapshot;
   const provider = normalizeLlmProvider(llm?.provider || selectedLlmProvider());
@@ -7803,12 +7892,19 @@ function renderSystemStatusSummary() {
   const unhealthy = !state.apiConnected || llmUnhealthy || state.comfyUpdateError;
   const stateName = unhealthy ? "offline" : (processing ? "busy" : "idle");
   control.dataset.state = stateName;
+  control.dataset.updateActive = state.comfyUpdateBusy ? "true" : "false";
   control.querySelector("summary").title = stateName === "offline"
     ? "System status: attention needed"
     : (stateName === "busy" ? "System status: processing" : "System status: ready");
-  label.textContent = stateName === "offline"
-    ? "Status: attention needed"
-    : (stateName === "busy" ? "Status: processing" : "Status: ready");
+  label.textContent = state.comfyUpdateBusy
+    ? `Updating ComfyUI${state.comfyUpdateTotalCount > 0 ? `: ${state.comfyUpdateDoneCount}/${state.comfyUpdateTotalCount}` : ""}`
+    : (state.comfyUpdateError
+      ? "ComfyUI update failed"
+      : (state.comfyUpdateNeedsRestart
+        ? "ComfyUI update complete; restart required"
+        : (state.comfyUpdateMessage
+          ? state.comfyUpdateMessage
+          : (stateName === "offline" ? "Status: attention needed" : (stateName === "busy" ? "Status: processing" : "Status: ready")))));
 
   if (!state.apiConnected) {
     comfyDetail.textContent = "Not responding";
@@ -7829,9 +7925,20 @@ function renderSystemStatusSummary() {
     comfyDetail.textContent = "Connected and ready";
     comfyDetail.dataset.state = "idle";
   }
+  updateProgress.hidden = !state.comfyUpdateBusy;
+  if (state.comfyUpdateBusy && state.comfyUpdateTotalCount > 0) {
+    updateProgress.max = state.comfyUpdateTotalCount;
+    updateProgress.value = Math.min(state.comfyUpdateDoneCount, state.comfyUpdateTotalCount);
+    updateProgress.setAttribute("aria-label", `ComfyUI update progress: ${state.comfyUpdateDoneCount} of ${state.comfyUpdateTotalCount}`);
+  } else {
+    updateProgress.removeAttribute("value");
+    updateProgress.setAttribute("aria-label", "ComfyUI update in progress");
+  }
   const managerBusy = state.comfyRestartBusy || state.comfyUpdateBusy;
   update.disabled = managerBusy || !state.apiConnected;
-  update.textContent = state.comfyUpdateBusy ? "Updating…" : "Update ComfyUI";
+  update.textContent = state.comfyUpdateBusy && state.comfyUpdateTotalCount > 0
+    ? `Updating ${state.comfyUpdateDoneCount}/${state.comfyUpdateTotalCount}`
+    : (state.comfyUpdateBusy ? "Updating…" : "Update ComfyUI");
   restart.disabled = managerBusy || !state.apiConnected;
   restart.textContent = state.comfyRestartBusy ? "Restarting…" : "Restart ComfyUI";
 }
@@ -7871,6 +7978,14 @@ function renderLlmStatus(status = {}) {
   const modelName = typeof status.model === "string" ? status.model.trim() : "";
   model.textContent = modelName || (reachable ? "Unavailable" : "—");
   model.title = modelName;
+  if (isLlamacpp && reachable && modelName) {
+    const modelSelect = state.panel?.querySelector("#promptstudio-llamacpp-model");
+    if (modelSelect && !modelSelect.value) {
+      modelSelect.replaceChildren(new Option(modelName, modelName));
+      modelSelect.value = modelName;
+      saveSettings();
+    }
+  }
   vision.textContent = status.vision === true ? "Yes" : (status.vision === false ? "No" : (reachable ? "Unknown" : "—"));
   vision.dataset.state = status.vision === true ? "available" : (status.vision === false ? "unavailable" : "unknown");
   stop.hidden = isOllama;
@@ -7886,11 +8001,17 @@ function renderLlmStatus(status = {}) {
     const process = status.server_process || {};
     const managedRunning = process.managed === true && process.running === true;
     const launcherConfigured = llamacppLauncherConfigured();
+    const selectedProfile = state.panel?.querySelector("#promptstudio-llamacpp-config-profile")?.value || "";
+    const activeProfile = String(process.config_profile || "");
+    const profileChangePending = managedRunning && activeProfile && selectedProfile
+      && activeProfile.toLowerCase() !== selectedProfile.toLowerCase();
     processDetail.textContent = state.llamacppProcessBusy
       ? "Applying server action…"
       : (managedRunning
-        ? `Managed server running${process.pid ? ` · PID ${process.pid}` : ""}`
-        : (reachable ? "Server running externally" : (launcherConfigured ? "Managed server stopped" : "Set executable and config paths in Settings")));
+        ? (profileChangePending
+          ? `Running ${activeProfile} · restart to apply ${selectedProfile}`
+          : `Managed server running${activeProfile ? ` · ${activeProfile}` : ""}${process.pid ? ` · PID ${process.pid}` : ""}`)
+        : (reachable ? "Server running externally" : (launcherConfigured ? "Managed server stopped" : "Complete Backend settings to enable server controls")));
     processStart.disabled = state.llamacppProcessBusy || managedRunning || reachable || !launcherConfigured;
     processStop.disabled = state.llamacppProcessBusy || !managedRunning;
     processRestart.disabled = state.llamacppProcessBusy || !managedRunning || !launcherConfigured;
@@ -7924,12 +8045,20 @@ async function restartComfyUIFromStatus() {
   }
 }
 
-async function requireManagerResponse(endpoint, options, action) {
-  const response = await api.fetchApi(endpoint, options);
-  if (response.ok) return response;
+async function requireManagerResponse(endpoints, options, action) {
+  let response;
+  for (const endpoint of endpoints) {
+    response = await api.fetchApi(endpoint, options);
+    if (response.ok) return response;
+    if (response.status === 405) {
+      response = await api.fetchApi(endpoint);
+      if (response.ok) return response;
+    }
+    if (![404, 405].includes(response.status)) break;
+  }
   const detail = (await response.text().catch(() => "")).trim();
   if (response.status === 404) {
-    throw new Error("ComfyUI Manager is not enabled. Enable Manager, restart ComfyUI, and try again.");
+    throw new Error("ComfyUI Manager's update API is unavailable in this running ComfyUI instance. Restart ComfyUI and try again.");
   }
   if (response.status === 401) {
     throw new Error("ComfyUI Manager is already processing another task.");
@@ -7946,60 +8075,179 @@ async function updateComfyUIFromStatus() {
   if (!ownerWindow.confirm("Run ComfyUI Manager Update All now? This updates ComfyUI and installed custom nodes. Restart ComfyUI after it finishes to apply the updates.")) return;
   state.comfyUpdateBusy = true;
   state.comfyUpdateError = false;
-  state.comfyUpdateMessage = "Queuing Manager Update All…";
+  state.comfyUpdateMessage = "Preparing Manager Update All…";
   state.comfyUpdateNeedsRestart = false;
+  state.comfyUpdateDoneCount = 0;
+  state.comfyUpdateTotalCount = 0;
+  state.comfyUpdateRequestId = `promptstudio-update-${Date.now()}`;
+  state.comfyUpdateResults.clear();
   renderSystemStatusSummary();
   try {
-    await requireManagerResponse(COMFY_UPDATE_ENDPOINT, { method: "POST" }, "queue the ComfyUI update");
-    await requireManagerResponse(MANAGER_UPDATE_ALL_ENDPOINT, {
+    const clientId = String(api.clientId || api.initialClientId || window.name || crypto.randomUUID());
+    const comfyUiQuery = new URLSearchParams({
+      client_id: clientId,
+      ui_id: `${state.comfyUpdateRequestId}_comfyui`,
+    });
+    const updateAllQuery = new URLSearchParams({
+      client_id: clientId,
+      ui_id: `${state.comfyUpdateRequestId}_nodes`,
+      mode: "remote",
+    });
+    await requireManagerResponse(
+      COMFY_UPDATE_ENDPOINTS.map((endpoint) => endpoint.startsWith("/v2/") ? `${endpoint}?${comfyUiQuery}` : endpoint),
+      { method: "POST" },
+      "queue the ComfyUI update",
+    );
+    state.comfyUpdateMessage = "ComfyUI queued · finding custom-node updates…";
+    renderSystemStatusSummary();
+    await requireManagerResponse(MANAGER_UPDATE_ALL_ENDPOINTS.map((endpoint) => endpoint.startsWith("/v2/")
+      ? `${endpoint}?${updateAllQuery}`
+      : `${endpoint}?mode=default`), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ mode: "default" }),
     }, "queue Update All");
-    await requireManagerResponse(MANAGER_QUEUE_START_ENDPOINT, { method: "POST" }, "start Update All");
-    state.comfyUpdateMessage = "Manager Update All is running…";
+    state.comfyUpdateMessage = "Updates queued · starting Manager…";
     renderSystemStatusSummary();
+    await requireManagerResponse(
+      MANAGER_QUEUE_START_ENDPOINTS,
+      { method: "POST" },
+      "start Update All",
+    );
+    state.comfyUpdateMessage = "Manager Update All started · waiting for progress…";
+    renderSystemStatusSummary();
+    setStatus("ComfyUI Manager Update All is running. Progress is shown in System status.", "working");
   } catch (error) {
     state.comfyUpdateBusy = false;
     state.comfyUpdateError = true;
     state.comfyUpdateMessage = error.message || String(error);
     renderSystemStatusSummary();
+    setStatus(`ComfyUI update could not start: ${state.comfyUpdateMessage}`, "error");
   }
 }
 
 function managerResultSucceeded(result) {
-  const message = typeof result === "object" && result ? result.msg : result;
+  const message = managerResultMessage(result);
   return typeof message === "string" && message.startsWith("success");
 }
 
 function managerResultFailed(result) {
-  const message = typeof result === "object" && result ? result.msg : result;
+  const message = managerResultMessage(result);
   return typeof message === "string" && message !== "skip" && !message.startsWith("success");
+}
+
+function managerResultSkipped(result) {
+  const message = managerResultMessage(result);
+  return message === "skip";
+}
+
+function managerResultMessage(result) {
+  if (!result || typeof result !== "object") return result;
+  return result.msg ?? result.result ?? result.status?.status_str ?? "";
+}
+
+function managerUpdateEventBelongsToRequest(detail) {
+  return state.comfyUpdateBusy
+    && Boolean(state.comfyUpdateRequestId)
+    && String(detail?.ui_id || "").startsWith(state.comfyUpdateRequestId);
+}
+
+function managerUpdateCountsFromTaskState(taskState = {}) {
+  const matches = (task) => String(task?.ui_id || "").startsWith(state.comfyUpdateRequestId);
+  const done = Object.values(taskState.history || {}).filter(matches).length;
+  const running = Array.from(taskState.running_queue || []).filter(matches).length;
+  const pending = Array.from(taskState.pending_queue || []).filter(matches).length;
+  return { done, total: done + running + pending };
+}
+
+function managerUpdateTaskLabel(detail = {}) {
+  if (detail.kind === "update-comfyui") return "ComfyUI core";
+  const prefix = `${state.comfyUpdateRequestId}_nodes_`;
+  const uiId = String(detail.ui_id || "");
+  return uiId.startsWith(prefix) ? uiId.slice(prefix.length) : "custom node";
+}
+
+function handleManagerTaskStarted(event) {
+  const detail = event.detail || {};
+  if (!managerUpdateEventBelongsToRequest(detail)) return;
+  const counts = managerUpdateCountsFromTaskState(detail.state);
+  state.comfyUpdateDoneCount = counts.done;
+  state.comfyUpdateTotalCount = counts.total;
+  state.comfyUpdateMessage = `Updating ${managerUpdateTaskLabel(detail)} · ${counts.done}/${counts.total}`;
+  renderSystemStatusSummary();
+}
+
+function handleManagerTaskCompleted(event) {
+  const detail = event.detail || {};
+  if (!managerUpdateEventBelongsToRequest(detail)) return;
+  state.comfyUpdateResults.set(String(detail.ui_id), detail);
+  const counts = managerUpdateCountsFromTaskState(detail.state);
+  state.comfyUpdateDoneCount = counts.done;
+  state.comfyUpdateTotalCount = counts.total;
+  state.comfyUpdateMessage = `Finished ${managerUpdateTaskLabel(detail)} · ${counts.done}/${counts.total}`;
+  if (counts.total > 0 && counts.done >= counts.total) {
+    finishComfyUpdate(Array.from(state.comfyUpdateResults.values()));
+    return;
+  }
+  renderSystemStatusSummary();
+}
+
+function finishComfyUpdate(results) {
+  const updatedCount = results.filter(managerResultSucceeded).length;
+  const failedCount = results.filter(managerResultFailed).length;
+  const skippedCount = results.filter(managerResultSkipped).length;
+  const failedLabels = [...new Set(results
+    .filter(managerResultFailed)
+    .map(managerUpdateTaskLabel))];
+  const failedSummary = failedLabels.length
+    ? ` · Failed: ${failedLabels.slice(0, 3).join(", ")}${failedLabels.length > 3 ? ` +${failedLabels.length - 3} more` : ""}`
+    : "";
+  const updated = updatedCount > 0;
+  const failed = failedCount > 0;
+  state.comfyUpdateBusy = false;
+  state.comfyUpdateError = failed;
+  state.comfyUpdateNeedsRestart = updated;
+  state.comfyUpdateDoneCount = Math.max(state.comfyUpdateDoneCount, results.length);
+  state.comfyUpdateTotalCount = Math.max(state.comfyUpdateTotalCount, results.length);
+  state.comfyUpdateMessage = failed
+    ? `Update finished · ${updatedCount} updated · ${failedCount} failed${failedSummary}${updated ? " · Restart required" : " · Check the ComfyUI terminal"}`
+    : (updated
+      ? `Update complete · ${updatedCount} updated${skippedCount ? ` · ${skippedCount} already current` : ""} · Restart required`
+      : "Update complete · ComfyUI and custom nodes are already up to date");
+  renderSystemStatusSummary();
+  setStatus(state.comfyUpdateMessage, failed ? "error" : "ready");
+  const control = state.panel?.querySelector("#promptstudio-kobold-control");
+  if (control) control.open = true;
+  state.comfyUpdateRequestId = "";
 }
 
 function handleManagerQueueStatus(event) {
   if (!state.comfyUpdateBusy) return;
   const status = event.detail || {};
+  if (status.status === "all-done") {
+    finishComfyUpdate(Array.from(state.comfyUpdateResults.values()));
+    return;
+  }
   if (status.status === "in_progress") {
     const done = Number(status.done_count);
     const total = Number(status.total_count);
-    state.comfyUpdateMessage = Number.isFinite(done) && Number.isFinite(total)
-      ? `Manager Update All · ${done}/${total}`
+    const completed = Number.isFinite(done) && Number.isFinite(total)
+      ? Math.min(total, Math.max(0, done + (status.target ? 1 : 0)))
+      : 0;
+    state.comfyUpdateDoneCount = completed;
+    state.comfyUpdateTotalCount = Number.isFinite(total) ? Math.max(0, total) : 0;
+    const target = String(status.target || "").trim();
+    state.comfyUpdateMessage = state.comfyUpdateTotalCount > 0
+      ? `Updating · ${completed}/${state.comfyUpdateTotalCount}${target ? ` · ${target}` : ""}`
       : "Manager Update All is running…";
     renderSystemStatusSummary();
     return;
   }
   if (status.status !== "done") return;
   const results = Object.values(status.nodepack_result || {});
-  const updated = results.some(managerResultSucceeded);
-  const failed = results.some(managerResultFailed);
-  state.comfyUpdateBusy = false;
-  state.comfyUpdateError = failed;
-  state.comfyUpdateNeedsRestart = updated;
-  state.comfyUpdateMessage = failed
-    ? `Update finished with errors${updated ? " · Restart required" : " · Check the ComfyUI terminal"}`
-    : (updated ? "Update complete · Restart required" : "ComfyUI and custom nodes are up to date");
-  renderSystemStatusSummary();
+  state.comfyUpdateDoneCount = Number(status.done_count) || results.length;
+  state.comfyUpdateTotalCount = Number(status.total_count) || results.length;
+  finishComfyUpdate(results);
 }
 
 async function refreshLlmStatus() {
@@ -8095,7 +8343,7 @@ async function controlLlamacppServer(action) {
   if (selectedLlmProvider() !== "llamacpp" || state.llamacppProcessBusy) return;
   const payload = llmConnectionPayload();
   if (["start", "restart"].includes(action) && !llamacppLauncherConfigured(payload)) {
-    setStatus("Set both the Llama.cpp executable and config paths before starting the server.", "warning");
+    setStatus("Set the Llama.cpp executable and config profile before starting the server.", "warning");
     return;
   }
   state.llamacppProcessBusy = true;
@@ -8111,8 +8359,12 @@ async function controlLlamacppServer(action) {
     if (data.url) {
       const endpoint = state.panel?.querySelector("#promptstudio-llamacpp-url");
       if (endpoint) endpoint.value = data.url;
-      saveSettings();
     }
+    if (["start", "restart"].includes(action) && !data.external) {
+      const modelSelect = state.panel?.querySelector("#promptstudio-llamacpp-model");
+      if (modelSelect) modelSelect.replaceChildren(new Option("Waiting for restarted server…", ""));
+    }
+    saveSettings();
     setStatus(data.external
       ? "A Llama.cpp server is already running at the configured endpoint; it remains externally managed."
       : `Llama.cpp server ${action} requested.`, data.external ? "warning" : "ready");
@@ -8130,11 +8382,6 @@ async function browseLlamacppPath(kind) {
       input: "#promptstudio-llamacpp-executable",
       button: "#promptstudio-browse-llamacpp-executable",
       label: "Llama.cpp executable",
-    },
-    config: {
-      input: "#promptstudio-llamacpp-config-path",
-      button: "#promptstudio-browse-llamacpp-config",
-      label: "Llama.cpp launcher config",
     },
   };
   const control = controls[kind];
@@ -8164,30 +8411,44 @@ async function browseLlamacppPath(kind) {
   }
 }
 
-async function openLlamacppConfigBuilder() {
-  const input = state.panel?.querySelector("#promptstudio-llamacpp-config-path");
-  const button = state.panel?.querySelector("#promptstudio-build-llamacpp-config");
-  if (!input || !button || button.disabled) return;
+async function openLlamacppConfigBuilder({ createNew = false } = {}) {
+  const profile = state.panel?.querySelector("#promptstudio-llamacpp-config-profile");
+  const button = state.panel?.querySelector(createNew
+    ? "#promptstudio-new-llamacpp-config"
+    : "#promptstudio-build-llamacpp-config");
+  if (!profile || !button || button.disabled) return;
+  let requestedProfile = profile.value.trim();
+  if (createNew) {
+    const ownerWindow = state.panel?.ownerDocument?.defaultView || window;
+    requestedProfile = String(ownerWindow.prompt("Name the new Llama.cpp config profile:", "llamacpp_server.json") || "").trim();
+    if (!requestedProfile) return;
+    if (!requestedProfile.toLowerCase().endsWith(".json")) requestedProfile += ".json";
+  }
   button.disabled = true;
   button.textContent = "Opening…";
   try {
     const response = await api.fetchApi(LLAMACPP_CONFIG_BUILDER_ENDPOINT, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ llamacpp_config_path: input.value.trim() }),
+      body: JSON.stringify({
+        llamacpp_config_profile: requestedProfile,
+      }),
     });
     const data = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(data.error || `Could not open the Llama.cpp config builder (${response.status}).`);
-    if (data.config_path) {
-      input.value = data.config_path;
-      input.dispatchEvent(new Event("change", { bubbles: true }));
+    if (data.config_profile) {
+      if (![...profile.options].some((option) => option.value === data.config_profile)) {
+        profile.add(new Option(data.config_profile, data.config_profile));
+      }
+      profile.value = data.config_profile;
     }
+    saveSettings();
     setStatus("Llama.cpp config builder opened. Save there before starting or restarting the server.", "ready");
   } catch (error) {
     setStatus(error.message || String(error), "warning");
   } finally {
     button.disabled = false;
-    button.textContent = "Build…";
+    button.textContent = createNew ? "New…" : "Edit…";
   }
 }
 
@@ -12264,6 +12525,7 @@ function buildPanel() {
               </section>
               <section class="promptstudio-system-status-section promptstudio-comfy-status-section">
                 <div class="promptstudio-system-status-row"><strong>ComfyUI</strong><span id="promptstudio-comfy-status-detail" data-state="busy" role="status" aria-live="polite">Checking…</span></div>
+                <progress id="promptstudio-comfy-update-progress" class="promptstudio-comfy-update-progress" aria-label="ComfyUI update progress" hidden></progress>
                 <div class="promptstudio-system-status-actions">
                   <button id="promptstudio-comfy-update" type="button">Update ComfyUI</button>
                   <button id="promptstudio-comfy-restart" type="button" data-promptstudio-allow-disconnected="true">Restart ComfyUI</button>
@@ -12368,17 +12630,27 @@ function buildPanel() {
       <div class="promptstudio-studio-settings-layout">
         <section class="promptstudio-studio-settings-card" aria-labelledby="promptstudio-general-settings-title">
           <header class="promptstudio-studio-settings-card-header">
-            <div><strong id="promptstudio-general-settings-title">General</strong><span>Connection, LLM profiles, chat display and editing behavior</span></div>
+            <div><strong id="promptstudio-general-settings-title">General</strong><span>Backend selection, chat display, and editing behavior</span></div>
           </header>
           <div class="promptstudio-studio-settings-list">
-            <label class="promptstudio-studio-setting promptstudio-endpoint-control">
+            <div class="promptstudio-studio-setting promptstudio-endpoint-control">
               <span class="promptstudio-studio-setting-copy"><strong>LLM provider</strong><small>Choose the local service used to rewrite prompts.</small></span>
-              <select id="promptstudio-llm-provider" aria-label="LLM provider">
-                <option value="ollama" ${settings.llm_provider === "ollama" ? "selected" : ""}>Ollama</option>
-                <option value="koboldcpp" ${settings.llm_provider === "koboldcpp" ? "selected" : ""}>KoboldCpp</option>
-                <option value="llamacpp" ${settings.llm_provider === "llamacpp" ? "selected" : ""}>Llama.cpp</option>
-              </select>
-            </label>
+              <span class="promptstudio-backend-selector-field">
+                <select id="promptstudio-llm-provider" aria-label="LLM provider">
+                  <option value="ollama" ${settings.llm_provider === "ollama" ? "selected" : ""}>Ollama</option>
+                  <option value="koboldcpp" ${settings.llm_provider === "koboldcpp" ? "selected" : ""}>KoboldCpp</option>
+                  <option value="llamacpp" ${settings.llm_provider === "llamacpp" ? "selected" : ""}>Llama.cpp</option>
+                </select>
+                <button id="promptstudio-open-backend-settings" type="button">Backend settings</button>
+              </span>
+            </div>
+            <div id="promptstudio-backend-settings-dialog" class="promptstudio-backend-settings-dialog" role="dialog" aria-modal="true" aria-labelledby="promptstudio-backend-settings-title" hidden>
+              <section class="promptstudio-backend-settings-card">
+                <header class="promptstudio-backend-settings-header">
+                  <div><strong id="promptstudio-backend-settings-title">Backend settings</strong><span>Connection, model, memory, and managed-server options</span></div>
+                  <button id="promptstudio-close-backend-settings" type="button">Done</button>
+                </header>
+                <div class="promptstudio-studio-settings-list promptstudio-backend-settings-list">
             <label class="promptstudio-studio-setting promptstudio-studio-setting-toggle">
               <span class="promptstudio-studio-setting-copy"><strong>Keep models loaded</strong><small>Keep ComfyUI and LLM models resident instead of handing GPU memory between them. Enable only when they use separate GPUs; leave off for a shared or single GPU.</small></span>
               <input id="promptstudio-keep-models-loaded" type="checkbox" role="switch" ${settings.keep_models_loaded ? "checked" : ""} />
@@ -12425,13 +12697,17 @@ function buildPanel() {
               </span>
             </label>
             <label class="promptstudio-studio-setting promptstudio-endpoint-control" data-llm-provider="llamacpp">
-              <span class="promptstudio-studio-setting-copy"><strong>Llama.cpp config file</strong><small>Absolute path to the Prompt Studio Llama.cpp JSON launcher config.</small></span>
-              <span class="promptstudio-path-field promptstudio-config-path-field">
-                <input id="promptstudio-llamacpp-config-path" type="text" spellcheck="false" placeholder="C:\\path\\to\\promptstudio-llamacpp.json" aria-label="Llama.cpp config file path" />
-                <button id="promptstudio-browse-llamacpp-config" type="button">Browse…</button>
-                <button id="promptstudio-build-llamacpp-config" type="button" title="Open the Prompt Studio Llama.cpp config builder">Build…</button>
+              <span class="promptstudio-studio-setting-copy"><strong>Llama.cpp config profile</strong><small>Profiles are stored in config/LlamaCPP. Select one, then press Restart in System status to apply it.</small></span>
+              <span class="promptstudio-config-profile-field">
+                <select id="promptstudio-llamacpp-config-profile" aria-label="Llama.cpp config profile"></select>
+                <button id="promptstudio-refresh-llamacpp-configs" type="button" title="Refresh config profiles" aria-label="Refresh Llama.cpp config profiles">↻</button>
+                <button id="promptstudio-build-llamacpp-config" type="button" title="Edit the selected profile in the Prompt Studio config builder">Edit…</button>
+                <button id="promptstudio-new-llamacpp-config" type="button" title="Create a new profile with the Prompt Studio config builder">New…</button>
               </span>
             </label>
+                </div>
+              </section>
+            </div>
             <label class="promptstudio-studio-setting promptstudio-image-scale-control">
               <span class="promptstudio-studio-setting-copy"><strong>Image scale</strong><small>Scale generated images in chat. Full-size preview is unchanged.</small></span>
               <span class="promptstudio-image-scale-field">
@@ -12800,7 +13076,12 @@ function buildPanel() {
   panel.querySelector("#promptstudio-ollama-url").value = settings.ollama_url;
   panel.querySelector("#promptstudio-llamacpp-url").value = settings.llamacpp_url;
   panel.querySelector("#promptstudio-llamacpp-executable").value = settings.llamacpp_executable;
-  panel.querySelector("#promptstudio-llamacpp-config-path").value = settings.llamacpp_config_path;
+  if (settings.llamacpp_config_profile) {
+    panel.querySelector("#promptstudio-llamacpp-config-profile").appendChild(
+      new Option(settings.llamacpp_config_profile, settings.llamacpp_config_profile),
+    );
+  }
+  loadLlamacppConfigProfiles({ announce: false, preferred: settings.llamacpp_config_profile });
   if (settings.ollama_model) {
     const option = document.createElement("option");
     option.value = settings.ollama_model;
@@ -13112,15 +13393,28 @@ function buildPanel() {
     refreshLlmStatus();
     if (!panel.querySelector("#promptstudio-consult").hidden) refreshConsultVisionCapability();
   });
-  ["promptstudio-llamacpp-executable", "promptstudio-llamacpp-config-path"].forEach((id) => {
-    panel.querySelector(`#${id}`).addEventListener("change", () => {
-      saveSettings();
-      refreshLlmStatus();
-    });
+  panel.querySelector("#promptstudio-open-backend-settings").addEventListener("click", openBackendSettings);
+  panel.querySelector("#promptstudio-close-backend-settings").addEventListener("click", () => closeBackendSettings());
+  panel.querySelector("#promptstudio-backend-settings-dialog").addEventListener("click", (event) => {
+    if (event.target === event.currentTarget) closeBackendSettings();
+  });
+  panel.querySelector("#promptstudio-backend-settings-dialog").addEventListener("keydown", (event) => {
+    if (event.key === "Escape") closeBackendSettings();
+  });
+  panel.querySelector("#promptstudio-llamacpp-executable").addEventListener("change", () => {
+    saveSettings();
+    refreshLlmStatus();
+  });
+  panel.querySelector("#promptstudio-llamacpp-config-profile").addEventListener("change", () => {
+    saveSettings();
+    refreshLlmStatus();
+  });
+  panel.querySelector("#promptstudio-refresh-llamacpp-configs").addEventListener("click", () => {
+    loadLlamacppConfigProfiles({ announce: true });
   });
   panel.querySelector("#promptstudio-browse-llamacpp-executable").addEventListener("click", () => browseLlamacppPath("executable"));
-  panel.querySelector("#promptstudio-browse-llamacpp-config").addEventListener("click", () => browseLlamacppPath("config"));
-  panel.querySelector("#promptstudio-build-llamacpp-config").addEventListener("click", openLlamacppConfigBuilder);
+  panel.querySelector("#promptstudio-build-llamacpp-config").addEventListener("click", () => openLlamacppConfigBuilder());
+  panel.querySelector("#promptstudio-new-llamacpp-config").addEventListener("click", () => openLlamacppConfigBuilder({ createNew: true }));
   panel.querySelector("#promptstudio-main-prompt").addEventListener("input", (event) => {
     syncMainPromptEditor(event.target.value, { userEdit: true });
   });
@@ -13434,6 +13728,8 @@ app.registerExtension({
     buildPanel();
     startLlmStatusMonitor();
     api.addEventListener("cm-queue-status", handleManagerQueueStatus);
+    api.addEventListener("cm-task-started", handleManagerTaskStarted);
+    api.addEventListener("cm-task-completed", handleManagerTaskCompleted);
     setupApiConnectionState();
     setupGenerationProgressEvents();
     setupWorkflowSync();

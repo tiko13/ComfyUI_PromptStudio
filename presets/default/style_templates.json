@@ -437,44 +437,12 @@
       "instruction": "Favor playful anime-style wording or tags. Avoid realism, cinematic photography, and professional studio phrasing unless requested."
     },
     {
-      "name": "Fixed Ceiling CCTV",
-      "instruction": "Make the result look like footage from a fixed ceiling-mounted security camera. Use a high corner viewpoint, very wide lens, mild barrel distortion, deep room coverage, flat automatic exposure, muted color, modest sensor noise, low-bitrate compression blocks, slight oversharpening, and subtle timestamp-like interface residue without readable text. Preserve the actual subjects and event; do not invent suspicious behavior."
-    },
-    {
       "name": "Analog Monochrome CCTV",
-      "instruction": "Present the scene as old monochrome analog CCTV footage: fixed distant framing, black-and-white video, soft low resolution, interlaced scanlines, unstable contrast, blooming highlights, crushed shadows, tape noise, faint ghosting, rounded screen corners, and unobtrusive recorder markings without legible words or numbers. Keep the prompt's content unchanged."
+      "instruction": "Give the scene the visual finish of old monochrome analog CCTV footage: black-and-white video, soft low resolution, interlaced scanlines, unstable contrast, blooming highlights, crushed shadows, tape noise, faint ghosting, rounded screen corners, and unobtrusive recorder markings without legible words or numbers. Keep the prompt's content and framing unchanged."
     },
     {
       "name": "Infrared Night-Vision CCTV",
-      "instruction": "Render the scene as infrared night-vision security footage. Favor a fixed wide viewpoint, near-monochrome gray or green-tinted output, harsh infrared illumination fading rapidly into darkness, pale reflective surfaces, bright eye reflection only where anatomically appropriate, coarse sensor grain, clipped highlights, deep black distance, and restrained security-overlay artifacts without readable text."
-    },
-    {
-      "name": "Hidden Pinhole Camera",
-      "instruction": "Make the image feel captured unknowingly by a tiny concealed pinhole camera. Use an awkward off-center or low placement, narrow partially obstructed view, strong edge vignetting, soft miniature optics, uneven focus, dim available light, poor dynamic range, muted color, digital noise, and compressed detail. Preserve the requested scene and do not add a voyeur, camera device, or new activity."
-    },
-    {
-      "name": "Doorbell Camera",
-      "instruction": "Use the recognizable look of smart doorbell-camera footage: fixed chest-height entry viewpoint, strong fisheye distortion, broad near-field coverage, sharp central detail, compressed peripheral forms, aggressive automatic HDR, slightly cool color, video sharpening, motion artifacts, and minimal interface-like residue without readable labels. Do not add a doorway, visitor, package, or homeowner unless present in the prompt."
-    },
-    {
-      "name": "Body-Worn Camera",
-      "instruction": "Make the scene look like a frame from a body-worn camera. Favor chest-height first-person placement, ultra-wide rectilinear distortion, urgent imperfect framing, natural body movement, rolling-shutter skew, mixed exposure, hard practical light, compressed video texture, and partial foreground occlusion only when supported by the action. Do not invent an officer, uniform, confrontation, or crime."
-    },
-    {
-      "name": "Dashcam Footage",
-      "instruction": "Present the image as fixed forward-facing dashcam footage with a low centered viewpoint, very wide road-oriented framing when compatible, windshield reflections, subtle dashboard-edge occlusion only if a vehicle is already implied, automatic exposure, headlight or streetlight bloom, motion compression, sensor noise, and timestamp-like marks without readable text. Preserve the requested event and setting."
-    },
-    {
-      "name": "Elevator Security Camera",
-      "instruction": "Use the impersonal look of an elevator security camera: extreme upper-corner angle, compact enclosed framing, wide-lens distortion, flat overhead illumination, desaturated color, reflective surfaces and repeating panel geometry only when compatible with the setting, compressed low-frame-rate video texture, and a blind area directly beneath the camera. Do not invent an elevator or additional occupants."
-    },
-    {
-      "name": "Trail Camera",
-      "instruction": "Make the result resemble an unattended motion-triggered trail-camera image. Use a fixed waist-height viewpoint, rough utilitarian framing, deep outdoor focus when compatible, harsh white flash or monochrome infrared illumination, abrupt falloff into darkness, foreground vegetation occlusion only when supported by the scene, high ISO noise, limited resolution, and a stark frozen instant. Do not add wildlife or a forest unless requested."
-    },
-    {
-      "name": "Aerial Surveillance Camera",
-      "instruction": "Present the scene as stabilized aerial surveillance imagery from directly overhead or a steep oblique angle. Favor distant compressed perspective, broad environmental coverage, restrained color, atmospheric haze, high digital sharpening, slight transmission artifacts, tracking-box-like geometry without targeting claims or readable text, and a detached observational mood. Do not add a drone, aircraft, pursuit, or military context."
+      "instruction": "Give the scene the visual finish of infrared night-vision security footage. Favor near-monochrome gray or green-tinted output, harsh infrared illumination fading rapidly into darkness, pale reflective surfaces, bright eye reflection only where anatomically appropriate, coarse sensor grain, clipped highlights, deep black distance, and restrained security-overlay artifacts without readable text. Preserve the requested framing."
     }
   ]
 }

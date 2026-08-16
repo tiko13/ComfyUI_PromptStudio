@@ -795,16 +795,6 @@ def _post_json(
         headers=request_headers,
         method="POST",
     )
-
-
-def _clean_llamacpp_base_url(url):
-    return _clean_service_base_url(
-        url,
-        "http://localhost:8080",
-        "Llama.cpp",
-        _allowed_llamacpp_hosts(),
-        "PROMPT_STUDIO_LLAMACPP_ALLOWED_HOSTS",
-    )
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
             if response_hook is not None:
@@ -824,6 +814,16 @@ def _clean_llamacpp_base_url(url):
         return json.loads(body)
     except json.JSONDecodeError as exc:
         raise RuntimeError(f"{service_name} returned invalid JSON: {body[:500]}") from exc
+
+
+def _clean_llamacpp_base_url(url):
+    return _clean_service_base_url(
+        url,
+        "http://localhost:8080",
+        "Llama.cpp",
+        _allowed_llamacpp_hosts(),
+        "PROMPT_STUDIO_LLAMACPP_ALLOWED_HOSTS",
+    )
 
 
 def _list_ollama_models(ollama_url, request_timeout=10):

@@ -112,6 +112,7 @@ class RegressionTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.nodes, self.routes = load_modules(self.temp.name)
+        self.routes.LLAMACPP_CONFIG_DIRECTORY = self.temp.name
 
     def tearDown(self):
         self.temp.cleanup()
@@ -297,7 +298,7 @@ class RegressionTests(unittest.TestCase):
 
         launcher = self.routes._load_llamacpp_launcher_config({
             "llamacpp_executable": str(executable),
-            "llamacpp_config_path": str(config_path),
+            "llamacpp_config_profile": config_path.name,
         })
 
         command = launcher["command"]
@@ -329,7 +330,7 @@ class RegressionTests(unittest.TestCase):
         config_path.write_text(json.dumps(config), encoding="utf-8")
         data = {
             "llamacpp_executable": str(executable),
-            "llamacpp_config_path": str(config_path),
+            "llamacpp_config_profile": config_path.name,
         }
 
         launcher = self.routes._load_llamacpp_launcher_config(data)
@@ -345,19 +346,57 @@ class RegressionTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "must not exceed"):
             self.routes._load_llamacpp_launcher_config(data)
 
-    def test_llamacpp_config_builder_uses_configured_or_local_json_path(self):
+    def test_llamacpp_launcher_switches_models_with_selected_config_profile(self):
+        root = Path(self.temp.name)
+        executable = root / "llama-server.exe"
+        model_a = root / "model-a.gguf"
+        model_b = root / "model-b.gguf"
+        executable.write_bytes(b"")
+        model_a.write_bytes(b"")
+        model_b.write_bytes(b"")
+        (root / "fast.json").write_text(json.dumps({"model": str(model_a)}), encoding="utf-8")
+        (root / "quality.json").write_text(json.dumps({"model": str(model_b)}), encoding="utf-8")
+        data = {
+            "llamacpp_executable": str(executable),
+            "llamacpp_config_profile": "fast.json",
+        }
+
+        fast = self.routes._load_llamacpp_launcher_config(data)
+        data["llamacpp_config_profile"] = "quality.json"
+        quality = self.routes._load_llamacpp_launcher_config(data)
+
+        self.assertEqual(fast["command"][fast["command"].index("--model") + 1], str(model_a))
+        self.assertEqual(quality["command"][quality["command"].index("--model") + 1], str(model_b))
+
+    def test_llamacpp_config_builder_resolves_profile_inside_config_folder(self):
         root = Path(self.temp.name)
         configured = root / "custom.json"
         self.assertEqual(
-            self.routes._llamacpp_builder_config_path(str(configured)),
+            self.routes._llamacpp_builder_config_path(configured.name),
             str(configured),
         )
         self.assertEqual(
             self.routes._llamacpp_builder_config_path(""),
-            str(Path(self.routes.BASE_DIR) / "llamacpp_server.json"),
+            str(root / "llamacpp_server.json"),
         )
-        with self.assertRaisesRegex(ValueError, "must be a JSON file"):
-            self.routes._llamacpp_builder_config_path(str(root / "custom.txt"))
+        with self.assertRaisesRegex(ValueError, "JSON filename"):
+            self.routes._llamacpp_builder_config_path("custom.txt")
+        with self.assertRaisesRegex(ValueError, "JSON filename"):
+            self.routes._llamacpp_builder_config_path("../escape.json")
+
+    def test_llamacpp_config_profiles_are_direct_json_files_sorted_by_name(self):
+        root = Path(self.temp.name)
+        (root / "zeta.json").write_text("{}", encoding="utf-8")
+        (root / "Alpha.JSON").write_text("{}", encoding="utf-8")
+        (root / "notes.txt").write_text("ignored", encoding="utf-8")
+        nested = root / "nested"
+        nested.mkdir()
+        (nested / "hidden.json").write_text("{}", encoding="utf-8")
+
+        self.assertEqual(
+            self.routes._list_llamacpp_config_profiles(),
+            ["Alpha.JSON", "zeta.json"],
+        )
 
     def test_llamacpp_config_builder_launches_fixed_script_without_shell(self):
         root = Path(self.temp.name)
@@ -372,7 +411,7 @@ class RegressionTests(unittest.TestCase):
             self.routes.subprocess, "Popen", return_value=process,
         ) as popen:
             result = self.routes._launch_llamacpp_config_builder({
-                "llamacpp_config_path": str(config_path),
+                "llamacpp_config_profile": config_path.name,
             })
 
         self.assertEqual(result["config_path"], str(config_path))
@@ -382,27 +421,21 @@ class RegressionTests(unittest.TestCase):
         self.assertIn(str(config_path), command)
         self.assertEqual(popen.call_args.kwargs["shell"], False)
 
-    def test_llamacpp_file_picker_accepts_only_expected_file_types(self):
+    def test_llamacpp_picker_accepts_only_the_executable(self):
         root = Path(self.temp.name)
         executable = root / "llama.exe"
-        config = root / "llamacpp.json"
         other_executable = root / "other.exe"
-        other_config = root / "llamacpp.txt"
-        for path in (executable, config, other_executable, other_config):
+        for path in (executable, other_executable):
             path.write_bytes(b"")
 
         self.assertEqual(
             self.routes._validate_llamacpp_picker_selection("executable", str(executable)),
             str(executable),
         )
-        self.assertEqual(
-            self.routes._validate_llamacpp_picker_selection("config", str(config)),
-            str(config),
-        )
         with self.assertRaisesRegex(ValueError, "llama.exe or llama-server.exe"):
             self.routes._validate_llamacpp_picker_selection("executable", str(other_executable))
-        with self.assertRaisesRegex(ValueError, "JSON launcher config"):
-            self.routes._validate_llamacpp_picker_selection("config", str(other_config))
+        with self.assertRaisesRegex(ValueError, "kind must be executable"):
+            self.routes._validate_llamacpp_picker_selection("config_directory", str(root / "missing"))
 
     def test_llm_status_preserves_failed_shared_gpu_handoff_until_success(self):
         payload = {
@@ -615,15 +648,21 @@ class RegressionTests(unittest.TestCase):
 
     def test_status_update_uses_comfyui_manager_update_all_queue(self):
         source = (REPO_ROOT / "web" / "js" / "prompt_studio.js").read_text(encoding="utf-8")
+        helper_start = source.index("async function requireManagerResponse")
         start = source.index("async function updateComfyUIFromStatus")
+        helper = source[helper_start:start]
         end = source.index("\nfunction managerResultSucceeded", start)
         update = source[start:end]
-        self.assertIn('COMFY_UPDATE_ENDPOINT', update)
-        self.assertIn('MANAGER_UPDATE_ALL_ENDPOINT', update)
+        self.assertIn("for (const endpoint of endpoints)", helper)
+        self.assertIn("response.status === 405", helper)
+        self.assertIn('COMFY_UPDATE_ENDPOINTS', update)
+        self.assertIn('MANAGER_UPDATE_ALL_ENDPOINTS', update)
         self.assertIn('JSON.stringify({ mode: "default" })', update)
-        self.assertIn('MANAGER_QUEUE_START_ENDPOINT', update)
-        self.assertLess(update.index("COMFY_UPDATE_ENDPOINT"), update.index("MANAGER_UPDATE_ALL_ENDPOINT"))
-        self.assertLess(update.index("MANAGER_UPDATE_ALL_ENDPOINT"), update.index("MANAGER_QUEUE_START_ENDPOINT"))
+        self.assertIn('mode: "remote"', update)
+        self.assertIn('MANAGER_QUEUE_START_ENDPOINTS', update)
+        self.assertIn('api.clientId', update)
+        self.assertLess(update.index("COMFY_UPDATE_ENDPOINTS"), update.index("MANAGER_UPDATE_ALL_ENDPOINTS"))
+        self.assertLess(update.index("MANAGER_UPDATE_ALL_ENDPOINTS"), update.index("MANAGER_QUEUE_START_ENDPOINTS"))
 
     def test_lan_access_address_scope_is_private_only(self):
         for address in ("192.168.1.25", "10.2.3.4", "172.16.0.8", "169.254.10.20", "fd12::42", "fe80::1"):
@@ -2052,7 +2091,51 @@ class RegressionTests(unittest.TestCase):
         self.assertEqual(result["warning"], routed_json.warning)
         self.assertFalse(consult.call_args.kwargs["allow_partial"])
 
-    def test_initial_turn_router_uses_llamacpp_supported_low_effort(self):
+    def test_shared_llm_generate_reuses_primary_dispatch_with_video_vision_payload(self):
+        messages = [
+            {"role": "system", "content": "Video Director"},
+            {"role": "user", "content": "Compose the project."},
+        ]
+        images = [{"data_uri": "data:image/png;base64,AAAA", "base64": "AAAA"}]
+        with mock.patch.object(
+            self.routes, "_generate_provider_messages", return_value="Complete response"
+        ) as generate:
+            result = self.routes.shared_llm_generate(
+                {"llm_provider": "llamacpp", "thinking_mode": "Medium"},
+                messages,
+                images,
+            )
+
+        self.assertEqual(result, "Complete response")
+        provider_messages = generate.call_args.args[1]
+        self.assertEqual(provider_messages[0], messages[0])
+        self.assertEqual(provider_messages[1]["content"][0]["text"], "Compose the project.")
+        self.assertEqual(
+            provider_messages[1]["content"][1]["image_url"]["url"],
+            images[0]["data_uri"],
+        )
+        self.assertFalse(generate.call_args.kwargs["allow_partial"])
+        self.assertEqual(generate.call_args.kwargs["default_max_response_tokens"], 4096)
+        self.assertEqual(generate.call_args.kwargs["maximum_request_timeout"], 3600)
+
+    def test_post_json_executes_request_before_llamacpp_url_helper(self):
+        class Response:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def read(self):
+                return b'{"ok": true}'
+
+        with mock.patch.object(self.nodes.urllib.request, "urlopen", return_value=Response()) as open_url:
+            result = self.nodes._post_json("http://localhost:8080/test", {"value": 1}, 10)
+
+        self.assertEqual(result, {"ok": True})
+        open_url.assert_called_once()
+
+    def test_initial_turn_router_disables_thinking_for_llamacpp(self):
         routed_json = '{"route":"mutate_now","confidence":0.9,"resolved_instruction":"make it blue"}'
         with mock.patch.object(self.routes, "_consult", return_value=routed_json) as consult:
             result = self.routes._studio_turn_route({
@@ -2064,7 +2147,7 @@ class RegressionTests(unittest.TestCase):
 
         self.assertEqual(result["route"], "mutate_now")
         request_data = consult.call_args.args[0]
-        self.assertEqual(request_data["thinking_mode"], "Low")
+        self.assertEqual(request_data["thinking_mode"], "Disabled")
         self.assertEqual(request_data["max_response_tokens"], 320)
 
     def test_ollama_generation_does_not_start_after_setup_is_cancelled(self):

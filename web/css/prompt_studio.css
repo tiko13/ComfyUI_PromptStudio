@@ -322,6 +322,17 @@ body.promptstudio-popout-body {
   box-shadow: 0 0 0 3px rgba(240, 188, 109, 0.15);
 }
 
+.promptstudio-kobold-control[data-update-active="true"] .promptstudio-kobold-dot {
+  animation: promptstudio-update-pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes promptstudio-update-pulse {
+  50% {
+    box-shadow: 0 0 0 6px rgba(240, 188, 109, 0.08);
+    transform: scale(1.2);
+  }
+}
+
 .promptstudio-kobold-control[data-state="offline"] .promptstudio-kobold-dot {
   background: var(--ps-error);
   box-shadow: 0 0 0 3px rgba(255, 133, 142, 0.12);
@@ -456,6 +467,19 @@ body.promptstudio-popout-body {
 }
 
 .promptstudio-system-status-actions[hidden] {
+  display: none;
+}
+
+.promptstudio-comfy-update-progress {
+  width: 100%;
+  height: 6px;
+  overflow: hidden;
+  border: 0;
+  border-radius: 999px;
+  accent-color: var(--ps-warning);
+}
+
+.promptstudio-comfy-update-progress[hidden] {
   display: none;
 }
 
@@ -1557,6 +1581,76 @@ body.promptstudio-popout-body .promptstudio-header-actions {
   display: grid;
 }
 
+.promptstudio-backend-selector-field {
+  display: flex;
+  flex: 0 1 430px;
+  align-items: center;
+  gap: 7px;
+  width: min(65%, 430px);
+  min-width: 260px;
+}
+
+#promptstudio-prompt-studio .promptstudio-backend-selector-field select {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+#promptstudio-prompt-studio .promptstudio-backend-selector-field button {
+  flex: 0 0 auto;
+  min-height: 36px;
+}
+
+.promptstudio-backend-settings-dialog {
+  position: absolute;
+  inset: 0;
+  z-index: 20;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(5, 6, 10, 0.78);
+  backdrop-filter: blur(10px);
+}
+
+.promptstudio-backend-settings-dialog[hidden] {
+  display: none;
+}
+
+.promptstudio-backend-settings-card {
+  display: flex;
+  flex-direction: column;
+  width: min(820px, 100%);
+  max-height: 100%;
+  overflow: hidden;
+  background: #12141d;
+  border: 1px solid var(--ps-border);
+  border-radius: 14px;
+  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.62);
+}
+
+.promptstudio-backend-settings-header {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 15px 17px;
+  border-bottom: 1px solid var(--ps-border);
+}
+
+.promptstudio-backend-settings-header > div {
+  display: grid;
+  gap: 3px;
+}
+
+.promptstudio-backend-settings-header > div > span {
+  color: var(--ps-muted);
+  font-size: 11px;
+}
+
+.promptstudio-backend-settings-list {
+  overflow-y: auto;
+}
+
 .promptstudio-studio-setting {
   display: flex;
   align-items: center;
@@ -1614,6 +1708,31 @@ body.promptstudio-popout-body .promptstudio-header-actions {
   grid-template-columns: minmax(0, 1fr) auto auto;
   flex-basis: 430px;
   width: min(65%, 430px);
+}
+
+.promptstudio-config-profile-field {
+  display: grid;
+  grid-template-columns: minmax(130px, 1fr) 36px auto auto;
+  flex: 0 1 480px;
+  align-items: center;
+  gap: 7px;
+  width: min(68%, 480px);
+  min-width: 310px;
+}
+
+#promptstudio-prompt-studio .promptstudio-config-profile-field select {
+  min-width: 0;
+}
+
+#promptstudio-prompt-studio .promptstudio-config-profile-field button {
+  min-height: 36px;
+  padding: 0 10px;
+}
+
+#promptstudio-prompt-studio #promptstudio-refresh-llamacpp-configs {
+  width: 36px;
+  padding: 0;
+  font-size: 16px;
 }
 
 #promptstudio-prompt-studio .promptstudio-path-field input {
@@ -4617,6 +4736,19 @@ body.promptstudio-popout-body #promptstudio-prompt-studio.promptstudio-chats-ope
     align-items: stretch;
   }
 
+  .promptstudio-backend-selector-field {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .promptstudio-config-profile-field {
+    grid-template-columns: minmax(0, 1fr) 36px;
+  }
+
+  #promptstudio-prompt-studio .promptstudio-config-profile-field button:not(#promptstudio-refresh-llamacpp-configs) {
+    width: 100%;
+  }
+
   #promptstudio-prompt-studio .promptstudio-mutation-launchers > button {
     align-items: flex-start;
     gap: 12px;
@@ -4770,10 +4902,16 @@ body.promptstudio-popout-body #promptstudio-prompt-studio.promptstudio-chats-ope
   #promptstudio-prompt-studio .promptstudio-endpoint-control > input,
   #promptstudio-prompt-studio .promptstudio-endpoint-control > select,
   .promptstudio-ollama-model-field,
-  .promptstudio-path-field {
+  .promptstudio-path-field,
+  .promptstudio-backend-selector-field,
+  .promptstudio-config-profile-field {
     flex-basis: auto;
     width: 100%;
     min-width: 0;
+  }
+
+  .promptstudio-backend-settings-dialog {
+    padding: 10px;
   }
 
   .promptstudio-image-scale-field {
