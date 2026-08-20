@@ -9,6 +9,9 @@ class StudioSwitchContractTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.panel = (ROOT / "web" / "js" / "prompt_studio.js").read_text(encoding="utf-8")
+        cls.constants = (
+            ROOT / "web" / "js" / "prompt-studio" / "core" / "constants.js"
+        ).read_text(encoding="utf-8")
         cls.shell = (ROOT / "web" / "js" / "prompt_studio_shell.js").read_text(encoding="utf-8")
         cls.page = (ROOT / "web" / "prompt_studio.html").read_text(encoding="utf-8")
         cls.styles = (ROOT / "web" / "css" / "prompt_studio.css").read_text(encoding="utf-8")
@@ -42,8 +45,8 @@ class StudioSwitchContractTests(unittest.TestCase):
         self.assertIn('cursor: help', self.styles)
 
     def test_restart_uses_manager_v4_with_a_legacy_fallback(self):
+        self.assertIn('["/v2/manager/reboot", "/manager/reboot"]', self.constants)
         for source in (self.panel, self.shell):
-            self.assertIn('["/v2/manager/reboot", "/manager/reboot"]', source)
             self.assertIn("for (const endpoint of COMFY_RESTART_ENDPOINTS)", source)
             self.assertIn("![404, 405].includes(response.status)", source)
 

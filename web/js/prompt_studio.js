@@ -1,451 +1,180 @@
 import { app } from "/scripts/app.js";
 import { api } from "/scripts/api.js";
 
-const EXTENSION_NAME = "ComfyUI_PromptStudio.PromptStudio";
-const ICON_URL = new URL("../prompt-studio-icon.svg", import.meta.url).href;
-const ACTIVITY_ICON_URL = new URL("../prompt-studio-activity-icon.svg", import.meta.url).href;
-const SLOT_TYPE = "KCPP_PromptSlot";
-const AMPLIFY_TYPE = "KCPP_PromptAmplify";
-const IMAGE_SOURCE_TYPE = "KCPP_ChatImageInput";
-const UPSCALE_TYPE = "KCPP_PromptStudioUpscale";
-const LORA_LOADER_TYPE = "KCPP_PromptStudioLoraLoader";
-const MODEL_LOADER_TYPE = "KCPP_PromptStudioModelLoader";
-const STORAGE_KEY = "promptstudio.promptStudio.settings.v1";
-const LORA_STORAGE_KEY = "promptstudio.promptStudio.loras.v1";
-const MODEL_STORAGE_KEY = "promptstudio.promptStudio.models.v1";
-const CONSULT_STORAGE_KEY = "promptstudio.promptStudio.consult.settings.v1";
-const LLM_PROFILE_STORAGE_KEY = "promptstudio.promptStudio.llmProfiles.v1";
-const SIDEBAR_GROUP_ORDER_STORAGE_KEY = "promptstudio.promptStudio.sidebarGroupOrder.v1";
-const ADVANCED_LLM_ACK_STORAGE_KEY = "promptstudio.promptStudio.advancedLlmAcknowledged.v1";
-const STANDALONE_CHANNEL = "promptstudio.promptStudio.standalone.v1";
-const VIDEO_STUDIO_CHANNEL = "promptstudio.video.standalone.v1";
-const WORKFLOW_SYNC_CHANNEL = "promptstudio.promptStudio.workflows.v1";
-const CHAT_SYNC_CHANNEL = "promptstudio.promptStudio.chats.v1";
-const STUDIO_SETTINGS_VERSION = 3;
-const STUDIO_ROUTE_ENDPOINT = "/promptstudio/prompt-studio/route-turn";
-const STUDIO_DISCUSS_ENDPOINT = "/promptstudio/prompt-studio/discuss";
-const CONSULT_CHAT_ENDPOINT = "/promptstudio/prompt-studio/chat";
-const LLM_RELEASE_ENDPOINT = "/promptstudio/prompt-studio/llm/release";
-const LLM_HANDOFF_COMPLETE_ENDPOINT = "/promptstudio/prompt-studio/llm/handoff-complete";
-const PROMPT_AGENT_ENDPOINT = "/promptstudio/prompt-studio/agent";
-const PROMPT_AGENT_CANCEL_ENDPOINT = "/promptstudio/prompt-studio/agent/cancel";
-const LLM_STATUS_ENDPOINT = "/promptstudio/prompt-studio/llm/status";
-const LLM_ABORT_ENDPOINT = "/promptstudio/prompt-studio/llm/abort";
-const LLAMACPP_SERVER_ENDPOINT = "/promptstudio/prompt-studio/llamacpp/server";
-const LLAMACPP_FILE_PICKER_ENDPOINT = "/promptstudio/prompt-studio/llamacpp/pick-file";
-const LLAMACPP_CONFIG_BUILDER_ENDPOINT = "/promptstudio/prompt-studio/llamacpp/config-builder";
-const LLAMACPP_CONFIG_PROFILES_ENDPOINT = "/promptstudio/prompt-studio/llamacpp/config-profiles";
-const MUTATION_CONFIG_ENDPOINT = "/promptstudio/prompt-studio/mutation-config";
-const COMFY_RESTART_ENDPOINTS = ["/v2/manager/reboot", "/manager/reboot"];
-const PROMPTSTUDIO_COMFY_UPDATE_ENDPOINT = "/promptstudio/prompt-studio/update-comfyui";
-const MANAGER_UPDATE_ALL_ENDPOINTS = ["/v2/manager/queue/update_all", "/manager/queue/update_all"];
-const MANAGER_QUEUE_START_ENDPOINTS = ["/v2/manager/queue/start", "/manager/queue/start"];
-const CONSULT_JOB_POLL_MS = 1000;
-const CONSULT_STATUS_RETRY_LIMIT = 3;
-const KOBOLD_STATUS_POLL_MS = 3000;
-const MUTATION_CONFIG_POLL_MS = 2500;
-const CHAT_SCROLL_STICK_THRESHOLD = 450;
-const MAX_DROPPED_IMAGE_BYTES = 20 * 1024 * 1024;
-const CONSULT_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
-const CONSULT_EXPERIMENT_MARKER = "PROMPT_STUDIO_EXPERIMENT";
-const MAX_CONSULT_EXPERIMENT_PROMPT_CHARS = 64 * 1024;
-const MAX_CONSULT_EXPERIMENT_GUIDANCE_CHARS = 16 * 1024;
-const PROMPT_AGENT_DEFAULT_MAX_ITERATIONS = 5;
-const PROMPT_AGENT_MAX_ITERATIONS = 10;
-const PROMPT_AGENT_MAX_SAVED_ITERATIONS = 50;
-const PROMPT_AGENT_MAX_GOAL_CHARS = 32 * 1024;
-const PROMPT_AGENT_MAX_CONTEXT_MESSAGES = 40;
-const PROMPT_AGENT_MAX_CONTEXT_CHARS = 24 * 1024;
-const PROMPT_AGENT_TARGET_SCORE = 85;
-const PROMPT_AGENT_MIN_CONFIDENCE = 0.7;
-const WORKFLOW_OBSERVER_KEY = Symbol.for("ComfyUI_PromptStudio.PromptStudio.WorkflowObserver");
-const RESOLUTION_ASPECT_RATIOS = [
-  "1:1 (Square)",
-  "2:3 (Portrait Photo)",
-  "3:2 (Photo)",
-  "3:4 (Portrait Standard)",
-  "4:3 (Standard)",
-  "9:16 (Portrait Widescreen)",
-  "16:9 (Widescreen)",
-  "21:9 (Ultrawide)",
-];
-const SETTINGS_DEFAULTS = Object.freeze({
-  llm_provider: "ollama",
-  kobold_url: "http://localhost:5001",
-  ollama_url: "http://localhost:11434",
-  ollama_model: "",
-  llamacpp_url: "http://127.0.0.1:8080",
-  llamacpp_model: "",
-  llamacpp_executable: "",
-  llamacpp_config_profile: "",
-  keep_models_loaded: false,
-  llm_profile: "qwen3.5",
-  model_profile: "General Natural Language",
-  style_preset: "None",
-  framing_preset: "None",
-  style_modifier: "",
-  framing_modifier: "",
-  thinking_mode: "Disabled",
-  embellishment_level: "Clean",
-  target_output_length: 35,
-  output_length_custom: false,
-  temperature: 0.7,
-  additional_instructions: "",
-  secondary_instructions: "",
-  use_llm_amplification: true,
-  use_prompt_upscaling: true,
-  randomize_seed: true,
-  auto_generate: true,
-  auto_advance_source: true,
-  use_latest_image_context: false,
-  image_scale: 100,
-  resolution_aspect_ratio: "1:1 (Square)",
-  resolution_megapixels: 1.0,
-  resolution_multiple: 8,
-});
-const LLM_THINKING_MODE_OPTIONS = Object.freeze([
-  "Disabled",
-  "Minimal",
-  "Low",
-  "Medium",
-  "High",
-  "XHigh",
-]);
-const DEFAULT_LLM_THINKING_MODES = Object.freeze(["Disabled", "Minimal", "Low", "Medium", "High"]);
-const LLM_PROFILE_DEFAULTS = Object.freeze({
-  id: "qwen3.5",
-  name: "Default",
-  thinking_mode: "Disabled",
-  thinking_modes: DEFAULT_LLM_THINKING_MODES,
-  max_response_tokens: 800,
-  llamacpp_reasoning_budget_tokens: 0,
-  temperature: 0.7,
-  top_p: 0.9,
-  top_k: 100,
-  min_p: 0,
-  presence_penalty: 0,
-  rep_pen: 1.05,
-  rep_pen_range: 360,
-  thinking_temperature: 0.7,
-  thinking_top_p: 0.9,
-  thinking_top_k: 100,
-  thinking_min_p: 0,
-  thinking_presence_penalty: 0,
-  thinking_rep_pen: 1.05,
-  thinking_rep_pen_range: 360,
-  sampler_seed: -1,
-  request_timeout: 120,
-  stop_sequence: "",
-});
-const QWEN38_27B_PROFILE_DEFAULTS = Object.freeze({
-  ...LLM_PROFILE_DEFAULTS,
-  id: "qwen3.8-27b",
-  name: "Qwen 3.8 (27B)",
-  thinking_mode: "XHigh",
-  thinking_modes: Object.freeze(["XHigh", "Medium", "Low", "Disabled"]),
-  temperature: 0.7,
-  top_p: 0.8,
-  top_k: 20,
-  min_p: 0,
-  presence_penalty: 1.5,
-  rep_pen: 1.0,
-  thinking_temperature: 1.0,
-  thinking_top_p: 0.95,
-  thinking_top_k: 20,
-  thinking_min_p: 0,
-  thinking_presence_penalty: 0,
-  thinking_rep_pen: 1.0,
-});
-const LLM_PROFILE_PRESETS = Object.freeze([
+import {
+  ADVANCED_LLM_ACK_STORAGE_KEY,
+  AMPLIFY_TYPE,
+  CHAT_SCROLL_STICK_THRESHOLD,
+  CHAT_SYNC_CHANNEL,
+  COMFY_RESTART_ENDPOINTS,
+  CONSULT_CHAT_ENDPOINT,
+  CONSULT_EXPERIMENT_MARKER,
+  CONSULT_JOB_POLL_MS,
+  CONSULT_RETENTION_MS,
+  CONSULT_STATUS_RETRY_LIMIT,
+  CONSULT_STORAGE_KEY,
+  DISCONNECTED_ALLOWED_CONTROL_IDS,
+  DISCONNECTED_CONTROL_SELECTOR,
+  EXTENSION_NAME,
+  ICON_URL,
+  IMAGE_SOURCE_TYPE,
+  KOBOLD_STATUS_POLL_MS,
+  LLAMACPP_CONFIG_BUILDER_ENDPOINT,
+  LLAMACPP_CONFIG_PROFILES_ENDPOINT,
+  LLAMACPP_FILE_PICKER_ENDPOINT,
+  LLAMACPP_SERVER_ENDPOINT,
+  LLM_ABORT_ENDPOINT,
+  LLM_HANDOFF_COMPLETE_ENDPOINT,
   LLM_PROFILE_DEFAULTS,
-  QWEN38_27B_PROFILE_DEFAULTS,
-]);
-const LLM_PROFILE_STORAGE_VERSION = 6;
-const RENDER_CONTROL_IDS = [
-  "promptstudio-profile",
-  "promptstudio-style",
-  "promptstudio-framing",
-  "promptstudio-style-modifier",
-  "promptstudio-framing-modifier",
-  "promptstudio-additional-instructions",
-  "promptstudio-embellishment",
-  "promptstudio-output-length",
-];
-const RENDER_CONTROL_SETTINGS = Object.freeze([
-  ["promptstudio-profile", "model_profile", "Model profile"],
-  ["promptstudio-style", "style_preset", "Style"],
-  ["promptstudio-framing", "framing_preset", "Framing"],
-  ["promptstudio-style-modifier", "style_modifier", "Style modifier"],
-  ["promptstudio-framing-modifier", "framing_modifier", "Framing modifier"],
-  ["promptstudio-additional-instructions", "additional_instructions", "Additional instructions"],
-  ["promptstudio-embellishment", "embellishment_level", "Embellishment"],
-  ["promptstudio-output-length", "target_output_length", "Target length"],
-]);
-const DISCONNECTED_CONTROL_SELECTOR = "input, textarea, select, button";
-const DISCONNECTED_ALLOWED_CONTROL_IDS = [
-  "promptstudio-close",
-  "promptstudio-mobile-close",
-  "promptstudio-close-chats",
-  "promptstudio-close-inspector",
-  "promptstudio-consult-close",
-  "promptstudio-lightbox-close",
-  "promptstudio-upscale-cancel",
-  "promptstudio-generation-failure-cancel",
-];
-const VIDEO_STUDIO_PRESENCE_TIMEOUT_MS = 7000;
-const TYPE_ANYWHERE_WINDOWS = new WeakSet();
-const MUTATION_CONFIG_CATEGORIES = Object.freeze({
-  protected_words: {
-    title: "Protected words",
-    description: "Preserve specific words and phrases during prompt rewriting.",
-    itemLabel: "word or phrase",
-    textField: null,
-    help: "Matching ignores case and uses token boundaries for word-like entries.",
-  },
-  additional_instruction_templates: {
-    title: "Additional instruction templates",
-    description: "Create reusable shortcuts for high-priority instructions.",
-    itemLabel: "instruction template",
-    textField: "instruction",
-    textLabel: "Instruction",
-    help: "The name expands only when it exactly matches the complete Additional instructions value, ignoring case and surrounding spaces.",
-  },
-  known_references: {
-    title: "Known references",
-    description: "Define reusable names for people, objects, poses, locations, and other concepts.",
-    itemLabel: "known reference",
-    textField: "definition",
-    textLabel: "Definition",
-    help: "Reference names match case-insensitively inside prompts; longer overlapping names take priority.",
-  },
-  additional_style_templates: {
-    title: "Additional style presets",
-    description: "Manage personal style guidance added to the built-in presets.",
-    itemLabel: "style preset",
-    textField: "instruction",
-    textLabel: "Style instruction",
-    help: "Additional preset names must not duplicate a built-in or another personal style name.",
-  },
-  additional_framing_templates: {
-    title: "Additional framing presets",
-    description: "Manage personal composition and camera-framing guidance.",
-    itemLabel: "framing preset",
-    textField: "instruction",
-    textLabel: "Framing instruction",
-    help: "Additional preset names must not duplicate a built-in or another personal framing name.",
-  },
+  LLM_PROFILE_PRESETS,
+  LLM_PROFILE_STORAGE_KEY,
+  LLM_PROFILE_STORAGE_VERSION,
+  LLM_RELEASE_ENDPOINT,
+  LLM_STATUS_ENDPOINT,
+  LLM_THINKING_MODE_OPTIONS,
+  LORA_LOADER_TYPE,
+  LORA_STORAGE_KEY,
+  MANAGER_QUEUE_START_ENDPOINTS,
+  MANAGER_UPDATE_ALL_ENDPOINTS,
+  MAX_CONSULT_EXPERIMENT_GUIDANCE_CHARS,
+  MAX_CONSULT_EXPERIMENT_PROMPT_CHARS,
+  MAX_DROPPED_IMAGE_BYTES,
+  MODEL_LOADER_TYPE,
+  MODEL_STORAGE_KEY,
+  MUTATION_CONFIG_CATEGORIES,
+  MUTATION_CONFIG_ENDPOINT,
+  MUTATION_CONFIG_POLL_MS,
+  PROMPT_AGENT_CANCEL_ENDPOINT,
+  PROMPT_AGENT_DEFAULT_MAX_ITERATIONS,
+  PROMPT_AGENT_ENDPOINT,
+  PROMPT_AGENT_MAX_CONTEXT_CHARS,
+  PROMPT_AGENT_MAX_CONTEXT_MESSAGES,
+  PROMPT_AGENT_MAX_GOAL_CHARS,
+  PROMPT_AGENT_MAX_ITERATIONS,
+  PROMPT_AGENT_MAX_SAVED_ITERATIONS,
+  PROMPT_AGENT_MIN_CONFIDENCE,
+  PROMPT_AGENT_TARGET_SCORE,
+  PROMPTSTUDIO_COMFY_UPDATE_ENDPOINT,
+  RENDER_CONTROL_IDS,
+  RENDER_CONTROL_SETTINGS,
+  RESOLUTION_ASPECT_RATIOS,
+  SETTINGS_DEFAULTS,
+  SIDEBAR_GROUP_ORDER_STORAGE_KEY,
+  SLOT_TYPE,
+  STANDALONE_CHANNEL,
+  STUDIO_DISCUSS_ENDPOINT,
+  STUDIO_ROUTE_ENDPOINT,
+  STUDIO_SETTINGS_VERSION,
+  STORAGE_KEY,
+  TYPE_ANYWHERE_WINDOWS,
+  UPSCALE_TYPE,
+  VIDEO_STUDIO_PRESENCE_TIMEOUT_MS,
+  WORKFLOW_OBSERVER_KEY,
+  WORKFLOW_SYNC_CHANNEL,
+} from "./prompt-studio/core/constants.js";
+import { makeId } from "./prompt-studio/core/id.js";
+import { state } from "./prompt-studio/core/state.js";
+import {
+  normalizeGenerationLoraState,
+  normalizeGenerationModelState,
+  normalizeGenerationSnapshot,
+  normalizeLoraStack,
+} from "./prompt-studio/chat/generation-state.js";
+import {
+  cleanModelName,
+  modelNameKey,
+} from "./prompt-studio/generation/model-name.js";
+import {
+  isPromptStudioWorkflowPath,
+  normalizeWorkflowProfile,
+  workflowNameFromPath,
+} from "./prompt-studio/generation/workflow-profile.js";
+import { createWorkflowTemplateBuilder } from "./prompt-studio/generation/workflow-template.js";
+import { normalizeImageReference } from "./prompt-studio/chat/image-reference.js";
+import { createChatModel } from "./prompt-studio/chat/model.js";
+import { createChatStoreController } from "./prompt-studio/chat/store-controller.js";
+import {
+  consultMessagesAfterClear,
+  consultTimestampMs,
+  normalizeConsultAgent,
+  normalizeConsultContext,
+  normalizeConsultExperiment,
+  normalizeConsultExperimentGeneration,
+  normalizeConsultExperimentProposal,
+  normalizeConsultMessage,
+  normalizePromptAgentCandidate,
+  normalizePromptAgentConversationContext,
+  normalizePromptAgentEvaluation,
+  normalizePromptAgentIteration,
+  normalizePromptAgentRubric,
+  retainedConsultMessages,
+} from "./prompt-studio/consult/model.js";
+import { createVideoStudioBridge } from "./prompt-studio/integrations/video-studio-bridge.js";
+import {
+  llmActivityLabel,
+  llmGeneratedTokenCount,
+  thinkingModeEnablesReasoning,
+} from "./prompt-studio/llm/status.js";
+import {
+  loadLlmProfiles,
+  normalizeLlmProfile,
+} from "./prompt-studio/settings/llm-profile-store.js";
+import {
+  getSettings,
+  migrateLlamacppConfigLocation,
+} from "./prompt-studio/settings/storage.js";
+import {
+  hasPendingStudioGenerations,
+  pendingStudioGenerationCount,
+  syncBackgroundActivityIndicator,
+} from "./prompt-studio/ui/background-activity.js";
+
+const { buildWorkflowTemplate } = createWorkflowTemplateBuilder({ app, nodeClassName });
+
+const { setupVideoStudioBridge } = createVideoStudioBridge({ refreshVideoHandoffActions });
+const {
+  controlsFingerprintFromSettings,
+  migratedStudioSettings,
+  newChatStudioSettings,
+  normalizeChat,
+  normalizeSessionLoraSelections,
+  normalizeSessionModelSelections,
+  normalizeStoredControlsFingerprint,
+  normalizeStudioControlChanges,
+  normalizeStudioDiscussion,
+  normalizeStudioProposal,
+  normalizeStudioSettings,
+  studioSettingsFromControlsFingerprint,
+} = createChatModel({
+  getDefaultLoraSelections: () => state.loraSelections,
+  getDefaultModelSelections: () => state.modelSelections,
+  loraSelectionKey,
+  modelSelectionKey,
+  normalizeLlmProvider,
+  normalizePromptVersion,
+  promptVersion,
 });
-
-const state = {
-  panel: null,
-  launcher: null,
-  popup: null,
-  popupCloseTimer: null,
-  dockingPopup: false,
-  returnToEmbedded: false,
-  standaloneChannel: null,
-  videoStudioChannel: null,
-  videoStudioPresence: new Map(),
-  videoStudioServerPresence: new Map(),
-  videoStudioPresenceTimer: null,
-  videoStudioInstalled: null,
-  videoStudioCapabilityRequest: null,
-  videoHandoffRequests: new Map(),
-  workflowSyncChannel: null,
-  chatSyncChannel: null,
-  config: null,
-  mutationConfig: null,
-  mutationConfigPending: null,
-  mutationConfigLoading: false,
-  mutationConfigTimer: null,
-  mutationManagerCategory: "",
-  mutationEditorIndex: null,
-  mutationEditorDirty: false,
-  mutationDeleteIndex: null,
-  mutationManagerTrigger: null,
-  llmProfiles: [],
-  llmProfileEditorTrigger: null,
-  llmProfileEditorId: null,
-  mainPrompt: "",
-  currentPrompt: "",
-  versions: [],
-  versionIndex: -1,
-  busy: false,
-  generating: false,
-  queueing: false,
-  operationToken: 0,
-  pollToken: 0,
-  activeGenerationPromptId: "",
-  consultGenerationTarget: null,
-  consultAgentGenerationTarget: null,
-  consultAgentRunning: false,
-  consultAgentRunToken: 0,
-  consultAgentAbortController: null,
-  consultAgentRequestId: "",
-  generationProgress: new Map(),
-  generationJobs: new Map(),
-  consultGenerationJobs: new Map(),
-  operationControllers: new Map(),
-  generationFailures: new Map(),
-  historyScrollRevision: 0,
-  consultHistoryScrollRevision: 0,
-  historyWasNearEnd: true,
-  consultHistoryWasNearEnd: true,
-  promptWorkerSeenAlive: false,
-  promptWorkerHealthCheckedAt: 0,
-  promptWorkerHealthRequest: null,
-  studioPreparations: new Map(),
-  latestStudioPreparationByChat: new Map(),
-  studioTurnBusyChatIds: new Set(),
-  chats: [],
-  activeChatId: null,
-  chatRevision: 0,
-  chatStoreLoaded: false,
-  chatPersistenceBlocked: false,
-  chatSaveInFlight: false,
-  chatMutationVersion: 0,
-  chatSyncInFlight: false,
-  chatSyncTimer: null,
-  consultBusy: false,
-  consultPendingText: "",
-  consultJobs: new Map(),
-  llmStatusRequest: null,
-  llmStatusRequestProvider: "",
-  llmStatusTimer: null,
-  llmStatusSnapshot: null,
-  comfyQueueRemaining: 0,
-  comfyRestartBusy: false,
-  comfyUpdateBusy: false,
-  comfyUpdateError: false,
-  comfyUpdateMessage: "",
-  comfyUpdateNeedsRestart: false,
-  comfyUpdateDoneCount: 0,
-  comfyUpdateTotalCount: 0,
-  comfyUpdateRequestId: "",
-  comfyUpdateResults: new Map(),
-  koboldAbortBusy: false,
-  llamacppProcessBusy: false,
-  consultVisionAvailable: null,
-  consultVisionReason: "",
-  consultSelectedImages: new Map(),
-  consultImageChoices: new Map(),
-  consultUploadedImages: [],
-  mainPastedImage: null,
-  mainPastedImagesByChat: new Map(),
-  workflowProfiles: [],
-  workflowIssues: [],
-  workflowRevision: 0,
-  workflowStoreLoaded: false,
-  workflowSaveChain: Promise.resolve(),
-  workflowBusy: false,
-  workflowRefreshTimer: null,
-  workflowRefreshBroadcast: false,
-  loraSelections: {},
-  loraCatalogs: new Map(),
-  loraRenderToken: 0,
-  modelSelections: {},
-  modelCatalogs: new Map(),
-  modelRenderToken: 0,
-  chatSaveTimer: null,
-  chatSaveChain: Promise.resolve(),
-  lightboxTrigger: null,
-  generationRetry: null,
-  generationFailureTrigger: null,
-  dragDepth: 0,
-  activityIndicatorDocument: null,
-  activityIndicatorVisible: false,
-  activityOriginalTitle: "",
-  activityOriginalFavicon: null,
-  activityOriginalFaviconHref: null,
-  activityOriginalFaviconType: null,
-  activityCreatedFavicon: false,
-  apiConnected: true,
-  disconnectedGenerationTimer: null,
-  disconnectedControls: new Map(),
-  disconnectedControlObserver: null,
-};
-
-function backgroundActivityLabel() {
-  const selector = state.consultBusy ? "#promptstudio-consult-status" : "#promptstudio-status";
-  return state.panel?.querySelector(selector)?.textContent?.trim() || "Prompt Studio is working";
-}
-
-function pendingStudioGenerationCount() {
-  return state.chats.reduce((count, chat) => count + chat.messages.filter((message) => (
-    message.promptId && ["queued", "generating"].includes(message.generationState)
-  )).length, 0);
-}
-
-function hasPendingStudioGenerations() {
-  return pendingStudioGenerationCount() > 0
-    || state.studioPreparations.size > 0
-    || state.chats.some((chat) => chat.messages.some((message) => (
-      message.operationId && !["complete", "error", "cancelled"].includes(message.operationPhase)
-    )))
-    || state.chats.some((chat) => Boolean(chat.consultPendingJob));
-}
-
-function restoreBackgroundActivityVisual() {
-  if (!state.activityIndicatorVisible) return;
-  const doc = state.activityIndicatorDocument;
-  if (doc) doc.title = state.activityOriginalTitle;
-  const favicon = state.activityOriginalFavicon;
-  if (favicon) {
-    if (state.activityCreatedFavicon) {
-      favicon.remove();
-    } else {
-      if (state.activityOriginalFaviconHref === null) favicon.removeAttribute("href");
-      else favicon.setAttribute("href", state.activityOriginalFaviconHref);
-      if (state.activityOriginalFaviconType === null) favicon.removeAttribute("type");
-      else favicon.setAttribute("type", state.activityOriginalFaviconType);
-    }
-  }
-  state.activityIndicatorVisible = false;
-  state.activityOriginalTitle = "";
-  state.activityOriginalFavicon = null;
-  state.activityOriginalFaviconHref = null;
-  state.activityOriginalFaviconType = null;
-  state.activityCreatedFavicon = false;
-}
-
-function detachBackgroundActivityDocument() {
-  restoreBackgroundActivityVisual();
-  state.activityIndicatorDocument?.removeEventListener("visibilitychange", syncBackgroundActivityIndicator);
-  state.activityIndicatorDocument = null;
-}
-
-function syncBackgroundActivityIndicator() {
-  const doc = state.panel?.ownerDocument || null;
-  const active = state.busy || state.consultBusy || hasPendingStudioGenerations();
-  if (state.activityIndicatorDocument !== doc) {
-    detachBackgroundActivityDocument();
-    state.activityIndicatorDocument = doc;
-    doc?.addEventListener("visibilitychange", syncBackgroundActivityIndicator);
-  }
-  if (!doc || !active || doc.visibilityState !== "hidden") {
-    restoreBackgroundActivityVisual();
-    if (!active) detachBackgroundActivityDocument();
-    return;
-  }
-
-  if (!state.activityIndicatorVisible) {
-    state.activityOriginalTitle = doc.title;
-    let favicon = doc.querySelector('link[rel~="icon"]');
-    if (!favicon) {
-      favicon = doc.createElement("link");
-      favicon.rel = "icon";
-      doc.head?.appendChild(favicon);
-      state.activityCreatedFavicon = true;
-    }
-    state.activityOriginalFavicon = favicon;
-    state.activityOriginalFaviconHref = favicon.getAttribute("href");
-    state.activityOriginalFaviconType = favicon.getAttribute("type");
-    favicon.type = "image/svg+xml";
-    favicon.href = ACTIVITY_ICON_URL;
-    state.activityIndicatorVisible = true;
-  }
-  doc.title = `● ${backgroundActivityLabel()} · ${state.activityOriginalTitle || "Prompt Studio"}`;
-}
+const {
+  loadChats,
+  saveChats,
+  setupChatSync,
+} = createChatStoreController({
+  activeChat,
+  imageReferenceKey,
+  newChatStudioSettings,
+  normalizeChat,
+  pruneExpiredConsultMessages,
+  refreshSecondaryInstructionsControl,
+  refreshStudioStatus,
+  refreshWorkflowControls,
+  renderChatHistory,
+  renderChatList,
+  renderConsultHistory,
+  restoreChatState,
+  resumeConsultJobs,
+  resumeSyncedGeneration,
+  setStatus,
+});
 
 function loadCss() {
   if (document.querySelector("link[data-promptstudio-prompt-studio]")) return;
@@ -491,150 +220,6 @@ function consumeInstallerSettings() {
 
 consumeInstallerSettings();
 
-function migrateLlamacppConfigLocation(value) {
-  const settings = value && typeof value === "object" && !Array.isArray(value) ? { ...value } : {};
-  const legacyPath = String(settings.llamacpp_config_path || "").trim();
-  if (!settings.llamacpp_config_profile && legacyPath) {
-    const separator = Math.max(legacyPath.lastIndexOf("/"), legacyPath.lastIndexOf("\\"));
-    settings.llamacpp_config_profile = separator >= 0 ? legacyPath.slice(separator + 1) : legacyPath;
-  }
-  delete settings.llamacpp_config_directory;
-  delete settings.llamacpp_config_path;
-  return settings;
-}
-
-function getSettings() {
-  try {
-    return {
-      ...SETTINGS_DEFAULTS,
-      ...migrateLlamacppConfigLocation(JSON.parse(localStorage.getItem(STORAGE_KEY) || "{}")),
-    };
-  } catch (_) {
-    return { ...SETTINGS_DEFAULTS };
-  }
-}
-
-function normalizeLlmProfile(value, fallback = null) {
-  const source = value && typeof value === "object" && !Array.isArray(value) ? value : {};
-  const presetFallback = LLM_PROFILE_PRESETS.find((profile) => profile.id === source.id) || null;
-  const thinkingPresetFallback = source.id === QWEN38_27B_PROFILE_DEFAULTS.id
-    ? QWEN38_27B_PROFILE_DEFAULTS
-    : null;
-  const defaults = fallback || presetFallback || LLM_PROFILE_DEFAULTS;
-  const number = (key, minimum, maximum, integer = false) => {
-    const requested = Number(source[key]);
-    const fallbackValue = Number(defaults[key]);
-    const bounded = Math.max(minimum, Math.min(maximum, Number.isFinite(requested) ? requested : fallbackValue));
-    return integer ? Math.round(bounded) : bounded;
-  };
-  const thinkingNumber = (key, standardKey, minimum, maximum, integer = false) => {
-    const requested = Number(source[key]);
-    const presetValue = Number(thinkingPresetFallback?.[key]);
-    const standardValue = Number(source[standardKey]);
-    const defaultValue = Number(defaults[key] ?? defaults[standardKey]);
-    const fallbackValue = Number.isFinite(presetValue)
-      ? presetValue
-      : Number.isFinite(standardValue) ? standardValue : defaultValue;
-    const bounded = Math.max(minimum, Math.min(maximum, Number.isFinite(requested) ? requested : fallbackValue));
-    return integer ? Math.round(bounded) : bounded;
-  };
-  const fallbackThinkingModes = Array.isArray(defaults.thinking_modes)
-    ? defaults.thinking_modes
-    : DEFAULT_LLM_THINKING_MODES;
-  const requestedThinkingModes = Array.isArray(source.thinking_modes)
-    ? source.thinking_modes
-    : fallbackThinkingModes;
-  const thinkingModes = [...new Set(requestedThinkingModes.map((value) => (
-    LLM_THINKING_MODE_OPTIONS.find((option) => option.toLowerCase() === String(value).trim().toLowerCase())
-  )).filter(Boolean))];
-  if (!thinkingModes.length) thinkingModes.push(...fallbackThinkingModes);
-  const requestedThinkingMode = LLM_THINKING_MODE_OPTIONS.find((option) => (
-    option.toLowerCase() === String(source.thinking_mode ?? defaults.thinking_mode).trim().toLowerCase()
-  ));
-  return {
-    id: String(source.id || defaults.id || LLM_PROFILE_DEFAULTS.id),
-    name: String(source.name || defaults.name || LLM_PROFILE_DEFAULTS.name).trim().slice(0, 80)
-      || LLM_PROFILE_DEFAULTS.name,
-    thinking_mode: thinkingModes.includes(requestedThinkingMode) ? requestedThinkingMode : thinkingModes[0],
-    thinking_modes: thinkingModes,
-    max_response_tokens: number("max_response_tokens", 0, 8192, true),
-    llamacpp_reasoning_budget_tokens: number("llamacpp_reasoning_budget_tokens", 0, 262144, true),
-    temperature: number("temperature", 0, 5),
-    top_p: number("top_p", 0, 1),
-    top_k: number("top_k", 0, 200, true),
-    min_p: number("min_p", 0, 1),
-    presence_penalty: number("presence_penalty", -2, 2),
-    rep_pen: number("rep_pen", 0.5, 3),
-    rep_pen_range: number("rep_pen_range", 0, 4096, true),
-    thinking_temperature: thinkingNumber("thinking_temperature", "temperature", 0, 5),
-    thinking_top_p: thinkingNumber("thinking_top_p", "top_p", 0, 1),
-    thinking_top_k: thinkingNumber("thinking_top_k", "top_k", 0, 200, true),
-    thinking_min_p: thinkingNumber("thinking_min_p", "min_p", 0, 1),
-    thinking_presence_penalty: thinkingNumber("thinking_presence_penalty", "presence_penalty", -2, 2),
-    thinking_rep_pen: thinkingNumber("thinking_rep_pen", "rep_pen", 0.5, 3),
-    thinking_rep_pen_range: thinkingNumber("thinking_rep_pen_range", "rep_pen_range", 0, 4096, true),
-    sampler_seed: number("sampler_seed", -1, 999999, true),
-    request_timeout: number("request_timeout", 5, 600, true),
-    stop_sequence: String(source.stop_sequence ?? defaults.stop_sequence ?? "").slice(0, 4096),
-  };
-}
-
-function loadLlmProfiles() {
-  let raw = null;
-  try {
-    raw = localStorage.getItem(LLM_PROFILE_STORAGE_KEY);
-  } catch (_) {
-    raw = null;
-  }
-  if (raw === null) return LLM_PROFILE_PRESETS.map((profile) => normalizeLlmProfile(profile, profile));
-  let stored = null;
-  try {
-    stored = JSON.parse(raw);
-  } catch (_) {
-    return LLM_PROFILE_PRESETS.map((profile) => normalizeLlmProfile(profile, profile));
-  }
-  const candidates = Array.isArray(stored) ? stored : stored?.profiles;
-  if (!Array.isArray(candidates)) {
-    return LLM_PROFILE_PRESETS.map((profile) => normalizeLlmProfile(profile, profile));
-  }
-  const storageVersion = Array.isArray(stored) ? 0 : Number(stored?.version) || 0;
-  const seen = new Set();
-  const profiles = candidates
-    .map((profile) => {
-      let migrated = profile;
-      if (storageVersion < 4 && profile?.id === QWEN38_27B_PROFILE_DEFAULTS.id
-          && !Array.isArray(profile.thinking_modes)) {
-        migrated = { ...migrated, thinking_mode: QWEN38_27B_PROFILE_DEFAULTS.thinking_mode };
-      }
-      if (storageVersion < 5 && profile?.id === LLM_PROFILE_DEFAULTS.id
-          && profile?.name === "Qwen3.5") {
-        migrated = { ...migrated, name: LLM_PROFILE_DEFAULTS.name };
-      }
-      return normalizeLlmProfile(migrated);
-    })
-    .filter((profile) => profile.id !== "default" && profile.id !== "__default__")
-    .filter((profile) => {
-      if (seen.has(profile.id)) return false;
-      seen.add(profile.id);
-      return true;
-    });
-  if (storageVersion < 2
-      && !profiles.some((profile) => profile.id === QWEN38_27B_PROFILE_DEFAULTS.id)) {
-    profiles.push(normalizeLlmProfile(QWEN38_27B_PROFILE_DEFAULTS, QWEN38_27B_PROFILE_DEFAULTS));
-  }
-  if (storageVersion < LLM_PROFILE_STORAGE_VERSION) {
-    try {
-      localStorage.setItem(LLM_PROFILE_STORAGE_KEY, JSON.stringify({
-        version: LLM_PROFILE_STORAGE_VERSION,
-        profiles,
-      }));
-    } catch (_) {
-      // The migrated profiles remain usable for this session when storage is unavailable.
-    }
-  }
-  return profiles;
-}
-
 function availableLlmProfiles() {
   return state.llmProfiles.length
     ? state.llmProfiles
@@ -670,25 +255,6 @@ function selectedLlmThinkingMode() {
   return profile.thinking_modes.find((mode) => mode.toLowerCase() === String(requested).toLowerCase())
     || profile.thinking_mode
     || profile.thinking_modes[0];
-}
-
-function thinkingModeEnablesReasoning(mode) {
-  return !["disabled", "none"].includes(String(mode || "").trim().toLowerCase());
-}
-
-function llmActivityLabel(status = {}, thinkingEnabled = false) {
-  if (status.generation_phase === "thinking") return "Thinking";
-  if (status.generation_phase === "generating") return "Processing";
-  if (status.generation_phase === "thinking_or_generating" || thinkingEnabled) {
-    return "Thinking / processing";
-  }
-  return "Processing";
-}
-
-function llmGeneratedTokenCount(status = {}) {
-  if (status.generated_tokens == null || status.generated_tokens === "") return null;
-  const tokens = Number(status.generated_tokens);
-  return Number.isFinite(tokens) && tokens >= 0 ? Math.trunc(tokens) : null;
 }
 
 function renderLlmThinkingModeOptions(requestedMode = null) {
@@ -1925,10 +1491,6 @@ function closePanelDrawers() {
   });
 }
 
-function makeId() {
-  return globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(36).slice(2)}`;
-}
-
 function activeChat() {
   return state.chats.find((chat) => chat.id === state.activeChatId) || null;
 }
@@ -1973,402 +1535,6 @@ function promptVersionsEqual(left, right) {
     && left.finalPrompt === right.finalPrompt);
 }
 
-function normalizeLoraStack(value) {
-  if (!Array.isArray(value)) return [];
-  return value
-    .filter((entry) => entry && typeof entry === "object" && String(entry.name || "").trim())
-    .map((entry) => ({
-      name: String(entry.name),
-      strength: Number.isFinite(Number(entry.strength)) ? Number(entry.strength) : 1,
-    }));
-}
-
-function normalizeGenerationLoraState(value) {
-  if (!Array.isArray(value)) return null;
-  const normalized = [];
-  const nodeIds = new Set();
-  for (const entry of value) {
-    const nodeId = String(entry?.nodeId || "").trim();
-    if (!nodeId || nodeIds.has(nodeId)) continue;
-    nodeIds.add(nodeId);
-    normalized.push({
-      nodeId,
-      loraType: String(entry?.loraType || "").trim(),
-      selections: normalizeLoraStack(entry?.selections),
-    });
-  }
-  return normalized;
-}
-
-function normalizeGenerationModelState(value) {
-  if (!Array.isArray(value)) return null;
-  const normalized = [];
-  const nodeIds = new Set();
-  for (const entry of value) {
-    const nodeId = String(entry?.nodeId || "").trim();
-    const modelName = cleanModelName(entry?.modelName);
-    if (!nodeId || !modelName || nodeIds.has(nodeId)) continue;
-    nodeIds.add(nodeId);
-    normalized.push({
-      nodeId,
-      modelType: String(entry?.modelType || "").trim(),
-      modelName,
-    });
-  }
-  return normalized;
-}
-
-function cleanModelName(value) {
-  return String(value || "").trim().replace(/^[/\\]+|[/\\]+$/g, "");
-}
-
-function modelNameKey(value) {
-  return cleanModelName(value).replaceAll("\\", "/").toLowerCase();
-}
-
-function normalizeGenerationSnapshot(value) {
-  const output = value?.output;
-  if (!output || typeof output !== "object" || Array.isArray(output)) return null;
-  return { output };
-}
-
-function normalizeConsultContext(value) {
-  return value && typeof value === "object" && !Array.isArray(value) ? value : null;
-}
-
-function normalizeConsultExperimentProposal(value) {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
-  const prompt = String(value.prompt || "").trim();
-  if (!prompt || prompt.length > MAX_CONSULT_EXPERIMENT_PROMPT_CHARS) return null;
-  const styleGuidance = String(value.style_guidance ?? value.styleGuidance ?? "").trim();
-  const framingGuidance = String(value.framing_guidance ?? value.framingGuidance ?? "").trim();
-  if (
-    styleGuidance.length > MAX_CONSULT_EXPERIMENT_GUIDANCE_CHARS
-    || framingGuidance.length > MAX_CONSULT_EXPERIMENT_GUIDANCE_CHARS
-  ) return null;
-  const requestedAction = String(value.action || "propose").trim().toLowerCase();
-  return {
-    prompt,
-    styleGuidance,
-    framingGuidance,
-    action: ["propose", "generate", "promote"].includes(requestedAction) ? requestedAction : "propose",
-  };
-}
-
-function normalizeConsultExperimentGeneration(value) {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
-  return {
-    promptId: String(value.promptId || ""),
-    generationState: ["queued", "generating", "complete", "error", "cancelled"].includes(value.generationState)
-      ? value.generationState
-      : "",
-    text: String(value.text || ""),
-    images: Array.isArray(value.images) ? value.images.map(normalizeImageReference).filter(Boolean) : [],
-    mainPrompt: String(value.mainPrompt || ""),
-    finalPrompt: String(value.finalPrompt || ""),
-    executionPrompt: String(value.executionPrompt || value.finalPrompt || ""),
-    generationAction: value.generationAction === "edit" ? "edit" : "create",
-    workflowProfileId: String(value.workflowProfileId || ""),
-    workflowName: String(value.workflowName || ""),
-    loraState: normalizeGenerationLoraState(value.loraState),
-    modelState: normalizeGenerationModelState(value.modelState),
-    generationSnapshot: normalizeGenerationSnapshot(value.generationSnapshot),
-    sourceImage: normalizeImageReference(value.sourceImage),
-    resultNodeIds: Array.isArray(value.resultNodeIds) ? value.resultNodeIds.map(String) : [],
-    resultFields: Array.isArray(value.resultFields) && value.resultFields.length
-      ? value.resultFields.map(String)
-      : ["images", "gifs"],
-    createdAt: Number.isFinite(Number(value.createdAt)) ? Number(value.createdAt) : Date.now(),
-    updatedAt: Number.isFinite(Number(value.updatedAt)) ? Number(value.updatedAt) : Date.now(),
-  };
-}
-
-function normalizeConsultExperiment(value) {
-  if (!value || typeof value !== "object" || Array.isArray(value) || value.active !== true) return null;
-  const startedAt = Number.isFinite(Number(value.startedAt)) ? Number(value.startedAt) : Date.now();
-  const updatedAt = Number.isFinite(Number(value.updatedAt)) ? Number(value.updatedAt) : startedAt;
-  if (updatedAt < Date.now() - CONSULT_RETENTION_MS) return null;
-  return {
-    id: String(value.id || makeId()),
-    active: true,
-    baseMainPrompt: String(value.baseMainPrompt || ""),
-    baseFinalPrompt: String(value.baseFinalPrompt || ""),
-    stylePreset: String(value.stylePreset || "None"),
-    stylePresetText: String(value.stylePresetText || ""),
-    framingPreset: String(value.framingPreset || "None"),
-    framingPresetText: String(value.framingPresetText || ""),
-    candidatePrompt: String(value.candidatePrompt || ""),
-    styleGuidance: String(value.styleGuidance || ""),
-    framingGuidance: String(value.framingGuidance || ""),
-    selectedMessageId: String(value.selectedMessageId || ""),
-    startedAt,
-    updatedAt,
-  };
-}
-
-function normalizePromptAgentRubric(value) {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
-  const criteria = Array.isArray(value.criteria)
-    ? value.criteria.slice(0, 12).map((item, index) => ({
-        id: String(item?.id || `criterion_${index + 1}`).slice(0, 80),
-        description: String(item?.description || "").slice(0, 1000),
-        weight: Math.max(0.1, Math.min(100, Number(item?.weight) || 1)),
-        hard: item?.hard === true,
-      })).filter((item) => item.description)
-    : [];
-  if (!criteria.length) return null;
-  return {
-    summary: String(value.summary || "").slice(0, 4000),
-    reference_notes: Array.isArray(value.reference_notes)
-      ? value.reference_notes.slice(0, 4).map((item, index) => ({
-          label: String(item?.label || `Reference ${index + 1}`).slice(0, 80),
-          purpose: String(item?.purpose || "general reference").slice(0, 200),
-          visible_content: String(item?.visible_content || "").slice(0, 4000),
-          apply: String(item?.apply || "").slice(0, 2000),
-        })).filter((item) => item.visible_content && item.apply)
-      : [],
-    criteria,
-    forbidden: Array.isArray(value.forbidden)
-      ? value.forbidden.map((item) => String(item || "").slice(0, 1000)).filter(Boolean).slice(0, 12)
-      : [],
-  };
-}
-
-function normalizePromptAgentCandidate(value) {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
-  const prompt = String(value.prompt || "").trim();
-  if (!prompt || prompt.length > MAX_CONSULT_EXPERIMENT_PROMPT_CHARS) return null;
-  const styleGuidance = String(value.style_guidance ?? value.styleGuidance ?? "").trim();
-  const framingGuidance = String(value.framing_guidance ?? value.framingGuidance ?? "").trim();
-  if (
-    styleGuidance.length > MAX_CONSULT_EXPERIMENT_GUIDANCE_CHARS
-    || framingGuidance.length > MAX_CONSULT_EXPERIMENT_GUIDANCE_CHARS
-  ) return null;
-  return {
-    prompt,
-    styleGuidance,
-    framingGuidance,
-    changeSummary: String(value.change_summary ?? value.changeSummary ?? "").slice(0, 4000),
-  };
-}
-
-function normalizePromptAgentEvaluation(value) {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
-  return {
-    score: Math.max(0, Math.min(100, Number(value.score) || 0)),
-    confidence: Math.max(0, Math.min(1, Number(value.confidence) || 0)),
-    pass: value.pass === true,
-    criteria: Array.isArray(value.criteria)
-      ? value.criteria.slice(0, 12).map((item) => ({
-          id: String(item?.id || "").slice(0, 80),
-          status: ["pass", "partial", "fail"].includes(item?.status) ? item.status : "fail",
-          score: Math.max(0, Math.min(100, Number(item?.score) || 0)),
-          evidence: String(item?.evidence || "").slice(0, 2000),
-        })).filter((item) => item.id)
-      : [],
-    forbidden: Array.isArray(value.forbidden)
-      ? value.forbidden.slice(0, 12).map((item, index) => ({
-          index: Math.max(1, Math.trunc(Number(item?.index) || index + 1)),
-          outcome: String(item?.outcome || "").slice(0, 1000),
-          status: ["clear", "visible", "uncertain"].includes(item?.status)
-            ? item.status
-            : "uncertain",
-          evidence: String(item?.evidence || "").slice(0, 2000),
-        })).filter((item) => item.outcome)
-      : [],
-    defects: Array.isArray(value.defects)
-      ? value.defects.map((item) => String(item || "").slice(0, 1000)).filter(Boolean).slice(0, 12)
-      : [],
-    nextRevision: String(value.next_revision ?? value.nextRevision ?? "").slice(0, 4000),
-    summary: String(value.summary || "").slice(0, 4000),
-  };
-}
-
-function normalizePromptAgentIteration(value, fallbackIndex = 0) {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
-  const createdAt = Number.isFinite(Number(value.createdAt)) ? Number(value.createdAt) : Date.now();
-  return {
-    id: String(value.id || makeId()),
-    index: Math.max(1, Math.trunc(Number(value.index) || fallbackIndex + 1)),
-    status: ["architecting", "generating", "evaluating", "complete", "stopped", "error"].includes(value.status)
-      ? value.status
-      : "architecting",
-    candidate: normalizePromptAgentCandidate(value.candidate),
-    generation: normalizeConsultExperimentGeneration(value.generation),
-    evaluation: normalizePromptAgentEvaluation(value.evaluation),
-    validation: value.validation === true,
-    createdAt,
-    updatedAt: Number.isFinite(Number(value.updatedAt)) ? Number(value.updatedAt) : createdAt,
-  };
-}
-
-function normalizePromptAgentConversationContext(value) {
-  if (!Array.isArray(value)) return [];
-  const normalized = value.slice(-PROMPT_AGENT_MAX_CONTEXT_MESSAGES).map((message) => ({
-    role: message?.role === "assistant" ? "assistant" : "user",
-    text: String(message?.text || "").trim().slice(0, 8000),
-    context: normalizeConsultContext(message?.context),
-  })).filter((message) => message.text || message.context);
-  const selected = [];
-  let remaining = PROMPT_AGENT_MAX_CONTEXT_CHARS;
-  for (let index = normalized.length - 1; index >= 0 && remaining > 0; index -= 1) {
-    const message = normalized[index];
-    const contextText = message.context ? JSON.stringify(message.context) : "";
-    const fixedCost = contextText.length + 32;
-    if (fixedCost >= remaining) continue;
-    const text = message.text.slice(-Math.max(0, remaining - fixedCost));
-    selected.unshift({ ...message, text });
-    remaining -= fixedCost + text.length;
-  }
-  return selected;
-}
-
-function normalizeConsultAgent(value) {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
-  const goal = String(value.goal || "").trim();
-  if (!goal) return null;
-  const startedAt = Number.isFinite(Number(value.startedAt)) ? Number(value.startedAt) : Date.now();
-  const updatedAt = Number.isFinite(Number(value.updatedAt)) ? Number(value.updatedAt) : startedAt;
-  if (updatedAt < Date.now() - CONSULT_RETENTION_MS) return null;
-  const status = [
-    "compiling", "architecting", "generating", "evaluating", "validating",
-    "paused", "complete", "stopped", "error",
-  ].includes(value.status) ? value.status : "paused";
-  return {
-    id: String(value.id || makeId()),
-    requestId: String(value.requestId || "").slice(0, 128),
-    requestPhase: ["compile", "architect", "evaluate"].includes(value.requestPhase) ? value.requestPhase : "",
-    active: value.active === true && !["complete", "stopped", "error"].includes(status),
-    status,
-    resumeStatus: [
-      "compiling", "architecting", "generating", "evaluating", "validating",
-    ].includes(value.resumeStatus) ? value.resumeStatus : "",
-    goal,
-    conversationContext: normalizePromptAgentConversationContext(value.conversationContext),
-    references: Array.isArray(value.references)
-      ? value.references.slice(0, 4).map((item) => ({
-          image: normalizeImageReference(item?.image),
-          purpose: String(item?.purpose || "general reference").slice(0, 200),
-        })).filter((item) => item.image)
-      : [],
-    rubric: normalizePromptAgentRubric(value.rubric),
-    initialStyle: {
-      name: String(value.initialStyle?.name || "None"),
-      instruction: String(value.initialStyle?.instruction || "").slice(0, MAX_CONSULT_EXPERIMENT_GUIDANCE_CHARS),
-    },
-    initialFraming: {
-      name: String(value.initialFraming?.name || "None"),
-      instruction: String(value.initialFraming?.instruction || "").slice(0, MAX_CONSULT_EXPERIMENT_GUIDANCE_CHARS),
-    },
-    feedback: Array.isArray(value.feedback)
-      ? value.feedback.slice(-20).map((item) => ({
-          text: String(item?.text || "").trim().slice(0, 4000),
-          createdAt: Number.isFinite(Number(item?.createdAt)) ? Number(item.createdAt) : updatedAt,
-        })).filter((item) => item.text)
-      : [],
-    iterations: Array.isArray(value.iterations)
-      ? value.iterations.map(normalizePromptAgentIteration).filter(Boolean).slice(-PROMPT_AGENT_MAX_SAVED_ITERATIONS)
-      : [],
-    currentIterationId: String(value.currentIterationId || ""),
-    bestIterationId: String(value.bestIterationId || ""),
-    maxIterations: Math.max(
-      1,
-      Math.min(PROMPT_AGENT_MAX_ITERATIONS, Math.trunc(Number(value.maxIterations) || PROMPT_AGENT_DEFAULT_MAX_ITERATIONS)),
-    ),
-    cycleStartIndex: Math.max(1, Math.trunc(Number(value.cycleStartIndex) || 1)),
-    targetScore: Math.max(1, Math.min(100, Number(value.targetScore) || PROMPT_AGENT_TARGET_SCORE)),
-    minConfidence: Math.max(0, Math.min(1, Number(value.minConfidence) || PROMPT_AGENT_MIN_CONFIDENCE)),
-    validationRequired: value.validationRequired !== false,
-    error: String(value.error || "").slice(0, 4000),
-    startedAt,
-    updatedAt,
-  };
-}
-
-function normalizeConsultMessage(message) {
-  const id = String(message?.id || makeId());
-  const role = message?.role === "assistant" ? "assistant" : "user";
-  const createdAt = Number(message?.createdAt);
-  const updatedAt = Number(message?.updatedAt);
-  const normalizedCreatedAt = Number.isFinite(createdAt) ? createdAt : Date.now();
-  const normalizedUpdatedAt = Number.isFinite(updatedAt) ? updatedAt : normalizedCreatedAt;
-  const normalized = {
-    id,
-    role,
-    text: String(message?.text || ""),
-    context: normalizeConsultContext(message?.context),
-    images: Array.isArray(message?.images)
-      ? message.images.map(normalizeImageReference).filter(Boolean).slice(0, 4)
-      : [],
-    experimentId: String(message?.experimentId || ""),
-    requestFailed: message?.requestFailed === true,
-    createdAt: normalizedCreatedAt,
-    updatedAt: normalizedUpdatedAt,
-  };
-  if (role !== "assistant") return normalized;
-
-  const variants = Array.isArray(message?.variants)
-    ? message.variants
-        .filter((variant) => variant && typeof variant === "object")
-        .map((variant, index) => ({
-          id: String(variant.id || `${id}-response-${index}`),
-          text: String(variant.text || ""),
-          proposal: normalizeConsultExperimentProposal(variant.proposal),
-          generation: normalizeConsultExperimentGeneration(variant.generation),
-          requestFailed: variant.requestFailed === true,
-          createdAt: Number.isFinite(Number(variant.createdAt))
-            ? Number(variant.createdAt)
-            : normalizedCreatedAt,
-        }))
-        .filter((variant) => variant.text.trim())
-    : [];
-  if (!variants.length && normalized.text.trim()) {
-    variants.push({
-      id: `${id}-response-0`,
-      text: normalized.text,
-      proposal: normalizeConsultExperimentProposal(message?.proposal),
-      generation: normalizeConsultExperimentGeneration(message?.generation),
-      requestFailed: normalized.requestFailed,
-      createdAt: normalizedCreatedAt,
-    });
-  }
-  const requestedIndex = Number(message?.variantIndex);
-  const variantIndex = Number.isFinite(requestedIndex)
-    ? Math.max(0, Math.min(Math.trunc(requestedIndex), variants.length - 1))
-    : Math.max(0, variants.length - 1);
-  return {
-    ...normalized,
-    text: variants[variantIndex]?.text || normalized.text,
-    proposal: variants[variantIndex]?.proposal || null,
-    generation: variants[variantIndex]?.generation || null,
-    requestFailed: variants[variantIndex]?.requestFailed === true,
-    variants,
-    variantIndex,
-  };
-}
-
-function retainedConsultMessages(messages, now = Date.now()) {
-  const cutoff = now - CONSULT_RETENTION_MS;
-  const retained = messages.filter((message) => {
-    const timestampMs = consultTimestampMs(message.createdAt);
-    return Number.isFinite(timestampMs) && timestampMs >= cutoff;
-  });
-  while (retained[0]?.role === "assistant") retained.shift();
-  return retained.slice(-100);
-}
-
-function consultTimestampMs(value) {
-  const timestamp = Number(value);
-  if (!Number.isFinite(timestamp)) return NaN;
-  return timestamp < 100_000_000_000 ? timestamp * 1000 : timestamp;
-}
-
-function consultMessagesAfterClear(messages, clearedAt) {
-  const cutoff = consultTimestampMs(clearedAt);
-  if (!Number.isFinite(cutoff) || cutoff <= 0) return messages;
-  return messages.filter((message) => consultTimestampMs(message.createdAt) >= cutoff);
-}
-
 function pruneExpiredConsultMessages(now = Date.now()) {
   let changed = false;
   for (const chat of state.chats) {
@@ -2393,460 +1559,6 @@ function pruneExpiredConsultMessages(now = Date.now()) {
     }
   }
   return changed;
-}
-
-function normalizeSessionLoraSelections(value) {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
-  return Object.fromEntries(
-    Object.entries(value)
-      .map(([key, selections]) => [String(key), normalizeLoraStack(selections)])
-      .filter(([key, selections]) => key && selections.length),
-  );
-}
-
-function normalizeSessionModelSelections(value) {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
-  return Object.fromEntries(
-    Object.entries(value)
-      .map(([key, modelName]) => [String(key), cleanModelName(modelName)])
-      .filter(([key, modelName]) => key && modelName),
-  );
-}
-
-function normalizeStudioSettings(value, fallback = getSettings()) {
-  const source = value && typeof value === "object" && !Array.isArray(value) ? value : {};
-  const base = { ...SETTINGS_DEFAULTS, ...(fallback || {}) };
-  const text = (key) => String(source[key] ?? base[key] ?? "");
-  const requiredText = (key) => (
-    String(source[key] ?? "").trim()
-    || String(base[key] ?? "").trim()
-    || String(SETTINGS_DEFAULTS[key] ?? "")
-  );
-  const checked = (key) => source[key] == null ? Boolean(base[key]) : Boolean(source[key]);
-  const numeric = (key, minimum, maximum) => {
-    const requested = Number(source[key] ?? base[key]);
-    const fallbackValue = Number(SETTINGS_DEFAULTS[key]);
-    return Math.max(minimum, Math.min(maximum, Number.isFinite(requested) ? requested : fallbackValue));
-  };
-  return {
-    version: STUDIO_SETTINGS_VERSION,
-    llm_provider: normalizeLlmProvider(text("llm_provider")),
-    llm_profile: requiredText("llm_profile"),
-    kobold_url: text("kobold_url"),
-    ollama_url: text("ollama_url"),
-    ollama_model: text("ollama_model"),
-    llamacpp_url: text("llamacpp_url"),
-    llamacpp_model: text("llamacpp_model"),
-    llamacpp_executable: text("llamacpp_executable"),
-    llamacpp_config_profile: text("llamacpp_config_profile"),
-    keep_models_loaded: checked("keep_models_loaded"),
-    model_profile: requiredText("model_profile"),
-    style_preset: requiredText("style_preset"),
-    framing_preset: requiredText("framing_preset"),
-    style_modifier: text("style_modifier"),
-    framing_modifier: text("framing_modifier"),
-    thinking_mode: requiredText("thinking_mode"),
-    embellishment_level: requiredText("embellishment_level"),
-    target_output_length: numeric("target_output_length", 1, 10000),
-    output_length_custom: checked("output_length_custom"),
-    temperature: numeric("temperature", 0, 5),
-    additional_instructions: text("additional_instructions"),
-    secondary_instructions: text("secondary_instructions"),
-    use_llm_amplification: checked("use_llm_amplification"),
-    use_prompt_upscaling: checked("use_prompt_upscaling"),
-    randomize_seed: checked("randomize_seed"),
-    auto_generate: checked("auto_generate"),
-    auto_advance_source: checked("auto_advance_source"),
-    use_latest_image_context: checked("use_latest_image_context"),
-    image_scale: numeric("image_scale", 10, 100),
-    resolution_aspect_ratio: RESOLUTION_ASPECT_RATIOS.includes(text("resolution_aspect_ratio"))
-      ? text("resolution_aspect_ratio")
-      : SETTINGS_DEFAULTS.resolution_aspect_ratio,
-    resolution_megapixels: numeric("resolution_megapixels", 0.1, 16),
-    resolution_multiple: numeric("resolution_multiple", 8, 128),
-    generation_action: source.generation_action === "edit" ? "edit" : "create",
-    lora_selections: normalizeSessionLoraSelections(source.lora_selections),
-    model_selections: normalizeSessionModelSelections(source.model_selections),
-  };
-}
-
-function newChatStudioSettings(value = getSettings()) {
-  const previous = normalizeStudioSettings(value);
-  return normalizeStudioSettings({
-    ...SETTINGS_DEFAULTS,
-    // Keep application-level preferences across chats, but start prompt and
-    // generation shaping from a clean slate. Thinking and embellishment are
-    // the only generation controls intentionally carried into a new chat.
-    llm_provider: previous.llm_provider,
-    llm_profile: previous.llm_profile,
-    kobold_url: previous.kobold_url,
-    ollama_url: previous.ollama_url,
-    ollama_model: previous.ollama_model,
-    llamacpp_url: previous.llamacpp_url,
-    llamacpp_model: previous.llamacpp_model,
-    llamacpp_executable: previous.llamacpp_executable,
-    llamacpp_config_profile: previous.llamacpp_config_profile,
-    keep_models_loaded: previous.keep_models_loaded,
-    thinking_mode: previous.thinking_mode,
-    embellishment_level: previous.embellishment_level,
-    use_llm_amplification: previous.use_llm_amplification,
-    use_prompt_upscaling: previous.use_prompt_upscaling,
-    randomize_seed: previous.randomize_seed,
-    auto_generate: previous.auto_generate,
-    auto_advance_source: previous.auto_advance_source,
-    use_latest_image_context: previous.use_latest_image_context,
-    image_scale: previous.image_scale,
-    generation_action: "create",
-    lora_selections: previous.lora_selections,
-    model_selections: previous.model_selections,
-  }, SETTINGS_DEFAULTS);
-}
-
-function studioSettingsFromControlsFingerprint(value) {
-  let fingerprint;
-  try {
-    fingerprint = JSON.parse(String(value || ""));
-  } catch (_) {
-    return { schema: "", values: {} };
-  }
-  if (!Array.isArray(fingerprint)) return { schema: "", values: {} };
-
-  const values = {};
-  const copyText = (key, index) => {
-    if (fingerprint[index] != null) values[key] = String(fingerprint[index]);
-  };
-  const copyNumber = (key, index) => {
-    const number = Number(fingerprint[index]);
-    if (Number.isFinite(number) && number > 0) values[key] = number;
-  };
-  const legacy = fingerprint.length >= 10 && /^https?:\/\//i.test(String(fingerprint[0] || ""));
-  if (legacy) {
-    copyText("kobold_url", 0);
-    copyText("model_profile", 1);
-    copyText("style_preset", 2);
-    copyText("framing_preset", 3);
-    copyText("style_modifier", 4);
-    copyText("framing_modifier", 5);
-    copyText("thinking_mode", 6);
-    copyText("embellishment_level", 7);
-    copyNumber("temperature", 9);
-    return { schema: "legacy-10", values };
-  }
-
-  copyText("model_profile", 0);
-  copyText("style_preset", 1);
-  copyText("framing_preset", 2);
-  copyText("style_modifier", 3);
-  copyText("framing_modifier", 4);
-  if (fingerprint.length >= 8) {
-    copyText("additional_instructions", 5);
-    copyText("embellishment_level", 6);
-    copyNumber("target_output_length", 7);
-    return { schema: "current-8", values };
-  }
-  if (fingerprint.length === 7) {
-    copyText("embellishment_level", 5);
-    copyNumber("target_output_length", 6);
-    return { schema: "transitional-7", values };
-  }
-  if (fingerprint.length >= 6) {
-    copyText("embellishment_level", 5);
-    return { schema: "pre-length-6", values };
-  }
-  return { schema: "", values: {} };
-}
-
-function controlsFingerprintFromSettings(settings, overrides = {}) {
-  const source = { ...normalizeStudioSettings(settings), ...overrides };
-  return JSON.stringify(RENDER_CONTROL_SETTINGS.map(([, key]) => String(source[key] ?? "")));
-}
-
-function normalizeStoredControlsFingerprint(value, settings) {
-  if (!String(value || "").trim()) return "";
-  const parsed = studioSettingsFromControlsFingerprint(value);
-  if (!parsed.schema) return controlsFingerprintFromSettings(settings);
-  return controlsFingerprintFromSettings(settings, parsed.values);
-}
-
-function migratedStudioSettings(chat, messages) {
-  const hasStoredSettings = chat?.studioSettings && typeof chat.studioSettings === "object"
-    && !Array.isArray(chat.studioSettings);
-  const source = hasStoredSettings ? structuredClone(chat.studioSettings) : {};
-  const latestGeneration = [...messages].reverse().find((message) => message.canonicalPrompt.trim());
-  const fingerprint = studioSettingsFromControlsFingerprint(
-    chat?.controlsFingerprint || latestGeneration?.controlsFingerprint || "",
-  );
-  if (!hasStoredSettings) {
-    if (fingerprint.schema) {
-      Object.assign(source, fingerprint.values);
-      source.output_length_custom = true;
-    }
-    if (latestGeneration) {
-      source.generation_action = latestGeneration.generationAction;
-      source.use_llm_amplification = latestGeneration.llmAmplified;
-      const promptNode = Object.values(latestGeneration.generationSnapshot?.output || {})
-        .find((node) => [SLOT_TYPE, AMPLIFY_TYPE].includes(node?.class_type));
-      if (typeof promptNode?.inputs?.secondary_instructions === "string") {
-        source.secondary_instructions = promptNode.inputs.secondary_instructions;
-      }
-    }
-    const loraSelections = {};
-    const modelSelections = {};
-    for (const message of messages) {
-      const profileId = String(message.workflowProfileId || "");
-      if (!profileId) continue;
-      for (const entry of message.loraState || []) {
-        const key = loraSelectionKey(profileId, entry.nodeId);
-        if (entry.selections.length) loraSelections[key] = entry.selections;
-        else delete loraSelections[key];
-      }
-      for (const entry of message.modelState || []) {
-        if (entry.modelName) modelSelections[modelSelectionKey(profileId, entry.nodeId)] = entry.modelName;
-      }
-    }
-    source.lora_selections = Object.keys(loraSelections).length
-      ? loraSelections
-      : (messages.length ? {} : state.loraSelections);
-    source.model_selections = Object.keys(modelSelections).length
-      ? modelSelections
-      : (messages.length ? {} : state.modelSelections);
-  } else {
-    const storedVersion = Number(chat.studioSettings?.version || 0);
-    const legacyShifted = storedVersion < STUDIO_SETTINGS_VERSION
-      && fingerprint.schema === "legacy-10"
-      && /^https?:\/\//i.test(String(source.model_profile || ""));
-    const oldLengthShifted = storedVersion < STUDIO_SETTINGS_VERSION
-      && ["pre-length-6", "transitional-7"].includes(fingerprint.schema)
-      && String(source.additional_instructions || "") === String(fingerprint.values.embellishment_level || "");
-    const configControlsLost = [
-      "model_profile", "style_preset", "framing_preset", "thinking_mode", "embellishment_level",
-    ].filter((key) => !String(source[key] || "").trim()).length >= 3;
-    if (legacyShifted || oldLengthShifted || configControlsLost) {
-      Object.assign(source, fingerprint.values);
-      if (oldLengthShifted) source.additional_instructions = "";
-      if (Object.hasOwn(fingerprint.values, "target_output_length")) source.output_length_custom = true;
-    } else {
-      for (const key of ["model_profile", "style_preset", "framing_preset", "embellishment_level"]) {
-        if (!String(source[key] || "").trim() && String(fingerprint.values[key] || "").trim()) {
-          source[key] = fingerprint.values[key];
-        }
-      }
-    }
-  }
-  return normalizeStudioSettings(source);
-}
-
-function normalizeStudioControlChanges(value) {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
-  const textFields = new Set([
-    "model_profile", "style_preset", "framing_preset", "style_modifier", "framing_modifier",
-    "additional_instructions", "secondary_instructions", "embellishment_level", "resolution_aspect_ratio",
-  ]);
-  const normalized = {};
-  for (const [key, raw] of Object.entries(value)) {
-    if (textFields.has(key)) {
-      normalized[key] = String(raw ?? "").slice(0, 16 * 1024);
-    } else if (key === "target_output_length" && Number.isFinite(Number(raw))) {
-      normalized[key] = Math.max(1, Math.min(10000, Number(raw)));
-    } else if (key === "resolution_megapixels" && Number.isFinite(Number(raw))) {
-      normalized[key] = Math.max(0.1, Math.min(16, Number(raw)));
-    } else if (key === "resolution_multiple" && Number.isFinite(Number(raw))) {
-      normalized[key] = Math.max(8, Math.min(128, Math.round(Number(raw) / 4) * 4));
-    } else if (key === "randomize_seed" && typeof raw === "boolean") {
-      normalized[key] = raw;
-    }
-  }
-  return normalized;
-}
-
-function normalizeStudioProposal(value) {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
-  const status = value.status === "ready" ? "ready" : value.status === "needs_choice" ? "needs_choice" : "";
-  const summary = String(value.summary || "").trim().slice(0, 4000);
-  const revisionInstruction = String(value.revision_instruction || value.revisionInstruction || "").trim().slice(0, 8000);
-  const controlChanges = normalizeStudioControlChanges(value.control_changes || value.controlChanges);
-  if (!status || !summary || (!revisionInstruction && !Object.keys(controlChanges).length)) return null;
-  return {
-    id: String(value.id || makeId()),
-    status,
-    summary,
-    revision_instruction: revisionInstruction,
-    control_changes: controlChanges,
-    createdAt: Number.isFinite(Number(value.createdAt)) ? Number(value.createdAt) : Date.now(),
-  };
-}
-
-function normalizeStudioDiscussion(value) {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
-  const status = ["active", "applied", "cancelled", "stale"].includes(value.status)
-    ? value.status
-    : "active";
-  const createdAt = Number.isFinite(Number(value.createdAt)) ? Number(value.createdAt) : Date.now();
-  return {
-    id: String(value.id || makeId()),
-    status,
-    targetImage: normalizeImageReference(value.targetImage),
-    targetMessageId: String(value.targetMessageId || ""),
-    anchorMainPrompt: String(value.anchorMainPrompt || ""),
-    anchorFinalPrompt: String(value.anchorFinalPrompt || ""),
-    anchorControlsFingerprint: String(value.anchorControlsFingerprint || ""),
-    anchorApplicableControls: normalizeStudioControlChanges(value.anchorApplicableControls),
-    references: Array.isArray(value.references)
-      ? value.references.map(normalizeImageReference).filter(Boolean).slice(0, 3)
-      : [],
-    pendingProposal: normalizeStudioProposal(value.pendingProposal),
-    createdAt,
-    updatedAt: Number.isFinite(Number(value.updatedAt)) ? Number(value.updatedAt) : createdAt,
-  };
-}
-
-function normalizeChat(chat) {
-  const normalizedAt = (value, fallback) => {
-    const timestamp = Number(value);
-    return Number.isFinite(timestamp) ? timestamp : fallback;
-  };
-  const now = Date.now();
-  const createdAt = normalizedAt(chat?.createdAt, normalizedAt(chat?.updatedAt, now));
-  const updatedAt = normalizedAt(chat?.updatedAt, createdAt);
-  const messages = Array.isArray(chat?.messages)
-    ? chat.messages.map((message) => ({
-        id: String(message?.id || makeId()),
-        role: ["user", "assistant", "system"].includes(message?.role) ? message.role : "system",
-        text: String(message?.text || ""),
-        label: String(message?.label || ""),
-        images: Array.isArray(message?.images) ? message.images.map(normalizeImageReference).filter(Boolean) : [],
-        mainPrompt: String(message?.mainPrompt || message?.canonicalPrompt || ""),
-        canonicalPrompt: String(message?.canonicalPrompt || ""),
-        controlsFingerprint: String(message?.controlsFingerprint || ""),
-        llmAmplified: Boolean(message?.llmAmplified),
-        executionPrompt: String(message?.executionPrompt || message?.canonicalPrompt || ""),
-        generationAction: ["edit", "upscale"].includes(message?.generationAction) ? message.generationAction : "create",
-        workflowProfileId: String(message?.workflowProfileId || ""),
-        workflowName: String(message?.workflowName || ""),
-        loraState: normalizeGenerationLoraState(message?.loraState),
-        modelState: normalizeGenerationModelState(message?.modelState),
-        generationSnapshot: normalizeGenerationSnapshot(message?.generationSnapshot),
-        sourceImage: normalizeImageReference(message?.sourceImage),
-        upscaleFactor: message?.upscaleFactor != null && Number.isFinite(Number(message.upscaleFactor))
-          ? Number(message.upscaleFactor)
-          : null,
-        resultNodeIds: Array.isArray(message?.resultNodeIds) ? message.resultNodeIds.map(String) : [],
-        resultFields: Array.isArray(message?.resultFields) && message.resultFields.length ? message.resultFields.map(String) : ["images", "gifs"],
-        promptId: String(message?.promptId || ""),
-        generationState: ["queued", "generating", "complete", "error", "cancelled"].includes(message?.generationState) ? message.generationState : "",
-        operationId: String(message?.operationId || ""),
-        operationPhase: String(message?.operationPhase || ""),
-        operationStatus: String(message?.operationStatus || ""),
-        operationKind: String(message?.operationKind || ""),
-        llmProvider: message?.llmProvider ? normalizeLlmProvider(message.llmProvider) : "",
-        llmThinkingEnabled: message?.llmThinkingEnabled === true,
-        llmTokenCount: message?.llmTokenCount != null && Number.isFinite(Number(message.llmTokenCount))
-          ? Math.max(0, Math.trunc(Number(message.llmTokenCount)))
-          : null,
-        studioMessageKind: ["discussion", "revision"].includes(message?.studioMessageKind)
-          ? message.studioMessageKind
-          : "",
-        studioDiscussionId: String(message?.studioDiscussionId || ""),
-        studioProposal: normalizeStudioProposal(message?.studioProposal),
-        createdAt: normalizedAt(message?.createdAt, updatedAt),
-        updatedAt: normalizedAt(message?.updatedAt, normalizedAt(message?.createdAt, updatedAt)),
-      }))
-    : [];
-  const consultClearedAt = normalizedAt(chat?.consultClearedAt, 0);
-  const consultMessages = Array.isArray(chat?.consultMessages)
-    ? retainedConsultMessages(consultMessagesAfterClear(
-        chat.consultMessages.map(normalizeConsultMessage),
-        consultClearedAt,
-      ))
-    : [];
-  const consultExperiment = normalizeConsultExperiment(chat?.consultExperiment);
-  const consultAgent = normalizeConsultAgent(chat?.consultAgent);
-  const consultAgentMode = typeof chat?.consultAgentMode === "boolean"
-    ? chat.consultAgentMode
-    : Boolean(consultAgent?.active);
-  const storedFinalPrompt = String(chat?.finalPrompt ?? chat?.currentPrompt ?? "");
-  const storedMainPrompt = String(chat?.mainPrompt ?? storedFinalPrompt);
-  const storedVersions = Array.isArray(chat?.versions) && chat.versions.length
-    ? chat.versions.map((value) => normalizePromptVersion(value, storedMainPrompt, storedFinalPrompt))
-    : [promptVersion(storedMainPrompt, storedFinalPrompt)];
-  const latestGeneration = [...messages]
-    .reverse()
-    .find((message) => message.canonicalPrompt.trim());
-  const recoverGeneratedPrompt = !storedFinalPrompt.trim()
-    && !storedVersions.some((version) => version.finalPrompt.trim())
-    && Boolean(latestGeneration?.canonicalPrompt.trim());
-  const mainPrompt = recoverGeneratedPrompt ? latestGeneration.mainPrompt : storedMainPrompt;
-  const finalPrompt = recoverGeneratedPrompt ? latestGeneration.canonicalPrompt : storedFinalPrompt;
-  const versions = recoverGeneratedPrompt
-    ? [promptVersion(mainPrompt, finalPrompt)]
-    : storedVersions;
-  const requestedIndex = Number(recoverGeneratedPrompt ? versions.length - 1 : chat?.versionIndex ?? versions.length - 1);
-  const versionIndex = Number.isFinite(requestedIndex)
-    ? Math.max(0, Math.min(requestedIndex, versions.length - 1))
-    : versions.length - 1;
-  const studioSettings = migratedStudioSettings(chat, messages);
-  const storedControlsFingerprint = String(chat?.controlsFingerprint || latestGeneration?.controlsFingerprint || "");
-  const controlsFingerprint = normalizeStoredControlsFingerprint(storedControlsFingerprint, studioSettings);
-  const renderedMainPrompt = String(
-    chat?.renderedMainPrompt
-    ?? (chat?.mainPromptDirty ? latestGeneration?.mainPrompt ?? "" : mainPrompt),
-  );
-  const renderedFinalPrompt = String(
-    chat?.renderedFinalPrompt
-    ?? (chat?.finalPromptManuallyEdited ? latestGeneration?.canonicalPrompt ?? "" : finalPrompt),
-  );
-  return {
-    id: String(chat?.id || makeId()),
-    createdAt,
-    updatedAt,
-    initialized: recoverGeneratedPrompt || (chat?.initialized == null ? Boolean(finalPrompt) : Boolean(chat.initialized)),
-    mainPrompt,
-    renderedMainPrompt,
-    mainPromptDirty: mainPrompt !== renderedMainPrompt,
-    finalPrompt,
-    renderedFinalPrompt,
-    finalPromptManuallyEdited: finalPrompt !== renderedFinalPrompt,
-    currentPrompt: finalPrompt,
-    versions,
-    versionIndex,
-    controlsFingerprint,
-    createWorkflowId: String(chat?.createWorkflowId || ""),
-    editWorkflowId: String(chat?.editWorkflowId || ""),
-    upscaleWorkflowId: String(chat?.upscaleWorkflowId || ""),
-    editPromptMode: ["edit_instruction", "full_prompt"].includes(chat?.editPromptMode) ? chat.editPromptMode : "",
-    selectedSource: normalizeImageReference(chat?.selectedSource),
-    lastGeneration: normalizeLastGeneration(chat?.lastGeneration),
-    pendingGeneration: normalizePendingGeneration(chat?.pendingGeneration),
-    studioSettings,
-    messages,
-    consultClearedAt,
-    consultMessages,
-    consultPendingJob: chat?.consultPendingJob && typeof chat.consultPendingJob === "object"
-      ? structuredClone(chat.consultPendingJob)
-      : null,
-    consultExperiment,
-    consultAgent,
-    consultAgentMode,
-    studioDiscussion: normalizeStudioDiscussion(chat?.studioDiscussion),
-  };
-}
-
-function normalizeImageReference(value) {
-  if (!value || typeof value !== "object") return null;
-  const filename = String(value.filename || "").trim();
-  if (!filename) return null;
-  const width = Number(value.width);
-  const height = Number(value.height);
-  const normalized = {
-    filename,
-    subfolder: String(value.subfolder || ""),
-    type: ["input", "output", "temp", "promptstudio"].includes(value.type) ? value.type : "output",
-  };
-  if (Number.isInteger(width) && width > 0 && Number.isInteger(height) && height > 0) {
-    normalized.width = width;
-    normalized.height = height;
-  }
-  return normalized;
 }
 
 function storedImageReference(value) {
@@ -2899,283 +1611,6 @@ function imageDimensionsFromView(reference) {
     image.addEventListener("error", () => reject(new Error("The image could not be loaded.")), { once: true });
     image.src = imageReferenceUrl(reference);
   });
-}
-
-function normalizeLastGeneration(value) {
-  if (!value || typeof value !== "object") return null;
-  return {
-    action: ["edit", "upscale"].includes(value.action) ? value.action : "create",
-    mainPrompt: String(value.mainPrompt || value.canonicalPrompt || ""),
-    canonicalPrompt: String(value.canonicalPrompt || ""),
-    executionPrompt: String(value.executionPrompt || ""),
-    workflowProfileId: String(value.workflowProfileId || ""),
-    sourceImage: normalizeImageReference(value.sourceImage),
-  };
-}
-
-function normalizePendingGeneration(value) {
-  if (!value || typeof value !== "object") return null;
-  return {
-    action: ["edit", "upscale"].includes(value.action) ? value.action : "create",
-    mainPrompt: String(value.mainPrompt || value.canonicalPrompt || ""),
-    canonicalPrompt: String(value.canonicalPrompt || ""),
-    executionPrompt: String(value.executionPrompt || ""),
-    workflowProfileId: String(value.workflowProfileId || ""),
-    workflowName: String(value.workflowName || ""),
-    loraState: normalizeGenerationLoraState(value.loraState),
-    modelState: normalizeGenerationModelState(value.modelState),
-    generationSnapshot: normalizeGenerationSnapshot(value.generationSnapshot),
-    replayFingerprint: String(value.replayFingerprint || ""),
-    sourceImage: normalizeImageReference(value.sourceImage),
-    upscaleFactor: value.upscaleFactor != null && Number.isFinite(Number(value.upscaleFactor))
-      ? Number(value.upscaleFactor)
-      : null,
-    resultNodeIds: Array.isArray(value.resultNodeIds) ? value.resultNodeIds.map(String) : [],
-    resultFields: Array.isArray(value.resultFields) && value.resultFields.length
-      ? value.resultFields.map(String)
-      : ["images", "gifs"],
-  };
-}
-
-function mergeChatMessages(remoteMessages, localMessages) {
-  const merged = new Map();
-  for (const message of [...remoteMessages, ...localMessages]) {
-    const current = merged.get(message.id);
-    if (!current) {
-      merged.set(message.id, message);
-      continue;
-    }
-    const newer = Number(message.updatedAt || message.createdAt) >= Number(current.updatedAt || current.createdAt)
-      ? message
-      : current;
-    const older = newer === message ? current : message;
-    const images = new Map();
-    for (const image of [...(older.images || []), ...(newer.images || [])]) {
-      const key = imageReferenceKey(image);
-      if (key) images.set(key, image);
-    }
-    const combined = { ...older, ...newer, images: [...images.values()] };
-    if (Array.isArray(older.variants) || Array.isArray(newer.variants)) {
-      const variants = new Map();
-      for (const variant of [...(older.variants || []), ...(newer.variants || [])]) {
-        if (variant?.id) variants.set(variant.id, variant);
-      }
-      combined.variants = [...variants.values()].sort((left, right) => (
-        Number(left.createdAt || 0) - Number(right.createdAt || 0)
-        || String(left.id).localeCompare(String(right.id))
-      ));
-      const selectedVariantId = newer.variants?.[newer.variantIndex]?.id;
-      const selectedIndex = combined.variants.findIndex((variant) => variant.id === selectedVariantId);
-      combined.variantIndex = selectedIndex >= 0 ? selectedIndex : combined.variants.length - 1;
-      combined.text = combined.variants[combined.variantIndex]?.text || combined.text;
-      combined.proposal = combined.variants[combined.variantIndex]?.proposal || null;
-      combined.generation = combined.variants[combined.variantIndex]?.generation || null;
-    }
-    merged.set(message.id, combined);
-  }
-  return [...merged.values()].sort((left, right) => left.createdAt - right.createdAt || left.id.localeCompare(right.id));
-}
-
-function mergeChatStores(remoteStore, localStore) {
-  const remoteChats = Array.isArray(remoteStore?.chats) ? remoteStore.chats.map(normalizeChat) : [];
-  const localChats = Array.isArray(localStore?.chats) ? localStore.chats.map(normalizeChat) : [];
-  const merged = new Map(remoteChats.map((chat) => [chat.id, chat]));
-  for (const localChat of localChats) {
-    const remoteChat = merged.get(localChat.id);
-    if (!remoteChat) {
-      merged.set(localChat.id, localChat);
-      continue;
-    }
-    const newer = localChat.updatedAt >= remoteChat.updatedAt ? localChat : remoteChat;
-    const older = newer === localChat ? remoteChat : localChat;
-    const consultClearedAt = Math.max(
-      Number(remoteChat.consultClearedAt || 0),
-      Number(localChat.consultClearedAt || 0),
-    );
-    merged.set(localChat.id, {
-      ...older,
-      ...newer,
-      createdAt: Math.min(localChat.createdAt, remoteChat.createdAt),
-      updatedAt: Math.max(localChat.updatedAt, remoteChat.updatedAt),
-      messages: mergeChatMessages(remoteChat.messages, localChat.messages),
-      consultClearedAt,
-      consultMessages: consultMessagesAfterClear(
-        mergeChatMessages(remoteChat.consultMessages, localChat.consultMessages),
-        consultClearedAt,
-      ),
-    });
-  }
-  return {
-    activeChatId: localStore?.activeChatId || remoteStore?.activeChatId || null,
-    chats: [...merged.values()],
-  };
-}
-
-function applyChatStoreSnapshot(stored, { preserveActive = true } = {}) {
-  const previousActiveId = preserveActive ? state.activeChatId : null;
-  const storedChats = Array.isArray(stored?.chats) ? stored.chats : [];
-  state.chats = storedChats.map(normalizeChat);
-  state.chatRevision = Number(stored?.revision || state.chatRevision);
-  state.chatStoreLoaded = true;
-  state.chatPersistenceBlocked = false;
-  state.activeChatId = state.chats.some((chat) => chat.id === previousActiveId)
-    ? previousActiveId
-    : state.chats.some((chat) => chat.id === stored?.activeChatId)
-      ? stored.activeChatId
-      : state.chats[0]?.id || null;
-  const chat = activeChat();
-  if (chat) {
-    restoreChatState(chat);
-    refreshWorkflowControls();
-    refreshSecondaryInstructionsControl();
-    refreshStudioStatus();
-  }
-  renderChatHistory();
-  renderConsultHistory();
-  renderChatList();
-  resumeConsultJobs();
-  resumeSyncedGeneration();
-}
-
-async function writeChatStore(snapshot, revision) {
-  return api.fetchApi("/promptstudio/prompt-studio/chats", {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ ...snapshot, revision }),
-  });
-}
-
-async function persistChats() {
-  if (state.chatPersistenceBlocked || !state.chatStoreLoaded) return;
-  state.chatSaveInFlight = true;
-  try {
-    let snapshot = structuredClone({ activeChatId: state.activeChatId, chats: state.chats });
-    let response = await writeChatStore(snapshot, state.chatRevision);
-    let data = await response.json().catch(() => ({}));
-    if (response.status === 409) {
-      const latestResponse = await api.fetchApi("/promptstudio/prompt-studio/chats");
-      const latest = await latestResponse.json().catch(() => ({}));
-      if (!latestResponse.ok) throw new Error(latest.error || `Chat synchronization failed (${latestResponse.status}).`);
-      snapshot = mergeChatStores(latest, {
-        activeChatId: state.activeChatId,
-        chats: structuredClone(state.chats),
-      });
-      const mergedMutationVersion = state.chatMutationVersion;
-      response = await writeChatStore(snapshot, Number(latest.revision || 0));
-      data = await response.json().catch(() => ({}));
-      if (response.ok && state.chatMutationVersion === mergedMutationVersion) {
-        applyChatStoreSnapshot({ ...snapshot, revision: data.revision }, { preserveActive: true });
-      }
-    }
-    if (!response.ok) throw new Error(data.error || `Chat save failed (${response.status}).`);
-    state.chatRevision = Number(data.revision || state.chatRevision);
-    state.chatSyncChannel?.postMessage({ type: "chat-store-updated", revision: state.chatRevision });
-  } finally {
-    state.chatSaveInFlight = false;
-  }
-}
-
-function saveChats({ immediate = false } = {}) {
-  if (state.chatPersistenceBlocked || !state.chatStoreLoaded) return;
-  if (pruneExpiredConsultMessages()) renderConsultHistory();
-  state.chatMutationVersion += 1;
-  if (state.chatSaveTimer) clearTimeout(state.chatSaveTimer);
-  const persist = () => {
-    state.chatSaveTimer = null;
-    state.chatSaveChain = state.chatSaveChain
-      .catch(() => {})
-      .then(persistChats)
-      .catch((error) => setStatus(error.message || "Chat history could not be saved.", "warning"));
-  };
-  if (immediate) persist();
-  else state.chatSaveTimer = setTimeout(persist, 150);
-}
-
-async function refreshChatsFromServer({ force = false } = {}) {
-  if (!state.chatStoreLoaded || state.chatPersistenceBlocked || state.chatSyncInFlight) return;
-  if (!force && (state.chatSaveTimer || state.chatSaveInFlight || state.busy)) return;
-  const syncMutationVersion = state.chatMutationVersion;
-  state.chatSyncInFlight = true;
-  try {
-    const response = await api.fetchApi(`/promptstudio/prompt-studio/chats?revision=${encodeURIComponent(state.chatRevision)}`);
-    if (response.status === 204) return;
-    const stored = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(stored.error || `Chat synchronization failed (${response.status}).`);
-    if (Number(stored.revision || 0) <= state.chatRevision) return;
-    // A generation or other local action may have changed chat state while this request was in flight.
-    // Keep that state authoritative; its pending save will merge against the newer server revision.
-    if (state.chatMutationVersion !== syncMutationVersion) return;
-    applyChatStoreSnapshot(stored, { preserveActive: true });
-  } catch (error) {
-    if (force) setStatus(error.message || "Chat history could not be synchronized.", "warning");
-  } finally {
-    state.chatSyncInFlight = false;
-  }
-}
-
-function setupChatSync() {
-  if (!state.chatSyncTimer) {
-    state.chatSyncTimer = window.setInterval(() => refreshChatsFromServer(), 1250);
-    window.addEventListener("focus", () => refreshChatsFromServer());
-    document.addEventListener("visibilitychange", () => {
-      if (document.visibilityState === "visible") refreshChatsFromServer();
-    });
-  }
-  if (typeof BroadcastChannel !== "function" || state.chatSyncChannel) return;
-  const channel = new BroadcastChannel(CHAT_SYNC_CHANNEL);
-  channel.addEventListener("message", (event) => {
-    if (event.data?.type !== "chat-store-updated") return;
-    if (Number(event.data.revision || 0) <= state.chatRevision) return;
-    refreshChatsFromServer();
-  });
-  state.chatSyncChannel = channel;
-}
-
-async function loadChats() {
-  let recoveredOrMigratedPromptState = false;
-  try {
-    const response = await api.fetchApi("/promptstudio/prompt-studio/chats");
-    const stored = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(stored.error || `Chat load failed (${response.status}).`);
-    const storedChats = Array.isArray(stored.chats) ? stored.chats : [];
-    state.chats = storedChats.map(normalizeChat);
-    recoveredOrMigratedPromptState = state.chats.some((chat, index) => {
-      const storedChat = storedChats[index];
-      return (
-        (!String(storedChat?.currentPrompt || "").trim() && Boolean(chat.currentPrompt.trim()))
-        || typeof storedChat?.mainPrompt !== "string"
-        || typeof storedChat?.finalPrompt !== "string"
-        || !storedChat?.studioSettings
-        || JSON.stringify(storedChat?.studioSettings) !== JSON.stringify(chat.studioSettings)
-        || (Array.isArray(storedChat?.versions) && storedChat.versions.some((version) => typeof version !== "object"))
-      );
-    });
-    state.chatRevision = Number(stored.revision || 0);
-    state.chatStoreLoaded = true;
-    state.chatPersistenceBlocked = false;
-    state.activeChatId = state.chats.some((chat) => chat.id === stored.activeChatId)
-      ? stored.activeChatId
-      : state.chats[0]?.id || null;
-  } catch (error) {
-    state.chats = [];
-    state.activeChatId = null;
-    state.chatStoreLoaded = false;
-    state.chatPersistenceBlocked = true;
-    setStatus(error.message || "Chat history could not be loaded.", "warning");
-  }
-  if (!state.chats.length) {
-    const chat = normalizeChat({ studioSettings: newChatStudioSettings() });
-    state.chats.push(chat);
-    state.activeChatId = chat.id;
-    if (state.chatStoreLoaded) saveChats({ immediate: true });
-  }
-  const chat = activeChat();
-  if (chat) {
-    restoreChatState(chat);
-    renderChatHistory();
-    renderChatList();
-  }
-  if (recoveredOrMigratedPromptState) saveChats({ immediate: true });
 }
 
 function restoreChatState(chat) {
@@ -3365,69 +1800,6 @@ function syncActiveChat() {
   renderChatList();
 }
 
-function normalizeWorkflowProfile(profile) {
-  const snapshot = profile?.snapshot && typeof profile.snapshot === "object" ? profile.snapshot : null;
-  const path = String(profile?.path || profile?.id || "").replaceAll("\\", "/");
-  const snapshotLoraNodes = Object.entries(snapshot?.output || {})
-    .filter(([, node]) => node?.class_type === LORA_LOADER_TYPE)
-    .map(([id, node]) => ({
-      id: String(id),
-      loraType: String(node.inputs?.lora_type || "").trim(),
-    }));
-  const loraNodes = Array.isArray(profile?.loraNodes)
-    ? profile.loraNodes.map((node) => ({
-      id: String(node?.id || ""),
-      loraType: String(node?.loraType || "").trim(),
-    })).filter((node) => node.id)
-    : snapshotLoraNodes;
-  const snapshotModelNodes = Object.entries(snapshot?.output || {})
-    .filter(([, node]) => node?.class_type === MODEL_LOADER_TYPE)
-    .map(([id, node]) => ({
-      id: String(id),
-      modelType: String(node.inputs?.model_type || "").trim(),
-      modelName: cleanModelName(node.inputs?.unet_name),
-    }));
-  const modelNodes = Array.isArray(profile?.modelNodes)
-    ? profile.modelNodes.map((node) => ({
-      id: String(node?.id || ""),
-      modelType: String(node?.modelType || "").trim(),
-      modelName: cleanModelName(node?.modelName),
-    })).filter((node) => node.id)
-    : snapshotModelNodes;
-  return {
-    id: path,
-    path,
-    name: String(profile?.name || workflowNameFromPath(path) || "Workflow").trim() || "Workflow",
-    kind: ["edit", "upscale"].includes(profile?.kind) ? profile.kind : "create",
-    promptMode: "full_prompt",
-    promptNodeId: String(profile?.promptNodeId || ""),
-    imageNodeId: String(profile?.imageNodeId || ""),
-    upscaleNodeId: String(profile?.upscaleNodeId || ""),
-    loraNodes,
-    modelNodes,
-    resultNodeIds: Array.isArray(profile?.resultNodeIds) ? profile.resultNodeIds.map(String) : [],
-    resultFields: ["images", "gifs"],
-    snapshot,
-    updatedAt: Number(profile?.updatedAt || Date.now()),
-    sourceModified: Number(profile?.sourceModified || 0),
-    stale: Boolean(profile?.stale),
-    error: String(profile?.error || ""),
-  };
-}
-
-function workflowNameFromPath(path) {
-  const filename = String(path || "").replaceAll("\\", "/").split("/").pop() || "";
-  return filename.replace(/\.json$/i, "");
-}
-
-function isPromptStudioWorkflowPath(path) {
-  const normalized = String(path || "").replaceAll("\\", "/");
-  const filename = normalized.split("/").pop() || "";
-  return normalized.startsWith("workflows/")
-    && filename.startsWith("[PS]")
-    && filename.toLowerCase().endsWith(".json");
-}
-
 function scheduleWorkflowRefresh({ broadcast = false } = {}) {
   state.workflowRefreshBroadcast ||= broadcast;
   if (state.workflowRefreshTimer) clearTimeout(state.workflowRefreshTimer);
@@ -3506,129 +1878,6 @@ function installWorkflowSaveObserver() {
     };
   }
   api[WORKFLOW_OBSERVER_KEY] = true;
-}
-
-function imageOutputNode(node) {
-  const data = node?.constructor?.nodeData;
-  if (!data?.output_node) return false;
-  const sockets = [...(node?.inputs || []), ...(node?.outputs || [])];
-  if (sockets.some((socket) => String(socket?.type || "").split(",").includes("IMAGE"))) return true;
-  const identity = `${nodeClassName(node)} ${node?.type || ""} ${node?.title || ""}`;
-  return /(?:image.*(?:save|preview|output)|(?:save|preview|output).*image|save.*(?:png|jpe?g|webp))/i.test(identity);
-}
-
-function firstExecutableNode(graph, snapshot, classTypes) {
-  const output = snapshot?.output || {};
-  return (graph?._nodes || []).find((node) => (
-    Object.hasOwn(output, String(node.id)) && classTypes.includes(output[String(node.id)]?.class_type)
-  ));
-}
-
-function bridgeWorkflowSubgraphs(graph, workflowData) {
-  const definitions = workflowData?.definitions?.subgraphs;
-  if (!Array.isArray(definitions) || definitions.length === 0) return () => {};
-
-  // Off-canvas graphs do not inherit ComfyUI's root subgraph listener. Forward
-  // their creation events so each node type binds to this graph's definitions.
-  const originals = new Map();
-  for (const definition of definitions) {
-    const id = String(definition?.id || "");
-    const original = id && app.rootGraph?.subgraphs?.get(id);
-    if (original) originals.set(id, original);
-  }
-
-  const listener = (event) => {
-    app.rootGraph.events.dispatch("subgraph-created", event.detail);
-  };
-  graph.events.addEventListener("subgraph-created", listener);
-
-  const restore = () => {
-    graph.events.removeEventListener("subgraph-created", listener);
-    for (const [id, subgraph] of originals) {
-      app.rootGraph.events.dispatch("subgraph-created", {
-        subgraph,
-        data: subgraph.asSerialisable?.() || { id },
-      });
-    }
-  };
-  return restore;
-}
-
-async function buildWorkflowTemplate(file, workflowData, cached) {
-  const Graph = app.rootGraph?.constructor || app.graph?.constructor;
-  if (typeof Graph !== "function") throw new Error("ComfyUI's workflow graph is not ready.");
-  const graph = new Graph();
-  const restoreSubgraphTypes = bridgeWorkflowSubgraphs(graph, workflowData);
-  let snapshot;
-  try {
-    const configureError = graph.configure(structuredClone(workflowData));
-    if (configureError) {
-      throw new Error("ComfyUI could not load one or more workflow nodes.");
-    }
-    const subgraphIds = new Set((workflowData?.definitions?.subgraphs || []).map((definition) => String(definition.id)));
-    const unresolvedSubgraphs = (graph._nodes || []).filter((node) => (
-      subgraphIds.has(String(node.type)) && !node.isSubgraphNode?.()
-    ));
-    if (unresolvedSubgraphs.length) {
-      throw new Error(`ComfyUI could not resolve ${unresolvedSubgraphs.length} subgraph node${unresolvedSubgraphs.length === 1 ? "" : "s"}.`);
-    }
-    snapshot = structuredClone(await app.graphToPrompt(graph));
-  } finally {
-    restoreSubgraphTypes();
-  }
-  const graphUpscaleNodes = (graph._nodes || []).filter((node) => nodeClassName(node) === UPSCALE_TYPE);
-  const upscaleWorkflow = graphUpscaleNodes.length > 0 || cached?.kind === "upscale";
-  const upscaleNode = firstExecutableNode(graph, snapshot, [UPSCALE_TYPE]);
-  if (upscaleWorkflow && !upscaleNode) {
-    throw new Error("Upscaling workflows need an executable Prompt Studio Upscale node.");
-  }
-  const graphImageSources = (graph._nodes || []).filter((node) => nodeClassName(node) === IMAGE_SOURCE_TYPE);
-  const editingWorkflow = !upscaleWorkflow && (graphImageSources.length > 0 || cached?.kind === "edit");
-  const imageNode = firstExecutableNode(graph, snapshot, [IMAGE_SOURCE_TYPE]);
-  if (editingWorkflow && !imageNode) {
-    throw new Error("Image workflows need an executable Prompt Studio Image Source node.");
-  }
-  const promptNode = firstExecutableNode(graph, snapshot, [SLOT_TYPE, AMPLIFY_TYPE]);
-  if (!upscaleWorkflow && !promptNode) {
-    throw new Error(`${editingWorkflow ? "Editing" : "Creation"} workflows need an executable KoboldCpp Prompt Slot or Prompt Amplify node.`);
-  }
-
-  const output = snapshot?.output || {};
-  const loraNodes = Object.entries(output)
-    .filter(([, node]) => node?.class_type === LORA_LOADER_TYPE)
-    .map(([id, node]) => ({
-      id: String(id),
-      loraType: String(node.inputs?.lora_type || "").trim(),
-    }));
-  const modelNodes = Object.entries(output)
-    .filter(([, node]) => node?.class_type === MODEL_LOADER_TYPE)
-    .map(([id, node]) => ({
-      id: String(id),
-      modelType: String(node.inputs?.model_type || "").trim(),
-      modelName: cleanModelName(node.inputs?.unet_name),
-    }));
-  const imageOutputs = (graph._nodes || []).filter((node) => (
-    Object.hasOwn(output, String(node.id)) && imageOutputNode(node)
-  ));
-  if (imageOutputs.length !== 1) {
-    throw new Error(`Workflow must have exactly one image output; found ${imageOutputs.length}.`);
-  }
-
-  return normalizeWorkflowProfile({
-    id: file.path,
-    path: file.path,
-    name: workflowNameFromPath(file.path),
-    kind: upscaleWorkflow ? "upscale" : editingWorkflow ? "edit" : "create",
-    promptNodeId: upscaleWorkflow ? "" : String(promptNode.id),
-    imageNodeId: editingWorkflow ? String(imageNode.id) : "",
-    upscaleNodeId: upscaleWorkflow ? String(upscaleNode.id) : "",
-    loraNodes,
-    modelNodes,
-    resultNodeIds: [String(imageOutputs[0].id)],
-    snapshot,
-    updatedAt: Date.now(),
-    sourceModified: Number(file.modified || 0),
-  });
 }
 
 async function loadWorkflowProfiles() {
@@ -13828,79 +12077,6 @@ function setupStandaloneBridge() {
     const connected = await attachStandalone(popup);
     channel.postMessage({ type: connected ? "connected" : "failed", requestId: data.requestId });
   });
-}
-
-function refreshVideoStudioServerPresence() {
-  if (state.videoStudioCapabilityRequest) return state.videoStudioCapabilityRequest;
-  state.videoStudioCapabilityRequest = api.fetchApi("/promptstudio-video/capabilities", { cache: "no-store" })
-    .then(async response => {
-      state.videoStudioInstalled = response.ok;
-      if (!response.ok) {
-        state.videoStudioServerPresence.clear();
-        return;
-      }
-      const data = await response.json().catch(() => ({}));
-      const seenAt = Date.now();
-      state.videoStudioServerPresence = new Map(
-        (Array.isArray(data.studio_instances) ? data.studio_instances : [])
-          .filter(item => item?.instanceId)
-          .map(item => [item.instanceId, { ...item, seenAt }]),
-      );
-    })
-    .catch(() => {
-      if (state.videoStudioInstalled === null) {
-        state.videoStudioInstalled = Boolean(globalThis.__promptstudioVideoStudioHost);
-      }
-      state.videoStudioServerPresence.clear();
-    })
-    .finally(() => {
-      state.videoStudioCapabilityRequest = null;
-      refreshVideoHandoffActions();
-    });
-  return state.videoStudioCapabilityRequest;
-}
-
-function setupVideoStudioBridge() {
-  refreshVideoStudioServerPresence();
-  if (state.videoStudioPresenceTimer) window.clearInterval(state.videoStudioPresenceTimer);
-  if (typeof BroadcastChannel !== "function") {
-    refreshVideoHandoffActions();
-    state.videoStudioPresenceTimer = window.setInterval(() => {
-      refreshVideoStudioServerPresence();
-      refreshVideoHandoffActions();
-    }, 3000);
-    return;
-  }
-  state.videoStudioChannel?.close();
-  const channel = new BroadcastChannel(VIDEO_STUDIO_CHANNEL);
-  state.videoStudioChannel = channel;
-  channel.addEventListener("message", (event) => {
-    const data = event.data;
-    if (data?.type === "studio-presence" && data.instanceId) {
-      state.videoStudioInstalled = true;
-      state.videoStudioPresence.set(data.instanceId, { ...data, seenAt: Date.now() });
-      refreshVideoHandoffActions();
-      return;
-    }
-    if (data?.type !== "handoff-result" || !data.requestId) return;
-    const pending = state.videoHandoffRequests.get(data.requestId);
-    if (!pending) return;
-    window.clearTimeout(pending.timeout);
-    state.videoHandoffRequests.delete(data.requestId);
-    if (data.ok) pending.resolve(data.result || {});
-    else pending.reject(new Error(data.error || "Video Studio could not import the image."));
-  });
-  const probe = () => {
-    const now = Date.now();
-    for (const [instanceId, presence] of state.videoStudioPresence) {
-      if (now - presence.seenAt >= VIDEO_STUDIO_PRESENCE_TIMEOUT_MS) state.videoStudioPresence.delete(instanceId);
-    }
-    channel.postMessage({ type: "studio-probe" });
-    refreshVideoStudioServerPresence();
-    refreshVideoHandoffActions();
-  };
-  probe();
-  state.videoStudioPresenceTimer = window.setInterval(probe, 3000);
 }
 
 function togglePopout({ returnToEmbedded = false } = {}) {

@@ -9,12 +9,166 @@ class FrontendRegressionTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.source = (REPO_ROOT / "web" / "js" / "prompt_studio.js").read_text(encoding="utf-8")
+        cls.constants = (
+            REPO_ROOT / "web" / "js" / "prompt-studio" / "core" / "constants.js"
+        ).read_text(encoding="utf-8")
+        cls.state = (
+            REPO_ROOT / "web" / "js" / "prompt-studio" / "core" / "state.js"
+        ).read_text(encoding="utf-8")
+        cls.background_activity = (
+            REPO_ROOT / "web" / "js" / "prompt-studio" / "ui" / "background-activity.js"
+        ).read_text(encoding="utf-8")
+        cls.video_bridge = (
+            REPO_ROOT
+            / "web"
+            / "js"
+            / "prompt-studio"
+            / "integrations"
+            / "video-studio-bridge.js"
+        ).read_text(encoding="utf-8")
+        cls.settings_storage = (
+            REPO_ROOT / "web" / "js" / "prompt-studio" / "settings" / "storage.js"
+        ).read_text(encoding="utf-8")
+        cls.llm_profile_store = (
+            REPO_ROOT
+            / "web"
+            / "js"
+            / "prompt-studio"
+            / "settings"
+            / "llm-profile-store.js"
+        ).read_text(encoding="utf-8")
+        cls.llm_status = (
+            REPO_ROOT / "web" / "js" / "prompt-studio" / "llm" / "status.js"
+        ).read_text(encoding="utf-8")
+        cls.id_source = (
+            REPO_ROOT / "web" / "js" / "prompt-studio" / "core" / "id.js"
+        ).read_text(encoding="utf-8")
+        cls.generation_state = (
+            REPO_ROOT / "web" / "js" / "prompt-studio" / "chat" / "generation-state.js"
+        ).read_text(encoding="utf-8")
+        cls.image_reference = (
+            REPO_ROOT / "web" / "js" / "prompt-studio" / "chat" / "image-reference.js"
+        ).read_text(encoding="utf-8")
+        cls.chat_model = (
+            REPO_ROOT / "web" / "js" / "prompt-studio" / "chat" / "model.js"
+        ).read_text(encoding="utf-8")
+        cls.chat_store = (
+            REPO_ROOT / "web" / "js" / "prompt-studio" / "chat" / "store-controller.js"
+        ).read_text(encoding="utf-8")
+        cls.consult_model = (
+            REPO_ROOT / "web" / "js" / "prompt-studio" / "consult" / "model.js"
+        ).read_text(encoding="utf-8")
+        cls.workflow_profile = (
+            REPO_ROOT
+            / "web"
+            / "js"
+            / "prompt-studio"
+            / "generation"
+            / "workflow-profile.js"
+        ).read_text(encoding="utf-8")
+        cls.model_name = (
+            REPO_ROOT
+            / "web"
+            / "js"
+            / "prompt-studio"
+            / "generation"
+            / "model-name.js"
+        ).read_text(encoding="utf-8")
+        cls.workflow_template = (
+            REPO_ROOT
+            / "web"
+            / "js"
+            / "prompt-studio"
+            / "generation"
+            / "workflow-template.js"
+        ).read_text(encoding="utf-8")
         cls.styles = (REPO_ROOT / "web" / "css" / "prompt_studio.css").read_text(encoding="utf-8")
 
-    def function_source(self, name, next_name):
-        start = self.source.index(f"function {name}")
-        end = self.source.index(f"\nfunction {next_name}", start)
-        return self.source[start:end]
+    def function_source(self, name, next_name=None, source=None):
+        module_source = self.source if source is None else source
+        start = module_source.index(f"function {name}")
+        if next_name is None:
+            return module_source[start:]
+        end = min(
+            index
+            for marker in ("function", "async function", "export function", "export async function")
+            if (index := module_source.find(f"\n{marker} {next_name}", start)) >= 0
+        )
+        return module_source[start:end]
+
+    def test_frontend_modules_keep_an_inward_dependency_direction(self):
+        self.assertIn('from "./prompt-studio/core/constants.js"', self.source)
+        self.assertIn('from "./prompt-studio/core/state.js"', self.source)
+        self.assertIn('from "./prompt-studio/ui/background-activity.js"', self.source)
+        self.assertIn('from "./prompt-studio/integrations/video-studio-bridge.js"', self.source)
+        self.assertIn('from "./prompt-studio/llm/status.js"', self.source)
+        self.assertIn('from "./prompt-studio/settings/llm-profile-store.js"', self.source)
+        self.assertIn('from "./prompt-studio/settings/storage.js"', self.source)
+        self.assertIn('from "./prompt-studio/core/id.js"', self.source)
+        self.assertIn('from "./prompt-studio/chat/generation-state.js"', self.source)
+        self.assertIn('from "./prompt-studio/chat/image-reference.js"', self.source)
+        self.assertIn('from "./prompt-studio/chat/model.js"', self.source)
+        self.assertIn('from "./prompt-studio/chat/store-controller.js"', self.source)
+        self.assertIn('from "./prompt-studio/consult/model.js"', self.source)
+        self.assertIn('from "./prompt-studio/generation/workflow-profile.js"', self.source)
+        self.assertIn('from "./prompt-studio/generation/workflow-template.js"', self.source)
+        self.assertIn('from "./prompt-studio/generation/model-name.js"', self.source)
+        self.assertIn("hasPendingStudioGenerations,", self.source)
+        self.assertNotIn("from ", self.constants)
+        self.assertNotIn("from ", self.state)
+        self.assertNotIn("prompt_studio.js", self.background_activity)
+        self.assertNotIn("prompt_studio.js", self.video_bridge)
+        self.assertIn('from "../core/constants.js"', self.background_activity)
+        self.assertIn('from "../core/state.js"', self.background_activity)
+        self.assertIn("export function hasPendingStudioGenerations()", self.background_activity)
+        self.assertIn('from "../core/constants.js"', self.video_bridge)
+        self.assertIn('from "../core/state.js"', self.video_bridge)
+        for module_source in (self.settings_storage, self.llm_profile_store, self.llm_status):
+            self.assertNotIn("prompt_studio.js", module_source)
+        self.assertIn('from "../core/constants.js"', self.settings_storage)
+        self.assertIn('from "../core/constants.js"', self.llm_profile_store)
+        self.assertNotIn("from ", self.llm_status)
+        for module_source in (self.id_source, self.image_reference):
+            self.assertNotIn("from ", module_source)
+            self.assertNotIn("prompt_studio.js", module_source)
+        self.assertNotIn("prompt_studio.js", self.generation_state)
+        self.assertIn('from "./image-reference.js"', self.generation_state)
+        self.assertIn('from "../generation/model-name.js"', self.generation_state)
+        self.assertNotIn("prompt_studio.js", self.consult_model)
+        self.assertIn('from "../core/constants.js"', self.consult_model)
+        self.assertIn('from "../core/id.js"', self.consult_model)
+        self.assertIn('from "../chat/generation-state.js"', self.consult_model)
+        self.assertIn('from "../chat/image-reference.js"', self.consult_model)
+        self.assertNotIn("prompt_studio.js", self.chat_model)
+        self.assertIn('from "../core/constants.js"', self.chat_model)
+        self.assertIn('from "../consult/model.js"', self.chat_model)
+        self.assertIn('from "../generation/model-name.js"', self.chat_model)
+        self.assertIn('from "../settings/storage.js"', self.chat_model)
+        self.assertNotIn("prompt_studio.js", self.chat_store)
+        self.assertIn('from "../core/state.js"', self.chat_store)
+        self.assertIn('from "../consult/model.js"', self.chat_store)
+        self.assertNotIn("prompt_studio.js", self.workflow_profile)
+        self.assertIn('from "../core/constants.js"', self.workflow_profile)
+        self.assertIn('from "./model-name.js"', self.workflow_profile)
+        self.assertNotIn("prompt_studio.js", self.workflow_template)
+        self.assertIn('from "../core/constants.js"', self.workflow_template)
+        self.assertIn('from "./model-name.js"', self.workflow_template)
+        self.assertIn('from "./workflow-profile.js"', self.workflow_template)
+        self.assertNotIn("from ", self.model_name)
+        self.assertNotIn("prompt_studio.js", self.model_name)
+
+    def test_relocated_brand_icons_resolve_from_the_nested_core_module(self):
+        self.assertIn('new URL("../../../prompt-studio-icon.svg", import.meta.url)', self.constants)
+        self.assertIn('new URL("../../../prompt-studio-activity-icon.svg", import.meta.url)', self.constants)
+        self.assertTrue((REPO_ROOT / "web" / "prompt-studio-icon.svg").is_file())
+        self.assertTrue((REPO_ROOT / "web" / "prompt-studio-activity-icon.svg").is_file())
+
+    def test_workflow_template_validation_stays_in_the_generation_domain(self):
+        self.assertIn("export function createWorkflowTemplateBuilder", self.workflow_template)
+        self.assertIn("bridgeWorkflowSubgraphs", self.workflow_template)
+        self.assertIn('dispatch("subgraph-created"', self.workflow_template)
+        self.assertIn("Workflow must have exactly one image output", self.workflow_template)
+        self.assertNotIn("function buildWorkflowTemplate", self.source)
 
     def test_empty_consult_history_refreshes_prompt_agent_mode(self):
         render = self.function_source("renderConsultHistory", "selectConsultResponse")
@@ -24,7 +178,11 @@ class FrontendRegressionTests(unittest.TestCase):
         )
 
     def test_pending_llm_messages_show_phase_and_live_token_count(self):
-        activity = self.function_source("llmActivityLabel", "llmGeneratedTokenCount")
+        activity = self.function_source(
+            "llmActivityLabel",
+            "llmGeneratedTokenCount",
+            self.llm_status,
+        )
         consult = self.source[
             self.source.index("function consultJobStatusText"):
             self.source.index("async function pollConsultJob")
@@ -61,12 +219,14 @@ class FrontendRegressionTests(unittest.TestCase):
         self.assertIn("consultAgentMode: false", exported)
 
     def test_new_chats_reset_generation_controls_except_thinking_and_embellishment(self):
-        fresh = self.function_source("newChatStudioSettings", "studioSettingsFromControlsFingerprint")
+        fresh = self.function_source(
+            "newChatStudioSettings",
+            "studioSettingsFromControlsFingerprint",
+            self.chat_model,
+        )
         create = self.function_source("createChat", "deleteChat")
-        load = self.source[
-            self.source.index("async function loadChats"):
-            self.source.index("function restoreChatState")
-        ]
+        load_start = self.chat_store.index("async function loadChats")
+        load = self.chat_store[load_start:self.chat_store.index("\n\n  return {", load_start)]
         delete = self.function_source("deleteChat", "activateChat")
 
         self.assertIn("...SETTINGS_DEFAULTS", fresh)
@@ -99,9 +259,9 @@ class FrontendRegressionTests(unittest.TestCase):
         self.assertIn("applyRememberedLlmConnection(", applied)
 
     def test_ollama_is_default_and_advanced_providers_warn_once(self):
-        defaults = self.source[
-            self.source.index("const SETTINGS_DEFAULTS"):
-            self.source.index("const LLM_PROFILE_DEFAULTS")
+        defaults = self.constants[
+            self.constants.index("const SETTINGS_DEFAULTS"):
+            self.constants.index("const LLM_THINKING_MODE_OPTIONS")
         ]
         normalizer = self.function_source("normalizeLlmProvider", "confirmAdvancedLlmProvider")
         confirmation = self.function_source("confirmAdvancedLlmProvider", "handleLlmProviderChange")
@@ -229,8 +389,12 @@ class FrontendRegressionTests(unittest.TestCase):
         self.assertNotIn("Generation controls changed.", self.source)
 
     def test_legacy_control_fingerprints_are_normalized_before_comparison(self):
-        normalizer = self.function_source("normalizeStoredControlsFingerprint", "migratedStudioSettings")
-        chat = self.function_source("normalizeChat", "normalizeImageReference")
+        normalizer = self.function_source(
+            "normalizeStoredControlsFingerprint",
+            "migratedStudioSettings",
+            self.chat_model,
+        )
+        chat = self.function_source("normalizeChat", source=self.chat_model)
 
         self.assertIn("studioSettingsFromControlsFingerprint(value)", normalizer)
         self.assertIn("controlsFingerprintFromSettings(settings, parsed.values)", normalizer)
@@ -266,6 +430,7 @@ class FrontendRegressionTests(unittest.TestCase):
         normalizer = self.function_source(
             "normalizePromptAgentIteration",
             "normalizePromptAgentConversationContext",
+            self.consult_model,
         )
         finish = self.source[
             self.source.index("function finishPromptAgent"):
@@ -307,6 +472,7 @@ class FrontendRegressionTests(unittest.TestCase):
         normalize = self.function_source(
             "normalizePromptAgentEvaluation",
             "normalizePromptAgentIteration",
+            self.consult_model,
         )
         controls = self.function_source(
             "applicableStudioControlOptions",
@@ -331,6 +497,7 @@ class FrontendRegressionTests(unittest.TestCase):
         normalizer = self.function_source(
             "normalizeConsultAgent",
             "normalizeConsultMessage",
+            self.consult_model,
         )
         request = self.source[
             self.source.index("async function requestPromptAgentPhase"):
@@ -363,7 +530,11 @@ class FrontendRegressionTests(unittest.TestCase):
         self.assertNotIn("const current = activeConsultAgent(agentChat)", run)
 
     def test_chat_sync_cannot_overwrite_a_generation_started_during_fetch(self):
-        sync = self.function_source("refreshChatsFromServer", "setupChatSync")
+        sync = self.function_source(
+            "refreshChatsFromServer",
+            "setupChatSync",
+            self.chat_store,
+        )
         self.assertIn("const syncMutationVersion = state.chatMutationVersion;", sync)
         self.assertIn("if (state.chatMutationVersion !== syncMutationVersion) return;", sync)
         self.assertLess(
@@ -392,7 +563,7 @@ class FrontendRegressionTests(unittest.TestCase):
         activate = self.function_source("activateChat", "nodeClassName")
         history_render = self.function_source("renderChatHistory", "updateComposeMode")
 
-        self.assertIn("const CHAT_SCROLL_STICK_THRESHOLD = 450;", self.source)
+        self.assertIn("const CHAT_SCROLL_STICK_THRESHOLD = 450;", self.constants)
         self.assertIn("historyShouldStickToEnd(history)", scroll)
         self.assertIn("setHistoryShouldStickToEnd(history, true);", scroll)
         self.assertIn("const wasNearEnd = historyShouldStickToEnd(history);", render)
@@ -448,7 +619,7 @@ class FrontendRegressionTests(unittest.TestCase):
             self.source.index("function llmConnectionPayload")
         ]
 
-        self.assertIn("keep_models_loaded: false", self.source)
+        self.assertIn("keep_models_loaded: false", self.constants)
         self.assertIn('id="promptstudio-keep-models-loaded"', self.source)
         self.assertIn("Enable only when they use separate GPUs", self.source)
         self.assertIn("keep_models_loaded:", connection)
@@ -494,7 +665,7 @@ class FrontendRegressionTests(unittest.TestCase):
         self.assertIn('api.addEventListener("cm-task-started", handleManagerTaskStarted)', self.source)
         self.assertIn('api.addEventListener("cm-task-completed", handleManagerTaskCompleted)', self.source)
         self.assertIn("counts.done >= counts.total", self.source)
-        self.assertIn('"/promptstudio/prompt-studio/update-comfyui"', self.source)
+        self.assertIn('"/promptstudio/prompt-studio/update-comfyui"', self.constants)
         self.assertIn("promptstudio-update-pulse", self.styles)
         self.assertIn(".promptstudio-comfy-update-progress", self.styles)
 
@@ -569,23 +740,23 @@ class FrontendRegressionTests(unittest.TestCase):
         restore = self.function_source("restoreLlmProfileEditorDefaults", "submitLlmProfileEditor")
         delete = self.function_source("deleteLlmProfile", "applyRememberedLlmConnection")
 
-        self.assertIn('id: "qwen3.5",\n  name: "Default"', self.source)
-        self.assertIn('name: "Qwen 3.8 (27B)"', self.source)
-        self.assertIn('id: "qwen3.8-27b"', self.source)
-        self.assertIn("presence_penalty: 1.5", self.source)
-        self.assertIn("top_p: 0.8", self.source)
-        self.assertIn("top_k: 20", self.source)
-        self.assertIn("thinking_temperature: 1.0", self.source)
-        self.assertIn("thinking_top_p: 0.95", self.source)
-        self.assertIn("thinking_presence_penalty: 0", self.source)
-        self.assertIn('thinking_modes: Object.freeze(["XHigh", "Medium", "Low", "Disabled"])', self.source)
-        self.assertIn('thinking_mode: "XHigh"', self.source)
-        self.assertIn("LLM_PROFILE_STORAGE_VERSION = 6", self.source)
+        self.assertIn('id: "qwen3.5",\n  name: "Default"', self.constants)
+        self.assertIn('name: "Qwen 3.8 (27B)"', self.constants)
+        self.assertIn('id: "qwen3.8-27b"', self.constants)
+        self.assertIn("presence_penalty: 1.5", self.constants)
+        self.assertIn("top_p: 0.8", self.constants)
+        self.assertIn("top_k: 20", self.constants)
+        self.assertIn("thinking_temperature: 1.0", self.constants)
+        self.assertIn("thinking_top_p: 0.95", self.constants)
+        self.assertIn("thinking_presence_penalty: 0", self.constants)
+        self.assertIn('thinking_modes: Object.freeze(["XHigh", "Medium", "Low", "Disabled"])', self.constants)
+        self.assertIn('thinking_mode: "XHigh"', self.constants)
+        self.assertIn("LLM_PROFILE_STORAGE_VERSION = 6", self.constants)
         self.assertIn("Llama.cpp reasoning cap", self.source)
         self.assertIn('name="llamacpp_reasoning_budget_tokens"', self.source)
-        self.assertIn('profile?.name === "Qwen3.5"', self.source)
-        self.assertIn("storageVersion < LLM_PROFILE_STORAGE_VERSION", self.source)
-        self.assertIn("storageVersion < 2", self.source)
+        self.assertIn('profile?.name === "Qwen3.5"', self.llm_profile_store)
+        self.assertIn("storageVersion < LLM_PROFILE_STORAGE_VERSION", self.llm_profile_store)
+        self.assertIn("storageVersion < 2", self.llm_profile_store)
         self.assertIn('id: "__default__", name: "Default"', available)
         self.assertIn('profile.id === "__default__"', editor)
         self.assertIn('"Add LLM profile"', editor)
