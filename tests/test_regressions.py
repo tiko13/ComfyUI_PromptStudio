@@ -86,7 +86,10 @@ def install_runtime_stubs(storage_root):
 
     server = types.ModuleType("server")
     server.PromptServer = types.SimpleNamespace(
-        instance=types.SimpleNamespace(routes=Routes(), app=types.SimpleNamespace(middlewares=[]))
+        instance=types.SimpleNamespace(
+            routes=Routes(),
+            app=types.SimpleNamespace(middlewares=[], on_startup=[]),
+        )
     )
     sys.modules["server"] = server
 
@@ -117,11 +120,22 @@ class RegressionTests(unittest.TestCase):
         self.routes.LLAMACPP_PROCESS_STATE_PATH = str(
             Path(self.temp.name) / "prompt_studio_llamacpp_process.json"
         )
+        self.routes.LLAMACPP_AUTOSTART_PATH = str(
+            Path(self.temp.name) / "prompt_studio_llamacpp_autostart.json"
+        )
         self.routes.LLAMACPP_OUTPUT_LOG_PATH = str(
             Path(self.temp.name) / "prompt_studio_llamacpp.log"
         )
+        self.launch_llamacpp_watchdog = self.routes._launch_llamacpp_watchdog
+        self.llamacpp_watchdog = mock.patch.object(
+            self.routes,
+            "_launch_llamacpp_watchdog",
+            return_value=mock.Mock(pid=97531),
+        )
+        self.llamacpp_watchdog.start()
 
     def tearDown(self):
+        self.llamacpp_watchdog.stop()
         self.temp.cleanup()
 
     def test_kobold_status_reports_loaded_model_and_vision(self):
@@ -560,6 +574,15 @@ class RegressionTests(unittest.TestCase):
             self.routes._LLAMACPP_PROCESS,
             self.routes._RecoveredLlamacppProcess,
         )
+        renewed = json.loads(
+            Path(self.routes.LLAMACPP_PROCESS_STATE_PATH).read_text(encoding="utf-8")
+        )
+        self.assertEqual(renewed["version"], 2)
+        self.assertEqual(renewed["watchdog"]["owner_pid"], os.getpid())
+
+    def test_llamacpp_recovery_is_registered_for_comfyui_startup(self):
+        callbacks = self.routes.PromptServer.instance.app.on_startup
+        self.assertIn(self.routes._recover_llamacpp_process_on_startup, callbacks)
 
     def test_llamacpp_recovery_rejects_a_reused_pid(self):
         root = Path(self.temp.name)
@@ -663,6 +686,121 @@ class RegressionTests(unittest.TestCase):
         self.assertEqual(saved["pid"], 2468)
         self.assertEqual(saved["identity"], identity)
         self.assertEqual(saved["details"]["config_profile"], profile.name)
+        self.assertEqual(saved["version"], 2)
+        self.assertEqual(saved["watchdog"]["grace_seconds"], 120)
+        self.assertEqual(saved["watchdog"]["owner_pid"], os.getpid())
+        self.assertEqual(len(saved["watchdog"]["token"]), 32)
+
+    def test_llamacpp_autostart_persists_validated_launcher_selection(self):
+        root = Path(self.temp.name)
+        executable = root / "llama-server.exe"
+        model = root / "model.gguf"
+        profile = root / "quality.json"
+        executable.write_bytes(b"")
+        model.write_bytes(b"")
+        profile.write_text(json.dumps({"model": str(model)}), encoding="utf-8")
+
+        status = self.routes._save_llamacpp_autostart_config({
+            "enabled": True,
+            "llamacpp_executable": str(executable),
+            "llamacpp_config_profile": profile.name,
+        })
+
+        saved = json.loads(
+            Path(self.routes.LLAMACPP_AUTOSTART_PATH).read_text(encoding="utf-8")
+        )
+        self.assertIs(status["enabled"], True)
+        self.assertEqual(saved["version"], 1)
+        self.assertEqual(saved["llamacpp_executable"], str(executable))
+        self.assertEqual(saved["llamacpp_config_profile"], profile.name)
+
+    def test_llamacpp_autostart_disable_removes_server_side_preference(self):
+        path = Path(self.routes.LLAMACPP_AUTOSTART_PATH)
+        path.write_text(json.dumps({"version": 1, "enabled": True}), encoding="utf-8")
+
+        status = self.routes._save_llamacpp_autostart_config({"enabled": False})
+
+        self.assertIs(status["enabled"], False)
+        self.assertFalse(path.exists())
+
+    def test_llamacpp_autostarts_after_recovery_during_comfyui_startup(self):
+        config = {
+            "version": 1,
+            "enabled": True,
+            "llamacpp_executable": str(Path(self.temp.name) / "llama-server.exe"),
+            "llamacpp_config_profile": "quality.json",
+        }
+        Path(self.routes.LLAMACPP_AUTOSTART_PATH).write_text(
+            json.dumps(config),
+            encoding="utf-8",
+        )
+        expected = {"managed": True, "running": True, "pid": 2468}
+
+        with (
+            mock.patch.object(self.routes, "_recover_llamacpp_process_locked") as recover,
+            mock.patch.object(self.routes, "_start_llamacpp_server", return_value=expected) as start,
+        ):
+            status = self.routes._initialize_llamacpp_process()
+
+        recover.assert_called_once_with()
+        start.assert_called_once_with(config)
+        self.assertEqual(status, expected)
+
+    def test_llamacpp_startup_does_not_launch_when_autostart_is_disabled(self):
+        with (
+            mock.patch.object(self.routes, "_recover_llamacpp_process_locked") as recover,
+            mock.patch.object(self.routes, "_start_llamacpp_server") as start,
+        ):
+            status = self.routes._initialize_llamacpp_process()
+
+        recover.assert_called_once_with()
+        start.assert_not_called()
+        self.assertIsNone(status)
+
+    def test_llamacpp_autostart_leaves_an_external_server_untouched(self):
+        root = Path(self.temp.name)
+        executable = root / "llama-server.exe"
+        model = root / "model.gguf"
+        profile = root / "quality.json"
+        executable.write_bytes(b"")
+        model.write_bytes(b"")
+        profile.write_text(json.dumps({"model": str(model)}), encoding="utf-8")
+        Path(self.routes.LLAMACPP_AUTOSTART_PATH).write_text(json.dumps({
+            "version": 1,
+            "enabled": True,
+            "llamacpp_executable": str(executable),
+            "llamacpp_config_profile": profile.name,
+        }), encoding="utf-8")
+
+        with (
+            mock.patch.object(self.routes, "_get_json", return_value={"status": "ok"}),
+            mock.patch.object(self.routes.subprocess, "Popen") as popen,
+        ):
+            status = self.routes._initialize_llamacpp_process()
+
+        self.assertIs(status["external"], True)
+        self.assertIs(status["already_running"], True)
+        popen.assert_not_called()
+
+    def test_llamacpp_watchdog_is_detached_from_comfyui_process_group(self):
+        watchdog = {"token": "a" * 32}
+        process = mock.Mock(pid=97531)
+        with mock.patch.object(self.routes.subprocess, "Popen", return_value=process) as popen:
+            launched = self.launch_llamacpp_watchdog(watchdog)
+
+        self.assertIs(launched, process)
+        command = popen.call_args.args[0]
+        self.assertEqual(command[0], sys.executable)
+        self.assertEqual(command[1], self.routes.LLAMACPP_WATCHDOG_PATH)
+        self.assertIn(self.routes.LLAMACPP_PROCESS_STATE_PATH, command)
+        self.assertEqual(popen.call_args.kwargs["stdin"], self.routes.subprocess.DEVNULL)
+        self.assertEqual(popen.call_args.kwargs["stdout"], self.routes.subprocess.DEVNULL)
+        if os.name == "nt":
+            flags = popen.call_args.kwargs["creationflags"]
+            self.assertTrue(flags & self.routes.subprocess.CREATE_NEW_PROCESS_GROUP)
+            self.assertTrue(flags & self.routes.subprocess.CREATE_NO_WINDOW)
+        else:
+            self.assertIs(popen.call_args.kwargs["start_new_session"], True)
 
     def test_llamacpp_start_does_not_leave_an_unrecoverable_process_running(self):
         root = Path(self.temp.name)

@@ -66,6 +66,8 @@ prompt_studio_workflows.json
 prompt_studio_workflows.json.tmp
 prompt_studio_llamacpp_process.json
 prompt_studio_llamacpp_process.json.tmp
+prompt_studio_llamacpp_autostart.json
+prompt_studio_llamacpp_autostart.json.tmp
 llamacpp_server.json
 config/LlamaCPP/*.json
 protected_words.txt

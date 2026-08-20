@@ -21,6 +21,7 @@ import {
   KOBOLD_STATUS_POLL_MS,
   LLAMACPP_CONFIG_BUILDER_ENDPOINT,
   LLAMACPP_CONFIG_PROFILES_ENDPOINT,
+  LLAMACPP_AUTOSTART_ENDPOINT,
   LLAMACPP_FILE_PICKER_ENDPOINT,
   LLAMACPP_SERVER_ENDPOINT,
   LLM_ABORT_ENDPOINT,
@@ -483,6 +484,9 @@ function applyRememberedLlmConnection(settings) {
     llamacpp_model: String(remembered.llamacpp_model ?? settings.llamacpp_model ?? ""),
     llamacpp_executable: String(remembered.llamacpp_executable ?? settings.llamacpp_executable ?? ""),
     llamacpp_config_profile: String(remembered.llamacpp_config_profile ?? settings.llamacpp_config_profile ?? ""),
+    llamacpp_autostart: remembered.llamacpp_autostart == null
+      ? Boolean(settings.llamacpp_autostart)
+      : Boolean(remembered.llamacpp_autostart),
     keep_models_loaded: remembered.keep_models_loaded == null
       ? Boolean(settings.keep_models_loaded)
       : Boolean(remembered.keep_models_loaded),
@@ -506,6 +510,7 @@ function saveSettings() {
       llamacpp_model: value("promptstudio-llamacpp-model"),
       llamacpp_executable: value("promptstudio-llamacpp-executable"),
       llamacpp_config_profile: value("promptstudio-llamacpp-config-profile"),
+      llamacpp_autostart: checked("promptstudio-llamacpp-autostart"),
       keep_models_loaded: checked("promptstudio-keep-models-loaded"),
       model_profile: value("promptstudio-profile"),
       style_preset: value("promptstudio-style"),
@@ -988,8 +993,13 @@ function openBackendSettings() {
   const provider = selectedLlmProvider();
   if (provider === "ollama") loadOllamaModels({ announce: false });
   if (provider === "llamacpp") {
-    loadLlamacppModels({ announce: false });
-    loadLlamacppConfigProfiles({ announce: false });
+    loadLlamacppAutostartPreference().then(() => {
+      loadLlamacppModels({ announce: false });
+      loadLlamacppConfigProfiles({
+        announce: false,
+        preferred: state.panel?.querySelector("#promptstudio-llamacpp-config-profile")?.value || "",
+      });
+    });
   }
   dialog.querySelector("#promptstudio-close-backend-settings")?.focus({ preventScroll: true });
 }
@@ -1645,6 +1655,7 @@ function captureStudioSettings(chat = activeChat()) {
     llamacpp_model: value("llamacpp_model", "promptstudio-llamacpp-model"),
     llamacpp_executable: value("llamacpp_executable", "promptstudio-llamacpp-executable"),
     llamacpp_config_profile: value("llamacpp_config_profile", "promptstudio-llamacpp-config-profile"),
+    llamacpp_autostart: checked("llamacpp_autostart", "promptstudio-llamacpp-autostart"),
     keep_models_loaded: checked("keep_models_loaded", "promptstudio-keep-models-loaded"),
     model_profile: value("model_profile", "promptstudio-profile"),
     style_preset: value("style_preset", "promptstudio-style"),
@@ -1754,6 +1765,7 @@ function applyStudioSettings(chat) {
     ["promptstudio-auto-advance-source", settings.auto_advance_source],
     ["promptstudio-use-latest-image-context", settings.use_latest_image_context],
     ["promptstudio-keep-models-loaded", settings.keep_models_loaded],
+    ["promptstudio-llamacpp-autostart", settings.llamacpp_autostart],
   ].forEach(([id, setting]) => setChecked(id, setting));
   const action = state.panel.querySelector(
     `input[name="promptstudio-generation-action"][value="${settings.generation_action}"]`,
@@ -4694,6 +4706,80 @@ async function loadLlamacppConfigProfiles({ announce = false, preferred = "" } =
   }
 }
 
+function applyLlamacppAutostartStatus(data) {
+  const enabled = data?.enabled === true;
+  const checkbox = state.panel?.querySelector("#promptstudio-llamacpp-autostart");
+  const executable = state.panel?.querySelector("#promptstudio-llamacpp-executable");
+  const profile = state.panel?.querySelector("#promptstudio-llamacpp-config-profile");
+  state.llamacppAutostartEnabled = enabled;
+  if (checkbox) checkbox.checked = enabled;
+  if (enabled && executable && data.llamacpp_executable) {
+    executable.value = String(data.llamacpp_executable);
+  }
+  if (enabled && profile && data.llamacpp_config_profile) {
+    const selected = String(data.llamacpp_config_profile);
+    if (![...profile.options].some((option) => option.value === selected)) {
+      profile.appendChild(new Option(selected, selected));
+    }
+    profile.value = selected;
+  }
+  saveSettings();
+}
+
+async function loadLlamacppAutostartPreference({ announce = false } = {}) {
+  if (state.llamacppAutostartBusy) return;
+  state.llamacppAutostartBusy = true;
+  const checkbox = state.panel?.querySelector("#promptstudio-llamacpp-autostart");
+  if (checkbox) checkbox.disabled = true;
+  try {
+    const response = await api.fetchApi(LLAMACPP_AUTOSTART_ENDPOINT);
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.error || `Could not load Llama.cpp autostart (${response.status}).`);
+    applyLlamacppAutostartStatus(data);
+    if (announce) {
+      setStatus(data.enabled ? "Llama.cpp will start with ComfyUI." : "Llama.cpp autostart is off.", "ready");
+    }
+  } catch (error) {
+    if (announce) setStatus(error.message || String(error), "warning");
+  } finally {
+    state.llamacppAutostartBusy = false;
+    if (checkbox) checkbox.disabled = false;
+  }
+}
+
+async function saveLlamacppAutostartPreference({ announce = false } = {}) {
+  if (state.llamacppAutostartBusy) return;
+  const checkbox = state.panel?.querySelector("#promptstudio-llamacpp-autostart");
+  if (!checkbox) return;
+  state.llamacppAutostartBusy = true;
+  checkbox.disabled = true;
+  try {
+    const response = await api.fetchApi(LLAMACPP_AUTOSTART_ENDPOINT, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        enabled: checkbox.checked,
+        llamacpp_executable: state.panel?.querySelector("#promptstudio-llamacpp-executable")?.value.trim() || "",
+        llamacpp_config_profile: state.panel?.querySelector("#promptstudio-llamacpp-config-profile")?.value || "",
+      }),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.error || `Could not save Llama.cpp autostart (${response.status}).`);
+    applyLlamacppAutostartStatus(data);
+    if (announce) {
+      setStatus(data.enabled ? "Llama.cpp will start with ComfyUI." : "Llama.cpp autostart disabled.", "ready");
+    }
+  } catch (error) {
+    setStatus(error.message || String(error), "warning");
+    state.llamacppAutostartBusy = false;
+    await loadLlamacppAutostartPreference();
+    return;
+  } finally {
+    state.llamacppAutostartBusy = false;
+    checkbox.disabled = false;
+  }
+}
+
 function syncLlmProviderControls({ refreshModels = false } = {}) {
   const provider = selectedLlmProvider();
   state.panel?.querySelectorAll("[data-llm-provider]").forEach((element) => {
@@ -6888,6 +6974,7 @@ async function openLlamacppConfigBuilder({ createNew = false } = {}) {
       profile.value = data.config_profile;
     }
     saveSettings();
+    if (state.llamacppAutostartEnabled) saveLlamacppAutostartPreference();
     setStatus("Llama.cpp config builder opened. Save there before starting or restarting the server.", "ready");
   } catch (error) {
     setStatus(error.message || String(error), "warning");
@@ -11188,6 +11275,10 @@ function buildPanel() {
                 <button id="promptstudio-new-llamacpp-config" type="button" title="Create a new profile with the Prompt Studio config builder">New…</button>
               </span>
             </label>
+            <label class="promptstudio-studio-setting promptstudio-studio-setting-toggle" data-llm-provider="llamacpp">
+              <span class="promptstudio-studio-setting-copy"><strong>Start with ComfyUI</strong><small>Automatically start this managed Llama.cpp executable and config profile when ComfyUI starts. External servers are never replaced.</small></span>
+              <input id="promptstudio-llamacpp-autostart" type="checkbox" role="switch" ${settings.llamacpp_autostart ? "checked" : ""} />
+            </label>
                 </div>
               </section>
             </div>
@@ -11890,11 +11981,17 @@ function buildPanel() {
   });
   panel.querySelector("#promptstudio-llamacpp-executable").addEventListener("change", () => {
     saveSettings();
+    if (state.llamacppAutostartEnabled) saveLlamacppAutostartPreference();
     refreshLlmStatus();
   });
   panel.querySelector("#promptstudio-llamacpp-config-profile").addEventListener("change", () => {
     saveSettings();
+    if (state.llamacppAutostartEnabled) saveLlamacppAutostartPreference();
     refreshLlmStatus();
+  });
+  panel.querySelector("#promptstudio-llamacpp-autostart").addEventListener("change", () => {
+    saveSettings();
+    saveLlamacppAutostartPreference({ announce: true });
   });
   panel.querySelector("#promptstudio-refresh-llamacpp-configs").addEventListener("click", () => {
     loadLlamacppConfigProfiles({ announce: true });

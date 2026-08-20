@@ -98,6 +98,8 @@ LLAMACPP_CONFIG_BUILDER_PATH = os.path.join(BASE_DIR, "llamacpp_config_builder.p
 LLAMACPP_CONFIG_DIRECTORY = os.path.join(BASE_DIR, "config", "LlamaCPP")
 LLAMACPP_PROCESS_STATE_PATH = os.path.join(BASE_DIR, "prompt_studio_llamacpp_process.json")
 LLAMACPP_OUTPUT_LOG_PATH = os.path.join(LLAMACPP_CONFIG_DIRECTORY, "prompt_studio_llamacpp.log")
+LLAMACPP_WATCHDOG_PATH = os.path.join(BASE_DIR, "llamacpp_watchdog.py")
+LLAMACPP_AUTOSTART_PATH = os.path.join(BASE_DIR, "prompt_studio_llamacpp_autostart.json")
 STANDALONE_ALIAS_PATH = "/PromptStudio"
 COMFYUI_ROOT = os.path.abspath(os.path.join(BASE_DIR, os.pardir, os.pardir))
 COMFYUI_UPDATE_PACKAGES = (
@@ -142,8 +144,10 @@ _LLAMACPP_PROCESS_DETAILS = {}
 _LLAMACPP_PICKER_LOCK = threading.Lock()
 MAX_LLAMACPP_CONFIG_BYTES = 64 * 1024
 MAX_LLAMACPP_PROCESS_STATE_BYTES = 16 * 1024
+MAX_LLAMACPP_AUTOSTART_BYTES = 16 * 1024
 MAX_LLAMACPP_OUTPUT_TAIL_BYTES = 16 * 1024
 LLAMACPP_STARTUP_GRACE_SECONDS = 1.25
+LLAMACPP_PARENT_EXIT_GRACE_SECONDS = 120
 
 
 def _update_command_output(result):
@@ -415,25 +419,7 @@ def _remove_llamacpp_process_state():
             logging.warning("Could not remove stale Prompt Studio Llama.cpp process state: %s", exc)
 
 
-def _write_llamacpp_process_state(process, details):
-    snapshot = None
-    for _attempt in range(10):
-        snapshot = _process_snapshot(process.pid)
-        if snapshot is not None or process.poll() is not None:
-            break
-        time.sleep(0.05)
-    if snapshot is None:
-        _remove_llamacpp_process_state()
-        raise RuntimeError(
-            "Prompt Studio could not record the Llama.cpp process identity, so the server "
-            "was not left running without restart-safe process control."
-        )
-    state = {
-        "version": 1,
-        "pid": int(process.pid),
-        "identity": snapshot,
-        "details": dict(details),
-    }
+def _write_llamacpp_process_state_payload(state):
     temporary_path = LLAMACPP_PROCESS_STATE_PATH + ".tmp"
     try:
         with open(temporary_path, "w", encoding="utf-8") as handle:
@@ -449,6 +435,30 @@ def _write_llamacpp_process_state(process, details):
         ) from exc
 
 
+def _write_llamacpp_process_state(process, details, watchdog):
+    snapshot = None
+    for _attempt in range(10):
+        snapshot = _process_snapshot(process.pid)
+        if snapshot is not None or process.poll() is not None:
+            break
+        time.sleep(0.05)
+    if snapshot is None:
+        _remove_llamacpp_process_state()
+        raise RuntimeError(
+            "Prompt Studio could not record the Llama.cpp process identity, so the server "
+            "was not left running without restart-safe process control."
+        )
+    state = {
+        "version": 2,
+        "pid": int(process.pid),
+        "identity": snapshot,
+        "details": dict(details),
+        "watchdog": dict(watchdog),
+    }
+    _write_llamacpp_process_state_payload(state)
+    return state
+
+
 def _read_llamacpp_process_state():
     try:
         if os.path.getsize(LLAMACPP_PROCESS_STATE_PATH) > MAX_LLAMACPP_PROCESS_STATE_BYTES:
@@ -461,10 +471,139 @@ def _read_llamacpp_process_state():
         logging.warning("Ignoring invalid Prompt Studio Llama.cpp process state: %s", exc)
         _remove_llamacpp_process_state()
         return None
-    if not isinstance(state, dict) or state.get("version") != 1:
+    if not isinstance(state, dict) or state.get("version") not in {1, 2}:
         _remove_llamacpp_process_state()
         return None
     return state
+
+
+def _remove_llamacpp_autostart_config():
+    for path in (LLAMACPP_AUTOSTART_PATH, LLAMACPP_AUTOSTART_PATH + ".tmp"):
+        try:
+            os.remove(path)
+        except FileNotFoundError:
+            pass
+        except OSError as exc:
+            logging.warning("Could not remove the Prompt Studio Llama.cpp autostart config: %s", exc)
+
+
+def _read_llamacpp_autostart_config():
+    try:
+        if os.path.getsize(LLAMACPP_AUTOSTART_PATH) > MAX_LLAMACPP_AUTOSTART_BYTES:
+            raise ValueError("autostart config exceeds the size limit")
+        with open(LLAMACPP_AUTOSTART_PATH, "r", encoding="utf-8") as handle:
+            config = json.load(handle)
+    except FileNotFoundError:
+        return None
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        logging.warning("Ignoring invalid Prompt Studio Llama.cpp autostart config: %s", exc)
+        return None
+    if (
+        not isinstance(config, dict)
+        or config.get("version") != 1
+        or config.get("enabled") is not True
+        or not _text(config.get("llamacpp_executable")).strip()
+        or not _text(config.get("llamacpp_config_profile")).strip()
+    ):
+        return None
+    return config
+
+
+def _llamacpp_autostart_status():
+    config = _read_llamacpp_autostart_config()
+    if config is None:
+        return {"enabled": False, "llamacpp_executable": "", "llamacpp_config_profile": ""}
+    return {
+        "enabled": True,
+        "llamacpp_executable": config["llamacpp_executable"],
+        "llamacpp_config_profile": config["llamacpp_config_profile"],
+    }
+
+
+def _save_llamacpp_autostart_config(data):
+    enabled = data.get("enabled", False)
+    if not isinstance(enabled, bool):
+        raise ValueError("Llama.cpp autostart 'enabled' must be a boolean")
+    if not enabled:
+        _remove_llamacpp_autostart_config()
+        return _llamacpp_autostart_status()
+    launcher = _load_llamacpp_launcher_config(data)
+    config = {
+        "version": 1,
+        "enabled": True,
+        "llamacpp_executable": launcher["executable"],
+        "llamacpp_config_profile": os.path.basename(launcher["config_path"]),
+    }
+    temporary_path = LLAMACPP_AUTOSTART_PATH + ".tmp"
+    try:
+        with open(temporary_path, "w", encoding="utf-8") as handle:
+            json.dump(config, handle, ensure_ascii=False, separators=(",", ":"))
+        os.replace(temporary_path, LLAMACPP_AUTOSTART_PATH)
+    except OSError as exc:
+        try:
+            os.remove(temporary_path)
+        except OSError:
+            pass
+        raise RuntimeError("Could not save the Prompt Studio Llama.cpp autostart config") from exc
+    return _llamacpp_autostart_status()
+
+
+def _launch_llamacpp_watchdog(watchdog):
+    command = [
+        sys.executable,
+        LLAMACPP_WATCHDOG_PATH,
+        "--state-path",
+        LLAMACPP_PROCESS_STATE_PATH,
+        "--token",
+        watchdog["token"],
+    ]
+    kwargs = {
+        "stdin": subprocess.DEVNULL,
+        "stdout": subprocess.DEVNULL,
+        "stderr": subprocess.DEVNULL,
+        "shell": False,
+        "close_fds": True,
+    }
+    if os.name == "nt":
+        kwargs["creationflags"] = (
+            getattr(subprocess, "CREATE_NO_WINDOW", 0)
+            | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+        )
+    else:
+        kwargs["start_new_session"] = True
+    try:
+        return subprocess.Popen(command, **kwargs)
+    except OSError as exc:
+        raise RuntimeError(f"Could not start the Llama.cpp parent-process watchdog: {exc}") from exc
+
+
+def _arm_llamacpp_watchdog(process, details, previous_state=None):
+    if _process_snapshot(process.pid) is None:
+        raise RuntimeError(
+            "Prompt Studio could not record the Llama.cpp process identity, so the server "
+            "was not left running without restart-safe process control."
+        )
+    owner_identity = _process_snapshot(os.getpid())
+    if owner_identity is None:
+        raise RuntimeError(
+            "Prompt Studio could not record the ComfyUI process identity for the Llama.cpp watchdog"
+        )
+    watchdog = {
+        "token": secrets.token_hex(16),
+        "owner_pid": os.getpid(),
+        "owner_identity": owner_identity,
+        "grace_seconds": LLAMACPP_PARENT_EXIT_GRACE_SECONDS,
+    }
+    _write_llamacpp_process_state(process, details, watchdog)
+    try:
+        _launch_llamacpp_watchdog(watchdog)
+    except Exception:
+        if previous_state is None:
+            _remove_llamacpp_process_state()
+        else:
+            _write_llamacpp_process_state_payload(previous_state)
+        raise
+    return watchdog
 
 
 def _terminate_recovered_process(pid, expected, *, force=False):
@@ -533,6 +672,10 @@ def _recover_llamacpp_process_locked():
         return
     _LLAMACPP_PROCESS = _RecoveredLlamacppProcess(pid, identity)
     _LLAMACPP_PROCESS_DETAILS = dict(details)
+    try:
+        _arm_llamacpp_watchdog(_LLAMACPP_PROCESS, _LLAMACPP_PROCESS_DETAILS, state)
+    except Exception as exc:
+        logging.warning("Could not renew the Prompt Studio Llama.cpp watchdog: %s", exc)
 
 
 def _keep_models_loaded(data):
@@ -1047,7 +1190,7 @@ def _start_llamacpp_server(data, *, allow_external=True):
             "started_at": time.time(),
         }
         try:
-            _write_llamacpp_process_state(process, _LLAMACPP_PROCESS_DETAILS)
+            _arm_llamacpp_watchdog(process, _LLAMACPP_PROCESS_DETAILS)
         except Exception:
             try:
                 process.terminate()
@@ -5566,6 +5709,35 @@ async def prompt_studio_llamacpp_config_profiles(request):
         return web.json_response({"error": str(exc)}, status=502)
 
 
+@PromptServer.instance.routes.get("/promptstudio/prompt-studio/llamacpp/autostart")
+async def prompt_studio_llamacpp_autostart_status(request):
+    try:
+        _require_loopback_server_control(request)
+        return web.json_response(await asyncio.to_thread(_llamacpp_autostart_status))
+    except PermissionError as exc:
+        return web.json_response({"error": str(exc)}, status=403)
+    except Exception as exc:
+        return web.json_response({"error": str(exc)}, status=502)
+
+
+@PromptServer.instance.routes.post("/promptstudio/prompt-studio/llamacpp/autostart")
+async def prompt_studio_llamacpp_autostart_save(request):
+    try:
+        _require_loopback_server_control(request)
+        if request.content_length is not None and request.content_length > MAX_LLM_CONFIG_REQUEST_BYTES:
+            raise ValueError("Llama.cpp autostart request is too large")
+        data = await request.json()
+        if not isinstance(data, dict):
+            raise ValueError("JSON body must be an object")
+        return web.json_response(await asyncio.to_thread(_save_llamacpp_autostart_config, data))
+    except PermissionError as exc:
+        return web.json_response({"error": str(exc)}, status=403)
+    except (ValueError, json.JSONDecodeError) as exc:
+        return web.json_response({"error": str(exc)}, status=400)
+    except Exception as exc:
+        return web.json_response({"error": str(exc)}, status=502)
+
+
 @PromptServer.instance.routes.post("/promptstudio/prompt-studio/llamacpp/pick-file")
 async def prompt_studio_llamacpp_pick_file(request):
     try:
@@ -5604,4 +5776,30 @@ async def prompt_studio_agent_status(request):
     return web.json_response(response)
 
 
+def _initialize_llamacpp_process():
+    with _LLAMACPP_PROCESS_LOCK:
+        _recover_llamacpp_process_locked()
+    config = _read_llamacpp_autostart_config()
+    if config is None:
+        return None
+    try:
+        status = _start_llamacpp_server(config)
+    except Exception as exc:
+        logging.error("Could not autostart the Prompt Studio Llama.cpp server: %s", exc)
+        return None
+    logging.info("Prompt Studio Llama.cpp autostart status: %s", status)
+    return status
+
+
+async def _recover_llamacpp_process_on_startup(_application):
+    await asyncio.to_thread(_initialize_llamacpp_process)
+
+
+def _install_llamacpp_recovery_hook():
+    on_startup = getattr(PromptServer.instance.app, "on_startup", None)
+    if on_startup is not None:
+        on_startup.append(_recover_llamacpp_process_on_startup)
+
+
 _install_lan_access_middleware()
+_install_llamacpp_recovery_hook()

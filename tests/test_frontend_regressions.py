@@ -255,6 +255,7 @@ class FrontendRegressionTests(unittest.TestCase):
         self.assertIn("llamacpp_model:", remembered)
         self.assertIn("llamacpp_executable:", remembered)
         self.assertIn("llamacpp_config_profile:", remembered)
+        self.assertIn("llamacpp_autostart:", remembered)
         self.assertIn("keep_models_loaded:", remembered)
         self.assertIn("applyRememberedLlmConnection(", applied)
 
@@ -289,6 +290,14 @@ class FrontendRegressionTests(unittest.TestCase):
         ]
         launcher_configured = self.function_source("llamacppLauncherConfigured", "comfyUiIsProcessing")
         process_control = self.function_source("controlLlamacppServer", "startLlmStatusMonitor")
+        autostart_load = self.function_source(
+            "loadLlamacppAutostartPreference",
+            "saveLlamacppAutostartPreference",
+        )
+        autostart_save = self.function_source(
+            "saveLlamacppAutostartPreference",
+            "syncLlmProviderControls",
+        )
         file_picker = self.function_source("browseLlamacppPath", "startLlmStatusMonitor")
         config_builder = self.function_source("openLlamacppConfigBuilder", "startLlmStatusMonitor")
 
@@ -312,6 +321,13 @@ class FrontendRegressionTests(unittest.TestCase):
         self.assertIn('id="promptstudio-browse-llamacpp-executable"', self.source)
         self.assertNotIn('id="promptstudio-browse-llamacpp-config-directory"', self.source)
         self.assertIn('id="promptstudio-llamacpp-config-profile"', self.source)
+        self.assertIn('id="promptstudio-llamacpp-autostart"', self.source)
+        self.assertIn("Start with ComfyUI", self.source)
+        self.assertIn("LLAMACPP_AUTOSTART_ENDPOINT", autostart_load)
+        self.assertIn("LLAMACPP_AUTOSTART_ENDPOINT", autostart_save)
+        self.assertIn("llamacpp_executable:", autostart_save)
+        self.assertIn("llamacpp_config_profile:", autostart_save)
+        self.assertIn("loadLlamacppAutostartPreference();", self.source)
         self.assertIn("Profiles are stored in config/LlamaCPP", self.source)
         self.assertIn('id="promptstudio-refresh-llamacpp-configs"', self.source)
         self.assertIn('id="promptstudio-build-llamacpp-config"', self.source)

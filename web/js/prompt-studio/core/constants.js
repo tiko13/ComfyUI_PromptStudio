@@ -33,6 +33,7 @@ export const PROMPT_AGENT_CANCEL_ENDPOINT = "/promptstudio/prompt-studio/agent/c
 export const LLM_STATUS_ENDPOINT = "/promptstudio/prompt-studio/llm/status";
 export const LLM_ABORT_ENDPOINT = "/promptstudio/prompt-studio/llm/abort";
 export const LLAMACPP_SERVER_ENDPOINT = "/promptstudio/prompt-studio/llamacpp/server";
+export const LLAMACPP_AUTOSTART_ENDPOINT = "/promptstudio/prompt-studio/llamacpp/autostart";
 export const LLAMACPP_FILE_PICKER_ENDPOINT = "/promptstudio/prompt-studio/llamacpp/pick-file";
 export const LLAMACPP_CONFIG_BUILDER_ENDPOINT = "/promptstudio/prompt-studio/llamacpp/config-builder";
 export const LLAMACPP_CONFIG_PROFILES_ENDPOINT = "/promptstudio/prompt-studio/llamacpp/config-profiles";
@@ -85,6 +86,7 @@ export const SETTINGS_DEFAULTS = Object.freeze({
   llamacpp_model: "",
   llamacpp_executable: "",
   llamacpp_config_profile: "",
+  llamacpp_autostart: false,
   keep_models_loaded: false,
   llm_profile: "qwen3.5",
   model_profile: "General Natural Language",

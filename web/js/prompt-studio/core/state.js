@@ -88,6 +88,8 @@ function createInitialState() {
     comfyUpdateResults: new Map(),
     koboldAbortBusy: false,
     llamacppProcessBusy: false,
+    llamacppAutostartBusy: false,
+    llamacppAutostartEnabled: false,
     consultVisionAvailable: null,
     consultVisionReason: "",
     consultSelectedImages: new Map(),
