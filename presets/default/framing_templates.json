@@ -86,11 +86,11 @@
     },
     {
       "name": "Character Sheet",
-      "instruction": "Frame the subject like a character blueprint or design reference, Always include front, side, and rear view. Character sheet overrides the original prompt - extract only the subject and put it on a plain background, standing upright and relaxed. Ignore anything that is not directly related to subject (such as any other objects/items in the scene.)"
+      "instruction": "Present the existing focal subject as a clean character-design sheet with front, side, and rear views on a plain background, standing upright in a relaxed neutral pose. Preserve the subject's established identity, anatomy, clothing, accessories, and requested attributes. Omit scene-specific background content from the sheet without inventing new props, characters, wardrobe, or physical traits."
     },
     {
       "name": "First-Person Downward View",
-      "instruction": "The scene is viewed from the first-person perspective of the subject. Frame the scene such as 'first-person perspective of a woman looking down on her legs'. This being a FIRST PERSON perspective, remove any mention of subject's head, face or anything the subject cannot see from their point of view, and don't mention it in the prompt at all."
+      "instruction": "Use the existing viewpoint character's first-person perspective while looking downward. Show only body parts, clothing, held objects, and surroundings that are naturally visible from that viewpoint and already supported by the prompt. Preserve the established subject identity and scene; do not introduce a gender, anatomy, clothing, props, or activity merely to demonstrate the framing."
     },
     {
       "name": "CCTV Footage",

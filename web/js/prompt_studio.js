@@ -31,15 +31,13 @@ const PROMPT_AGENT_ENDPOINT = "/promptstudio/prompt-studio/agent";
 const PROMPT_AGENT_CANCEL_ENDPOINT = "/promptstudio/prompt-studio/agent/cancel";
 const LLM_STATUS_ENDPOINT = "/promptstudio/prompt-studio/llm/status";
 const LLM_ABORT_ENDPOINT = "/promptstudio/prompt-studio/llm/abort";
-const KOBOLD_STATUS_ENDPOINT = "/promptstudio/prompt-studio/kobold/status";
-const KOBOLD_ABORT_ENDPOINT = "/promptstudio/prompt-studio/kobold/abort";
 const LLAMACPP_SERVER_ENDPOINT = "/promptstudio/prompt-studio/llamacpp/server";
 const LLAMACPP_FILE_PICKER_ENDPOINT = "/promptstudio/prompt-studio/llamacpp/pick-file";
 const LLAMACPP_CONFIG_BUILDER_ENDPOINT = "/promptstudio/prompt-studio/llamacpp/config-builder";
 const LLAMACPP_CONFIG_PROFILES_ENDPOINT = "/promptstudio/prompt-studio/llamacpp/config-profiles";
 const MUTATION_CONFIG_ENDPOINT = "/promptstudio/prompt-studio/mutation-config";
 const COMFY_RESTART_ENDPOINTS = ["/v2/manager/reboot", "/manager/reboot"];
-const COMFY_UPDATE_ENDPOINTS = ["/v2/manager/queue/update_comfyui", "/manager/queue/update_comfyui"];
+const PROMPTSTUDIO_COMFY_UPDATE_ENDPOINT = "/promptstudio/prompt-studio/update-comfyui";
 const MANAGER_UPDATE_ALL_ENDPOINTS = ["/v2/manager/queue/update_all", "/manager/queue/update_all"];
 const MANAGER_QUEUE_START_ENDPOINTS = ["/v2/manager/queue/start", "/manager/queue/start"];
 const CONSULT_JOB_POLL_MS = 1000;
@@ -680,11 +678,11 @@ function thinkingModeEnablesReasoning(mode) {
 
 function llmActivityLabel(status = {}, thinkingEnabled = false) {
   if (status.generation_phase === "thinking") return "Thinking";
-  if (status.generation_phase === "generating") return "Generating";
+  if (status.generation_phase === "generating") return "Processing";
   if (status.generation_phase === "thinking_or_generating" || thinkingEnabled) {
-    return "Thinking / generating";
+    return "Thinking / processing";
   }
-  return "Generating";
+  return "Processing";
 }
 
 function llmGeneratedTokenCount(status = {}) {
@@ -782,10 +780,6 @@ function syncLlmProfileControls() {
   if (summary) summary.textContent = `${profile.name} · ${thinkingModeEnablesReasoning(sampler.thinking_mode) ? "thinking" : "non-thinking"} · temperature ${sampler.temperature} · top p ${sampler.top_p}`;
   const name = state.panel.querySelector("#promptstudio-consult-profile-name");
   if (name) name.textContent = profile.name;
-}
-
-function llmProfileEditorIsOpen() {
-  return state.panel?.querySelector("#promptstudio-llm-profile-editor")?.hidden === false;
 }
 
 function setLlmProfileEditorThinkingModes(modes) {
@@ -1403,7 +1397,15 @@ function toggleStudioSettings(force) {
   if (show) toggleConsult(false);
   popover.hidden = !show;
   button.setAttribute("aria-expanded", show ? "true" : "false");
-  if (show) startMutationConfigMonitor();
+  if (show) {
+    closeSystemStatus();
+    startMutationConfigMonitor();
+    popover.ownerDocument.defaultView?.setTimeout(() => {
+      if (!popover.hidden && !openPromptStudioDialog()) {
+        popover.querySelector("#promptstudio-close-studio-settings")?.focus({ preventScroll: true });
+      }
+    }, 0);
+  }
   else {
     stopMutationConfigMonitor();
     closeBackendSettings({ restoreFocus: false });
@@ -1712,6 +1714,40 @@ function openPromptStudioDialog() {
   return state.panel?.querySelector('[role="dialog"][aria-modal="true"]:not([hidden])');
 }
 
+function closeSystemStatus({ restoreFocus = false } = {}) {
+  const control = state.panel?.querySelector("#promptstudio-kobold-control");
+  if (!control?.open) return false;
+  control.open = false;
+  if (restoreFocus) control.querySelector("summary")?.focus({ preventScroll: true });
+  return true;
+}
+
+function trapDialogFocus(dialog, event) {
+  if (event.key !== "Tab") return false;
+  const controls = [...dialog.querySelectorAll(
+    'a[href], button, input, select, textarea, [tabindex]:not([tabindex="-1"])',
+  )].filter((control) => !control.disabled && !control.hidden && control.getClientRects().length);
+  if (!controls.length) {
+    event.preventDefault();
+    dialog.focus({ preventScroll: true });
+    return true;
+  }
+  const first = controls[0];
+  const last = controls[controls.length - 1];
+  const active = dialog.ownerDocument.activeElement;
+  if (event.shiftKey && (active === first || !dialog.contains(active))) {
+    event.preventDefault();
+    last.focus({ preventScroll: true });
+    return true;
+  }
+  if (!event.shiftKey && (active === last || !dialog.contains(active))) {
+    event.preventDefault();
+    first.focus({ preventScroll: true });
+    return true;
+  }
+  return false;
+}
+
 function insertTypedCharacter(input, character) {
   const caret = input.value.length;
   input.focus({ preventScroll: true });
@@ -1753,12 +1789,14 @@ function installTypeAnywhereFocus(ownerDocument) {
       || state.panel.hidden
       || state.panel.ownerDocument !== ownerDocument
     ) return;
+    const statusControl = state.panel.querySelector("#promptstudio-kobold-control");
+    if (statusControl?.open && !statusControl.contains(event.target)) closeSystemStatus();
+
     // Let the active modal handle its own backdrop and controls without
     // dismissing an underlying consultation or settings layer first.
     if (openPromptStudioDialog()) return;
 
     const target = event.target;
-    let dismissed = false;
     const consult = state.panel.querySelector("#promptstudio-consult");
     const consultToggles = state.panel.querySelectorAll(".promptstudio-consult-toggle");
     if (
@@ -1768,7 +1806,6 @@ function installTypeAnywhereFocus(ownerDocument) {
       && ![...consultToggles].some((button) => button.contains(target))
     ) {
       toggleConsult(false);
-      dismissed = true;
     }
 
     const settings = state.panel.querySelector("#promptstudio-studio-settings");
@@ -1780,14 +1817,14 @@ function installTypeAnywhereFocus(ownerDocument) {
       && !settingsToggle?.contains(target)
     ) {
       toggleStudioSettings(false);
-      dismissed = true;
-    }
-    if (dismissed) {
-      event.preventDefault();
-      event.stopPropagation();
     }
   }, { capture: true });
   view.addEventListener("keydown", (event) => {
+    const dialog = openPromptStudioDialog();
+    if (dialog && trapDialogFocus(dialog, event)) {
+      event.stopPropagation();
+      return;
+    }
     if (
       !event.defaultPrevented
       && event.key === "Escape"
@@ -1796,6 +1833,11 @@ function installTypeAnywhereFocus(ownerDocument) {
       && state.panel.ownerDocument === ownerDocument
       && !openPromptStudioDialog()
     ) {
+      if (closeSystemStatus({ restoreFocus: true })) {
+        event.preventDefault();
+        event.stopPropagation();
+        return;
+      }
       const mutationManager = state.panel.querySelector("#promptstudio-mutation-manager");
       if (mutationManager && !mutationManager.hidden) {
         event.preventDefault();
@@ -2123,6 +2165,16 @@ function normalizePromptAgentEvaluation(value) {
           score: Math.max(0, Math.min(100, Number(item?.score) || 0)),
           evidence: String(item?.evidence || "").slice(0, 2000),
         })).filter((item) => item.id)
+      : [],
+    forbidden: Array.isArray(value.forbidden)
+      ? value.forbidden.slice(0, 12).map((item, index) => ({
+          index: Math.max(1, Math.trunc(Number(item?.index) || index + 1)),
+          outcome: String(item?.outcome || "").slice(0, 1000),
+          status: ["clear", "visible", "uncertain"].includes(item?.status)
+            ? item.status
+            : "uncertain",
+          evidence: String(item?.evidence || "").slice(0, 2000),
+        })).filter((item) => item.outcome)
       : [],
     defects: Array.isArray(value.defects)
       ? value.defects.map((item) => String(item || "").slice(0, 1000)).filter(Boolean).slice(0, 12)
@@ -3729,7 +3781,7 @@ function confirmAdvancedLlmProvider(provider) {
   const view = state.panel?.ownerDocument.defaultView;
   const accepted = Boolean(view?.confirm(
     `${llmProviderDisplayName(normalized)} is an advanced local-server option.\n\n`
-    + "You are responsible for installing and configuring the server, model files, endpoint, vision/projector support, and GPU settings. Incorrect settings can prevent generation or exhaust GPU memory. Ollama is the recommended default for most users.\n\n"
+    + "You are responsible for installing and configuring the server, model files, endpoint, vision/projector support, and GPU settings. Incorrect settings can prevent LLM processing or exhaust GPU memory. Ollama is the recommended default for most users.\n\n"
     + "Choose OK to continue. This notice will not be shown again.",
   ));
   if (accepted) {
@@ -4232,6 +4284,7 @@ function activateChat(chatId) {
   renderChatHistory({ forceEnd: true });
   renderConsultHistory({ forceEnd: true });
   renderChatList();
+  closePanelDrawers();
   refreshSecondaryInstructionsControl();
   refreshStudioStatus();
   const undo = state.panel?.querySelector("#promptstudio-undo");
@@ -4773,7 +4826,10 @@ function setStatus(text, kind = "") {
 }
 
 function isDisconnectedAllowedControl(control) {
-  return control?.dataset?.promptstudioAllowDisconnected === "true";
+  if (control?.dataset?.promptstudioAllowDisconnected === "true") return true;
+  if (!control?.closest?.('[role="dialog"]')) return false;
+  const label = String(control.getAttribute?.("aria-label") || control.title || control.textContent || "").trim();
+  return /^(close|cancel|done)\b/i.test(label);
 }
 
 function freezeDisconnectedControls(root = state.panel) {
@@ -4990,6 +5046,9 @@ function closeUpscaleDialog() {
   if (!dialog || dialog.hidden) return;
   dialog.hidden = true;
   dialog._upscaleRequest = null;
+  const trigger = dialog._upscaleTrigger;
+  dialog._upscaleTrigger = null;
+  dialog.ownerDocument.defaultView?.setTimeout(() => trigger?.focus({ preventScroll: true }));
 }
 
 function requestImageUpscale(reference, generationData = null) {
@@ -5002,6 +5061,7 @@ function requestImageUpscale(reference, generationData = null) {
   const factor = dialog?.querySelector("#promptstudio-upscale-factor");
   if (!dialog || !factor) return;
   dialog._upscaleRequest = { source, generationData, workflowProfileId: profile.id };
+  dialog._upscaleTrigger = dialog.ownerDocument.activeElement;
   factor.value = "2";
   dialog.hidden = false;
   factor.focus({ preventScroll: true });
@@ -6551,15 +6611,6 @@ function executionFailureMessage(eventName, details = null) {
     ? "ComfyUI interrupted execution."
     : "ComfyUI reported an execution error without further details.";
   return `Generation failed: ${reason || fallback}${node ? ` (${node})` : ""}`;
-}
-
-function activeTrackedGenerationPromptIds() {
-  const ids = new Set([...state.generationJobs.keys()].map(String));
-  for (const target of [state.consultGenerationTarget, state.consultAgentGenerationTarget]) {
-    if (target?.promptId) ids.add(String(target.promptId));
-  }
-  if (state.activeGenerationPromptId) ids.add(String(state.activeGenerationPromptId));
-  return [...ids].filter(Boolean);
 }
 
 function rememberGenerationFailure(promptId, message) {
@@ -8115,10 +8166,10 @@ function renderLlmStatus(status = {}) {
   stop.hidden = isOllama;
   stopHelp.hidden = isOllama;
   stop.disabled = !busy || state.koboldAbortBusy;
-  stop.textContent = state.koboldAbortBusy ? "Stopping…" : "Force stop generation";
+  stop.textContent = state.koboldAbortBusy ? "Stopping…" : "Force stop processing";
   stopHelp.textContent = isLlamacpp
     ? "Stops Prompt Studio text streams only. The Llama.cpp server stays loaded."
-    : "Stops text generation only. KoboldCpp stays loaded.";
+    : "Stops LLM processing only. KoboldCpp stays loaded.";
   if (processControls && processDetail && processStart && processStop && processRestart) {
     processControls.hidden = !isLlamacpp;
     processDetail.hidden = !isLlamacpp;
@@ -8127,13 +8178,17 @@ function renderLlmStatus(status = {}) {
     const launcherConfigured = llamacppLauncherConfigured();
     const selectedProfile = state.panel?.querySelector("#promptstudio-llamacpp-config-profile")?.value || "";
     const activeProfile = String(process.config_profile || "");
-    const profileChangePending = managedRunning && activeProfile && selectedProfile
-      && activeProfile.toLowerCase() !== selectedProfile.toLowerCase();
+    const profileChangePending = managedRunning && (
+      process.config_changed === true
+      || (activeProfile && selectedProfile && activeProfile.toLowerCase() !== selectedProfile.toLowerCase())
+    );
     processDetail.textContent = state.llamacppProcessBusy
       ? "Applying server action…"
       : (managedRunning
         ? (profileChangePending
-          ? `Running ${activeProfile} · restart to apply ${selectedProfile}`
+          ? (activeProfile.toLowerCase() === selectedProfile.toLowerCase()
+            ? `Running ${activeProfile} · restart to apply saved edits`
+            : `Running ${activeProfile} · restart to apply ${selectedProfile}`)
           : `Managed server running${activeProfile ? ` · ${activeProfile}` : ""}${process.pid ? ` · PID ${process.pid}` : ""}`)
         : (reachable ? "Server running externally" : (launcherConfigured ? "Managed server stopped" : "Complete Backend settings to enable server controls")));
     processStart.disabled = state.llamacppProcessBusy || managedRunning || reachable || !launcherConfigured;
@@ -8196,10 +8251,10 @@ async function requireManagerResponse(endpoints, options, action) {
 async function updateComfyUIFromStatus() {
   if (state.comfyUpdateBusy || state.comfyRestartBusy || !state.apiConnected) return;
   const ownerWindow = state.panel?.ownerDocument?.defaultView || window;
-  if (!ownerWindow.confirm("Run ComfyUI Manager Update All now? This updates ComfyUI and installed custom nodes. Restart ComfyUI after it finishes to apply the updates.")) return;
+  if (!ownerWindow.confirm("Update ComfyUI, its Python packages, and installed custom nodes now? Restart ComfyUI after it finishes to apply the updates.")) return;
   state.comfyUpdateBusy = true;
   state.comfyUpdateError = false;
-  state.comfyUpdateMessage = "Preparing Manager Update All…";
+  state.comfyUpdateMessage = "Updating ComfyUI core and Python packages…";
   state.comfyUpdateNeedsRestart = false;
   state.comfyUpdateDoneCount = 0;
   state.comfyUpdateTotalCount = 0;
@@ -8208,21 +8263,32 @@ async function updateComfyUIFromStatus() {
   renderSystemStatusSummary();
   try {
     const clientId = String(api.clientId || api.initialClientId || window.name || crypto.randomUUID());
-    const comfyUiQuery = new URLSearchParams({
-      client_id: clientId,
-      ui_id: `${state.comfyUpdateRequestId}_comfyui`,
-    });
     const updateAllQuery = new URLSearchParams({
       client_id: clientId,
       ui_id: `${state.comfyUpdateRequestId}_nodes`,
       mode: "remote",
     });
-    await requireManagerResponse(
-      COMFY_UPDATE_ENDPOINTS.map((endpoint) => endpoint.startsWith("/v2/") ? `${endpoint}?${comfyUiQuery}` : endpoint),
-      { method: "POST" },
-      "queue the ComfyUI update",
-    );
-    state.comfyUpdateMessage = "ComfyUI queued · finding custom-node updates…";
+    const coreResponse = await api.fetchApi(PROMPTSTUDIO_COMFY_UPDATE_ENDPOINT, { method: "POST" });
+    const coreUpdate = await coreResponse.json().catch(() => ({}));
+    if (!coreResponse.ok) {
+      throw new Error(coreUpdate.error || `Prompt Studio could not update ComfyUI (${coreResponse.status}).`);
+    }
+    for (const [index, step] of Array.from(coreUpdate.steps || []).entries()) {
+      const message = step.success === true
+        ? (step.updated === true ? "success" : "skip")
+        : (step.error || `An error occurred while updating '${step.label || step.id}'.`);
+      state.comfyUpdateResults.set(`${state.comfyUpdateRequestId}_local_${index}`, {
+        ui_id: `${state.comfyUpdateRequestId}_local_${index}`,
+        kind: "promptstudio-update",
+        title: step.label || step.id || "ComfyUI dependency",
+        msg: message,
+      });
+    }
+    state.comfyUpdateDoneCount = state.comfyUpdateResults.size;
+    state.comfyUpdateTotalCount = state.comfyUpdateResults.size;
+    state.comfyUpdateMessage = coreUpdate.success === false
+      ? "ComfyUI core update reported errors · continuing with custom nodes…"
+      : "ComfyUI core and Python packages checked · finding custom-node updates…";
     renderSystemStatusSummary();
     await requireManagerResponse(MANAGER_UPDATE_ALL_ENDPOINTS.map((endpoint) => endpoint.startsWith("/v2/")
       ? `${endpoint}?${updateAllQuery}`
@@ -8285,6 +8351,7 @@ function managerUpdateCountsFromTaskState(taskState = {}) {
 }
 
 function managerUpdateTaskLabel(detail = {}) {
+  if (detail.title) return String(detail.title);
   if (detail.kind === "update-comfyui") return "ComfyUI core";
   const prefix = `${state.comfyUpdateRequestId}_nodes_`;
   const uiId = String(detail.ui_id || "");
@@ -8317,10 +8384,11 @@ function handleManagerTaskCompleted(event) {
 }
 
 function finishComfyUpdate(results) {
-  const updatedCount = results.filter(managerResultSucceeded).length;
-  const failedCount = results.filter(managerResultFailed).length;
-  const skippedCount = results.filter(managerResultSkipped).length;
-  const failedLabels = [...new Set(results
+  const allResults = [...new Set([...state.comfyUpdateResults.values(), ...results])];
+  const updatedCount = allResults.filter(managerResultSucceeded).length;
+  const failedCount = allResults.filter(managerResultFailed).length;
+  const skippedCount = allResults.filter(managerResultSkipped).length;
+  const failedLabels = [...new Set(allResults
     .filter(managerResultFailed)
     .map(managerUpdateTaskLabel))];
   const failedSummary = failedLabels.length
@@ -8331,8 +8399,8 @@ function finishComfyUpdate(results) {
   state.comfyUpdateBusy = false;
   state.comfyUpdateError = failed;
   state.comfyUpdateNeedsRestart = updated;
-  state.comfyUpdateDoneCount = Math.max(state.comfyUpdateDoneCount, results.length);
-  state.comfyUpdateTotalCount = Math.max(state.comfyUpdateTotalCount, results.length);
+  state.comfyUpdateDoneCount = Math.max(state.comfyUpdateDoneCount, allResults.length);
+  state.comfyUpdateTotalCount = Math.max(state.comfyUpdateTotalCount, allResults.length);
   state.comfyUpdateMessage = failed
     ? `Update finished · ${updatedCount} updated · ${failedCount} failed${failedSummary}${updated ? " · Restart required" : " · Check the ComfyUI terminal"}`
     : (updated
@@ -8456,7 +8524,7 @@ async function stopLlmGeneration() {
       provider,
       reachable: true,
       busy: data.success !== true,
-      message: data.success ? "Stop signal accepted." : `${llmProviderDisplayName(provider)} reported no Prompt Studio generation to stop.`,
+      message: data.success ? "Stop signal accepted." : `${llmProviderDisplayName(provider)} reported no Prompt Studio processing to stop.`,
     });
   } catch (error) {
     renderLlmStatus({ provider, reachable: false, message: error.message || String(error) });
@@ -8492,9 +8560,10 @@ async function controlLlamacppServer(action) {
       if (modelSelect) modelSelect.replaceChildren(new Option("Waiting for restarted server…", ""));
     }
     saveSettings();
+    const appliedRevision = String(data.config_revision || "").slice(0, 8);
     setStatus(data.external
       ? "A Llama.cpp server is already running at the configured endpoint; it remains externally managed."
-      : `Llama.cpp server ${action} requested.`, data.external ? "warning" : "ready");
+      : `Llama.cpp server ${action} requested${appliedRevision ? ` · config ${appliedRevision}` : ""}.`, data.external ? "warning" : "ready");
   } catch (error) {
     setStatus(error.message || String(error), "warning");
   } finally {
@@ -8966,6 +9035,11 @@ function promptAgentEvaluationPayload(evaluation) {
     pass: normalized.pass,
     criteria: normalized.criteria.map((item) => ({
       ...item,
+      evidence: item.evidence.slice(0, 600),
+    })),
+    forbidden: normalized.forbidden.map((item) => ({
+      index: item.index,
+      status: item.status,
       evidence: item.evidence.slice(0, 600),
     })),
     defects: normalized.defects.map((item) => item.slice(0, 500)),
@@ -10178,14 +10252,6 @@ function setConsultBusy(busy) {
   updateConsultExperimentUi();
 }
 
-function setConsultProgress(text) {
-  state.consultPendingText = String(text || "");
-  setConsultStatus(state.consultPendingText, "working");
-  const pending = state.panel?.querySelector("[data-consult-pending]");
-  if (pending) pending.textContent = state.consultPendingText;
-  else if (state.consultBusy) renderConsultHistory();
-}
-
 function consultRequestMessages(messages) {
   const experimentId = activeConsultExperiment()?.id || "";
   const scopedMessages = messages.filter((message) => (
@@ -10195,21 +10261,26 @@ function consultRequestMessages(messages) {
         : !String(message.experimentId || "")
     )
   ));
-  const selected = scopedMessages.slice(-60).map((message) => ({
+  const bounded = scopedMessages.slice(-60);
+  while (bounded.length && bounded[0].role === "assistant") bounded.shift();
+  const selected = bounded.map((message) => ({
     role: message.role,
     text: message.text,
-    context: message.context,
+    context: message.context ? { ...message.context } : message.context,
     images: message.role === "user"
       ? message.images.map(storedImageReference).filter(Boolean)
       : [],
   }));
   let imageBudget = 8;
   for (let index = selected.length - 1; index >= 0; index -= 1) {
-    if (selected[index].images.length <= imageBudget) {
-      imageBudget -= selected[index].images.length;
-    } else {
-      selected[index].images = [];
+    const retainedCount = Math.min(selected[index].images.length, imageBudget);
+    if (retainedCount < selected[index].images.length) {
+      selected[index].images = selected[index].images.slice(0, retainedCount);
     }
+    if (Array.isArray(selected[index].context?.attached_images)) {
+      selected[index].context.attached_images = selected[index].context.attached_images.slice(0, retainedCount);
+    }
+    imageBudget -= retainedCount;
   }
   return selected;
 }
@@ -10626,6 +10697,12 @@ function renderConsultAgentCard(history, agent) {
         const row = document.createElement("li");
         row.dataset.status = criterion.status;
         row.textContent = `${criterion.status} · ${criterion.evidence || criterion.id}`;
+        criteria.appendChild(row);
+      });
+      iteration.evaluation.forbidden.forEach((check) => {
+        const row = document.createElement("li");
+        row.dataset.status = check.status === "clear" ? "pass" : "fail";
+        row.textContent = `${check.status} · forbidden: ${check.outcome}${check.evidence ? ` · ${check.evidence}` : ""}`;
         criteria.appendChild(row);
       });
       if (iteration.evaluation.nextRevision) {
@@ -11400,15 +11477,16 @@ function importSelectedImageFiles(fileList) {
 }
 
 function studioDiscussionHistory(chat, discussionId) {
-  return (chat?.messages || [])
+  const bounded = (chat?.messages || [])
     .filter((message) => (
       message.studioMessageKind === "discussion"
       && message.studioDiscussionId === discussionId
       && ["user", "assistant"].includes(message.role)
       && message.text.trim()
     ))
-    .slice(-20)
-    .map((message) => ({ role: message.role, text: message.text }));
+    .slice(-20);
+  while (bounded.length && bounded[0].role === "assistant") bounded.shift();
+  return bounded.map((message) => ({ role: message.role, text: message.text }));
 }
 
 function compactGenerationContextValue(value, depth = 0) {
@@ -11463,6 +11541,16 @@ function applicableStudioControlValues(chat = activeChat()) {
     resolution_megapixels: settings.resolution_megapixels,
     resolution_multiple: settings.resolution_multiple,
     randomize_seed: settings.randomize_seed,
+  };
+}
+
+function applicableStudioControlOptions() {
+  return {
+    model_profile: [...(state.config?.profiles || [])],
+    style_preset: [...(state.config?.styles || [])],
+    framing_preset: [...(state.config?.framings || [])],
+    embellishment_level: [...(state.config?.embellishment_levels || [])],
+    resolution_aspect_ratio: [...RESOLUTION_ASPECT_RATIOS],
   };
 }
 
@@ -11587,6 +11675,7 @@ function studioDiscussionRequestMessages(chat, discussion) {
           target_generation: storedGenerationDiscussionContext(target?.message),
           current_studio_controls: consultCurrentGenerationSettings(),
           applicable_control_values: applicableStudioControlValues(chat),
+          allowed_control_options: applicableStudioControlOptions(),
           current_main_prompt: chat.mainPrompt,
           current_final_prompt: chat.finalPrompt,
         },
@@ -12053,9 +12142,9 @@ async function reviseAndMaybeGenerate({
   syncBackgroundActivityIndicator();
   const revisionStatus = (
     creating
-      ? `${providerName} is rendering the initial final prompt...`
+      ? `${providerName} is preparing the initial main and final prompts...`
       : regenerateFinal
-        ? `${providerName} is regenerating the final prompt...`
+        ? `${providerName} is processing the final prompt again...`
         : controlsOnly || promptNeedsRebuild
         ? `${providerName} is rebuilding the final prompt from the main prompt and controls...`
         : `${providerName} is revising the main and final prompts...`
@@ -12080,7 +12169,12 @@ async function reviseAndMaybeGenerate({
     let mainPrompt;
     let finalPrompt;
     if (creating) {
-      mainPrompt = revision;
+      mainPrompt = await requestPromptRevision(
+        payloadFor(revision, "create_main", "", ""),
+        "Initial main-prompt creation",
+        llmWarnings,
+        operationSignal,
+      );
       finalPrompt = await requestPromptRevision(
         payloadFor(mainPrompt, "render", "", ""),
         "Prompt rendering",
@@ -12594,7 +12688,7 @@ function buildPanel() {
           <span id="promptstudio-status" class="promptstudio-status" role="status" aria-live="polite">Loading…</span>
           <span id="promptstudio-compose-hint">Leave empty to create from the current prompt</span>
         </div>
-        <textarea id="promptstudio-revision" rows="3" placeholder="Make the background more varied…" title="Paste with Ctrl+V or drop an image into the chat to attach it as a visual reference."></textarea>
+        <textarea id="promptstudio-revision" rows="3" aria-label="Prompt revision" placeholder="Make the background more varied…" title="Paste with Ctrl+V or drop an image into the chat to attach it as a visual reference."></textarea>
         <div id="promptstudio-discussion-context" class="promptstudio-discussion-context" hidden>
           <img alt="" />
           <span><strong>Discussing generated image</strong><small></small></span>
@@ -12654,8 +12748,8 @@ function buildPanel() {
                   <div><dt>Model</dt><dd id="promptstudio-kobold-model">Checking…</dd></div>
                   <div><dt>Vision</dt><dd id="promptstudio-kobold-vision" data-state="unknown">Checking…</dd></div>
                 </dl>
-                <button id="promptstudio-kobold-stop" type="button" disabled ${settings.llm_provider === "ollama" ? "hidden" : ""}>Force stop generation</button>
-                <small id="promptstudio-kobold-stop-help" ${settings.llm_provider === "ollama" ? "hidden" : ""}>Stops text generation only. KoboldCpp stays loaded.</small>
+                <button id="promptstudio-kobold-stop" type="button" disabled ${settings.llm_provider === "ollama" ? "hidden" : ""}>Force stop processing</button>
+                <small id="promptstudio-kobold-stop-help" ${settings.llm_provider === "ollama" ? "hidden" : ""}>Stops LLM processing only. KoboldCpp stays loaded.</small>
                 <div id="promptstudio-llamacpp-process-controls" class="promptstudio-system-status-actions" ${settings.llm_provider === "llamacpp" ? "" : "hidden"}>
                   <button id="promptstudio-llamacpp-start" type="button" title="Start Llama.cpp server" disabled>Start</button>
                   <button id="promptstudio-llamacpp-server-stop" type="button" title="Stop managed Llama.cpp server" disabled>Stop</button>
@@ -12695,12 +12789,12 @@ function buildPanel() {
           <summary><span>Main prompt</span><small>Editable source intent</small></summary>
           <div class="promptstudio-main-prompt-editor">
             <div id="promptstudio-main-prompt-highlights" class="promptstudio-main-prompt-highlights" aria-hidden="true"><pre id="promptstudio-main-prompt-highlight-content"></pre></div>
-            <textarea id="promptstudio-main-prompt" rows="5" placeholder="The user's model-neutral image description"></textarea>
+            <textarea id="promptstudio-main-prompt" rows="5" aria-label="Main prompt" placeholder="The user's model-neutral image description"></textarea>
           </div>
         </details>
         <details class="promptstudio-current-details" data-promptstudio-sidebar-group="final-prompt" open>
           <summary><span>Final prompt</span><small>Editable; rebuilt when controls change</small></summary>
-          <textarea id="promptstudio-current-prompt" rows="8" placeholder="The rendered prompt sent to the selected workflow"></textarea>
+          <textarea id="promptstudio-current-prompt" rows="8" aria-label="Final prompt" placeholder="The rendered prompt sent to the selected workflow"></textarea>
         </details>
         <details class="promptstudio-settings" data-promptstudio-sidebar-group="generation-controls" open>
           <summary><span>Generation controls</span><small>Model, style and prompt shaping</small></summary>
@@ -12753,19 +12847,19 @@ function buildPanel() {
         </details>
         <details class="promptstudio-secondary-details promptstudio-additional-details" data-promptstudio-sidebar-group="additional-instructions" open>
           <summary><span>Additional instructions</span><small>Steering guidance for the LLM</small></summary>
-          <textarea id="promptstudio-additional-instructions" rows="3" placeholder="Explain intent or give rewrite guidance without changing the selected style or framing"></textarea>
+          <textarea id="promptstudio-additional-instructions" rows="3" aria-label="Additional instructions" placeholder="Explain intent or give rewrite guidance without changing the selected style or framing"></textarea>
         </details>
         <details class="promptstudio-secondary-details" data-promptstudio-sidebar-group="secondary-instructions" open>
           <summary><span>Unmodified part</span><small>Text passed through unchanged</small></summary>
-          <textarea id="promptstudio-secondary-instructions" rows="3" placeholder="Phrases that must remain unchanged, such as LoRA trigger words"></textarea>
+          <textarea id="promptstudio-secondary-instructions" rows="3" aria-label="Unmodified part" placeholder="Phrases that must remain unchanged, such as LoRA trigger words"></textarea>
         </details>
       </section>
     </aside>
     <button class="promptstudio-mobile-scrim" type="button" aria-label="Close open drawer"></button>
-    <div id="promptstudio-studio-settings" class="promptstudio-studio-settings" hidden>
+    <div id="promptstudio-studio-settings" class="promptstudio-studio-settings" role="dialog" aria-labelledby="promptstudio-studio-settings-title" hidden>
       <header class="promptstudio-studio-settings-header">
-        <div><strong>Settings</strong><span>Configure Prompt Studio, local services and ComfyUI workflows.</span></div>
-        <span class="promptstudio-studio-settings-context">Prompt Studio</span>
+        <div><strong id="promptstudio-studio-settings-title">Settings</strong><span>Configure Prompt Studio, local services and ComfyUI workflows.</span></div>
+        <div class="promptstudio-studio-settings-header-actions"><span class="promptstudio-studio-settings-context">Prompt Studio</span><button id="promptstudio-close-studio-settings" type="button">Done</button></div>
       </header>
       <div class="promptstudio-studio-settings-layout">
         <section class="promptstudio-studio-settings-card" aria-labelledby="promptstudio-general-settings-title">
@@ -12804,7 +12898,7 @@ function buildPanel() {
               </span>
             </div>
             <label class="promptstudio-studio-setting promptstudio-endpoint-control" data-llm-provider="koboldcpp">
-              <span class="promptstudio-studio-setting-copy"><strong>KoboldCpp endpoint</strong><small>Base URL for the local generation server. Shared-GPU handoff requires KoboldCpp Admin Mode and an Admin Directory.</small></span>
+              <span class="promptstudio-studio-setting-copy"><strong>KoboldCpp endpoint</strong><small>Base URL for the local LLM processing server. Shared-GPU handoff requires KoboldCpp Admin Mode and an Admin Directory.</small></span>
               <input id="promptstudio-kobold-url" type="url" inputmode="url" spellcheck="false" aria-label="KoboldCpp endpoint" />
             </label>
             <label class="promptstudio-studio-setting promptstudio-endpoint-control" data-llm-provider="ollama">
@@ -12815,7 +12909,7 @@ function buildPanel() {
               <span class="promptstudio-studio-setting-copy"><strong>Ollama model</strong><small>Select a model installed in Ollama.</small></span>
               <span class="promptstudio-ollama-model-field">
                 <select id="promptstudio-ollama-model" aria-label="Ollama model"></select>
-                <button id="promptstudio-refresh-ollama-models" type="button" title="Refresh Ollama models" aria-label="Refresh Ollama models">â†»</button>
+                <button id="promptstudio-refresh-ollama-models" type="button" title="Refresh Ollama models" aria-label="Refresh Ollama models">↻</button>
               </span>
             </label>
             <label class="promptstudio-studio-setting promptstudio-endpoint-control" data-llm-provider="llamacpp">
@@ -13097,7 +13191,7 @@ function buildPanel() {
           <span id="promptstudio-consult-status" class="promptstudio-consult-status" role="status" aria-live="polite">Ready</span>
         </div>
         <div class="promptstudio-consult-input-row">
-          <textarea id="promptstudio-consult-input" rows="3" placeholder="Ask your local model… Paste screenshots with Ctrl+V."></textarea>
+          <textarea id="promptstudio-consult-input" rows="3" aria-label="Local model message" placeholder="Ask your local model… Paste screenshots with Ctrl+V."></textarea>
           <button id="promptstudio-consult-send" class="promptstudio-primary" type="button">Send</button>
         </div>
       </footer>
@@ -13260,6 +13354,10 @@ function buildPanel() {
   panel.querySelector("#promptstudio-close-inspector").addEventListener("click", closePanelDrawers);
   panel.querySelector(".promptstudio-mobile-scrim").addEventListener("click", closePanelDrawers);
   panel.querySelector("#promptstudio-toggle-studio-settings").addEventListener("click", () => toggleStudioSettings());
+  panel.querySelector("#promptstudio-close-studio-settings").addEventListener("click", () => {
+    toggleStudioSettings(false);
+    panel.querySelector("#promptstudio-toggle-studio-settings")?.focus({ preventScroll: true });
+  });
   panel.querySelector("#promptstudio-llm-profile").addEventListener("change", (event) => {
     renderLlmProfileOptions(event.target.value);
     renderLlmThinkingModeOptions(selectedLlmProfile().thinking_mode);
@@ -13643,6 +13741,8 @@ function updatePopoutButton() {
 function dockPanel({ closePopup = true, keepOpen = true } = {}) {
   const popup = state.popup;
   toggleConsult(false);
+  toggleStudioSettings(false);
+  closeSystemStatus();
   if (state.popupCloseTimer) window.clearInterval(state.popupCloseTimer);
   state.popupCloseTimer = null;
   if (state.panel.ownerDocument !== document) document.body.appendChild(state.panel);
@@ -13695,7 +13795,14 @@ function setupStandaloneBridge() {
   globalThis.__promptstudioPromptStudioHost = {
     attach: attachStandalone,
     setStandaloneVisibility(visible) {
-      if (state.panel?.ownerDocument === state.popup?.document) state.panel.hidden = !visible;
+      if (state.panel?.ownerDocument !== state.popup?.document) return;
+      if (!visible) {
+        toggleConsult(false);
+        toggleStudioSettings(false);
+        closeSystemStatus();
+        closePanelDrawers();
+      }
+      state.panel.hidden = !visible;
     },
   };
   if (typeof BroadcastChannel !== "function") return;
@@ -13839,6 +13946,9 @@ async function togglePanel(force) {
   if (!show) {
     commitPromptEditorVersion();
     closeImageLightbox();
+    toggleConsult(false);
+    toggleStudioSettings(false);
+    closeSystemStatus();
     closePanelDrawers();
   }
   if (!show && state.popup && !state.popup.closed) {

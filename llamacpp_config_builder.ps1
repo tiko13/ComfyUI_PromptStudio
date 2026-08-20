@@ -206,7 +206,7 @@ Add-Field "Parallel slots" $parallelSlots 4 "Number of concurrent llama-server s
 Add-Field "CUDA devices" $cudaDevices 5 "Optional value for llama.cpp --device, such as CUDA0,CUDA1."
 Add-Field "CUDA visible devices" $cudaVisibleDevices 6 "Optional CUDA_VISIBLE_DEVICES environment value."
 Add-Field "Split mode" $splitMode 7 "How model tensors are split across GPUs."
-Add-Field "Main GPU" $mainGpu 8 "Primary GPU index used by llama.cpp."
+Add-Field "Main GPU" $mainGpu 8 "Physical CUDA GPU index. When CUDA devices filters the list, Prompt Studio translates this to llama.cpp's filtered-list index."
 Add-Field "Tensor split" $tensorSplit 9 "Optional comma-separated proportions, such as 2,1,1."
 Add-Field "Auto-fit" $autoFit 10 "Use default to omit --fit, or explicitly turn it on/off."
 Add-Field "Flash attention" $flashAttention 11 "Automatic, enabled, or disabled flash attention."

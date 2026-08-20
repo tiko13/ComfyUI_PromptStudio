@@ -1,5 +1,6 @@
 import asyncio
 import base64
+import hashlib
 import io
 import importlib.util
 import json
@@ -113,6 +114,12 @@ class RegressionTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.nodes, self.routes = load_modules(self.temp.name)
         self.routes.LLAMACPP_CONFIG_DIRECTORY = self.temp.name
+        self.routes.LLAMACPP_PROCESS_STATE_PATH = str(
+            Path(self.temp.name) / "prompt_studio_llamacpp_process.json"
+        )
+        self.routes.LLAMACPP_OUTPUT_LOG_PATH = str(
+            Path(self.temp.name) / "prompt_studio_llamacpp.log"
+        )
 
     def tearDown(self):
         self.temp.cleanup()
@@ -272,7 +279,7 @@ class RegressionTests(unittest.TestCase):
         config_path.write_text(json.dumps({
             "model_gguf": str(model),
             "mmproj_gguf": str(mmproj),
-            "context_size": 32768,
+            "context_size": 64000,
             "gpu_layers": "all",
             "parallel_slots": 2,
             "cuda_devices": "CUDA0,CUDA1",
@@ -314,6 +321,9 @@ class RegressionTests(unittest.TestCase):
             self.assertIn(flag, command)
         self.assertEqual(command[command.index("--spec-type") + 1], "draft-mtp")
         self.assertEqual(command[command.index("--spec-draft-n-max") + 1], "4")
+        self.assertEqual(command[command.index("--ctx-size") + 1], "64000")
+        self.assertEqual(command[command.index("--parallel") + 1], "2")
+        self.assertEqual(command[command.index("--main-gpu") + 1], "1")
         self.assertEqual(launcher["url"], "http://127.0.0.1:8080")
 
     def test_llamacpp_launcher_omits_disabled_mtp_and_validates_draft_range(self):
@@ -346,6 +356,29 @@ class RegressionTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "must not exceed"):
             self.routes._load_llamacpp_launcher_config(data)
 
+    def test_llamacpp_launcher_maps_physical_main_gpu_into_filtered_device_list(self):
+        root = Path(self.temp.name)
+        executable = root / "llama-server.exe"
+        model = root / "model.gguf"
+        config_path = root / "llamacpp.json"
+        executable.write_bytes(b"")
+        model.write_bytes(b"")
+        config_path.write_text(json.dumps({
+            "model": str(model),
+            "cuda_devices": "CUDA1",
+            "split_mode": "none",
+            "main_gpu": 1,
+        }), encoding="utf-8")
+
+        launcher = self.routes._load_llamacpp_launcher_config({
+            "llamacpp_executable": str(executable),
+            "llamacpp_config_profile": config_path.name,
+        })
+
+        command = launcher["command"]
+        self.assertEqual(command[command.index("--device") + 1], "CUDA1")
+        self.assertEqual(command[command.index("--main-gpu") + 1], "0")
+
     def test_llamacpp_launcher_switches_models_with_selected_config_profile(self):
         root = Path(self.temp.name)
         executable = root / "llama-server.exe"
@@ -367,6 +400,79 @@ class RegressionTests(unittest.TestCase):
 
         self.assertEqual(fast["command"][fast["command"].index("--model") + 1], str(model_a))
         self.assertEqual(quality["command"][quality["command"].index("--model") + 1], str(model_b))
+
+    def test_llamacpp_restart_reloads_profile_after_stopping_old_server(self):
+        root = Path(self.temp.name)
+        executable = root / "llama-server.exe"
+        model = root / "model.gguf"
+        profile = root / "quality.json"
+        executable.write_bytes(b"")
+        model.write_bytes(b"")
+        profile.write_text(json.dumps({
+            "model": str(model),
+            "context_size": 32768,
+            "main_gpu": 0,
+        }), encoding="utf-8")
+        data = {
+            "llamacpp_executable": str(executable),
+            "llamacpp_config_profile": profile.name,
+        }
+        process = mock.Mock(pid=2468)
+        process.poll.return_value = None
+        process.wait.side_effect = self.routes.subprocess.TimeoutExpired("llama-server.exe", 1.25)
+        identity = {
+            "executable": str(executable),
+            "creation_marker": "windows:2468",
+        }
+
+        def stop_and_edit(_data):
+            profile.write_text(json.dumps({
+                "model": str(model),
+                "context_size": 64000,
+                "main_gpu": 1,
+            }), encoding="utf-8")
+            return {"stopped": True}
+
+        with (
+            mock.patch.object(self.routes, "_stop_llamacpp_server", side_effect=stop_and_edit) as stop,
+            mock.patch.object(self.routes, "_get_json", return_value=None),
+            mock.patch.object(self.routes, "_process_snapshot", return_value=identity),
+            mock.patch.object(self.routes.subprocess, "Popen", return_value=process) as popen,
+        ):
+            status = self.routes._restart_llamacpp_server(data)
+
+        command = popen.call_args.args[0]
+        stop.assert_called_once_with(data)
+        self.assertEqual(command[command.index("--ctx-size") + 1], "64000")
+        self.assertEqual(command[command.index("--main-gpu") + 1], "1")
+        self.assertEqual(status["config_revision"], hashlib.sha256(profile.read_bytes()).hexdigest())
+
+    def test_llamacpp_status_detects_edits_to_running_profile(self):
+        root = Path(self.temp.name)
+        executable = root / "llama-server.exe"
+        model = root / "model.gguf"
+        profile = root / "quality.json"
+        executable.write_bytes(b"")
+        model.write_bytes(b"")
+        profile.write_text(json.dumps({"model": str(model), "context_size": 32768}), encoding="utf-8")
+        data = {
+            "llamacpp_executable": str(executable),
+            "llamacpp_config_profile": profile.name,
+        }
+        launched = self.routes._load_llamacpp_launcher_config(data)
+        process = mock.Mock(pid=2468)
+        process.poll.return_value = None
+        self.routes._LLAMACPP_PROCESS = process
+        self.routes._LLAMACPP_PROCESS_DETAILS = {
+            "config_path": str(profile),
+            "config_profile": profile.name,
+            "config_revision": launched["config_revision"],
+            "started_at": 1234.5,
+        }
+
+        self.assertIs(self.routes._llamacpp_managed_process_status(data)["config_changed"], False)
+        profile.write_text(json.dumps({"model": str(model), "context_size": 64000}), encoding="utf-8")
+        self.assertIs(self.routes._llamacpp_managed_process_status(data)["config_changed"], True)
 
     def test_llamacpp_config_builder_resolves_profile_inside_config_folder(self):
         root = Path(self.temp.name)
@@ -420,6 +526,202 @@ class RegressionTests(unittest.TestCase):
         self.assertIn("-STA", command)
         self.assertIn(str(config_path), command)
         self.assertEqual(popen.call_args.kwargs["shell"], False)
+
+    def test_llamacpp_managed_process_is_recovered_after_comfyui_restart(self):
+        root = Path(self.temp.name)
+        executable = root / "llama-server.exe"
+        executable.write_bytes(b"")
+        identity = {
+            "executable": str(executable),
+            "creation_marker": "windows:123456789",
+        }
+        details = {
+            "url": "http://127.0.0.1:8080",
+            "executable": str(executable),
+            "config_path": str(root / "quality.json"),
+            "config_profile": "quality.json",
+            "started_at": 1234.5,
+        }
+        Path(self.routes.LLAMACPP_PROCESS_STATE_PATH).write_text(json.dumps({
+            "version": 1,
+            "pid": 4321,
+            "identity": identity,
+            "details": details,
+        }), encoding="utf-8")
+
+        with mock.patch.object(self.routes, "_process_snapshot", return_value=identity):
+            status = self.routes._llamacpp_managed_process_status()
+
+        self.assertIs(status["managed"], True)
+        self.assertIs(status["running"], True)
+        self.assertEqual(status["pid"], 4321)
+        self.assertEqual(status["config_profile"], "quality.json")
+        self.assertIsInstance(
+            self.routes._LLAMACPP_PROCESS,
+            self.routes._RecoveredLlamacppProcess,
+        )
+
+    def test_llamacpp_recovery_rejects_a_reused_pid(self):
+        root = Path(self.temp.name)
+        executable = root / "llama-server.exe"
+        executable.write_bytes(b"")
+        recorded = {
+            "executable": str(executable),
+            "creation_marker": "windows:old-process",
+        }
+        current = {
+            "executable": str(executable),
+            "creation_marker": "windows:new-process",
+        }
+        state_path = Path(self.routes.LLAMACPP_PROCESS_STATE_PATH)
+        state_path.write_text(json.dumps({
+            "version": 1,
+            "pid": 4321,
+            "identity": recorded,
+            "details": {"started_at": 1234.5},
+        }), encoding="utf-8")
+
+        with mock.patch.object(self.routes, "_process_snapshot", return_value=current):
+            status = self.routes._llamacpp_managed_process_status()
+
+        self.assertIs(status["managed"], False)
+        self.assertIs(status["running"], False)
+        self.assertFalse(state_path.exists())
+
+    def test_llamacpp_recovered_process_can_be_stopped(self):
+        root = Path(self.temp.name)
+        executable = root / "llama-server.exe"
+        executable.write_bytes(b"")
+        identity = {
+            "executable": str(executable),
+            "creation_marker": "windows:123456789",
+        }
+        state_path = Path(self.routes.LLAMACPP_PROCESS_STATE_PATH)
+        state_path.write_text(json.dumps({
+            "version": 1,
+            "pid": 4321,
+            "identity": identity,
+            "details": {
+                "url": "http://127.0.0.1:8080",
+                "executable": str(executable),
+                "started_at": 1234.5,
+            },
+        }), encoding="utf-8")
+
+        with mock.patch.object(self.routes, "_process_snapshot", return_value=identity):
+            self.routes._recover_llamacpp_process_locked()
+        process = self.routes._LLAMACPP_PROCESS
+        poll_results = iter((None, 0))
+
+        def poll():
+            result = next(poll_results)
+            if result is not None:
+                process.returncode = result
+            return result
+
+        with (
+            mock.patch.object(process, "poll", side_effect=poll),
+            mock.patch.object(process, "terminate") as terminate,
+        ):
+            status = self.routes._stop_llamacpp_server()
+
+        terminate.assert_called_once_with()
+        self.assertIs(status["stopped"], True)
+        self.assertIs(status["running"], False)
+        self.assertFalse(state_path.exists())
+
+    def test_llamacpp_start_persists_process_ownership(self):
+        root = Path(self.temp.name)
+        executable = root / "llama-server.exe"
+        model = root / "model.gguf"
+        profile = root / "quality.json"
+        executable.write_bytes(b"")
+        model.write_bytes(b"")
+        profile.write_text(json.dumps({"model": str(model)}), encoding="utf-8")
+        process = mock.Mock(pid=2468)
+        process.poll.return_value = None
+        process.wait.side_effect = self.routes.subprocess.TimeoutExpired("llama-server.exe", 1.25)
+        identity = {
+            "executable": str(executable),
+            "creation_marker": "windows:2468",
+        }
+
+        with (
+            mock.patch.object(self.routes, "_get_json", return_value=None),
+            mock.patch.object(self.routes, "_process_snapshot", return_value=identity),
+            mock.patch.object(self.routes.subprocess, "Popen", return_value=process),
+        ):
+            status = self.routes._start_llamacpp_server({
+                "llamacpp_executable": str(executable),
+                "llamacpp_config_profile": profile.name,
+            })
+
+        saved = json.loads(
+            Path(self.routes.LLAMACPP_PROCESS_STATE_PATH).read_text(encoding="utf-8")
+        )
+        self.assertIs(status["running"], True)
+        self.assertEqual(saved["pid"], 2468)
+        self.assertEqual(saved["identity"], identity)
+        self.assertEqual(saved["details"]["config_profile"], profile.name)
+
+    def test_llamacpp_start_does_not_leave_an_unrecoverable_process_running(self):
+        root = Path(self.temp.name)
+        executable = root / "llama-server.exe"
+        model = root / "model.gguf"
+        profile = root / "quality.json"
+        executable.write_bytes(b"")
+        model.write_bytes(b"")
+        profile.write_text(json.dumps({"model": str(model)}), encoding="utf-8")
+        process = mock.Mock(pid=2468)
+        process.poll.return_value = None
+        process.wait.side_effect = [
+            self.routes.subprocess.TimeoutExpired("llama-server.exe", 1.25),
+            0,
+        ]
+
+        with (
+            mock.patch.object(self.routes, "_get_json", return_value=None),
+            mock.patch.object(self.routes, "_process_snapshot", return_value=None),
+            mock.patch.object(self.routes.subprocess, "Popen", return_value=process),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "not left running"):
+                self.routes._start_llamacpp_server({
+                    "llamacpp_executable": str(executable),
+                    "llamacpp_config_profile": profile.name,
+                })
+
+        process.terminate.assert_called_once_with()
+        self.assertIsNone(self.routes._LLAMACPP_PROCESS)
+        self.assertFalse(Path(self.routes.LLAMACPP_PROCESS_STATE_PATH).exists())
+
+    def test_llamacpp_start_reports_immediate_process_error_output(self):
+        root = Path(self.temp.name)
+        executable = root / "llama-server.exe"
+        model = root / "model.gguf"
+        profile = root / "quality.json"
+        executable.write_bytes(b"")
+        model.write_bytes(b"")
+        profile.write_text(json.dumps({"model": str(model)}), encoding="utf-8")
+        process = mock.Mock(pid=2468)
+        process.wait.return_value = 1
+
+        def popen_with_error(*_args, **kwargs):
+            kwargs["stdout"].write(b"E llama_prepare_model_devices: invalid value for main_gpu: 1\n")
+            kwargs["stdout"].flush()
+            return process
+
+        with (
+            mock.patch.object(self.routes, "_get_json", return_value=None),
+            mock.patch.object(self.routes.subprocess, "Popen", side_effect=popen_with_error),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "invalid value for main_gpu: 1"):
+                self.routes._start_llamacpp_server({
+                    "llamacpp_executable": str(executable),
+                    "llamacpp_config_profile": profile.name,
+                })
+
+        self.assertIsNone(self.routes._LLAMACPP_PROCESS)
+        self.assertEqual(self.routes._LLAMACPP_PROCESS_DETAILS["return_code"], 1)
 
     def test_llamacpp_picker_accepts_only_the_executable(self):
         root = Path(self.temp.name)
@@ -646,7 +948,7 @@ class RegressionTests(unittest.TestCase):
         self.assertIn("releaseBusy: false", reroll)
         self.assertIn("chatId: chat.id", reroll)
 
-    def test_status_update_uses_comfyui_manager_update_all_queue(self):
+    def test_status_update_uses_promptstudio_core_and_manager_custom_node_updates(self):
         source = (REPO_ROOT / "web" / "js" / "prompt_studio.js").read_text(encoding="utf-8")
         helper_start = source.index("async function requireManagerResponse")
         start = source.index("async function updateComfyUIFromStatus")
@@ -655,14 +957,60 @@ class RegressionTests(unittest.TestCase):
         update = source[start:end]
         self.assertIn("for (const endpoint of endpoints)", helper)
         self.assertIn("response.status === 405", helper)
-        self.assertIn('COMFY_UPDATE_ENDPOINTS', update)
+        self.assertIn('PROMPTSTUDIO_COMFY_UPDATE_ENDPOINT', update)
+        self.assertIn('coreUpdate.steps', update)
         self.assertIn('MANAGER_UPDATE_ALL_ENDPOINTS', update)
         self.assertIn('JSON.stringify({ mode: "default" })', update)
         self.assertIn('mode: "remote"', update)
         self.assertIn('MANAGER_QUEUE_START_ENDPOINTS', update)
         self.assertIn('api.clientId', update)
-        self.assertLess(update.index("COMFY_UPDATE_ENDPOINTS"), update.index("MANAGER_UPDATE_ALL_ENDPOINTS"))
+        self.assertLess(update.index("PROMPTSTUDIO_COMFY_UPDATE_ENDPOINT"), update.index("MANAGER_UPDATE_ALL_ENDPOINTS"))
         self.assertLess(update.index("MANAGER_UPDATE_ALL_ENDPOINTS"), update.index("MANAGER_QUEUE_START_ENDPOINTS"))
+
+    def test_comfyui_runtime_update_pulls_git_and_upgrades_required_packages(self):
+        git_before = mock.Mock(returncode=0, stdout="before\n", stderr="")
+        git_pull = mock.Mock(returncode=0, stdout="Updating before..after\n", stderr="")
+        git_after = mock.Mock(returncode=0, stdout="after\n", stderr="")
+        pip_update = mock.Mock(
+            returncode=0,
+            stdout="Successfully installed comfy-kitchen-1.0\n",
+            stderr="",
+        )
+
+        with mock.patch.object(
+            self.routes,
+            "_run_comfyui_update_command",
+            side_effect=[git_before, git_pull, git_after, pip_update],
+        ) as run:
+            with mock.patch.object(self.routes.os.path, "isdir", return_value=True):
+                result = self.routes._update_comfyui_runtime()
+
+        self.assertTrue(result["success"])
+        self.assertTrue(result["updated"])
+        self.assertTrue(result["restart_required"])
+        self.assertEqual(run.call_args_list[1], mock.call(["git", "pull"]))
+        pip_command = run.call_args_list[3].args[0]
+        self.assertEqual(pip_command[:4], [sys.executable, "-m", "pip", "install"])
+        self.assertIn("--upgrade", pip_command)
+        for package in self.routes.COMFYUI_UPDATE_PACKAGES:
+            self.assertIn(package, pip_command)
+
+    def test_comfyui_runtime_update_still_upgrades_packages_when_git_pull_fails(self):
+        git_before = mock.Mock(returncode=0, stdout="before\n", stderr="")
+        git_pull = mock.Mock(returncode=1, stdout="", stderr="pull failed")
+        pip_update = mock.Mock(returncode=0, stdout="Requirement already satisfied\n", stderr="")
+
+        with mock.patch.object(
+            self.routes,
+            "_run_comfyui_update_command",
+            side_effect=[git_before, git_pull, pip_update],
+        ):
+            with mock.patch.object(self.routes.os.path, "isdir", return_value=True):
+                result = self.routes._update_comfyui_runtime()
+
+        self.assertFalse(result["success"])
+        self.assertEqual(result["steps"][0]["error"], "pull failed")
+        self.assertTrue(result["steps"][1]["success"])
 
     def test_lan_access_address_scope_is_private_only(self):
         for address in ("192.168.1.25", "10.2.3.4", "172.16.0.8", "169.254.10.20", "fd12::42", "fe80::1"):
@@ -1013,6 +1361,20 @@ class RegressionTests(unittest.TestCase):
         self.assertEqual(self.nodes._strip_response('Final prompt: "STOP."'), '"STOP."')
         self.assertEqual(self.nodes._strip_apply_response('  "exact output"  '), '"exact output"')
 
+    def test_response_cleanup_preserves_natural_language_labels_as_prompt_content(self):
+        value = "Final prompt: A warning poster with exact visible text.\nNote: Keep Out\nUser prompt: Stay Back"
+        self.assertEqual(
+            self.nodes._strip_response(value),
+            "A warning poster with exact visible text.\nNote: Keep Out\nUser prompt: Stay Back",
+        )
+
+    def test_prompt_agent_json_parser_requires_one_complete_object(self):
+        self.assertEqual(self.routes._prompt_agent_json_object('{"route":"discuss"}'), {"route": "discuss"})
+        with self.assertRaisesRegex(RuntimeError, "one complete"):
+            self.routes._prompt_agent_json_object('Preamble {"route":"discuss"}')
+        with self.assertRaisesRegex(RuntimeError, "one complete"):
+            self.routes._prompt_agent_json_object('{"route":"discuss"} trailing')
+
     def test_main_prompt_revision_keeps_auto_only_removals_out_of_positive_prompt(self):
         request = self.nodes._build_main_revision_prompt(
             "A woman in a red dress",
@@ -1064,9 +1426,14 @@ class RegressionTests(unittest.TestCase):
 
         self.assertIn("only as affirmative descriptions", rules)
         self.assertIn("omit absent, rejected, removed, or superseded alternatives", rules)
-        self.assertIn("soft diffused lighting", rules)
-        self.assertIn("the subject gazes off-frame", rules)
+        self.assertEqual(len(self.nodes._positive_output_rule_lines("test prompt")), 2)
+        self.assertNotIn("soft diffused lighting", rules)
         self.assertIn("Use affirmative visual language only", self.routes.VISION_CAPTION_PROMPT)
+
+    def test_global_prompt_editor_does_not_prime_unrequested_adult_concepts(self):
+        self.assertNotIn("NSFW", self.nodes.CHAT_SYSTEM_MESSAGE)
+        self.assertNotIn("explicit content", self.nodes.CHAT_SYSTEM_MESSAGE.casefold())
+        self.assertIn("without sanitizing", self.nodes.CHAT_SYSTEM_MESSAGE)
 
     def test_style_and_framing_modifiers_supplement_selected_presets(self):
         profile = self.nodes.DEFAULT_PROFILE
@@ -1460,7 +1827,8 @@ class RegressionTests(unittest.TestCase):
             })
         self.assertEqual(main, "A woman in a green dress")
         self.assertIn("model-neutral main prompt", generate.call_args.args[0])
-        self.assertIn("Additional user instructions", generate.call_args.args[0])
+        self.assertIn("direct description of the desired visual content", generate.call_args.args[0])
+        self.assertIn("Persistent additional guidance", generate.call_args.args[0])
         self.assertIn(additional_instructions, generate.call_args.args[0])
         self.assertEqual(generate.call_args.kwargs["presence_penalty"], 1.5)
 
@@ -1480,6 +1848,34 @@ class RegressionTests(unittest.TestCase):
             ("A woman in a green dress", additional_instructions),
         )
         self.assertEqual(build_render.call_args.kwargs["target_output_length"], 20)
+
+    def test_first_main_prompt_is_semantically_created_before_rendering(self):
+        request = "a picture of a red chair in style of Monet"
+        expected = "A red chair in the style of Monet."
+        with mock.patch.object(
+            self.routes,
+            "_generate_kcpp",
+            return_value=f"Final prompt: {expected}",
+        ) as generate:
+            main = self.routes._revise({
+                "kobold_url": "http://localhost:5001",
+                "model_profile": "General Natural Language",
+                "style_preset": "None",
+                "framing_preset": "None",
+                "thinking_mode": "Disabled",
+                "embellishment_level": "None",
+                "mode": "create_main",
+                "revision": request,
+            })
+
+        self.assertEqual(main, expected)
+        creation_prompt = generate.call_args.args[0]
+        self.assertIn("direct description of the visual content", creation_prompt)
+        self.assertIn("Interpret the request semantically", creation_prompt)
+        self.assertIn("when it merely introduces the actual subject", creation_prompt)
+        self.assertIn("Decide this from meaning, not from a fixed phrase-removal rule", creation_prompt)
+        self.assertIn("Preserve an explicitly requested style or medium", creation_prompt)
+        self.assertIn(request, creation_prompt)
 
     def test_directly_typed_main_prompt_resolves_known_references_during_render(self):
         references_path = Path(self.temp.name) / "known-references.json"
@@ -1555,6 +1951,7 @@ class RegressionTests(unittest.TestCase):
 
         self.assertEqual(rendered, "A quiet forest")
         self.assertEqual(ollama.call_args.args[1:3], ("http://localhost:11434", "qwen3:8b"))
+        self.assertFalse(ollama.call_args.kwargs["allow_partial"])
         kobold.assert_not_called()
 
     def test_prompt_studio_can_route_revisions_through_llamacpp(self):
@@ -1671,6 +2068,7 @@ class RegressionTests(unittest.TestCase):
             ollama.call_args.args[0],
         )
         self.assertTrue(ollama.call_args.kwargs["image_base64"])
+        self.assertFalse(ollama.call_args.kwargs["allow_partial"])
 
     def test_none_embellishment_adds_no_visible_details(self):
         natural = self.nodes._embellishment_instruction("None", {"style": "natural_language"})
@@ -1825,6 +2223,37 @@ class RegressionTests(unittest.TestCase):
         self.assertEqual(payload["reasoning_effort"], "medium")
         self.assertEqual(payload["reasoning_format"], "auto")
 
+    def test_llamacpp_structured_request_uses_json_schema_response_format(self):
+        response = {"choices": [{"message": {"content": '{"ok":true}'}, "finish_reason": "stop"}]}
+        schema = {"type": "object", "properties": {"ok": {"type": "boolean"}}, "required": ["ok"]}
+        with (
+            mock.patch.object(self.nodes, "_llamacpp_token_count", return_value=100),
+            mock.patch.object(self.nodes, "_llamacpp_context_length", return_value=8192),
+            mock.patch.object(self.nodes, "_post_llamacpp_chat", return_value=response) as post,
+        ):
+            self.nodes._generate_llamacpp(
+                "Return JSON", "http://localhost:8080", "model.gguf", 200, 200,
+                0.0, 1.0, 1, 0.0, 1.0, 128, 0, "Disabled", "", 120,
+                response_schema=schema,
+            )
+
+        self.assertEqual(post.call_args.args[1]["response_format"]["json_schema"]["schema"], schema)
+
+    def test_kobold_structured_request_uses_json_grammar_without_thinking(self):
+        response = {"choices": [{"message": {"content": '{"ok":true}'}, "finish_reason": "stop"}]}
+        with (
+            mock.patch.object(self.nodes, "_server_capabilities", return_value={"jinja": True}),
+            mock.patch.object(self.nodes, "_server_context_length", return_value=8192),
+            mock.patch.object(self.nodes, "_kobold_token_count", return_value=100),
+            mock.patch.object(self.nodes, "_post_json", return_value=response) as post,
+        ):
+            self.nodes._generate_kcpp(
+                "Return JSON", "http://localhost:5001", 200, 200, 0.0, 1.0, 1, 0.0,
+                1.0, 128, 0, "Disabled", "", 120, response_schema={"type": "object"},
+            )
+
+        self.assertEqual(post.call_args.args[1]["grammar"], self.nodes.JSON_OBJECT_GBNF)
+
     def test_high_thinking_length_failure_is_not_retried_without_thinking(self):
         response = {
             "choices": [
@@ -1978,11 +2407,51 @@ class RegressionTests(unittest.TestCase):
         self.assertFalse(payload["stream"])
         self.assertEqual(payload["keep_alive"], 30)
         self.assertEqual(payload["options"]["num_predict"], 750)
+        self.assertGreaterEqual(payload["options"]["num_ctx"], payload["options"]["num_predict"])
         self.assertEqual(payload["options"]["presence_penalty"], 1.5)
         self.assertEqual(payload["options"]["repeat_penalty"], 1.05)
         self.assertEqual(payload["options"]["repeat_last_n"], 360)
         self.assertNotIn("seed", payload["options"])
         self.assertEqual(post.call_args.kwargs["service_name"], "Ollama")
+
+    def test_ollama_context_bucket_accounts_for_the_complete_message_set(self):
+        messages = [
+            {"role": "system", "content": "Director rules " + "x" * 20_000},
+            {"role": "user", "content": "Preserve the opening and revise only the ending."},
+        ]
+        context = self.nodes._ollama_request_context(messages, 2_000)
+
+        self.assertGreaterEqual(
+            context,
+            self.nodes._ollama_context_estimate(messages) + 2_000,
+        )
+        self.assertEqual(context & (context - 1), 0)
+
+    def test_ollama_structured_request_uses_native_format_schema(self):
+        response = {"message": {"role": "assistant", "content": '{"ok":true}'}, "done": True, "done_reason": "stop"}
+        schema = {"type": "object", "properties": {"ok": {"type": "boolean"}}, "required": ["ok"]}
+        with mock.patch.object(self.nodes, "_ollama_model_info", return_value={
+            "model_info": {"qwen3.context_length": 32768},
+        }), mock.patch.object(self.nodes, "_post_json", return_value=response) as post:
+            self.nodes._generate_ollama(
+                "Return JSON", "http://localhost:11434", "qwen3:8b", 200, 200,
+                0.0, 1.0, 1, 0.0, 1.0, 128, 0, "Disabled", "", 120,
+                response_schema=schema,
+            )
+
+        self.assertEqual(post.call_args.args[1]["format"], schema)
+
+    def test_ollama_context_preflight_rejects_an_unsafe_allocation(self):
+        messages = [{"role": "user", "content": "x" * 132_000}]
+
+        with self.assertRaisesRegex(RuntimeError, "65536-token safety limit"):
+            self.nodes._ollama_request_context(messages, 2_000)
+
+    def test_ollama_context_preflight_respects_selected_model_limit(self):
+        messages = [{"role": "user", "content": "x" * 20_000}]
+
+        with self.assertRaisesRegex(RuntimeError, "8192-token context window"):
+            self.nodes._ollama_request_context(messages, 2_000, 8192)
 
     def test_ollama_small_model_decision_retries_without_thinking(self):
         exhausted = {
@@ -2002,7 +2471,11 @@ class RegressionTests(unittest.TestCase):
             self.nodes,
             "_post_json",
             side_effect=[exhausted, completed],
-        ) as post:
+        ) as post, mock.patch.object(
+            self.nodes,
+            "_ollama_model_info",
+            return_value={"model_info": {"qwen3.context_length": 32768}},
+        ):
             result = self.nodes._generate_ollama(
                 "Classify this Studio turn",
                 "http://localhost:11434",
@@ -2036,7 +2509,11 @@ class RegressionTests(unittest.TestCase):
             "done": True,
             "done_reason": "length",
         }
-        with mock.patch.object(self.nodes, "_post_json", return_value=response) as post:
+        with mock.patch.object(self.nodes, "_post_json", return_value=response) as post, mock.patch.object(
+            self.nodes,
+            "_ollama_model_info",
+            return_value={"model_info": {"qwen3.context_length": 32768}},
+        ):
             result = self.nodes._generate_ollama(
                 "Rewrite this prompt",
                 "http://localhost:11434",
@@ -2698,9 +3175,156 @@ class RegressionTests(unittest.TestCase):
         self.assertFalse(evaluation["pass"])
         self.assertEqual(evaluation["next_revision"], "Use softer light.")
 
+    def test_prompt_agent_evaluation_discards_unconfirmed_defects_when_model_still_passes(self):
+        rubric = self.routes._normalize_prompt_agent_rubric({
+            "summary": "A clearly visible portrait subject",
+            "criteria": [{
+                "id": "subject",
+                "description": "One coherent portrait subject is clearly visible",
+                "weight": 100,
+                "hard": True,
+            }],
+            "forbidden": [],
+        })
+        evaluation = self.routes._normalize_prompt_agent_evaluation({
+            "score": 95,
+            "confidence": 0.92,
+            "pass": True,
+            "criteria": [{
+                "id": "subject",
+                "status": "pass",
+                "score": 95,
+                "evidence": "One coherent portrait subject is clearly visible.",
+            }],
+            "defects": [{
+                "description": "Possible facial ghosting",
+                "location": "face",
+                "severity": "serious",
+                "confidence": 0.6,
+            }],
+            "next_revision": "",
+            "summary": "The requested portrait is present.",
+        }, rubric, 85, 0.7, require_structured_defects=True)
+
+        self.assertTrue(evaluation["pass"])
+        self.assertEqual(evaluation["defects"], [])
+        self.assertEqual(evaluation["next_revision"], "")
+        self.assertEqual(evaluation["summary"], "The requested portrait is present.")
+
+    def test_prompt_agent_forbidden_outcome_is_an_independent_server_veto(self):
+        rubric = self.routes._normalize_prompt_agent_rubric({
+            "summary": "One product with no visible branding",
+            "criteria": [{
+                "id": "product",
+                "description": "One product is clearly visible",
+                "weight": 100,
+                "hard": True,
+            }],
+            "forbidden": ["visible branding"],
+        })
+        evaluation = self.routes._normalize_prompt_agent_evaluation({
+            "score": 95,
+            "confidence": 0.95,
+            "pass": False,
+            "criteria": [{
+                "id": "product",
+                "status": "pass",
+                "score": 95,
+                "evidence": "One product is visible, with a brand logo.",
+            }],
+            "forbidden": [{
+                "index": 1,
+                "status": "visible",
+                "evidence": "A brand logo is visible on the center label.",
+            }],
+            "defects": [{
+                "description": "Visible forbidden brand logo",
+                "location": "center label",
+                "severity": "minor",
+                "confidence": 0.99,
+            }],
+            "next_revision": "Remove the branding.",
+            "summary": "Forbidden branding is visible.",
+        }, rubric, 85, 0.7, require_structured_defects=True)
+
+        self.assertFalse(evaluation["pass"])
+        self.assertEqual(evaluation["forbidden"][0]["status"], "visible")
+        self.assertEqual(evaluation["next_revision"], "Remove the branding.")
+
+    def test_prompt_agent_missing_forbidden_assessment_cannot_pass(self):
+        rubric = self.routes._normalize_prompt_agent_rubric({
+            "summary": "One unbranded product",
+            "criteria": [{
+                "id": "product",
+                "description": "One product is visible",
+                "weight": 100,
+                "hard": True,
+            }],
+            "forbidden": ["visible branding"],
+        })
+        evaluation = self.routes._normalize_prompt_agent_evaluation({
+            "score": 100,
+            "confidence": 1,
+            "pass": True,
+            "criteria": [{
+                "id": "product", "status": "pass", "score": 100, "evidence": "Visible"
+            }],
+            "defects": [],
+            "summary": "Looks complete.",
+        }, rubric, 85, 0.7, require_structured_defects=True)
+
+        self.assertFalse(evaluation["pass"])
+        self.assertEqual(evaluation["forbidden"][0]["status"], "uncertain")
+        self.assertIn("clearly absent", evaluation["next_revision"])
+
+    def test_prompt_agent_evaluation_keeps_only_located_high_confidence_serious_defects(self):
+        rubric = self.routes._normalize_prompt_agent_rubric({
+            "summary": "A clearly visible portrait subject",
+            "criteria": [{
+                "id": "subject",
+                "description": "One coherent portrait subject is clearly visible",
+                "weight": 100,
+                "hard": True,
+            }],
+            "forbidden": [],
+        })
+        evaluation = self.routes._normalize_prompt_agent_evaluation({
+            "score": 95,
+            "confidence": 0.92,
+            "pass": True,
+            "criteria": [{
+                "id": "subject",
+                "status": "pass",
+                "score": 95,
+                "evidence": "One coherent portrait subject is clearly visible.",
+            }],
+            "defects": [
+                {
+                    "description": "Small background texture discontinuity",
+                    "location": "upper-left wall",
+                    "severity": "minor",
+                    "confidence": 0.99,
+                },
+                {
+                    "description": "Clearly duplicated facial structure",
+                    "location": "center of the face",
+                    "severity": "serious",
+                    "confidence": 0.94,
+                },
+            ],
+            "next_revision": "Render one coherent face.",
+            "summary": "A confirmed serious defect prevents a pass.",
+        }, rubric, 85, 0.7, require_structured_defects=True)
+
+        self.assertFalse(evaluation["pass"])
+        self.assertEqual(evaluation["defects"], ["Clearly duplicated facial structure"])
+        self.assertEqual(evaluation["next_revision"], "Render one coherent face.")
+
     def test_prompt_agent_visual_judge_does_not_receive_candidate_prompt(self):
         path = Path(self.temp.name) / "agent-result.png"
+        reference_path = Path(self.temp.name) / "agent-reference.png"
         Image.new("RGB", (64, 64), color="teal").save(path)
+        Image.new("RGB", (64, 64), color="purple").save(reference_path)
         payload = {
             "phase": "evaluate",
             "goal": "Create a quiet teal product photograph.",
@@ -2715,6 +3339,14 @@ class RegressionTests(unittest.TestCase):
                 "forbidden": [],
             },
             "candidate": {"prompt": "SECRET CANDIDATE WORDING"},
+            "references": [{
+                "purpose": "appearance reference",
+                "image": {
+                    "filename": reference_path.name,
+                    "subfolder": "",
+                    "type": "output",
+                },
+            }],
             "generated_images": [{
                 "filename": path.name,
                 "subfolder": "",
@@ -2746,6 +3378,9 @@ class RegressionTests(unittest.TestCase):
         judge_text = messages[1]["content"][0]["text"]
         self.assertNotIn("SECRET CANDIDATE WORDING", judge_text)
         self.assertIn("Generated result 1", judge_text)
+        self.assertNotIn("Reference 1", judge_text)
+        self.assertEqual(len(messages[1]["content"]), 2)
+        self.assertIn("Only generated candidate images", messages[0]["content"])
 
     def test_consultation_labels_multimodal_reference_for_ollama(self):
         path = Path(self.temp.name) / "pose-reference.png"
@@ -3104,7 +3739,7 @@ class RegressionTests(unittest.TestCase):
                 "Disabled phrase",
             )
 
-    def test_additional_instructions_are_highest_priority_in_all_prompt_builders(self):
+    def test_additional_instructions_never_override_the_latest_user_request(self):
         storage = Path(self.temp.name)
         templates = storage / "additional-instructions.json"
         trigger = "Override scene rules"
@@ -3150,9 +3785,13 @@ class RegressionTests(unittest.TestCase):
             with self.subTest(builder=request.splitlines()[0]):
                 self.assertIn(expansion, request)
                 self.assertNotIn(trigger, request)
-                self.assertIn("Additional user instructions (highest priority)", request)
-                self.assertIn("main/user/current prompt", request)
-                self.assertIn("Replace or omit conflicting lower-priority content", request)
+                self.assertIn("Persistent additional guidance", request)
+                self.assertIn("latest request is authoritative", request)
+                self.assertIn("must not expand the requested edit scope", request)
+        self.assertIn(
+            "Do not import decorative style, framing, camera, lighting, quality",
+            requests[2],
+        )
 
     def test_missing_additional_preset_file_is_created_from_tracked_example(self):
         storage = Path(self.temp.name)

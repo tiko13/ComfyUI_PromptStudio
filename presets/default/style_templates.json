@@ -162,7 +162,7 @@
     },
     {
       "name": "Extreme Nightmare Fuel",
-      "instruction": "Generate a profoundly unsettling scene characterized by distorted anatomy: unnaturally elongated limbs, disjointed joints, and slender, multi-jointed fingers. Use a sickly, diseased color scheme dominated by jaundiced yellows, bruised purples, and emerald greens, with accents of coagulated red. Focus on visceral textures: peeling, oozing wallpaper; slick, wet surfaces; and skin that appears translucent and veined. Incorporate 'uncanny valley' elements such as asymmetrical facial features, glassy unblinking eyes, and a slightly hunched, rigid posture. Create visual tension through 'impossible geometry' where chair legs curve into the floor and shadows seem to detach from their sources. The lighting should be harsh and directional, casting long, sharp shadows that emphasize the gauntness of the subject. Aim for a feeling of stagnant decay and biological wrongness."
+      "instruction": "Render the requested content with extreme surreal horror: diseased yellow, bruised purple, and deep green color, harsh directional light, long detached-looking shadows, wet or decayed textures on already-present compatible surfaces, and subtly impossible geometry in the established environment. Distort only existing compatible organic forms when the request permits it, while preserving subject identity and all protected details. Do not add people, body parts, furniture, wallpaper, wounds, props, or scene objects solely to express the style."
     },
     {
       "name": "Jumpscare - Sudden Reveal",

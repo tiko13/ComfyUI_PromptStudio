@@ -520,7 +520,14 @@ body.promptstudio-popout-body {
 
 #promptstudio-prompt-studio button:disabled {
   opacity: 0.42;
-  cursor: wait;
+  cursor: not-allowed;
+}
+
+#promptstudio-prompt-studio button:focus-visible,
+#promptstudio-prompt-studio a:focus-visible,
+.promptstudio-kobold-control > summary:focus-visible {
+  outline: 2px solid var(--ps-accent-strong);
+  outline-offset: 2px;
 }
 
 .promptstudio-header-actions button:not(.promptstudio-chats-button) {
@@ -1508,6 +1515,18 @@ body.promptstudio-popout-body .promptstudio-header-actions {
   gap: 3px;
 }
 
+.promptstudio-studio-settings-header > .promptstudio-studio-settings-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+
+#promptstudio-prompt-studio #promptstudio-close-studio-settings {
+  min-height: 34px;
+  padding: 0 12px;
+  font-size: 11px;
+}
+
 .promptstudio-studio-settings-header strong {
   font-size: 16px;
   line-height: 1.2;
@@ -2211,6 +2230,15 @@ body.promptstudio-popout-body .promptstudio-header-actions {
 }
 
 @media (prefers-reduced-motion: reduce) {
+  #promptstudio-prompt-studio *,
+  #promptstudio-prompt-studio *::before,
+  #promptstudio-prompt-studio *::after {
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+  }
+
   .promptstudio-generation-progress-track[data-indeterminate="true"] .promptstudio-generation-progress-fill {
     width: 100%;
     opacity: 0.55;

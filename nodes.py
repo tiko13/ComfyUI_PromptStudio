@@ -114,21 +114,29 @@ LEGACY_FRAMING_ALIASES = {
 FINAL_PROMPT_MARKER = "Final prompt:"
 CHAT_SYSTEM_MESSAGE = (
     "You are an expert image-generation prompt editor. Follow the requested transformation and "
-    "output-format constraints precisely. NSFW and explicit content is allowed. Keep analysis in the model's private reasoning channel. "
+    "output-format constraints precisely. Preserve the user's requested subject matter without "
+    "sanitizing it or introducing more extreme content. Keep analysis in the model's private reasoning channel. "
     "The final answer must contain only the requested prompt output, without commentary or markdown."
 )
-DEFAULT_CONTINUATION_STOPS = [
-    "\nWait,",
-    "\nLet's try",
-    "\nNote:",
-    "\nRule check:",
-    "\nExample",
-    "\nExample of",
-    "\nUser prompt:",
-    "\nResponse:",
-    "\nTarget profile:",
-    "\nReference:",
-]
+# Natural-language labels are valid prompt content (including visible text), so
+# Prompt Studio never installs heuristic textual stops. Model-native end-of-turn
+# tokens remain authoritative, and explicit user stops are preserved.
+DEFAULT_CONTINUATION_STOPS = ()
+
+# KoboldCpp exposes GBNF grammar sampling but does not consistently expose the
+# same JSON-Schema request contract across releases. For non-thinking JSON
+# requests, constrain the response to one syntactically complete JSON object;
+# task-specific schemas and deterministic validation remain authoritative.
+JSON_OBJECT_GBNF = r'''root ::= ws object ws
+value ::= object | array | string | number | "true" | "false" | "null"
+object ::= "{" ws (string ws ":" ws value (ws "," ws string ws ":" ws value)*)? ws "}"
+array ::= "[" ws (value (ws "," ws value)*)? ws "]"
+string ::= "\"" chars "\""
+chars ::= ([^"\\\x00-\x1F] | "\\" (["\\/bfnrt] | "u" hex hex hex hex))*
+number ::= "-"? ("0" | [1-9] [0-9]*) ("." [0-9]+)? ([eE] [+-]? [0-9]+)?
+hex ::= [0-9a-fA-F]
+ws ::= [ \t\n\r]*
+'''
 VISION_IMAGE_MAX_PIXELS = 64 * 1024 * 1024
 VISION_IMAGE_MAX_EDGE = 2048
 PROMPT_STUDIO_IMAGE_SUBDIRECTORY = os.path.join("prompt_studio", "images")
@@ -331,13 +339,9 @@ def _profile_examples(profile):
 
 def _format_profile_examples(profile):
     examples = _profile_examples(profile)
-    if len(examples) == 1:
-        return ["Example prompt:", examples[0]]
-
-    lines = ["Example prompts:"]
-    for index, example in enumerate(examples, start=1):
-        lines.append(f"{index}. {example}")
-    return lines
+    # One syntax reference is enough for local models; multiple content-rich
+    # examples consume context and increase subject-matter copying.
+    return ["Syntax example (format only; never copy its subject matter):", examples[0]]
 
 
 def _profile_notes(profile):
@@ -647,7 +651,7 @@ def _known_reference_final_prompt_lines(references):
         "- Do not output a reference name or matched spelling merely because it appears in the source. The final prompt must describe the referenced content instead.",
         "- Apply every mapping independently and simultaneously. Never merge mappings, swap definitions, transfer attributes between references, or assign a pose, expression, item, background, or other concept to the wrong subject or location.",
         "- If a reference appears only in a requested revision, use its definition to identify the corresponding content in the current prompt, apply the requested edit, and still omit the reference name from the result.",
-        "- An explicit local modification attached to a reference may refine or override the conflicting part of its definition. Otherwise the definition is the baseline and overrides conflicting generic prompt, style, framing, or embellishment guidance. Highest-priority additional user instructions still take precedence.",
+        "- An explicit local modification attached to a reference may refine or override the conflicting part of its definition. Otherwise the definition is the baseline and overrides conflicting generic style, framing, or embellishment guidance. The latest explicit user prompt or revision remains authoritative, and compatible persistent guidance may refine only unspecified details.",
         "- Preserve all compatible surrounding prompt details and combine compatible reference definitions coherently.",
     ]
 
@@ -664,17 +668,23 @@ def _expand_additional_instructions(value):
     return instruction
 
 
-def _additional_instruction_prompt_lines(value):
+def _additional_instruction_prompt_lines(value, *, main_prompt=False):
     instruction = _expand_additional_instructions(value)
     if not instruction:
         return []
-    return [
+    lines = [
         "",
-        "Additional user instructions (highest priority):",
+        "Persistent additional guidance:",
         instruction,
-        "Follow these instructions whenever they conflict with the selected style, style modifier, selected framing, framing modifier, or the main/user/current prompt. Replace or omit conflicting lower-priority content.",
-        "Treat non-conflicting style, framing, and prompt content as supporting context. Do not copy meta-instruction language into the output unless it explicitly describes content the user wants generated.",
+        "Apply this guidance only where it is compatible with the latest explicit user prompt or revision. The latest request is authoritative and must never be reversed, weakened, or silently replaced by this persistent setting.",
+        "This guidance may refine selected style, framing, embellishment, format, or otherwise unspecified details, but it must not expand the requested edit scope, introduce unrelated subjects or scene concepts, or alter protected content.",
+        "Do not copy meta-instruction language into the output unless it explicitly describes content the user wants generated.",
     ]
+    if main_prompt:
+        lines.append(
+            "For the model-neutral main prompt, use this guidance only to resolve ambiguity in durable user intent. Do not import decorative style, framing, camera, lighting, quality, format, or incidental rendered details into the main prompt."
+        )
+    return lines
 
 
 def _get_profile(profile_name):
@@ -1106,7 +1116,7 @@ def _kobold_vision_unavailable_reason(capabilities):
     )
 
 
-def _ollama_model_capabilities(base_url, model, timeout):
+def _ollama_model_info(base_url, model, timeout):
     result = _post_json(
         _ollama_api_url(base_url, "show"),
         {"model": model},
@@ -1115,8 +1125,40 @@ def _ollama_model_capabilities(base_url, model, timeout):
     )
     if not isinstance(result, dict):
         raise RuntimeError(f"Unexpected Ollama model-info response: {result}")
+    return result
+
+
+def _ollama_model_capabilities(base_url, model, timeout):
+    result = _ollama_model_info(base_url, model, timeout)
     capabilities = result.get("capabilities")
     return [str(value).strip().casefold() for value in capabilities] if isinstance(capabilities, list) else []
+
+
+def _ollama_model_context_length(model_info):
+    metadata = model_info.get("model_info") if isinstance(model_info, dict) else None
+    if not isinstance(metadata, dict):
+        return None
+    architecture = str(metadata.get("general.architecture") or "").strip()
+    if architecture:
+        try:
+            primary = int(metadata.get(f"{architecture}.context_length"))
+        except (TypeError, ValueError):
+            primary = 0
+        if primary > 0:
+            return primary
+    values = []
+    for key, value in metadata.items():
+        if not str(key).casefold().endswith(".context_length"):
+            continue
+        try:
+            length = int(value)
+        except (TypeError, ValueError):
+            continue
+        if length > 0:
+            values.append(length)
+    # If an older model omits general.architecture, choose the most conservative
+    # advertised context rather than accidentally selecting an auxiliary encoder.
+    return min(values) if values else None
 
 
 def _ollama_vision_unavailable_reason(capabilities, model):
@@ -1442,6 +1484,7 @@ def _generate_kcpp(
     response_hook=None,
     cancellation_check=None,
     presence_penalty=0.0,
+    response_schema=None,
 ):
     def ensure_active():
         if cancellation_check is not None and cancellation_check():
@@ -1542,6 +1585,8 @@ def _generate_kcpp(
             "continue_assistant_turn": False,
             "stream": False,
         }
+        if isinstance(response_schema, dict) and effort == "none":
+            payload["grammar"] = JSON_OBJECT_GBNF
         if thinking_budget is not None:
             # KoboldCpp's top-level Minimal/Low/Medium efforts enforce percentage caps
             # before consulting thinking_budget_tokens. Keep the effort as a template
@@ -1568,7 +1613,7 @@ def _generate_kcpp(
         except (KeyError, IndexError, TypeError) as exc:
             raise RuntimeError(f"Unexpected KoboldCpp response: {result}") from exc
         if finish_reason == "error":
-            raise RuntimeError("KoboldCpp reported an error while generating the chat completion.")
+            raise RuntimeError("KoboldCpp reported an error while processing the chat completion.")
         return str(content), message, finish_reason, max_length, result
 
     content, message, finish_reason, max_length, result = generate_once(thinking_mode)
@@ -1610,6 +1655,7 @@ def _generate_llamacpp(
     cancellation_check=None,
     presence_penalty=0.0,
     reasoning_budget_tokens=0,
+    response_schema=None,
 ):
     def ensure_active():
         if cancellation_check is not None and cancellation_check():
@@ -1703,6 +1749,15 @@ def _generate_llamacpp(
         "chat_template_kwargs": {"enable_thinking": enable_thinking},
         "stop": stop_sequences,
     }
+    if isinstance(response_schema, dict):
+        payload["response_format"] = {
+            "type": "json_schema",
+            "json_schema": {
+                "name": "prompt_studio_response",
+                "schema": response_schema,
+                "strict": True,
+            },
+        }
     if thinking_budget is not None:
         payload["thinking_budget_tokens"] = thinking_budget
     ensure_active()
@@ -1743,6 +1798,66 @@ def _ollama_thinking_value(thinking_mode):
     if effort in {"minimal", "low"}:
         return "low"
     return effort
+
+
+OLLAMA_MAX_REQUEST_CONTEXT = 65536
+
+
+def _ollama_context_estimate(messages):
+    """Conservatively estimate formatted text and vision tokens for Ollama.
+
+    Ollama does not expose the model's exact formatted input-token count through
+    its native chat API.  A conservative estimate is still preferable to
+    silently relying on a small server default that may discard system or user
+    context.  Image payload bytes are excluded; each image receives a separate
+    vision-token allowance.
+    """
+    text_chars = 0
+    image_count = 0
+    for message in messages if isinstance(messages, list) else []:
+        if not isinstance(message, dict):
+            continue
+        content = message.get("content")
+        if isinstance(content, str):
+            text_chars += len(content)
+        elif isinstance(content, list):
+            for part in content:
+                if not isinstance(part, dict):
+                    continue
+                if part.get("type") == "text":
+                    text_chars += len(str(part.get("text") or ""))
+                elif part.get("type") == "image_url":
+                    image_count += 1
+        images = message.get("images")
+        if isinstance(images, list):
+            image_count += len(images)
+    # English prompt text is commonly near four characters per token.  Two
+    # characters per token leaves headroom for JSON/chat-template overhead and
+    # less compact languages.  Vision encoders vary, so reserve a generous
+    # fixed allowance per sanitized image.
+    return math.ceil(text_chars / 2) + image_count * 4096 + 256
+
+
+def _ollama_request_context(messages, completion_tokens, model_context_length=None):
+    required = _ollama_context_estimate(messages) + max(1, int(completion_tokens))
+    if model_context_length is not None and required > int(model_context_length):
+        raise RuntimeError(
+            f"The Ollama request needs approximately {required} context tokens, but the selected "
+            f"model advertises a {int(model_context_length)}-token context window. Shorten the "
+            "conversation or reduce the response budget."
+        )
+    if required > OLLAMA_MAX_REQUEST_CONTEXT:
+        raise RuntimeError(
+            f"The Ollama request needs approximately {required} context tokens, exceeding "
+            f"Prompt Studio's {OLLAMA_MAX_REQUEST_CONTEXT}-token safety limit. Shorten the "
+            "conversation or Director context."
+        )
+    # Stable power-of-two buckets avoid needless Ollama runner reloads between
+    # closely related routing, rewrite, and discussion stages.
+    context = 2048
+    while context < required:
+        context *= 2
+    return min(context, int(model_context_length)) if model_context_length is not None else context
 
 
 class _GenerationText(str):
@@ -1818,6 +1933,7 @@ def _generate_ollama(
     allow_partial=True,
     keep_alive=30,
     presence_penalty=0.0,
+    response_schema=None,
 ):
     def ensure_active():
         if cancellation_check is not None and cancellation_check():
@@ -1828,6 +1944,9 @@ def _generate_ollama(
     model = str(ollama_model or "").strip()
     if not model:
         raise ValueError("Select an Ollama model in Prompt Studio settings")
+    ensure_active()
+    model_info = _ollama_model_info(base_url, model, int(request_timeout))
+    model_context_length = _ollama_model_context_length(model_info)
     has_images = bool(image_base64) or (
         messages_override is not None
         and any(
@@ -1836,7 +1955,12 @@ def _generate_ollama(
         )
     )
     if has_images:
-        capabilities = _ollama_model_capabilities(base_url, model, int(request_timeout))
+        capabilities = model_info.get("capabilities")
+        capabilities = (
+            [str(value).strip().casefold() for value in capabilities]
+            if isinstance(capabilities, list)
+            else []
+        )
         vision_reason = _ollama_vision_unavailable_reason(capabilities, model)
         if vision_reason:
             raise RuntimeError(vision_reason)
@@ -1854,9 +1978,11 @@ def _generate_ollama(
         {"role": "system", "content": CHAT_SYSTEM_MESSAGE},
         user_message,
     ]
+    request_context = _ollama_request_context(messages, max_length, model_context_length)
     def generate_once(request_thinking_mode, prediction_limit):
         options = {
             "num_predict": int(prediction_limit),
+            "num_ctx": request_context,
             "temperature": float(temperature),
             "top_p": float(top_p),
             "top_k": int(top_k),
@@ -1878,6 +2004,8 @@ def _generate_ollama(
             # frontend explicitly unloads it immediately before queueing ComfyUI.
             "keep_alive": keep_alive,
         }
+        if isinstance(response_schema, dict):
+            payload["format"] = response_schema
         ensure_active()
         result = _post_json(
             _ollama_api_url(base_url, "chat"),
@@ -2001,7 +2129,7 @@ def _generate_kcpp_raw(
     except (KeyError, IndexError, TypeError) as exc:
         raise RuntimeError(f"Unexpected KoboldCpp response: {result}") from exc
     if item.get("finish_reason") == "error":
-        raise RuntimeError("KoboldCpp reported an error while generating the raw completion.")
+        raise RuntimeError("KoboldCpp reported an error while processing the raw completion.")
     return text
 
 
@@ -2019,35 +2147,22 @@ def _strip_response(text):
     if final_marker_matches:
         text = text[final_marker_matches[0].end():]
 
-    text = re.sub(r"<\|channel\>thought\b.*?<channel\|>", "", text, flags=re.IGNORECASE | re.DOTALL)
-    text = re.sub(r"<\|channel\>analysis\b.*?<channel\|>", "", text, flags=re.IGNORECASE | re.DOTALL)
-    text = re.sub(r"<thinking>.*?</thinking>", "", text, flags=re.IGNORECASE | re.DOTALL)
-    text = re.sub(r"<think>.*?</think>", "", text, flags=re.IGNORECASE | re.DOTALL)
+    text = re.sub(r"^\s*<\|channel\>thought\b.*?<channel\|>\s*", "", text, count=1, flags=re.IGNORECASE | re.DOTALL)
+    text = re.sub(r"^\s*<\|channel\>analysis\b.*?<channel\|>\s*", "", text, count=1, flags=re.IGNORECASE | re.DOTALL)
+    text = re.sub(r"^\s*<thinking>.*?</thinking>\s*", "", text, count=1, flags=re.IGNORECASE | re.DOTALL)
+    text = re.sub(r"^\s*<think>.*?</think>\s*", "", text, count=1, flags=re.IGNORECASE | re.DOTALL)
     if not has_final_marker:
         text = re.sub(r"^.*?</thinking>", "", text, flags=re.IGNORECASE | re.DOTALL)
         text = re.sub(r"^.*?</think>", "", text, flags=re.IGNORECASE | re.DOTALL)
     text = re.sub(r"</(?:thinking|think)>", "", text, flags=re.IGNORECASE)
-    output_match = re.search(r"<output>(.*?)(?:</output>|$)", text, flags=re.IGNORECASE | re.DOTALL)
+    output_match = re.fullmatch(r"\s*<output>(.*?)</output>\s*", text, flags=re.IGNORECASE | re.DOTALL)
     if output_match:
         text = output_match.group(1)
-    text = re.sub(r"```(?:text|prompt)?", "", text, flags=re.IGNORECASE)
-    text = re.sub(r"\s*```$", "", text)
+    fence_match = re.fullmatch(r"\s*```(?:text|prompt)?\s*\n?(.*?)\n?```\s*", text, flags=re.IGNORECASE | re.DOTALL)
+    if fence_match:
+        text = fence_match.group(1)
     text = re.sub(r"</?(?:output|final_prompt)>", "", text, flags=re.IGNORECASE)
     text = re.sub(r"^(?:rewritten prompt|amplified prompt|prompt)\s*:\s*", "", text, flags=re.IGNORECASE)
-    text = re.split(r"\n\s*\((?:note|reasoning|explanation)\s*:", text, maxsplit=1, flags=re.IGNORECASE)[0]
-    text = re.split(
-        r"\n\s*\n\s*(?=(?:the user (?:wants|asked|requested)|i (?:need|should|will|have to)|this (?:edit|revision|change)|the current prompt (?:has|contains)|to satisfy (?:the|this) request)\b)",
-        text,
-        maxsplit=1,
-        flags=re.IGNORECASE,
-    )[0]
-    text = re.split(r"<(?:\|channel\>|channel\|)", text, maxsplit=1, flags=re.IGNORECASE)[0]
-    text = re.split(
-        r"\n\s*(?:wait,|let's\s+try\b|note\s*:|rule\s+check\s*:|example\s*:|example\s+of\b|user\s+prompt\s*:|response\s*:|reasoning\s*:|target\s+profile\s*:|final\s+prompt\s*:)",
-        text,
-        maxsplit=1,
-        flags=re.IGNORECASE,
-    )[0]
     return text.strip()
 
 
@@ -2198,10 +2313,7 @@ def _revision_thinking_instruction(thinking_mode):
 def _positive_output_rule_lines(target="final prompt"):
     return [
         f"- Write the {target} only as affirmative descriptions of visible content to generate.",
-        "- State each desired visual property directly and omit absent, rejected, removed, or superseded alternatives entirely.",
-        "- Keep instruction language out of the output: do not express constraints as negation, exclusion, correction, contrast, or comparison.",
-        "- Before responding, silently convert negative or comparative phrasing into the closest affirmative visual description, then omit any clause that only describes absence.",
-        "- Prefer direct phrases such as 'soft diffused lighting', 'an uncluttered background', and 'the subject gazes off-frame'.",
+        "- Express the desired state directly; omit absent, rejected, removed, or superseded alternatives, comparison, correction, and meta-instructions.",
     ]
 
 
@@ -2512,7 +2624,7 @@ def _build_expansion_retry_prompt(
             "- Expand by adding visible attributes, textures, materials, colors, pose, expression, composition, and ordinary supporting setting details.",
             "- Do not add new main subjects, extra characters, animals, vehicles, signs, symbols, readable text, logos, landmarks, brands, new focal props, loose decorative props, or new story events.",
             "- Use visible details only. Do not add sounds, smells, emotions, mood labels, or invisible sensory details unless the user asks for them.",
-            "- Follow any explicit, NSFW and similar content orders if asked for.",
+            "- Follow the user's explicit content request without sanitizing, substituting, or escalating it.",
             *_expansion_rule_lines(embellishment_level, profile),
             *_target_length_rule_lines(target_output_length, profile, embellishment_level, "expanded prompt"),
             *_positive_output_rule_lines("expanded prompt"),
@@ -2849,6 +2961,8 @@ def _build_main_revision_prompt(
         "Return one complete main prompt, never a patch or a list of changes.",
         "",
         "Main-prompt rules:",
+        "- Keep the main prompt as a direct description of the desired visual content, not an instruction to create, generate, draw, show, render, or produce something.",
+        "- Interpret conversational or request framing in the revision as editing instructions; store only the resulting visual intent, while preserving request wording that is explicitly meant to appear as visible content.",
         "- Add or replace positive content when the user explicitly requests that content.",
         "- A requested attribute replacement must replace the complete old value phrase, including omitted old qualifiers, while preserving neighboring attributes that describe a different property.",
         "- Example: 'dark wavy hair' revised with 'make her hair blonde' becomes 'blonde wavy hair', not 'dark blonde wavy hair'.",
@@ -2871,7 +2985,7 @@ def _build_main_revision_prompt(
     )
     if known_reference_lines:
         prompt_parts.extend(["", *known_reference_lines])
-    prompt_parts.extend(_additional_instruction_prompt_lines(additional_instructions))
+    prompt_parts.extend(_additional_instruction_prompt_lines(additional_instructions, main_prompt=True))
     if _reasoning_effort(thinking_mode) != "none":
         prompt_parts.extend(
             [
@@ -2891,6 +3005,62 @@ def _build_main_revision_prompt(
             "",
             "Requested revision:",
             str(revision or "").strip(),
+        ]
+    )
+    return "\n".join(prompt_parts)
+
+
+def _build_main_creation_prompt(
+    user_request,
+    thinking_mode,
+    additional_instructions="",
+):
+    """Build the first model-neutral main prompt from a creation request."""
+    prompt_parts = [
+        "You convert a user's first image-creation request into Prompt Studio's model-neutral main prompt.",
+        "The main prompt is a direct description of the visual content the user wants, not an instruction to create, generate, draw, show, or render something.",
+        "Interpret the request semantically. Separate language used only to ask for an image from language that describes the desired content.",
+        "Preserve every explicitly requested subject, action, setting, relationship, attribute, medium, style, composition, camera choice, lighting choice, and other durable intent.",
+        "Do not add decorative detail, automatic embellishment, inferred content, quality language, model-specific syntax, or prompt weights.",
+        "Return one complete main prompt, never a response to the user, a patch, or a list of changes.",
+        "",
+        "Main-prompt semantics:",
+        "- Begin directly with the content to depict and describe it affirmatively.",
+        "- Never begin with or retain a request wrapper such as an instruction to create, generate, make, draw, show, render, or produce the result.",
+        "- Omit generic container wording such as 'an image of', 'a picture of', or 'a photo of' when it merely introduces the actual subject.",
+        "- Preserve image, picture, photograph, painting, drawing, and similar nouns when they are themselves requested visible objects or explicitly specify the desired medium. Decide this from meaning, not from a fixed phrase-removal rule.",
+        "- Preserve an explicitly requested style or medium even when it appears inside the request framing.",
+        "- Do not address the user, mention their request, or describe the act of making the image.",
+        *_positive_output_rule_lines("main prompt"),
+        "- Do not explain the transformation.",
+        "- Do not include markdown.",
+        f"- Start the final answer with exactly '{FINAL_PROMPT_MARKER}' followed by the main prompt.",
+        f"- Do not put anything after the main prompt following '{FINAL_PROMPT_MARKER}'.",
+    ]
+    known_references = _matched_known_references(user_request)
+    protected_word_lines = _protected_word_instruction_lines(
+        user_request,
+        excluded_literals=[reference["name"] for reference in known_references],
+    )
+    if protected_word_lines:
+        prompt_parts.extend(["", *protected_word_lines])
+    known_reference_lines = _known_reference_main_prompt_lines(user_request)
+    if known_reference_lines:
+        prompt_parts.extend(["", *known_reference_lines])
+    prompt_parts.extend(_additional_instruction_prompt_lines(additional_instructions, main_prompt=True))
+    if _reasoning_effort(thinking_mode) != "none":
+        prompt_parts.extend(
+            [
+                "",
+                "Reasoning policy:",
+                "Silently distinguish request framing from desired visual content, verify that every explicit detail is preserved, then answer without exposing the analysis.",
+            ]
+        )
+    prompt_parts.extend(
+        [
+            "",
+            "User's image-creation request:",
+            str(user_request or "").strip(),
         ]
     )
     return "\n".join(prompt_parts)

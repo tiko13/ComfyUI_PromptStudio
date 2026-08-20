@@ -41,8 +41,8 @@ class FrontendRegressionTests(unittest.TestCase):
         ]
 
         self.assertIn('return "Thinking"', activity)
-        self.assertIn('return "Generating"', activity)
-        self.assertIn('return "Thinking / generating"', activity)
+        self.assertIn('return "Processing"', activity)
+        self.assertIn('return "Thinking / processing"', activity)
         self.assertNotIn("with ${", consult)
         self.assertIn("llmGeneratedTokenCount(job.provider_status", poll)
         self.assertIn("promptstudio-llm-token-count", consult_render)
@@ -139,6 +139,7 @@ class FrontendRegressionTests(unittest.TestCase):
         self.assertIn("llamacpp_config_profile:", connection)
         self.assertIn("llmGeneratedTokenCount(status)", status)
         self.assertIn("server_process", status)
+        self.assertIn("process.config_changed === true", status)
         self.assertIn("llamacpp_executable", launcher_configured)
         self.assertIn("llamacpp_config_profile", launcher_configured)
         self.assertIn("!launcherConfigured", status)
@@ -199,6 +200,19 @@ class FrontendRegressionTests(unittest.TestCase):
         self.assertIn('chat.mainPrompt !== String(chat.renderedMainPrompt ?? "")', render_state)
         self.assertIn("mainPrompt = previousMainPrompt;", revise)
         self.assertIn('payloadFor(mainPrompt, "render", "", previousFinalPrompt)', revise)
+
+    def test_first_request_is_semantically_converted_to_a_main_prompt_before_rendering(self):
+        revise = self.source[
+            self.source.index("async function reviseAndMaybeGenerate"):
+            self.source.index("async function createNewFromCurrentPrompt")
+        ]
+
+        create_main = 'payloadFor(revision, "create_main", "", "")'
+        render_main = 'payloadFor(mainPrompt, "render", "", "")'
+        self.assertIn(create_main, revise)
+        self.assertIn(render_main, revise)
+        self.assertLess(revise.index(create_main), revise.index(render_main))
+        self.assertNotIn("mainPrompt = revision;", revise)
 
     def test_info_pill_is_derived_from_current_prompt_and_control_state(self):
         changed_controls = self.function_source("changedRenderControlLabels", "useLlmAmplification")
@@ -288,6 +302,30 @@ class FrontendRegressionTests(unittest.TestCase):
         ]
         self.assertIn("Math.max(1400", request)
         self.assertNotIn("Math.max(1200", request)
+
+    def test_llm_context_carries_forbidden_checks_and_real_control_options(self):
+        normalize = self.function_source(
+            "normalizePromptAgentEvaluation",
+            "normalizePromptAgentIteration",
+        )
+        controls = self.function_source(
+            "applicableStudioControlOptions",
+            "studioDiscussionTarget",
+        )
+        discussion = self.source[
+            self.source.index("function studioDiscussionRequestMessages"):
+            self.source.index("async function requestStudioDiscussion")
+        ]
+        payload = self.function_source(
+            "promptAgentEvaluationPayload",
+            "promptAgentReferencesPayload",
+        )
+
+        self.assertIn("forbidden:", normalize)
+        self.assertIn("normalized.forbidden.map", payload)
+        self.assertIn("state.config?.profiles", controls)
+        self.assertIn("state.config?.styles", controls)
+        self.assertIn("allowed_control_options: applicableStudioControlOptions()", discussion)
 
     def test_prompt_agent_stop_survives_a_page_refresh(self):
         normalizer = self.function_source(
@@ -440,10 +478,13 @@ class FrontendRegressionTests(unittest.TestCase):
         self.assertIn('id="promptstudio-comfy-update-progress"', self.source)
         self.assertIn("comfyUpdateDoneCount", summary)
         self.assertIn("comfyUpdateTotalCount", summary)
-        self.assertIn('state.comfyUpdateMessage = "ComfyUI queued', update)
+        self.assertIn("PROMPTSTUDIO_COMFY_UPDATE_ENDPOINT", update)
+        self.assertIn("coreUpdate.steps", update)
+        self.assertIn("ComfyUI core and Python packages checked", update)
         self.assertIn('state.comfyUpdateMessage = "Updates queued', update)
         self.assertIn("status.target", queue)
         self.assertIn("updatedCount", finish)
+        self.assertIn("state.comfyUpdateResults.values()", finish)
         self.assertIn("failedCount", finish)
         self.assertIn("failedLabels", finish)
         self.assertIn("Failed:", finish)
@@ -453,7 +494,7 @@ class FrontendRegressionTests(unittest.TestCase):
         self.assertIn('api.addEventListener("cm-task-started", handleManagerTaskStarted)', self.source)
         self.assertIn('api.addEventListener("cm-task-completed", handleManagerTaskCompleted)', self.source)
         self.assertIn("counts.done >= counts.total", self.source)
-        self.assertIn('"/v2/manager/queue/update_comfyui"', self.source)
+        self.assertIn('"/promptstudio/prompt-studio/update-comfyui"', self.source)
         self.assertIn("promptstudio-update-pulse", self.styles)
         self.assertIn(".promptstudio-comfy-update-progress", self.styles)
 
@@ -591,6 +632,57 @@ class FrontendRegressionTests(unittest.TestCase):
 
         self.assertIn("z-index: 10", header)
         self.assertIn("background: var(--ps-panel)", popover)
+
+    def test_transient_status_and_settings_have_complete_dismissal_paths(self):
+        install = self.function_source("installTypeAnywhereFocus", "setPanelDrawer")
+        close_status = self.function_source("closeSystemStatus", "trapDialogFocus")
+
+        self.assertIn('statusControl?.open && !statusControl.contains(event.target)', install)
+        self.assertIn('closeSystemStatus({ restoreFocus: true })', install)
+        self.assertIn('control.open = false', close_status)
+        self.assertIn('id="promptstudio-close-studio-settings"', self.source)
+        self.assertIn('role="dialog" aria-labelledby="promptstudio-studio-settings-title"', self.source)
+        self.assertIn('!popover.hidden && !openPromptStudioDialog()', self.source)
+
+    def test_modal_focus_is_trapped_and_upscale_restores_its_trigger(self):
+        trap = self.function_source("trapDialogFocus", "insertTypedCharacter")
+        close_upscale = self.function_source("closeUpscaleDialog", "requestImageUpscale")
+        open_upscale = self.function_source("requestImageUpscale", "imageReferenceKey")
+
+        self.assertIn('event.key !== "Tab"', trap)
+        self.assertIn('last.focus({ preventScroll: true })', trap)
+        self.assertIn('first.focus({ preventScroll: true })', trap)
+        self.assertIn('dialog._upscaleTrigger = dialog.ownerDocument.activeElement', open_upscale)
+        self.assertIn('trigger?.focus({ preventScroll: true })', close_upscale)
+
+    def test_accessibility_and_cleanup_basics_are_kept_release_ready(self):
+        self.assertIn("button:focus-visible", self.styles)
+        self.assertIn("prefers-reduced-motion: reduce", self.styles)
+        self.assertIn("cursor: not-allowed", self.styles)
+        for label in (
+            'aria-label="Prompt revision"',
+            'aria-label="Main prompt"',
+            'aria-label="Final prompt"',
+            'aria-label="Local model message"',
+        ):
+            self.assertIn(label, self.source)
+        self.assertNotIn("â†»", self.source)
+        for dead_name in (
+            "KOBOLD_STATUS_ENDPOINT",
+            "KOBOLD_ABORT_ENDPOINT",
+            "llmProfileEditorIsOpen",
+            "activeTrackedGenerationPromptIds",
+            "setConsultProgress",
+        ):
+            self.assertNotIn(dead_name, self.source)
+
+    def test_llm_history_pruning_keeps_turn_and_image_context_consistent(self):
+        consult = self.function_source("consultRequestMessages", "collectConsultGenerationSettings")
+        discussion = self.function_source("studioDiscussionHistory", "compactGenerationContextValue")
+
+        self.assertIn('while (bounded.length && bounded[0].role === "assistant")', consult)
+        self.assertIn("attached_images.slice(0, retainedCount)", consult)
+        self.assertIn('while (bounded.length && bounded[0].role === "assistant")', discussion)
 
 
 if __name__ == "__main__":

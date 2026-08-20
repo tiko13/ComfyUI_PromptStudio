@@ -13,6 +13,7 @@ import re
 import secrets
 import shutil
 import subprocess
+import sys
 import threading
 import time
 import urllib.parse
@@ -34,6 +35,7 @@ from .nodes import (
     _apply_profile_wrappers,
     _build_expansion_retry_prompt,
     _build_instruction_prompt,
+    _build_main_creation_prompt,
     _build_main_revision_prompt,
     _build_revision_prompt,
     _chat_image_vision_payload,
@@ -94,7 +96,19 @@ MAX_IMAGE_UPLOAD_REQUEST_BYTES = MAX_IMAGE_UPLOAD_BYTES + 1024 * 1024
 STANDALONE_PAGE_PATH = os.path.join(BASE_DIR, "web", "prompt_studio.html")
 LLAMACPP_CONFIG_BUILDER_PATH = os.path.join(BASE_DIR, "llamacpp_config_builder.ps1")
 LLAMACPP_CONFIG_DIRECTORY = os.path.join(BASE_DIR, "config", "LlamaCPP")
+LLAMACPP_PROCESS_STATE_PATH = os.path.join(BASE_DIR, "prompt_studio_llamacpp_process.json")
+LLAMACPP_OUTPUT_LOG_PATH = os.path.join(LLAMACPP_CONFIG_DIRECTORY, "prompt_studio_llamacpp.log")
 STANDALONE_ALIAS_PATH = "/PromptStudio"
+COMFYUI_ROOT = os.path.abspath(os.path.join(BASE_DIR, os.pardir, os.pardir))
+COMFYUI_UPDATE_PACKAGES = (
+    "comfyui-frontend-package",
+    "comfyui-workflow-templates",
+    "comfy-kitchen",
+    "comfyui-backend-docs",
+)
+COMFYUI_UPDATE_TIMEOUT_SECONDS = 15 * 60
+COMFYUI_UPDATE_OUTPUT_LIMIT = 32 * 1024
+_COMFYUI_UPDATE_LOCK = threading.Lock()
 
 LLM_PRIORITY_STUDIO = 0
 LLM_PRIORITY_STUDIO_DISCUSS = 2
@@ -127,6 +141,398 @@ _LLAMACPP_PROCESS = None
 _LLAMACPP_PROCESS_DETAILS = {}
 _LLAMACPP_PICKER_LOCK = threading.Lock()
 MAX_LLAMACPP_CONFIG_BYTES = 64 * 1024
+MAX_LLAMACPP_PROCESS_STATE_BYTES = 16 * 1024
+MAX_LLAMACPP_OUTPUT_TAIL_BYTES = 16 * 1024
+LLAMACPP_STARTUP_GRACE_SECONDS = 1.25
+
+
+def _update_command_output(result):
+    output = "\n".join(
+        value.strip()
+        for value in (getattr(result, "stdout", ""), getattr(result, "stderr", ""))
+        if value and value.strip()
+    )
+    return output[-COMFYUI_UPDATE_OUTPUT_LIMIT:]
+
+
+def _run_comfyui_update_command(command):
+    environment = os.environ.copy()
+    environment.setdefault("GIT_TERMINAL_PROMPT", "0")
+    environment.setdefault("GIT_MERGE_AUTOEDIT", "no")
+    environment.setdefault("PYTHONUTF8", "1")
+    creation_flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    return subprocess.run(
+        command,
+        cwd=COMFYUI_ROOT,
+        env=environment,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=COMFYUI_UPDATE_TIMEOUT_SECONDS,
+        shell=False,
+        creationflags=creation_flags,
+    )
+
+
+def _comfyui_commit():
+    result = _run_comfyui_update_command(["git", "rev-parse", "HEAD"])
+    if result.returncode != 0:
+        return ""
+    return result.stdout.strip()
+
+
+def _update_comfyui_runtime():
+    if not _COMFYUI_UPDATE_LOCK.acquire(blocking=False):
+        raise RuntimeError("A Prompt Studio ComfyUI update is already running")
+    try:
+        if not os.path.isdir(os.path.join(COMFYUI_ROOT, ".git")):
+            raise RuntimeError(f"ComfyUI Git repository was not found at {COMFYUI_ROOT}")
+
+        before_commit = _comfyui_commit()
+        steps = []
+
+        git_result = _run_comfyui_update_command(["git", "pull"])
+        git_output = _update_command_output(git_result)
+        after_commit = _comfyui_commit() if git_result.returncode == 0 else before_commit
+        pull_was_current = "already up to date" in git_output.casefold().replace("-", " ")
+        git_updated = git_result.returncode == 0 and (
+            bool(before_commit and after_commit and before_commit != after_commit)
+            or not pull_was_current
+        )
+        if git_result.returncode != 0:
+            logging.error("Prompt Studio git pull failed:\n%s", git_output)
+        steps.append({
+            "id": "comfyui-core",
+            "label": "ComfyUI core",
+            "success": git_result.returncode == 0,
+            "updated": git_updated,
+            "output": git_output,
+            "error": "" if git_result.returncode == 0 else (
+                git_output or f"git pull exited with code {git_result.returncode}"
+            ),
+        })
+
+        pip_command = [
+            sys.executable,
+            "-m",
+            "pip",
+            "install",
+            "--upgrade",
+            *COMFYUI_UPDATE_PACKAGES,
+        ]
+        pip_result = _run_comfyui_update_command(pip_command)
+        pip_output = _update_command_output(pip_result)
+        pip_updated = pip_result.returncode == 0 and "Successfully installed" in pip_output
+        if pip_result.returncode != 0:
+            logging.error("Prompt Studio ComfyUI package update failed:\n%s", pip_output)
+        steps.append({
+            "id": "comfyui-python-packages",
+            "label": "ComfyUI Python packages",
+            "success": pip_result.returncode == 0,
+            "updated": pip_updated,
+            "packages": list(COMFYUI_UPDATE_PACKAGES),
+            "output": pip_output,
+            "error": "" if pip_result.returncode == 0 else (
+                pip_output or f"pip install exited with code {pip_result.returncode}"
+            ),
+        })
+
+        return {
+            "success": all(step["success"] for step in steps),
+            "updated": any(step["updated"] for step in steps),
+            "restart_required": any(step["updated"] for step in steps),
+            "python": sys.executable,
+            "root": COMFYUI_ROOT,
+            "steps": steps,
+        }
+    finally:
+        _COMFYUI_UPDATE_LOCK.release()
+
+
+def _llamacpp_output_tail():
+    try:
+        with open(LLAMACPP_OUTPUT_LOG_PATH, "rb") as handle:
+            handle.seek(0, os.SEEK_END)
+            size = handle.tell()
+            handle.seek(max(0, size - MAX_LLAMACPP_OUTPUT_TAIL_BYTES))
+            output = handle.read().decode("utf-8", errors="replace").strip()
+    except OSError:
+        return ""
+    return output[-MAX_LLAMACPP_OUTPUT_TAIL_BYTES:]
+
+
+def _llamacpp_error_detail(output):
+    error_lines = [
+        line.strip()
+        for line in output.splitlines()
+        if re.search(r"(?:^|\s)[EF]\s|error|invalid|failed", line, re.IGNORECASE)
+    ]
+    return "\n".join((error_lines or output.splitlines())[-8:]).strip()
+
+
+def _llamacpp_startup_error(return_code):
+    detail = _llamacpp_error_detail(_llamacpp_output_tail())
+    message = f"Llama.cpp exited during startup with code {return_code}."
+    return f"{message}\n{detail}" if detail else message
+
+
+def _llamacpp_effective_main_gpu(main_gpu, cuda_devices):
+    devices = [value.strip() for value in cuda_devices.split(",") if value.strip()]
+    if not devices:
+        return main_gpu
+    physical_cuda_device = f"cuda{main_gpu}"
+    for index, device in enumerate(devices):
+        if device.casefold() == physical_cuda_device:
+            return index
+    if main_gpu >= len(devices):
+        raise ValueError(
+            "Llama.cpp config 'main_gpu' is not present in cuda_devices and exceeds the "
+            f"filtered device index range 0-{len(devices) - 1}"
+        )
+    return main_gpu
+
+
+def _normalized_process_path(path):
+    return os.path.normcase(os.path.realpath(os.path.abspath(_text(path).strip())))
+
+
+def _windows_process_snapshot(pid, *, terminate=False, expected=None):
+    import ctypes
+    from ctypes import wintypes
+
+    query = 0x1000  # PROCESS_QUERY_LIMITED_INFORMATION
+    synchronize = 0x00100000
+    terminate_access = 0x0001 if terminate else 0
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    kernel32.OpenProcess.restype = wintypes.HANDLE
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel32.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+    kernel32.QueryFullProcessImageNameW.argtypes = [
+        wintypes.HANDLE, wintypes.DWORD, wintypes.LPWSTR, ctypes.POINTER(wintypes.DWORD),
+    ]
+    kernel32.GetProcessTimes.argtypes = [
+        wintypes.HANDLE,
+        ctypes.POINTER(wintypes.FILETIME),
+        ctypes.POINTER(wintypes.FILETIME),
+        ctypes.POINTER(wintypes.FILETIME),
+        ctypes.POINTER(wintypes.FILETIME),
+    ]
+    access = query | synchronize | terminate_access
+    handle = kernel32.OpenProcess(access, False, int(pid))
+    if not handle:
+        return None
+    try:
+        if kernel32.WaitForSingleObject(handle, 0) != 0x00000102:  # WAIT_TIMEOUT
+            return None
+        buffer = ctypes.create_unicode_buffer(32768)
+        size = wintypes.DWORD(len(buffer))
+        if not kernel32.QueryFullProcessImageNameW(handle, 0, buffer, ctypes.byref(size)):
+            return None
+        created = wintypes.FILETIME()
+        exited = wintypes.FILETIME()
+        kernel = wintypes.FILETIME()
+        user = wintypes.FILETIME()
+        if not kernel32.GetProcessTimes(
+            handle,
+            ctypes.byref(created),
+            ctypes.byref(exited),
+            ctypes.byref(kernel),
+            ctypes.byref(user),
+        ):
+            return None
+        marker = (int(created.dwHighDateTime) << 32) | int(created.dwLowDateTime)
+        snapshot = {
+            "executable": _normalized_process_path(buffer.value),
+            "creation_marker": f"windows:{marker}",
+        }
+        if terminate:
+            if not _process_snapshots_match(snapshot, expected):
+                return None
+            kernel32.TerminateProcess.argtypes = [wintypes.HANDLE, wintypes.UINT]
+            if not kernel32.TerminateProcess(handle, 1):
+                raise OSError(ctypes.get_last_error(), "Could not terminate recovered Llama.cpp process")
+        return snapshot
+    finally:
+        kernel32.CloseHandle(handle)
+
+
+def _process_snapshot(pid):
+    try:
+        pid = int(pid)
+    except (TypeError, ValueError):
+        return None
+    if pid <= 0:
+        return None
+    if os.name == "nt":
+        try:
+            return _windows_process_snapshot(pid)
+        except (OSError, ValueError):
+            return None
+    proc_root = f"/proc/{pid}"
+    try:
+        executable = os.readlink(os.path.join(proc_root, "exe"))
+        with open(os.path.join(proc_root, "stat"), "r", encoding="utf-8") as handle:
+            stat = handle.read()
+        fields = stat.rsplit(") ", 1)[1].split()
+        start_ticks = fields[19]
+    except (OSError, IndexError, ValueError):
+        return None
+    return {
+        "executable": _normalized_process_path(executable),
+        "creation_marker": f"proc:{start_ticks}",
+    }
+
+
+def _process_snapshots_match(actual, expected):
+    if not isinstance(actual, dict) or not isinstance(expected, dict):
+        return False
+    actual_executable = _text(actual.get("executable")).strip()
+    expected_executable = _text(expected.get("executable")).strip()
+    actual_marker = _text(actual.get("creation_marker")).strip()
+    expected_marker = _text(expected.get("creation_marker")).strip()
+    return bool(
+        actual_executable
+        and expected_executable
+        and actual_marker
+        and expected_marker
+        and _normalized_process_path(actual_executable)
+        == _normalized_process_path(expected_executable)
+        and hmac.compare_digest(actual_marker, expected_marker)
+    )
+
+
+def _remove_llamacpp_process_state():
+    for path in (LLAMACPP_PROCESS_STATE_PATH, LLAMACPP_PROCESS_STATE_PATH + ".tmp"):
+        try:
+            os.remove(path)
+        except FileNotFoundError:
+            pass
+        except OSError as exc:
+            logging.warning("Could not remove stale Prompt Studio Llama.cpp process state: %s", exc)
+
+
+def _write_llamacpp_process_state(process, details):
+    snapshot = None
+    for _attempt in range(10):
+        snapshot = _process_snapshot(process.pid)
+        if snapshot is not None or process.poll() is not None:
+            break
+        time.sleep(0.05)
+    if snapshot is None:
+        _remove_llamacpp_process_state()
+        raise RuntimeError(
+            "Prompt Studio could not record the Llama.cpp process identity, so the server "
+            "was not left running without restart-safe process control."
+        )
+    state = {
+        "version": 1,
+        "pid": int(process.pid),
+        "identity": snapshot,
+        "details": dict(details),
+    }
+    temporary_path = LLAMACPP_PROCESS_STATE_PATH + ".tmp"
+    try:
+        with open(temporary_path, "w", encoding="utf-8") as handle:
+            json.dump(state, handle, ensure_ascii=False, separators=(",", ":"))
+        os.replace(temporary_path, LLAMACPP_PROCESS_STATE_PATH)
+    except OSError as exc:
+        try:
+            os.remove(temporary_path)
+        except OSError:
+            pass
+        raise RuntimeError(
+            "Could not save Prompt Studio Llama.cpp process ownership for restart recovery"
+        ) from exc
+
+
+def _read_llamacpp_process_state():
+    try:
+        if os.path.getsize(LLAMACPP_PROCESS_STATE_PATH) > MAX_LLAMACPP_PROCESS_STATE_BYTES:
+            raise ValueError("process state exceeds the size limit")
+        with open(LLAMACPP_PROCESS_STATE_PATH, "r", encoding="utf-8") as handle:
+            state = json.load(handle)
+    except FileNotFoundError:
+        return None
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        logging.warning("Ignoring invalid Prompt Studio Llama.cpp process state: %s", exc)
+        _remove_llamacpp_process_state()
+        return None
+    if not isinstance(state, dict) or state.get("version") != 1:
+        _remove_llamacpp_process_state()
+        return None
+    return state
+
+
+def _terminate_recovered_process(pid, expected, *, force=False):
+    if os.name == "nt":
+        if _windows_process_snapshot(pid, terminate=True, expected=expected) is None:
+            raise ProcessLookupError(f"Recovered Llama.cpp process {pid} is no longer running")
+        return
+    import signal
+
+    actual = _process_snapshot(pid)
+    if not _process_snapshots_match(actual, expected):
+        raise ProcessLookupError(f"Recovered Llama.cpp process {pid} is no longer running")
+    os.kill(pid, signal.SIGKILL if force else signal.SIGTERM)
+
+
+class _RecoveredLlamacppProcess:
+    def __init__(self, pid, identity):
+        self.pid = int(pid)
+        self.identity = dict(identity)
+        self.returncode = None
+
+    def poll(self):
+        if _process_snapshots_match(_process_snapshot(self.pid), self.identity):
+            return None
+        if self.returncode is None:
+            self.returncode = 0
+        return self.returncode
+
+    def terminate(self):
+        _terminate_recovered_process(self.pid, self.identity)
+
+    def kill(self):
+        _terminate_recovered_process(self.pid, self.identity, force=True)
+
+    def wait(self, timeout=None):
+        deadline = None if timeout is None else time.monotonic() + timeout
+        while self.poll() is None:
+            if deadline is not None and time.monotonic() >= deadline:
+                raise subprocess.TimeoutExpired(self.identity.get("executable"), timeout)
+            time.sleep(0.05)
+        return self.returncode
+
+
+def _recover_llamacpp_process_locked():
+    global _LLAMACPP_PROCESS, _LLAMACPP_PROCESS_DETAILS
+    if _LLAMACPP_PROCESS is not None:
+        return
+    state = _read_llamacpp_process_state()
+    if state is None:
+        return
+    try:
+        pid = int(state.get("pid"))
+    except (TypeError, ValueError):
+        _remove_llamacpp_process_state()
+        return
+    identity = state.get("identity")
+    details = state.get("details")
+    executable = _text(identity.get("executable") if isinstance(identity, dict) else "").strip()
+    if (
+        not isinstance(details, dict)
+        or os.path.basename(executable).casefold()
+        not in {"llama.exe", "llama", "llama-server.exe", "llama-server"}
+        or not _process_snapshots_match(_process_snapshot(pid), identity)
+    ):
+        _remove_llamacpp_process_state()
+        return
+    _LLAMACPP_PROCESS = _RecoveredLlamacppProcess(pid, identity)
+    _LLAMACPP_PROCESS_DETAILS = dict(details)
 
 
 def _keep_models_loaded(data):
@@ -325,9 +731,12 @@ def _llamacpp_launcher_paths(data):
 def _load_llamacpp_launcher_config(data):
     executable, config_path = _llamacpp_launcher_paths(data)
     try:
-        with open(config_path, "r", encoding="utf-8-sig") as handle:
-            config = json.load(handle)
-    except (OSError, json.JSONDecodeError) as exc:
+        with open(config_path, "rb") as handle:
+            raw_config = handle.read(MAX_LLAMACPP_CONFIG_BYTES + 1)
+        if len(raw_config) > MAX_LLAMACPP_CONFIG_BYTES:
+            raise ValueError("Llama.cpp config file exceeds the 64 KB limit")
+        config = json.loads(raw_config.decode("utf-8-sig"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
         raise ValueError(f"Could not read Llama.cpp config JSON: {exc}") from exc
     if not isinstance(config, dict):
         raise ValueError("Llama.cpp config JSON must contain an object at the root")
@@ -437,12 +846,20 @@ def _load_llamacpp_launcher_config(data):
     if any(character.isspace() for character in host):
         raise ValueError("Llama.cpp config 'host' is invalid")
     port = integer("port", "port", default=8080, minimum=1, maximum=65535)
-    parallel = integer("parallel_slots", "parallel", default=1, minimum=1, maximum=1024)
-    context_size = integer("context_size", "ctx_size", default=32768, minimum=128, maximum=16_777_216)
-    main_gpu = integer("main_gpu", "main_gpu_index", default=0, minimum=0, maximum=1024)
+    parallel = integer(
+        "parallel_slots", "parallel_slots", "parallel", default=1, minimum=1, maximum=1024,
+    )
+    context_size = integer(
+        "context_size", "context_size", "ctx_size",
+        default=32768, minimum=128, maximum=16_777_216,
+    )
+    main_gpu = integer(
+        "main_gpu", "main_gpu", "main_gpu_index", default=0, minimum=0, maximum=1024,
+    )
     tensor_split = _text(first("tensor_split", default="")).strip()
     cuda_devices = _text(first("cuda_devices", default="")).strip()
     cuda_visible_devices = _text(first("cuda_visible_devices", default="")).strip()
+    effective_main_gpu = _llamacpp_effective_main_gpu(main_gpu, cuda_devices)
     extra_args = first("extra_args", default=[])
     if not isinstance(extra_args, list) or not all(isinstance(value, str) for value in extra_args):
         raise ValueError("Llama.cpp config 'extra_args' must be a list of strings")
@@ -459,7 +876,7 @@ def _load_llamacpp_launcher_config(data):
         "--ctx-size", str(context_size),
         "--gpu-layers", gpu_layers,
         "--split-mode", split_mode,
-        "--main-gpu", str(main_gpu),
+        "--main-gpu", str(effective_main_gpu),
         "--flash-attn", flash_attention,
         "--cache-type-k", cache_type_k,
         "--cache-type-v", cache_type_v,
@@ -491,6 +908,7 @@ def _load_llamacpp_launcher_config(data):
     return {
         "executable": executable,
         "config_path": config_path,
+        "config_revision": hashlib.sha256(raw_config).hexdigest(),
         "command": command,
         "environment": {"CUDA_VISIBLE_DEVICES": cuda_visible_devices} if cuda_visible_devices else {},
         "host": host,
@@ -502,6 +920,7 @@ def _load_llamacpp_launcher_config(data):
 def _llamacpp_managed_process_status(data=None):
     global _LLAMACPP_PROCESS
     with _LLAMACPP_PROCESS_LOCK:
+        _recover_llamacpp_process_locked()
         process = _LLAMACPP_PROCESS
         details = dict(_LLAMACPP_PROCESS_DETAILS)
         if process is None:
@@ -512,15 +931,22 @@ def _llamacpp_managed_process_status(data=None):
             running = return_code is None
             if not running:
                 details["return_code"] = return_code
+                output = _llamacpp_output_tail()
+                if output:
+                    details["last_output"] = output
                 _LLAMACPP_PROCESS_DETAILS.update(details)
                 _LLAMACPP_PROCESS = None
+                _remove_llamacpp_process_state()
         status = {
             "managed": process is not None or bool(details.get("started_at")),
             "running": running,
             "pid": process.pid if running else None,
             "return_code": return_code,
         }
-        for key in ("url", "executable", "config_path", "config_profile", "started_at"):
+        for key in (
+            "url", "executable", "config_path", "config_profile", "config_revision", "started_at",
+            "last_output",
+        ):
             if details.get(key) is not None:
                 status[key] = details[key]
         if data:
@@ -531,17 +957,39 @@ def _llamacpp_managed_process_status(data=None):
                     or _text(data.get("llamacpp_config_path")).strip()
                 )
             )
+            if running and details.get("config_revision"):
+                try:
+                    selected = _load_llamacpp_launcher_config(data)
+                except (OSError, ValueError):
+                    status["config_changed"] = True
+                else:
+                    status["config_changed"] = (
+                        _normalized_process_path(selected["config_path"])
+                        != _normalized_process_path(details.get("config_path"))
+                        or not hmac.compare_digest(
+                            selected["config_revision"],
+                            details["config_revision"],
+                        )
+                    )
         return status
 
 
-def _start_llamacpp_server(data):
+def _start_llamacpp_server(data, *, allow_external=True):
     global _LLAMACPP_PROCESS, _LLAMACPP_PROCESS_DETAILS
-    launcher = _load_llamacpp_launcher_config(data)
     with _LLAMACPP_PROCESS_LOCK:
+        _recover_llamacpp_process_locked()
         current = _LLAMACPP_PROCESS
         if current is not None and current.poll() is None:
             return {**_llamacpp_managed_process_status(data), "already_running": True}
+        # Config Builder replaces profiles atomically. Reading inside the launch lock,
+        # immediately before Popen, keeps the command and revision on one saved version.
+        launcher = _load_llamacpp_launcher_config(data)
         if isinstance(_get_json(urllib.parse.urljoin(launcher["url"] + "/", "health"), 2), dict):
+            if not allow_external:
+                raise RuntimeError(
+                    "The previous Llama.cpp server stopped, but its endpoint is still responding. "
+                    "The edited config was not started; retry Restart after the endpoint goes offline."
+                )
             return {
                 "managed": False,
                 "running": True,
@@ -553,37 +1001,82 @@ def _start_llamacpp_server(data):
         environment.update(launcher["environment"])
         creation_flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
         try:
-            process = subprocess.Popen(
-                launcher["command"],
-                cwd=os.path.dirname(launcher["executable"]),
-                env=environment,
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                shell=False,
-                creationflags=creation_flags,
-            )
+            output_handle = open(LLAMACPP_OUTPUT_LOG_PATH, "wb")
         except OSError as exc:
-            raise RuntimeError(f"Could not start Llama.cpp: {exc}") from exc
+            raise RuntimeError(f"Could not open the Llama.cpp startup log: {exc}") from exc
+        try:
+            try:
+                process = subprocess.Popen(
+                    launcher["command"],
+                    cwd=os.path.dirname(launcher["executable"]),
+                    env=environment,
+                    stdin=subprocess.DEVNULL,
+                    stdout=output_handle,
+                    stderr=subprocess.STDOUT,
+                    shell=False,
+                    creationflags=creation_flags,
+                )
+            except OSError as exc:
+                raise RuntimeError(f"Could not start Llama.cpp: {exc}") from exc
+        finally:
+            output_handle.close()
+        try:
+            return_code = process.wait(timeout=LLAMACPP_STARTUP_GRACE_SECONDS)
+        except subprocess.TimeoutExpired:
+            return_code = None
+        if return_code is not None:
+            _LLAMACPP_PROCESS = None
+            _LLAMACPP_PROCESS_DETAILS = {
+                "url": launcher["url"],
+                "executable": launcher["executable"],
+                "config_path": launcher["config_path"],
+                "config_profile": os.path.basename(launcher["config_path"]),
+                "config_revision": launcher["config_revision"],
+                "return_code": return_code,
+                "last_output": _llamacpp_output_tail(),
+            }
+            _remove_llamacpp_process_state()
+            raise RuntimeError(_llamacpp_startup_error(return_code))
         _LLAMACPP_PROCESS = process
         _LLAMACPP_PROCESS_DETAILS = {
             "url": launcher["url"],
             "executable": launcher["executable"],
             "config_path": launcher["config_path"],
             "config_profile": os.path.basename(launcher["config_path"]),
+            "config_revision": launcher["config_revision"],
             "started_at": time.time(),
         }
+        try:
+            _write_llamacpp_process_state(process, _LLAMACPP_PROCESS_DETAILS)
+        except Exception:
+            try:
+                process.terminate()
+                process.wait(timeout=5)
+            except Exception:
+                try:
+                    process.kill()
+                except Exception:
+                    pass
+            _LLAMACPP_PROCESS = None
+            _LLAMACPP_PROCESS_DETAILS = {}
+            _remove_llamacpp_process_state()
+            raise
         return _llamacpp_managed_process_status(data)
 
 
 def _stop_llamacpp_server(data=None):
     global _LLAMACPP_PROCESS
     with _LLAMACPP_PROCESS_LOCK:
+        _recover_llamacpp_process_locked()
         process = _LLAMACPP_PROCESS
         if process is None or process.poll() is not None:
             _LLAMACPP_PROCESS = None
+            _remove_llamacpp_process_state()
             return {**_llamacpp_managed_process_status(data), "stopped": False}
-        process.terminate()
+        try:
+            process.terminate()
+        except ProcessLookupError:
+            process.returncode = 0
     try:
         process.wait(timeout=10)
     except subprocess.TimeoutExpired:
@@ -592,12 +1085,16 @@ def _stop_llamacpp_server(data=None):
     with _LLAMACPP_PROCESS_LOCK:
         _LLAMACPP_PROCESS_DETAILS["return_code"] = process.returncode
         _LLAMACPP_PROCESS = None
+        _remove_llamacpp_process_state()
         return {**_llamacpp_managed_process_status(data), "stopped": True}
 
 
 def _restart_llamacpp_server(data):
-    _stop_llamacpp_server(data)
-    return _start_llamacpp_server(data)
+    # Validate before interrupting a healthy server, then reload after stopping so edits
+    # saved while the old process is shutting down are included in the new command.
+    _load_llamacpp_launcher_config(data)
+    stopped = _stop_llamacpp_server(data)
+    return _start_llamacpp_server(data, allow_external=not stopped.get("stopped"))
 
 
 def _require_loopback_server_control(request):
@@ -1081,12 +1578,20 @@ def _llamacpp_generation_status(data):
     selected_model = _text(data.get("llamacpp_model")).strip()
     health = _get_json(urllib.parse.urljoin(base_url + "/", "health"), 3)
     if not isinstance(health, dict):
-        return {
+        process = _llamacpp_managed_process_status(data)
+        status = {
             "provider": "llamacpp",
             "reachable": False,
             "busy": None,
-            "server_process": _llamacpp_managed_process_status(data),
+            "server_process": process,
         }
+        if process.get("running") is False and process.get("last_output"):
+            detail = _llamacpp_error_detail(process["last_output"])
+            if detail:
+                status["message"] = (
+                    f"Llama.cpp stopped with code {process.get('return_code')}. {detail}"
+                )
+        return status
     models = _list_llamacpp_models(base_url, request_timeout=3)
     model = selected_model or (models[0] if len(models) == 1 else "")
     slots = _get_json(urllib.parse.urljoin(base_url + "/", "slots"), 3)
@@ -1149,7 +1654,7 @@ def _llamacpp_generation_status(data):
     elif model not in models:
         status["message"] = f"Llama.cpp is online, but '{model}' is not available."
     elif not isinstance(slots, list):
-        status["message"] = "Llama.cpp is ready. Start llama-server with --slots to monitor active generation."
+        status["message"] = "Llama.cpp is ready. Start llama-server with --slots to monitor active processing."
     return status
 
 
@@ -1538,7 +2043,7 @@ Answer the user's question directly using the attached target image, labelled re
 
 When the discussion supports one concrete change, provide one pending proposal. For a prompt change, revision_instruction must be a self-contained, model-neutral instruction for a precision image-prompt editor. It must describe only the intended visible change, use affirmative desired language, resolve references such as "this" into concrete traits, and preserve unrelated established content. Do not output a complete rewritten generation prompt.
 
-When recommending changes to Prompt Studio controls, put exact replacement values in control_changes. Allowed keys are model_profile, style_preset, framing_preset, style_modifier, framing_modifier, additional_instructions, secondary_instructions, embellishment_level, target_output_length, resolution_aspect_ratio, resolution_megapixels, resolution_multiple, and randomize_seed. Use exact option names from the supplied current controls for named presets or profiles. Text fields are complete replacement values, including secondary_instructions; use an empty string only when intentionally clearing a field. Do not put control changes into revision_instruction. A proposal may contain a prompt change, control changes, or both.
+When recommending changes to Prompt Studio controls, put exact replacement values in control_changes. Allowed keys are model_profile, style_preset, framing_preset, style_modifier, framing_modifier, additional_instructions, secondary_instructions, embellishment_level, target_output_length, resolution_aspect_ratio, resolution_megapixels, resolution_multiple, and randomize_seed. For named presets or profiles, use only an exact value from the supplied allowed_control_options; if the desired named option is absent, explain the limitation instead of inventing a value. Text fields are complete replacement values, including secondary_instructions; use an empty string only when intentionally clearing a field. Do not put control changes into revision_instruction. A proposal may contain a prompt change, control changes, or both.
 
 Set status to ready only when one unambiguous recommendation can be applied. Use needs_choice when the user still needs to choose between materially different alternatives. For informational answers with no useful applicable change, use null. You may discuss unsupported workflow inputs such as CFG, steps, sampler, scheduler, arbitrary node inputs, workflow selection, model selection, or LoRA selection, but do not claim the Apply action can change them and do not include them in control_changes.
 
@@ -1568,12 +2073,111 @@ Return only JSON:
 {"prompt":"complete executable image prompt","style_guidance":"run-local aesthetic guidance","framing_guidance":"run-local composition guidance","change_summary":"concise reason for this candidate"}"""
 PROMPT_AGENT_JUDGE_SYSTEM_MESSAGE = """You are the independent visual judge for an autonomous image-prompt agent.
 
-Judge only visible pixels against the current user goal, including any later corrections, labelled references, and acceptance rubric. Do not reward prompt wording or assume requested details exist. Separate observation from uncertainty. Score every criterion, report concrete evidence, and fail any unmet hard criterion. Set pass true only when all hard criteria pass, no forbidden outcome is visible, the overall score is at least the supplied target, confidence is at least the supplied minimum, and there is no serious visual defect. A partial criterion is not a hard-criterion pass.
+Only generated candidate images are attached to this request. Reference pixels were already converted into the rubric's concrete reference notes and criteria; do not imagine, reconstruct, or compare against an unseen image. Judge the generated pixels against the current user goal, including any later corrections, and the acceptance rubric. Do not reward prompt wording or assume requested details exist.
+
+Perform a neutral criterion assessment, not an open-ended defect hunt. First identify the ordinary visible evidence for each criterion. Score requested content independently from the separate defect audit: a suspected rendering defect must not lower a criterion's status or score unless that criterion explicitly requires the affected visual integrity. A visual defect is an unambiguous candidate-local rendering failure visible inside the generated image itself, not a difference from the requested result, an unusual but plausible feature, blur or occlusion, or uncertainty caused by composition. Do not invent stock image-generation failure modes. When uncertain, explain the uncertainty in criterion evidence and omit it from defects.
+
+Score every criterion, report concrete pixel evidence, and fail any unmet hard criterion. Assess every rubric forbidden outcome separately and in its original order. Use status clear only when the outcome is visibly absent, visible when it is present, and uncertain when the pixels do not support a reliable decision. Set pass true only when all hard criteria pass, every forbidden outcome is clear, the overall score is at least the supplied target, confidence is at least the supplied minimum, and there is no confirmed serious visual defect. A partial criterion is not a hard-criterion pass. A forbidden outcome is a requirement mismatch, not automatically a rendering defect. Each defect must identify a precise visible location, use severity serious only when it materially breaks the image, and give calibrated confidence.
 
 Return only JSON:
-{"score":0,"confidence":0.0,"pass":false,"criteria":[{"id":"criterion_id","status":"pass","score":0,"evidence":"visible evidence"}],"defects":["visible defect"],"next_revision":"specific smallest useful revision","summary":"concise verdict"}"""
+{"score":0,"confidence":0.0,"pass":false,"criteria":[{"id":"criterion_id","status":"pass","score":0,"evidence":"visible evidence"}],"forbidden":[{"index":1,"status":"clear","evidence":"visible evidence that the forbidden outcome is absent or present"}],"defects":[{"description":"candidate-local visible defect","location":"precise image region","severity":"serious","confidence":0.0}],"next_revision":"specific smallest useful revision","summary":"concise verdict"}"""
+
+STUDIO_TURN_RESPONSE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "route": {"type": "string", "enum": ["mutate_now", "discuss", "commit_pending", "cancel_pending", "clarify"]},
+        "confidence": {"type": "number"},
+        "resolved_instruction": {"type": "string"},
+        "reason": {"type": "string"},
+    },
+    "required": ["route", "confidence", "resolved_instruction", "reason"],
+    "additionalProperties": False,
+}
+
+STUDIO_DISCUSSION_RESPONSE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "message": {"type": "string"},
+        "proposal": {
+            "anyOf": [
+                {"type": "null"},
+                {
+                    "type": "object",
+                    "properties": {
+                        "status": {"type": "string", "enum": ["ready", "needs_choice"]},
+                        "summary": {"type": "string"},
+                        "revision_instruction": {"type": "string"},
+                        "control_changes": {
+                            "type": "object",
+                            "properties": {
+                                "model_profile": {"type": "string"},
+                                "style_preset": {"type": "string"},
+                                "framing_preset": {"type": "string"},
+                                "style_modifier": {"type": "string"},
+                                "framing_modifier": {"type": "string"},
+                                "additional_instructions": {"type": "string"},
+                                "secondary_instructions": {"type": "string"},
+                                "embellishment_level": {"type": "string"},
+                                "target_output_length": {"type": "number"},
+                                "resolution_aspect_ratio": {"type": "string"},
+                                "resolution_megapixels": {"type": "number"},
+                                "resolution_multiple": {"type": "number"},
+                                "randomize_seed": {"type": "boolean"},
+                            },
+                            "additionalProperties": False,
+                        },
+                    },
+                    "required": ["status", "summary", "revision_instruction", "control_changes"],
+                },
+            ]
+        },
+    },
+    "required": ["message", "proposal"],
+    "additionalProperties": False,
+}
+
+PROMPT_AGENT_RESPONSE_SCHEMAS = {
+    "compile": {
+        "type": "object",
+        "properties": {
+            "summary": {"type": "string"},
+            "reference_notes": {"type": "array", "items": {"type": "object", "additionalProperties": True}},
+            "criteria": {"type": "array", "items": {"type": "object", "additionalProperties": True}},
+            "forbidden": {"type": "array", "items": {"type": "string"}},
+        },
+        "required": ["summary", "reference_notes", "criteria", "forbidden"],
+    },
+    "architect": {
+        "type": "object",
+        "properties": {
+            "prompt": {"type": "string"},
+            "style_guidance": {"type": "string"},
+            "framing_guidance": {"type": "string"},
+            "change_summary": {"type": "string"},
+        },
+        "required": ["prompt", "style_guidance", "framing_guidance", "change_summary"],
+        "additionalProperties": False,
+    },
+    "evaluate": {
+        "type": "object",
+        "properties": {
+            "score": {"type": "number"},
+            "confidence": {"type": "number"},
+            "pass": {"type": "boolean"},
+            "criteria": {"type": "array", "items": {"type": "object", "additionalProperties": True}},
+            "forbidden": {"type": "array", "items": {"type": "object", "additionalProperties": True}},
+            "defects": {"type": "array", "items": {"type": "object", "additionalProperties": True}},
+            "next_revision": {"type": "string"},
+            "summary": {"type": "string"},
+        },
+        "required": ["score", "confidence", "pass", "criteria", "forbidden", "defects", "next_revision", "summary"],
+        "additionalProperties": False,
+    },
+}
 REVISION_IMAGE_CONTEXT_NOTE = """A generated image is attached as visual context for this prompt edit.
 Inspect only what is visible. Cross-check the current result with the user's requested change, main intent, and current prompt, then use that comparison to resolve what should change. The user's explicit request and stored prompt remain authoritative; preserve details outside the requested scope. Do not invent hidden details, replace the prompt with a general image description, or mention the attachment in the final prompt."""
+MAIN_CREATION_IMAGE_CONTEXT_NOTE = """A visual reference is attached to the user's first image-creation request.
+Inspect only what is visible and use it together with the user's words to determine the durable visual content they want. The user's explicit text is authoritative. Describe the requested content directly in the main prompt; do not mention the attachment, visual reference, request, or act of creating an image."""
 MAX_CONSULT_MESSAGES = 60
 MAX_CONSULT_IMAGES_PER_MESSAGE = 4
 MAX_CONSULT_IMAGES = 8
@@ -1585,6 +2189,7 @@ MAX_PROMPT_AGENT_CONTEXT_MESSAGES = 40
 MAX_PROMPT_AGENT_CONTEXT_CHARS = 24 * 1024
 MAX_PROMPT_AGENT_PROMPT_CHARS = 64 * 1024
 MAX_PROMPT_AGENT_GUIDANCE_CHARS = 16 * 1024
+PROMPT_AGENT_CONFIRMED_DEFECT_MIN_CONFIDENCE = 0.85
 
 _LAN_IPV4_NETWORKS = tuple(
     ipaddress.ip_network(value)
@@ -2471,8 +3076,8 @@ def _revise(data):
         raise ValueError("revision is required")
 
     mode = _text(data.get("mode"), "revise")
-    if mode not in ("create", "render", "revise", "revise_main"):
-        raise ValueError("mode must be create, render, revise, or revise_main")
+    if mode not in ("create", "create_main", "render", "revise", "revise_main"):
+        raise ValueError("mode must be create, create_main, render, revise, or revise_main")
     if mode in ("revise", "revise_main") and not current_prompt:
         raise ValueError("current_prompt is required")
 
@@ -2544,6 +3149,12 @@ def _revise(data):
             additional_instructions,
             target_output_length=target_output_length,
         )
+    elif mode == "create_main":
+        prompt = _build_main_creation_prompt(
+            revision,
+            thinking_mode,
+            additional_instructions,
+        )
     elif mode == "revise":
         current_prompt = _remove_known_profile_wrappers(current_prompt)
         prompt = _build_revision_prompt(
@@ -2568,7 +3179,12 @@ def _revise(data):
         )
 
     if context_image:
-        prompt = f"{prompt}\n\n{REVISION_IMAGE_CONTEXT_NOTE}"
+        image_context_note = (
+            MAIN_CREATION_IMAGE_CONTEXT_NOTE
+            if mode == "create_main"
+            else REVISION_IMAGE_CONTEXT_NOTE
+        )
+        prompt = f"{prompt}\n\n{image_context_note}"
 
     def generate(request_prompt, seed):
         if llm_provider == "ollama":
@@ -2592,6 +3208,7 @@ def _revise(data):
                 image_base64=image_base64,
                 keep_alive=_ollama_keep_alive(data),
                 presence_penalty=presence_penalty,
+                allow_partial=False,
             )
             _record_generation_warning(data, generated)
             return generated
@@ -2660,7 +3277,7 @@ def _revise(data):
             revised = retry
     if not revised:
         raise RuntimeError(f"{_provider_display_name(llm_provider)} returned an empty prompt")
-    if mode == "revise_main":
+    if mode in ("create_main", "revise_main"):
         return revised
     return _apply_profile_wrappers(revised, profile)
 
@@ -2801,6 +3418,7 @@ def _generate_provider_messages(
     allow_partial=True,
     default_max_response_tokens=800,
     maximum_request_timeout=600,
+    response_schema=None,
 ):
     llm_provider = _text(data.get("llm_provider"), "koboldcpp").strip().casefold()
     if llm_provider not in {"koboldcpp", "ollama", "llamacpp"}:
@@ -2852,6 +3470,7 @@ def _generate_provider_messages(
             allow_partial=allow_partial,
             keep_alive=_ollama_keep_alive(data),
             presence_penalty=presence_penalty,
+            response_schema=response_schema,
         )
     if llm_provider == "llamacpp":
         return _generate_llamacpp(
@@ -2873,6 +3492,7 @@ def _generate_provider_messages(
             messages_override=messages,
             presence_penalty=presence_penalty,
             reasoning_budget_tokens=llamacpp_reasoning_budget_tokens,
+            response_schema=response_schema,
         )
     return _generate_kcpp(
         "",
@@ -2891,6 +3511,7 @@ def _generate_provider_messages(
         request_timeout,
         messages_override=messages,
         presence_penalty=presence_penalty,
+        response_schema=response_schema,
     )
 
 
@@ -2958,6 +3579,7 @@ def shared_llm_generate(data, messages, images=None):
         allow_partial=False,
         default_max_response_tokens=4096,
         maximum_request_timeout=3600,
+        response_schema=data.get("_response_schema"),
     )
 
 
@@ -2969,31 +3591,63 @@ def shared_llm_abort(data):
     return _abort_llm_generation(data)
 
 
-def _consult(data, system_message=None, allow_partial=True):
+def _consult(data, system_message=None, allow_partial=True, response_schema=None):
     provider = _text(data.get("llm_provider"), "koboldcpp").strip().casefold()
     messages = _consult_provider_messages(data, provider, system_message)
-    return _generate_provider_messages(data, messages, allow_partial=allow_partial)
+    return _generate_provider_messages(
+        data,
+        messages,
+        allow_partial=allow_partial,
+        response_schema=response_schema,
+    )
+
+
+def _consult_json_object(data, system_message, response_schema):
+    request_data = {
+        **data,
+        "temperature": 0.0,
+        "top_p": 1.0,
+        "top_k": 1,
+        "min_p": 0.0,
+        "sampler_seed": 0,
+        "thinking_mode": "Disabled",
+    }
+    last_error = None
+    active_system_message = system_message
+    for attempt in range(2):
+        raw = _consult(
+            request_data,
+            active_system_message,
+            allow_partial=False,
+            response_schema=response_schema,
+        )
+        try:
+            return raw, _prompt_agent_json_object(raw)
+        except RuntimeError as exc:
+            last_error = exc
+            if attempt == 0:
+                active_system_message = (
+                    system_message
+                    + "\n\nYour previous response was invalid. Return exactly one complete JSON object "
+                    "matching the required structure, with no prose, markdown, or trailing content."
+                )
+    raise last_error
 
 
 def _prompt_agent_json_object(value):
-    text = _strip_response(value).strip()
-    if text.startswith("```"):
-        first_newline = text.find("\n")
-        if first_newline >= 0:
-            text = text[first_newline + 1:]
-        if text.rstrip().endswith("```"):
-            text = text.rstrip()[:-3].rstrip()
-    decoder = json.JSONDecoder()
-    candidates = [text]
-    candidates.extend(text[index:] for index, char in enumerate(text) if char == "{")
-    for candidate in candidates:
-        try:
-            parsed, _end = decoder.raw_decode(candidate.lstrip())
-        except json.JSONDecodeError:
-            continue
-        if isinstance(parsed, dict):
-            return parsed
-    raise RuntimeError("The local model did not return the required Prompt Agent JSON object")
+    text = str(value or "").strip()
+    fence = re.fullmatch(r"```(?:json)?\s*\n?(.*?)\n?```", text, flags=re.IGNORECASE | re.DOTALL)
+    if fence:
+        text = fence.group(1).strip()
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(
+            "The local model did not return one complete Prompt Agent JSON object"
+        ) from exc
+    if not isinstance(parsed, dict):
+        raise RuntimeError("The local model did not return the required Prompt Agent JSON object")
+    return parsed
 
 
 def _normalize_studio_control_changes(value):
@@ -3302,13 +3956,12 @@ def _studio_turn_route(data):
         "sampler_seed": 0,
         "messages": [{"role": "user", "text": json.dumps(payload, ensure_ascii=False)}],
     }
-    raw = _consult(
+    raw, parsed = _consult_json_object(
         request_data,
         STUDIO_TURN_ROUTER_SYSTEM_MESSAGE,
-        allow_partial=False,
+        STUDIO_TURN_RESPONSE_SCHEMA,
     )
     warning = _generation_warning(raw)
-    parsed = _prompt_agent_json_object(raw)
     route = _text(parsed.get("route")).strip().casefold()
     allowed = {"mutate_now", "discuss", "commit_pending", "cancel_pending", "clarify"}
     if route not in allowed:
@@ -3338,9 +3991,12 @@ def _studio_turn_route(data):
 
 
 def _studio_discuss(data):
-    raw = _consult(data, STUDIO_DISCUSSION_SYSTEM_MESSAGE, allow_partial=False)
+    raw, parsed = _consult_json_object(
+        data,
+        STUDIO_DISCUSSION_SYSTEM_MESSAGE,
+        STUDIO_DISCUSSION_RESPONSE_SCHEMA,
+    )
     warning = _generation_warning(raw)
-    parsed = _prompt_agent_json_object(raw)
     message = _text(parsed.get("message")).strip()
     if not message:
         raise RuntimeError("The local model returned an empty Prompt Studio discussion answer")
@@ -3556,7 +4212,94 @@ def _prompt_agent_grounding_error(phase, result, reference_count):
     return ""
 
 
-def _normalize_prompt_agent_evaluation(value, rubric, target_score, min_confidence):
+def _normalize_prompt_agent_defects(value, *, require_structured=False):
+    if not isinstance(value, list):
+        return []
+    confirmed = []
+    for item in value[:12]:
+        if isinstance(item, str):
+            if require_structured:
+                continue
+            description = _prompt_agent_string(
+                item,
+                "visual defect",
+                1000,
+                required=True,
+            )
+        elif isinstance(item, dict):
+            description = _prompt_agent_string(
+                item.get("description"),
+                "visual defect description",
+                1000,
+            )
+            if not description:
+                continue
+            location = _prompt_agent_string(
+                item.get("location"),
+                "visual defect location",
+                500,
+            )
+            severity = _text(item.get("severity")).strip().casefold()
+            confidence = _bounded_number(item.get("confidence"), 0, 0, 1)
+            if (
+                severity != "serious"
+                or confidence < PROMPT_AGENT_CONFIRMED_DEFECT_MIN_CONFIDENCE
+                or not location
+            ):
+                continue
+        else:
+            continue
+        confirmed.append(description)
+    return confirmed
+
+
+def _normalize_prompt_agent_forbidden_checks(value, rubric):
+    expected = rubric.get("forbidden", []) if isinstance(rubric, dict) else []
+    if not expected:
+        return []
+    raw_items = value if isinstance(value, list) else []
+    by_index = {}
+    for item in raw_items[:12]:
+        if not isinstance(item, dict):
+            continue
+        try:
+            index = int(item.get("index"))
+        except (TypeError, ValueError):
+            continue
+        if isinstance(item.get("index"), bool) or index in by_index or not 1 <= index <= len(expected):
+            continue
+        status = _text(item.get("status")).strip().casefold()
+        if status not in {"clear", "visible", "uncertain"}:
+            status = "uncertain"
+        by_index[index] = {
+            "index": index,
+            "outcome": expected[index - 1],
+            "status": status,
+            "evidence": _prompt_agent_string(
+                item.get("evidence"),
+                "forbidden-outcome evidence",
+                2000,
+            ),
+        }
+    return [
+        by_index.get(index, {
+            "index": index,
+            "outcome": outcome,
+            "status": "uncertain",
+            "evidence": "The judge did not assess this forbidden outcome.",
+        })
+        for index, outcome in enumerate(expected, start=1)
+    ]
+
+
+def _normalize_prompt_agent_evaluation(
+    value,
+    rubric,
+    target_score,
+    min_confidence,
+    *,
+    require_structured_defects=False,
+):
     if not isinstance(value, dict):
         raise ValueError("Prompt Agent evaluation must be an object")
     raw_criteria = value.get("criteria")
@@ -3606,47 +4349,65 @@ def _normalize_prompt_agent_evaluation(value, rubric, target_score, min_confiden
         for item in rubric["criteria"]
         if item["hard"]
     )
-    defects = value.get("defects", [])
-    if not isinstance(defects, list):
-        defects = []
+    raw_defects = value.get("defects", [])
+    defects = _normalize_prompt_agent_defects(
+        raw_defects,
+        require_structured=require_structured_defects,
+    )
+    forbidden_checks = _normalize_prompt_agent_forbidden_checks(
+        value.get("forbidden"),
+        rubric,
+    )
+    forbidden_clear = all(item["status"] == "clear" for item in forbidden_checks)
+    model_pass = value.get("pass") is True
+    passed = bool(
+        score >= target_score
+        and confidence >= min_confidence
+        and hard_pass
+        and forbidden_clear
+        and not defects
+        and model_pass
+    )
+    summary = _prompt_agent_string(value.get("summary"), "evaluation summary", 4000)
+    if passed and not summary:
+        summary = "The generated result satisfies the acceptance rubric."
+    next_revision = "" if passed else _prompt_agent_string(
+        value.get("next_revision"), "next revision", 4000
+    )
+    if not passed and not next_revision:
+        visible = [item["outcome"] for item in forbidden_checks if item["status"] == "visible"]
+        uncertain = [item["outcome"] for item in forbidden_checks if item["status"] == "uncertain"]
+        if visible:
+            next_revision = "Remove the visible forbidden outcome: " + "; ".join(visible)
+        elif uncertain:
+            next_revision = "Make these forbidden outcomes clearly absent: " + "; ".join(uncertain)
     return {
         "score": score,
         "confidence": confidence,
-        "pass": bool(
-            value.get("pass") is True
-            and score >= target_score
-            and confidence >= min_confidence
-            and hard_pass
-            and not defects
-        ),
+        "pass": passed,
         "criteria": normalized,
-        "defects": [
-            _prompt_agent_string(item, "visual defect", 1000, required=True)
-            for item in defects[:12]
-        ],
-        "next_revision": _prompt_agent_string(
-            value.get("next_revision"),
-            "next revision",
-            4000,
-        ),
-        "summary": _prompt_agent_string(value.get("summary"), "evaluation summary", 4000),
+        "forbidden": forbidden_checks,
+        "defects": defects,
+        "next_revision": next_revision,
+        "summary": summary,
     }
 
 
 def _prompt_agent_images(data, phase):
     records = []
-    references = data.get("references", [])
-    if not isinstance(references, list):
-        raise ValueError("Prompt Agent references must be a list")
-    for index, item in enumerate(references[:4]):
-        if not isinstance(item, dict) or not isinstance(item.get("image"), dict):
-            raise ValueError("Prompt Agent references must contain image objects")
-        records.append({
-            "label": f"Reference {index + 1}",
-            "purpose": _prompt_agent_string(item.get("purpose"), "reference purpose", 200)
-            or "general reference",
-            "image": item["image"],
-        })
+    if phase != "evaluate":
+        references = data.get("references", [])
+        if not isinstance(references, list):
+            raise ValueError("Prompt Agent references must be a list")
+        for index, item in enumerate(references[:4]):
+            if not isinstance(item, dict) or not isinstance(item.get("image"), dict):
+                raise ValueError("Prompt Agent references must contain image objects")
+            records.append({
+                "label": f"Reference {index + 1}",
+                "purpose": _prompt_agent_string(item.get("purpose"), "reference purpose", 200)
+                or "general reference",
+                "image": item["image"],
+            })
     if phase == "evaluate":
         generated = data.get("generated_images", [])
         if not isinstance(generated, list) or not generated:
@@ -3807,6 +4568,7 @@ def _prompt_agent(data, response_hook=None, cancellation_check=None):
     rep_pen_range = _bounded_number(data.get("rep_pen_range"), 360, 0, 4096, integer=True)
     sampler_seed = _bounded_number(data.get("sampler_seed"), -1, -1, 999999, integer=True)
     request_timeout = _bounded_number(data.get("request_timeout"), 120, 5, 600, integer=True)
+    response_schema = PROMPT_AGENT_RESPONSE_SCHEMAS[phase]
 
     def generate_with_system(active_system_message, response_tokens=max_response_tokens):
         messages = _prompt_agent_provider_messages(
@@ -3838,6 +4600,7 @@ def _prompt_agent(data, response_hook=None, cancellation_check=None):
                 allow_partial=False,
                 keep_alive=_ollama_keep_alive(data),
                 presence_penalty=presence_penalty,
+                response_schema=response_schema,
             )
         if provider == "llamacpp":
             return _generate_llamacpp(
@@ -3861,6 +4624,7 @@ def _prompt_agent(data, response_hook=None, cancellation_check=None):
                 cancellation_check=cancellation_check,
                 presence_penalty=presence_penalty,
                 reasoning_budget_tokens=llamacpp_reasoning_budget_tokens,
+                response_schema=response_schema,
             )
         return _generate_kcpp(
             "",
@@ -3881,16 +4645,29 @@ def _prompt_agent(data, response_hook=None, cancellation_check=None):
             response_hook=response_hook,
             cancellation_check=cancellation_check,
             presence_penalty=presence_penalty,
+            response_schema=response_schema,
         )
 
     token_retry_used = False
+    json_retry_used = False
 
     def generate_json(active_system_message):
-        nonlocal token_retry_used
+        nonlocal token_retry_used, json_retry_used
         try:
             return _prompt_agent_json_object(generate_with_system(active_system_message))
         except RuntimeError as exc:
-            if token_retry_used or not PROMPT_AGENT_TOKEN_EXHAUSTION_RE.search(str(exc)):
+            if not PROMPT_AGENT_TOKEN_EXHAUSTION_RE.search(str(exc)):
+                if json_retry_used:
+                    raise
+                json_retry_used = True
+                correction = (
+                    "\n\nThe previous response was not one complete valid JSON object. Retry once "
+                    "with only the required JSON object and no prose, markdown, or trailing content."
+                )
+                return _prompt_agent_json_object(
+                    generate_with_system(active_system_message + correction)
+                )
+            if token_retry_used:
                 raise
             retry_tokens = _prompt_agent_retry_token_limit(max_response_tokens)
             effective_tokens = max(
@@ -3958,6 +4735,7 @@ def _prompt_agent(data, response_hook=None, cancellation_check=None):
             rubric,
             target_score,
             min_confidence,
+            require_structured_defects=True,
         )
     }
 
@@ -4095,6 +4873,16 @@ async def prompt_studio_alias_redirect(request):
 @PromptServer.instance.routes.get(STANDALONE_ALIAS_PATH)
 async def prompt_studio_alias(request):
     return web.FileResponse(STANDALONE_PAGE_PATH)
+
+
+@PromptServer.instance.routes.post("/promptstudio/prompt-studio/update-comfyui")
+async def prompt_studio_update_comfyui(request):
+    try:
+        result = await asyncio.to_thread(_update_comfyui_runtime)
+        return web.json_response(result)
+    except (OSError, RuntimeError, subprocess.SubprocessError) as exc:
+        logging.exception("Prompt Studio could not update ComfyUI")
+        return web.json_response({"success": False, "error": str(exc)}, status=500)
 
 
 @PromptServer.instance.routes.get("/promptstudio/prompt-studio/config")
