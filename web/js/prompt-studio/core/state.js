@@ -27,6 +27,7 @@ function createInitialState() {
     mutationDeleteIndex: null,
     mutationManagerTrigger: null,
     llmProfiles: [],
+    llamacppConfigLlmProfiles: new Map(),
     llmProfileEditorTrigger: null,
     llmProfileEditorId: null,
     mainPrompt: "",

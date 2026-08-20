@@ -9,6 +9,12 @@ class FrontendRegressionTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.source = (REPO_ROOT / "web" / "js" / "prompt_studio.js").read_text(encoding="utf-8")
+        cls.standalone = (
+            REPO_ROOT / "web" / "js" / "prompt_studio_standalone.js"
+        ).read_text(encoding="utf-8")
+        cls.shell = (
+            REPO_ROOT / "web" / "js" / "prompt_studio_shell.js"
+        ).read_text(encoding="utf-8")
         cls.constants = (
             REPO_ROOT / "web" / "js" / "prompt-studio" / "core" / "constants.js"
         ).read_text(encoding="utf-8")
@@ -217,6 +223,23 @@ class FrontendRegressionTests(unittest.TestCase):
         )
         self.assertIn("consultAgentMode: false", create)
         self.assertIn("consultAgentMode: false", exported)
+
+    def test_llamacpp_uses_config_owned_generation_settings_instead_of_profile_ui(self):
+        selected = self.function_source("selectedLlmProfile", "selectedLlamacppGenerationSettings")
+        providers = self.function_source("syncLlmProviderControls", "loadConfig")
+        configs = self.function_source("loadLlamacppConfigProfiles", "applyLlamacppAutostartStatus")
+        builder = (REPO_ROOT / "llamacpp_config_builder.ps1").read_text(encoding="utf-8")
+
+        self.assertIn('selectedLlmProvider() === "llamacpp"', selected)
+        self.assertIn("state.llamacppConfigLlmProfiles.get", selected)
+        self.assertIn('profileControl.hidden = provider === "llamacpp"', providers)
+        self.assertIn("llamacpp_config_profile: selected", configs)
+        self.assertIn("data.llm_profile", configs)
+        self.assertIn('llm_profile = [ordered]@{', builder)
+        self.assertIn('thinking_temperature = [double] $llmThinkingTemperature.Value', builder)
+        self.assertIn('presence_penalty = [double] $llmPresencePenalty.Value', builder)
+        self.assertIn('$qwen38ThinkingModesText = "XHigh, Medium, Low, Disabled"', builder)
+        self.assertIn("Qwen 3.8 uses XHigh, Medium, and Low", builder)
 
     def test_new_chats_reset_generation_controls_except_thinking_and_embellishment(self):
         fresh = self.function_source(
@@ -441,6 +464,36 @@ class FrontendRegressionTests(unittest.TestCase):
         self.assertIn("new ResizeObserver(renderKnownReferenceHighlights)", self.source)
         self.assertIn(".promptstudio-main-prompt-highlights mark", self.styles)
         self.assertIn("color: #b9a8ff", self.styles)
+
+    def test_additional_instruction_template_uses_a_synchronized_highlight_layer(self):
+        ranges = self.function_source(
+            "additionalInstructionTemplateHighlightRanges",
+            "renderAdditionalInstructionTemplateHighlights",
+        )
+        render = self.function_source(
+            "renderAdditionalInstructionTemplateHighlights",
+            "updatePromptEditor",
+        )
+
+        self.assertIn("state.config?.additional_instruction_template_names", ranges)
+        self.assertIn('new RegExp(`^${escaped}$`, "iu")', ranges)
+        self.assertIn('document.createElement("mark")', render)
+        self.assertIn("editor.scrollLeft", render)
+        self.assertIn("editor.scrollTop", render)
+        self.assertIn(
+            'class="promptstudio-main-prompt-editor promptstudio-additional-instructions-editor"',
+            self.source,
+        )
+        self.assertIn(
+            'addEventListener("input", renderAdditionalInstructionTemplateHighlights)',
+            self.source,
+        )
+        self.assertIn(
+            'addEventListener("scroll", renderAdditionalInstructionTemplateHighlights)',
+            self.source,
+        )
+        self.assertIn("new ResizeObserver(renderAdditionalInstructionTemplateHighlights)", self.source)
+        self.assertIn(".promptstudio-additional-instructions-editor[data-has-highlights]", self.styles)
 
     def test_prompt_agent_failure_does_not_leave_iteration_generating(self):
         normalizer = self.function_source(
@@ -862,6 +915,11 @@ class FrontendRegressionTests(unittest.TestCase):
             "setConsultProgress",
         ):
             self.assertNotIn(dead_name, self.source)
+
+    def test_cancelled_refresh_does_not_detach_the_standalone_panel(self):
+        for source in (self.source, self.standalone, self.shell):
+            self.assertNotIn('addEventListener("beforeunload"', source)
+            self.assertIn('addEventListener("pagehide"', source)
 
     def test_llm_history_pruning_keeps_turn_and_image_context_consistent(self):
         consult = self.function_source("consultRequestMessages", "collectConsultGenerationSettings")

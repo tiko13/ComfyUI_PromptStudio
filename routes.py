@@ -52,6 +52,7 @@ from .nodes import (
     _get_profile,
     _get_style_template,
     _kobold_token_count,
+    _load_additional_instruction_templates,
     _load_framing_templates,
     _load_known_references,
     _load_profiles,
@@ -143,6 +144,30 @@ _LLAMACPP_PROCESS = None
 _LLAMACPP_PROCESS_DETAILS = {}
 _LLAMACPP_PICKER_LOCK = threading.Lock()
 MAX_LLAMACPP_CONFIG_BYTES = 64 * 1024
+LLAMACPP_LLM_PROFILE_DEFAULTS = {
+    "thinking_mode": "Disabled",
+    "thinking_modes": ["Disabled", "Minimal", "Low", "Medium", "High"],
+    "max_response_tokens": 800,
+    "llamacpp_reasoning_budget_tokens": 0,
+    "temperature": 0.7,
+    "top_p": 0.9,
+    "top_k": 100,
+    "min_p": 0.0,
+    "presence_penalty": 0.0,
+    "rep_pen": 1.05,
+    "rep_pen_range": 360,
+    "thinking_temperature": 0.7,
+    "thinking_top_p": 0.9,
+    "thinking_top_k": 100,
+    "thinking_min_p": 0.0,
+    "thinking_presence_penalty": 0.0,
+    "thinking_rep_pen": 1.05,
+    "thinking_rep_pen_range": 360,
+    "sampler_seed": -1,
+    "request_timeout": 120,
+    "stop_sequence": "",
+}
+LLAMACPP_THINKING_MODES = ("Disabled", "Minimal", "Low", "Medium", "High", "XHigh")
 MAX_LLAMACPP_PROCESS_STATE_BYTES = 16 * 1024
 MAX_LLAMACPP_AUTOSTART_BYTES = 16 * 1024
 MAX_LLAMACPP_OUTPUT_TAIL_BYTES = 16 * 1024
@@ -783,6 +808,142 @@ def _list_llamacpp_config_profiles():
     except OSError as exc:
         raise ValueError(f"Could not read the Llama.cpp config profiles folder: {exc}") from exc
     return sorted(profiles, key=str.casefold)
+
+
+def _read_llamacpp_config_document(profile):
+    config_path = _llamacpp_resolve_config_path(profile)
+    if not os.path.isfile(config_path):
+        raise ValueError(f"Llama.cpp config file was not found: {config_path}")
+    try:
+        with open(config_path, "rb") as handle:
+            raw_config = handle.read(MAX_LLAMACPP_CONFIG_BYTES + 1)
+        if len(raw_config) > MAX_LLAMACPP_CONFIG_BYTES:
+            raise ValueError("Llama.cpp config file exceeds the 64 KB limit")
+        config = json.loads(raw_config.decode("utf-8-sig"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise ValueError(f"Could not read Llama.cpp config JSON: {exc}") from exc
+    if not isinstance(config, dict):
+        raise ValueError("Llama.cpp config JSON must contain an object at the root")
+    return config, raw_config, config_path
+
+
+def _normalize_llamacpp_llm_profile(value):
+    source = value if isinstance(value, dict) else {}
+    defaults = LLAMACPP_LLM_PROFILE_DEFAULTS
+
+    def number(key, minimum, maximum, *, integer=False):
+        requested = source.get(key, defaults[key])
+        try:
+            normalized = int(requested) if integer else float(requested)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"Llama.cpp config 'llm_profile.{key}' must be a number") from exc
+        if not math.isfinite(normalized) or normalized < minimum or normalized > maximum:
+            raise ValueError(
+                f"Llama.cpp config 'llm_profile.{key}' must be between {minimum} and {maximum}"
+            )
+        return int(normalized) if integer else normalized
+
+    requested_modes = source.get("thinking_modes", defaults["thinking_modes"])
+    if not isinstance(requested_modes, list) or not requested_modes:
+        raise ValueError("Llama.cpp config 'llm_profile.thinking_modes' must be a non-empty list")
+    modes = []
+    for requested in requested_modes:
+        mode = next(
+            (candidate for candidate in LLAMACPP_THINKING_MODES
+             if candidate.casefold() == _text(requested).strip().casefold()),
+            None,
+        )
+        if mode is None:
+            raise ValueError(
+                "Llama.cpp config 'llm_profile.thinking_modes' may contain only "
+                + ", ".join(LLAMACPP_THINKING_MODES)
+            )
+        if mode not in modes:
+            modes.append(mode)
+    requested_default = _text(source.get("thinking_mode"), defaults["thinking_mode"]).strip()
+    thinking_mode = next(
+        (mode for mode in modes if mode.casefold() == requested_default.casefold()),
+        None,
+    )
+    if thinking_mode is None:
+        raise ValueError(
+            "Llama.cpp config 'llm_profile.thinking_mode' must be included in thinking_modes"
+        )
+    stop_sequence = source.get("stop_sequence", defaults["stop_sequence"])
+    if not isinstance(stop_sequence, str) or len(stop_sequence) > 4096:
+        raise ValueError("Llama.cpp config 'llm_profile.stop_sequence' must be a string up to 4096 characters")
+    return {
+        "thinking_mode": thinking_mode,
+        "thinking_modes": modes,
+        "max_response_tokens": number("max_response_tokens", 0, 8192, integer=True),
+        "llamacpp_reasoning_budget_tokens": number(
+            "llamacpp_reasoning_budget_tokens", 0, 262144, integer=True
+        ),
+        "temperature": number("temperature", 0, 5),
+        "top_p": number("top_p", 0, 1),
+        "top_k": number("top_k", 0, 200, integer=True),
+        "min_p": number("min_p", 0, 1),
+        "presence_penalty": number("presence_penalty", -2, 2),
+        "rep_pen": number("rep_pen", 0.5, 3),
+        "rep_pen_range": number("rep_pen_range", 0, 4096, integer=True),
+        "thinking_temperature": number("thinking_temperature", 0, 5),
+        "thinking_top_p": number("thinking_top_p", 0, 1),
+        "thinking_top_k": number("thinking_top_k", 0, 200, integer=True),
+        "thinking_min_p": number("thinking_min_p", 0, 1),
+        "thinking_presence_penalty": number("thinking_presence_penalty", -2, 2),
+        "thinking_rep_pen": number("thinking_rep_pen", 0.5, 3),
+        "thinking_rep_pen_range": number("thinking_rep_pen_range", 0, 4096, integer=True),
+        "sampler_seed": number("sampler_seed", -1, 999999, integer=True),
+        "request_timeout": number("request_timeout", 5, 600, integer=True),
+        "stop_sequence": stop_sequence,
+    }
+
+
+def _llamacpp_config_llm_profile(profile):
+    config, _, _ = _read_llamacpp_config_document(profile)
+    return _normalize_llamacpp_llm_profile(config.get("llm_profile"))
+
+
+def _llamacpp_configured_generation_data(data):
+    if _text(data.get("llm_provider"), "koboldcpp").strip().casefold() != "llamacpp":
+        return data
+    profile_name = _text(data.get("llamacpp_config_profile")).strip()
+    if not profile_name:
+        # Preserve direct/external llama-server callers that do not opt into a
+        # Prompt Studio config file. The UI selects a config whenever one exists.
+        return data
+    profile = _llamacpp_config_llm_profile(profile_name)
+    requested_mode = _text(data.get("thinking_mode"), profile["thinking_mode"]).strip()
+    thinking_mode = next(
+        (mode for mode in profile["thinking_modes"] if mode.casefold() == requested_mode.casefold()),
+        profile["thinking_mode"],
+    )
+    thinking = thinking_mode.casefold() not in {"disabled", "none"}
+    sampler_keys = (
+        ("temperature", "thinking_temperature"),
+        ("top_p", "thinking_top_p"),
+        ("top_k", "thinking_top_k"),
+        ("min_p", "thinking_min_p"),
+        ("presence_penalty", "thinking_presence_penalty"),
+        ("rep_pen", "thinking_rep_pen"),
+        ("rep_pen_range", "thinking_rep_pen_range"),
+    )
+    configured = {
+        "thinking_mode": thinking_mode,
+        "max_response_tokens": profile["max_response_tokens"],
+        "llamacpp_reasoning_budget_tokens": profile["llamacpp_reasoning_budget_tokens"],
+        "sampler_seed": profile["sampler_seed"],
+        "request_timeout": profile["request_timeout"],
+        "stop_sequence": profile["stop_sequence"],
+    }
+    configured.update({
+        standard: profile[thinking_key if thinking else standard]
+        for standard, thinking_key in sampler_keys
+    })
+    internal_overrides = data.get("_llamacpp_generation_overrides")
+    if isinstance(internal_overrides, dict):
+        configured.update(internal_overrides)
+    return {**data, **configured}
 
 
 def _llamacpp_resolve_config_path(profile, *, default_profile=""):
@@ -3212,6 +3373,7 @@ def _update_workflow_store(data):
 
 
 def _revise(data):
+    data = _llamacpp_configured_generation_data(data)
     current_prompt = _text(data.get("current_prompt")).strip()
     current_final_prompt = _text(data.get("current_final_prompt")).strip()
     revision = _text(data.get("revision")).strip()
@@ -3563,6 +3725,7 @@ def _generate_provider_messages(
     maximum_request_timeout=600,
     response_schema=None,
 ):
+    data = _llamacpp_configured_generation_data(data)
     llm_provider = _text(data.get("llm_provider"), "koboldcpp").strip().casefold()
     if llm_provider not in {"koboldcpp", "ollama", "llamacpp"}:
         raise ValueError("llm_provider must be koboldcpp, ollama, or llamacpp")
@@ -3746,14 +3909,20 @@ def _consult(data, system_message=None, allow_partial=True, response_schema=None
 
 
 def _consult_json_object(data, system_message, response_schema):
-    request_data = {
-        **data,
+    deterministic = {
         "temperature": 0.0,
         "top_p": 1.0,
         "top_k": 1,
         "min_p": 0.0,
         "sampler_seed": 0,
         "thinking_mode": "Disabled",
+    }
+    if "max_response_tokens" in data:
+        deterministic["max_response_tokens"] = data["max_response_tokens"]
+    request_data = {
+        **data,
+        **deterministic,
+        "_llamacpp_generation_overrides": deterministic,
     }
     last_error = None
     active_system_message = system_message
@@ -4624,6 +4793,7 @@ def _prompt_agent_retry_token_limit(value):
 
 
 def _prompt_agent(data, response_hook=None, cancellation_check=None):
+    data = _llamacpp_configured_generation_data(data)
     phase = _text(data.get("phase")).strip().casefold()
     if phase not in {"compile", "architect", "evaluate"}:
         raise ValueError("Prompt Agent phase must be compile, architect, or evaluate")
@@ -4898,6 +5068,7 @@ def _vision_capability(data):
 
 
 def _caption_image(data):
+    data = _llamacpp_configured_generation_data(data)
     image_reference = data.get("image")
     if not isinstance(image_reference, dict):
         raise ValueError("image must be a Prompt Studio image reference")
@@ -5030,6 +5201,7 @@ async def prompt_studio_update_comfyui(request):
 
 @PromptServer.instance.routes.get("/promptstudio/prompt-studio/config")
 async def prompt_studio_config(request):
+    additional_instruction_templates = _load_additional_instruction_templates()
     style_templates = _load_style_templates()
     framing_templates = _load_framing_templates()
     known_references = _load_known_references()
@@ -5063,6 +5235,9 @@ async def prompt_studio_config(request):
                     "instruction": str(template.get("instruction") or ""),
                 }
                 for template in framing_templates
+            ],
+            "additional_instruction_template_names": [
+                template["name"] for template in additional_instruction_templates
             ],
             "known_reference_names": [reference["name"] for reference in known_references],
             "thinking_modes": ["Disabled", "Minimal", "Low", "Medium", "High", "XHigh"],
@@ -5700,7 +5875,19 @@ async def prompt_studio_llamacpp_config_profiles(request):
         if not isinstance(data, dict):
             raise ValueError("JSON body must be an object")
         profiles = await asyncio.to_thread(_list_llamacpp_config_profiles)
-        return web.json_response({"profiles": profiles})
+        selected = _text(data.get("llamacpp_config_profile")).strip()
+        if selected not in profiles:
+            selected = profiles[0] if profiles else ""
+        llm_profile = (
+            await asyncio.to_thread(_llamacpp_config_llm_profile, selected)
+            if selected
+            else _normalize_llamacpp_llm_profile(None)
+        )
+        return web.json_response({
+            "profiles": profiles,
+            "selected_profile": selected,
+            "llm_profile": llm_profile,
+        })
     except PermissionError as exc:
         return web.json_response({"error": str(exc)}, status=403)
     except (ValueError, json.JSONDecodeError) as exc:

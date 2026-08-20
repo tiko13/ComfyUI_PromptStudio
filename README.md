@@ -96,19 +96,25 @@ When a shared-GPU handoff fails, the system-status dot turns red and the provide
 $env:PROMPT_STUDIO_KOBOLD_ADMIN_PASSWORD = "your-admin-password"
 ```
 
-**Settings → General → LLM Profiles** stores model-specific thinking, response-token, optional Llama.cpp reasoning-cap, sampler,
+**Settings → General → LLM Profiles** stores model-specific thinking, response-token, sampler,
 stop-sequence, and request-timeout values. The shipped editable profiles are **Default** and
 **Qwen 3.8 (27B)**; the latter stores Unsloth's separate recommended sampler values for thinking
 and non-thinking operation and switches between them from the Generation controls' Thinking selector. Profiles can
 be added, renamed, edited, restored to their shipped parameter defaults, or deleted. When no user
 profiles remain, Prompt Studio exposes an immutable **Default** profile with the shipped values so
 local-LLM features remain usable. The selected profile is shared by prompt rewriting, local model
-chat, image discussion, and Prompt Agent.
+chat, image discussion, and Prompt Agent when Ollama or KoboldCpp is selected. Llama.cpp does not
+display or consume these browser profiles; its selected `config/LlamaCPP/*.json` file owns the same
+thinking, response-token, reasoning-cap, sampler, stop-sequence, and timeout settings under
+`llm_profile`.
 
-Profiles can also limit the modes shown by the Generation controls' **Thinking** selector. Existing
+Profiles can also limit the choices shown by the Generation controls' **Thinking** selector. Existing
 and newly added profiles default to **Disabled**, **Minimal**, **Low**, **Medium**, and **High**.
-**Qwen 3.8 (27B)** instead provides **XHigh** (its default), **Medium**, **Low**, and **Disabled**;
-Disabled is sent to the model as `reasoning_effort: none`.
+**Qwen 3.8 (27B)** has exactly three native reasoning-effort levels: **XHigh** (its default),
+**Medium**, and **Low**. Prompt Studio also shows **Disabled** for this config as a separate
+thinking on/off choice; it is not a fourth Qwen 3.8 effort level. Enabled requests pass the exact
+lowercase effort both as top-level `reasoning_effort` and in `chat_template_kwargs`, while Disabled
+sends `reasoning_effort: none` with `enable_thinking: false`.
 
 For **Qwen 3.8 (27B)**, Disabled thinking uses temperature `0.7`, `top_p` `0.8`, `top_k` `20`,
 `min_p` `0`, presence penalty `1.5`, and repetition penalty `1.0`. Any enabled thinking level uses
@@ -121,9 +127,9 @@ With Ollama selected, Prompt Studio uses Ollama's native, non-streaming `/api/ch
 
 With Llama.cpp selected, Prompt Studio uses llama-server's streaming OpenAI-compatible `/v1/chat/completions` endpoint. It explicitly requests `reasoning_format: auto`, so native thinking is returned separately in `reasoning_content` and only final `content` reaches the image workflow. The system-status popover reads `/health`, `/models`, `/props`, and `/slots`, including model, vision, active-slot, and token progress. **Force stop processing** closes Prompt Studio's live llama-server streams; chat and Prompt Agent cancellation use the same mechanism. Start llama-server with its default `--slots` support (Prompt Studio adds `--slots` when it launches the server).
 
-Llama.cpp treats model-native `reasoning_effort` and its server-side token cutoff as separate controls. With the profile's **Llama.cpp reasoning cap** set to `0`, Prompt Studio passes the selected qualitative effort to the model's Jinja template and allows thinking to use the available server context window. A positive cap opts into llama-server's `thinking_budget_tokens` cutoff; Prompt Studio then requests the cap plus the final-answer allowance, bounded by the available context. Reaching that cap forcibly ends thinking, which can reduce answer quality, so the shipped profiles leave it at `0`. Prompt Studio does not retain or resend private reasoning from earlier turns.
+Llama.cpp treats model-native `reasoning_effort` and its server-side token cutoff as separate controls. With the selected config's **Reasoning token cap** set to `0`, Prompt Studio passes the selected qualitative effort to the model's Jinja template and allows thinking to use the available server context window. This matters for Qwen 3.8: Low, Medium, and XHigh change the template's reasoning instructions rather than imposing three arbitrary token budgets. A positive cap opts into llama-server's `thinking_budget_tokens` cutoff; Prompt Studio then requests the cap plus the final-answer allowance, bounded by the available context. Reaching that cap forcibly ends thinking, which can reduce answer quality, so the shipped config example leaves it at `0`. Prompt Studio does not retain or resend private reasoning from earlier turns.
 
-Prompt Studio can also start, stop, and restart Llama.cpp itself. In **Settings → Backend settings**, use **Browse…** to select `llama.exe` or `llama-server.exe`. Launcher profiles always live in `config/LlamaCPP`; Prompt Studio creates that folder automatically. Pick any discovered profile and press **Restart** in System status to apply its model and server settings immediately. Enable **Start with ComfyUI** to launch that validated executable and profile automatically during future ComfyUI startups. **Edit…** opens the selected profile in the included Windows PowerShell config builder; **New…** creates another named JSON profile in the same fixed folder. [`llamacpp_server.example.json`](llamacpp_server.example.json) includes every setting shown by the builder: model GGUF, MMProj GGUF, context size, GPU layers, parallel slots, CUDA devices (`--device`), CUDA-visible devices, split mode, main GPU, tensor split, auto-fit, flash attention, K/V cache types, MTP speculative decoding, host, port, and optional extra arguments. MTP controls its draft-token range and probability cutoff plus the draft context's GPU layers, device, and K/V cache types; it requires an MTP-capable GGUF and a recent llama.cpp build. `llama.exe` is started with the `serve` subcommand; `llama-server.exe` is started directly. The executable picker, profile discovery, config builder, autostart preference, and process actions are accepted only from a loopback browser connection. Prompt Studio records the exact managed process identity and recovers control after a ComfyUI restart; PID, executable path, and OS creation marker must all still match before it will stop that process. A detached watchdog stops that exact managed process 120 seconds after ComfyUI exits, including an abrupt termination. Restarting ComfyUI during the grace period renews ownership and cancels the pending shutdown. An already-running server at the configured endpoint remains externally managed and is never replaced by autostart, while processing monitoring and stream cancellation still work.
+Prompt Studio can also start, stop, and restart Llama.cpp itself. In **Settings → Backend settings**, use **Browse…** to select `llama.exe` or `llama-server.exe`. Launcher profiles always live in `config/LlamaCPP`; Prompt Studio creates that folder automatically. Pick any discovered profile and press **Restart** in System status to apply its model and server settings immediately. Enable **Start with ComfyUI** to launch that validated executable and profile automatically during future ComfyUI startups. **Edit…** opens the selected profile in the included Windows PowerShell config builder; **New…** creates another named JSON profile in the same fixed folder. [`llamacpp_server.example.json`](llamacpp_server.example.json) includes every setting shown by the builder: model GGUF, MMProj GGUF, context size, GPU layers, parallel slots, CUDA devices (`--device`), CUDA-visible devices, split mode, main GPU, tensor split, auto-fit, flash attention, K/V cache types, MTP speculative decoding, host, port, optional extra arguments, and the complete thinking/non-thinking LLM sampler configuration. MTP controls its draft-token range and probability cutoff plus the draft context's GPU layers, device, and K/V cache types; it requires an MTP-capable GGUF and a recent llama.cpp build. `llama.exe` is started with the `serve` subcommand; `llama-server.exe` is started directly. The executable picker, profile discovery, config builder, autostart preference, and process actions are accepted only from a loopback browser connection. Prompt Studio records the exact managed process identity and recovers control after a ComfyUI restart; PID, executable path, and OS creation marker must all still match before it will stop that process. A detached watchdog stops that exact managed process 120 seconds after ComfyUI exits, including an abrupt termination. Restarting ComfyUI during the grace period renews ownership and cancels the pending shutdown. An already-running server at the configured endpoint remains externally managed and is never replaced by autostart, while processing monitoring and stream cancellation still work.
 
 Shared-GPU Llama.cpp handoff requires llama-server router mode (`--models-dir`) because only router mode exposes `/models/unload`; normal chat requests autoload the selected model again. For a single-model llama-server process, use separate GPUs and enable **Keep models loaded**, or let the external launcher own the GPU transition.
 
@@ -254,9 +260,10 @@ Additional reference images can be uploaded directly in the attachment tray.
 The upload control is also a drop target, so one image can be dragged directly beside the recent
 image thumbnails.
 
-The chat composer's **Gen settings** panel shows the active shared LLM profile and links to its
-editor. Sampling behavior is managed centrally in **Settings → General → LLM Profiles** rather than
-being stored separately for each assistant conversation.
+The chat composer's **Gen settings** panel shows the active shared LLM configuration and links to
+its editor. For Ollama and KoboldCpp, sampling behavior is managed in **Settings → General → LLM
+Profiles**. For Llama.cpp, it comes from the selected JSON config and **Edit config** opens the
+Llama.cpp config builder.
 
 Consultation messages are temporary and automatically expire seven days after they are created.
 The **Clear** action removes the full consultation history, draft, and all pending context

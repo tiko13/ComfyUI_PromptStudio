@@ -241,11 +241,26 @@ function persistLlmProfiles() {
 }
 
 function selectedLlmProfile() {
+  if (selectedLlmProvider() === "llamacpp") {
+    const configProfile = state.panel?.querySelector("#promptstudio-llamacpp-config-profile")?.value
+      || getSettings().llamacpp_config_profile;
+    const configured = state.llamacppConfigLlmProfiles.get(String(configProfile || ""));
+    if (configured) return configured;
+  }
   const selectedId = state.panel?.querySelector("#promptstudio-llm-profile")?.value
     || getSettings().llm_profile
     || LLM_PROFILE_DEFAULTS.id;
   const profiles = availableLlmProfiles();
   return profiles.find((profile) => profile.id === selectedId) || profiles[0];
+}
+
+function selectedLlamacppGenerationSettings() {
+  const configProfile = state.panel?.querySelector("#promptstudio-llamacpp-config-profile")?.value
+    || getSettings().llamacpp_config_profile;
+  const profile = state.llamacppConfigLlmProfiles.get(String(configProfile || ""));
+  if (!profile) return getSettings().llamacpp_generation_settings || null;
+  const { id, name, ...settings } = profile;
+  return { ...settings, thinking_modes: [...profile.thinking_modes] };
 }
 
 function selectedLlmThinkingMode() {
@@ -484,6 +499,9 @@ function applyRememberedLlmConnection(settings) {
     llamacpp_model: String(remembered.llamacpp_model ?? settings.llamacpp_model ?? ""),
     llamacpp_executable: String(remembered.llamacpp_executable ?? settings.llamacpp_executable ?? ""),
     llamacpp_config_profile: String(remembered.llamacpp_config_profile ?? settings.llamacpp_config_profile ?? ""),
+    llamacpp_generation_settings: remembered.llamacpp_generation_settings
+      ?? settings.llamacpp_generation_settings
+      ?? null,
     llamacpp_autostart: remembered.llamacpp_autostart == null
       ? Boolean(settings.llamacpp_autostart)
       : Boolean(remembered.llamacpp_autostart),
@@ -510,6 +528,7 @@ function saveSettings() {
       llamacpp_model: value("promptstudio-llamacpp-model"),
       llamacpp_executable: value("promptstudio-llamacpp-executable"),
       llamacpp_config_profile: value("promptstudio-llamacpp-config-profile"),
+      llamacpp_generation_settings: selectedLlamacppGenerationSettings(),
       llamacpp_autostart: checked("promptstudio-llamacpp-autostart"),
       keep_models_loaded: checked("promptstudio-keep-models-loaded"),
       model_profile: value("promptstudio-profile"),
@@ -1655,6 +1674,7 @@ function captureStudioSettings(chat = activeChat()) {
     llamacpp_model: value("llamacpp_model", "promptstudio-llamacpp-model"),
     llamacpp_executable: value("llamacpp_executable", "promptstudio-llamacpp-executable"),
     llamacpp_config_profile: value("llamacpp_config_profile", "promptstudio-llamacpp-config-profile"),
+    llamacpp_generation_settings: selectedLlamacppGenerationSettings(),
     llamacpp_autostart: checked("llamacpp_autostart", "promptstudio-llamacpp-autostart"),
     keep_models_loaded: checked("keep_models_loaded", "promptstudio-keep-models-loaded"),
     model_profile: value("model_profile", "promptstudio-profile"),
@@ -1778,6 +1798,7 @@ function applyStudioSettings(chat) {
   syncLlmProfileControls();
   syncLlmProviderControls();
   updateAmplificationMode({ announce: false, persist: false });
+  renderAdditionalInstructionTemplateHighlights();
 }
 
 function syncActiveChatSettings({ persist = true } = {}) {
@@ -4435,6 +4456,48 @@ function renderKnownReferenceHighlights() {
   editor.closest(".promptstudio-main-prompt-editor")?.toggleAttribute("data-has-highlights", ranges.length > 0);
 }
 
+function additionalInstructionTemplateHighlightRanges(text) {
+  const source = String(text || "");
+  const trimmed = source.trim();
+  if (!trimmed) return [];
+  const names = Array.isArray(state.config?.additional_instruction_template_names)
+    ? state.config.additional_instruction_template_names.map(String).filter(Boolean)
+    : [];
+  const templateIndex = names.findIndex((name) => {
+    const escaped = name.trim().replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    return new RegExp(`^${escaped}$`, "iu").test(trimmed);
+  });
+  if (templateIndex < 0) return [];
+  const start = source.search(/\S/u);
+  return [{ start, end: start + trimmed.length, templateIndex }];
+}
+
+function renderAdditionalInstructionTemplateHighlights() {
+  const editor = state.panel?.querySelector("#promptstudio-additional-instructions");
+  const layer = state.panel?.querySelector("#promptstudio-additional-instruction-highlights");
+  const content = state.panel?.querySelector("#promptstudio-additional-instruction-highlight-content");
+  if (!editor || !layer || !content) return;
+  const text = editor.value;
+  const ranges = additionalInstructionTemplateHighlightRanges(text);
+  const fragment = document.createDocumentFragment();
+  let offset = 0;
+  for (const range of ranges) {
+    fragment.append(document.createTextNode(text.slice(offset, range.start)));
+    const mark = document.createElement("mark");
+    mark.textContent = text.slice(range.start, range.end);
+    fragment.append(mark);
+    offset = range.end;
+  }
+  fragment.append(document.createTextNode(`${text.slice(offset)}\n`));
+  content.replaceChildren(fragment);
+  layer.style.width = `${editor.clientWidth}px`;
+  layer.style.height = `${editor.clientHeight}px`;
+  content.style.width = `${editor.clientWidth}px`;
+  content.style.transform = `translate(${-editor.scrollLeft}px, ${-editor.scrollTop}px)`;
+  editor.closest(".promptstudio-additional-instructions-editor")
+    ?.toggleAttribute("data-has-highlights", ranges.length > 0);
+}
+
 function updatePromptEditor(prompt) {
   state.currentPrompt = prompt;
   const editor = state.panel?.querySelector("#promptstudio-current-prompt");
@@ -4678,7 +4741,7 @@ async function loadLlamacppConfigProfiles({ announce = false, preferred = "" } =
     const response = await api.fetchApi(LLAMACPP_CONFIG_PROFILES_ENDPOINT, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({}),
+      body: JSON.stringify({ llamacpp_config_profile: selected }),
     });
     const data = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(data.error || `Could not load Llama.cpp config profiles (${response.status}).`);
@@ -4688,6 +4751,18 @@ async function loadLlamacppConfigProfiles({ announce = false, preferred = "" } =
       select.appendChild(new Option("No JSON profiles found", ""));
     } else if (!profiles.includes(selected)) {
       select.value = profiles[0];
+    }
+    const selectedProfile = String(data.selected_profile || select.value || "");
+    if (selectedProfile && data.llm_profile && typeof data.llm_profile === "object") {
+      state.llamacppConfigLlmProfiles.set(selectedProfile, normalizeLlmProfile({
+        ...data.llm_profile,
+        id: `llamacpp:${selectedProfile}`,
+        name: selectedProfile.replace(/\.json$/i, ""),
+      }));
+      select.value = selectedProfile;
+      renderLlmThinkingModeOptions();
+      syncLlmProfileControls();
+      syncLlmProviderControls();
     }
     saveSettings();
     refreshLlmStatus();
@@ -4787,6 +4862,16 @@ function syncLlmProviderControls({ refreshModels = false } = {}) {
   });
   const help = state.panel?.querySelector("#promptstudio-llm-amplification-help");
   if (help) help.textContent = `Rewrite prompts through ${llmProviderName()}`;
+  const profileControl = state.panel?.querySelector(".promptstudio-llm-profile-control");
+  if (profileControl) profileControl.hidden = provider === "llamacpp";
+  const consultProfileEdit = state.panel?.querySelector("#promptstudio-consult-edit-llm-profile");
+  if (consultProfileEdit) {
+    consultProfileEdit.textContent = provider === "llamacpp" ? "Edit config" : "Edit profile";
+    consultProfileEdit.title = provider === "llamacpp"
+      ? "Edit sampler and request settings in the selected Llama.cpp config"
+      : "Edit the active LLM profile";
+  }
+  if (provider === "llamacpp") closeLlmProfileEditor({ restoreFocus: false });
   const thinking = state.panel?.querySelector("#promptstudio-thinking-control");
   if (thinking) {
     const profile = selectedLlmProfile();
@@ -4813,6 +4898,7 @@ async function loadConfig() {
   syncOutputLengthControl({ storedSettings: settings });
   applyStudioSettings(activeChat());
   renderKnownReferenceHighlights();
+  renderAdditionalInstructionTemplateHighlights();
   if (selectedLlmProvider() === "ollama") await loadOllamaModels({ announce: false });
   if (selectedLlmProvider() === "llamacpp") {
     await loadLlamacppConfigProfiles({ announce: false, preferred: settings.llamacpp_config_profile });
@@ -10134,6 +10220,9 @@ function applyStudioProposalControlChanges(chat, value) {
   for (const [key, id] of Object.entries(textControls)) {
     if (Object.hasOwn(changes, key)) state.panel.querySelector(`#${id}`).value = changes[key];
   }
+  if (Object.hasOwn(changes, "additional_instructions")) {
+    renderAdditionalInstructionTemplateHighlights();
+  }
   const directControls = {
     resolution_aspect_ratio: "promptstudio-resolution-aspect-ratio",
     resolution_megapixels: "promptstudio-resolution-megapixels",
@@ -11183,7 +11272,10 @@ function buildPanel() {
         </details>
         <details class="promptstudio-secondary-details promptstudio-additional-details" data-promptstudio-sidebar-group="additional-instructions" open>
           <summary><span>Additional instructions</span><small>Steering guidance for the LLM</small></summary>
-          <textarea id="promptstudio-additional-instructions" rows="3" aria-label="Additional instructions" placeholder="Explain intent or give rewrite guidance without changing the selected style or framing"></textarea>
+          <div class="promptstudio-main-prompt-editor promptstudio-additional-instructions-editor">
+            <div id="promptstudio-additional-instruction-highlights" class="promptstudio-main-prompt-highlights" aria-hidden="true"><pre id="promptstudio-additional-instruction-highlight-content"></pre></div>
+            <textarea id="promptstudio-additional-instructions" rows="3" aria-label="Additional instructions" placeholder="Explain intent or give rewrite guidance without changing the selected style or framing"></textarea>
+          </div>
         </details>
         <details class="promptstudio-secondary-details" data-promptstudio-sidebar-group="secondary-instructions" open>
           <summary><span>Unmodified part</span><small>Text passed through unchanged</small></summary>
@@ -11225,7 +11317,7 @@ function buildPanel() {
               <span class="promptstudio-studio-setting-copy"><strong>Keep models loaded</strong><small>Keep ComfyUI and LLM models resident instead of handing GPU memory between them. Enable only when they use separate GPUs; leave off for a shared or single GPU.</small></span>
               <input id="promptstudio-keep-models-loaded" type="checkbox" role="switch" ${settings.keep_models_loaded ? "checked" : ""} />
             </label>
-            <div class="promptstudio-studio-setting promptstudio-llm-profile-control">
+            <div class="promptstudio-studio-setting promptstudio-llm-profile-control" ${settings.llm_provider === "llamacpp" ? "hidden" : ""}>
               <span class="promptstudio-studio-setting-copy"><strong>LLM Profiles</strong><small>Model-specific thinking, sampler and request settings.</small></span>
               <span class="promptstudio-llm-profile-field">
                 <select id="promptstudio-llm-profile" aria-label="LLM profile"></select>
@@ -11714,7 +11806,11 @@ function buildPanel() {
   });
   panel.querySelector("#promptstudio-consult-edit-llm-profile").addEventListener("click", (event) => {
     toggleStudioSettings(true);
-    openLlmProfileEditor(event.currentTarget);
+    if (selectedLlmProvider() === "llamacpp") {
+      openLlamacppConfigBuilder();
+    } else {
+      openLlmProfileEditor(event.currentTarget);
+    }
   });
   panel.querySelector("#promptstudio-llm-profile-editor form").addEventListener("submit", submitLlmProfileEditor);
   panel.querySelector("#promptstudio-llm-profile-editor-close").addEventListener("click", () => closeLlmProfileEditor());
@@ -11954,6 +12050,8 @@ function buildPanel() {
     });
   });
   panel.querySelector("#promptstudio-secondary-instructions").addEventListener("change", saveSettings);
+  panel.querySelector("#promptstudio-additional-instructions").addEventListener("input", renderAdditionalInstructionTemplateHighlights);
+  panel.querySelector("#promptstudio-additional-instructions").addEventListener("scroll", renderAdditionalInstructionTemplateHighlights);
   panel.querySelector("#promptstudio-additional-instructions").addEventListener("change", markControlsChanged);
   panel.querySelector("#promptstudio-thinking").addEventListener("change", () => {
     syncLlmProfileControls();
@@ -11984,10 +12082,11 @@ function buildPanel() {
     if (state.llamacppAutostartEnabled) saveLlamacppAutostartPreference();
     refreshLlmStatus();
   });
-  panel.querySelector("#promptstudio-llamacpp-config-profile").addEventListener("change", () => {
+  panel.querySelector("#promptstudio-llamacpp-config-profile").addEventListener("change", (event) => {
     saveSettings();
     if (state.llamacppAutostartEnabled) saveLlamacppAutostartPreference();
     refreshLlmStatus();
+    loadLlamacppConfigProfiles({ preferred: event.target.value });
   });
   panel.querySelector("#promptstudio-llamacpp-autostart").addEventListener("change", () => {
     saveSettings();
@@ -12005,6 +12104,8 @@ function buildPanel() {
   panel.querySelector("#promptstudio-main-prompt").addEventListener("scroll", renderKnownReferenceHighlights);
   if ("ResizeObserver" in window) {
     new ResizeObserver(renderKnownReferenceHighlights).observe(panel.querySelector("#promptstudio-main-prompt"));
+    new ResizeObserver(renderAdditionalInstructionTemplateHighlights)
+      .observe(panel.querySelector("#promptstudio-additional-instructions"));
   }
   panel.querySelector("#promptstudio-main-prompt").addEventListener("change", commitPromptEditorVersion);
   panel.querySelector("#promptstudio-current-prompt").addEventListener("input", (event) => {
@@ -12128,7 +12229,9 @@ async function attachStandalone(popup) {
     if (state.popup !== popup || !popup.closed) return;
     dockPanel({ closePopup: false, keepOpen: state.returnToEmbedded });
   }, 250);
-  popup.addEventListener("beforeunload", () => {
+  // beforeunload fires before the browser's leave-page confirmation. Moving the
+  // panel there would empty a popup whose navigation is subsequently cancelled.
+  popup.addEventListener("pagehide", () => {
     if (!state.dockingPopup && state.popup === popup) {
       dockPanel({ closePopup: false, keepOpen: state.returnToEmbedded });
     }

@@ -343,7 +343,7 @@ capabilityPoll = window.setInterval(() => {
   if (connected && videoAvailability !== "ready") refreshVideoAvailability();
 }, 5000);
 
-window.addEventListener("beforeunload", () => {
+window.addEventListener("pagehide", () => {
   channel?.close();
   unifiedChannel?.close();
   if (hostPoll) window.clearInterval(hostPoll);

@@ -63,6 +63,12 @@ function normalizeStudioSettings(value, fallback = getSettings()) {
     || String(SETTINGS_DEFAULTS[key] ?? "")
   );
   const checked = (key) => source[key] == null ? Boolean(base[key]) : Boolean(source[key]);
+  const object = (key) => {
+    const requested = source[key] ?? base[key];
+    return requested && typeof requested === "object" && !Array.isArray(requested)
+      ? { ...requested, thinking_modes: Array.isArray(requested.thinking_modes) ? [...requested.thinking_modes] : undefined }
+      : null;
+  };
   const numeric = (key, minimum, maximum) => {
     const requested = Number(source[key] ?? base[key]);
     const fallbackValue = Number(SETTINGS_DEFAULTS[key]);
@@ -79,6 +85,7 @@ function normalizeStudioSettings(value, fallback = getSettings()) {
     llamacpp_model: text("llamacpp_model"),
     llamacpp_executable: text("llamacpp_executable"),
     llamacpp_config_profile: text("llamacpp_config_profile"),
+    llamacpp_generation_settings: object("llamacpp_generation_settings"),
     llamacpp_autostart: checked("llamacpp_autostart"),
     keep_models_loaded: checked("keep_models_loaded"),
     model_profile: requiredText("model_profile"),
@@ -127,6 +134,7 @@ function newChatStudioSettings(value = getSettings()) {
     llamacpp_model: previous.llamacpp_model,
     llamacpp_executable: previous.llamacpp_executable,
     llamacpp_config_profile: previous.llamacpp_config_profile,
+    llamacpp_generation_settings: previous.llamacpp_generation_settings,
     llamacpp_autostart: previous.llamacpp_autostart,
     keep_models_loaded: previous.keep_models_loaded,
     thinking_mode: previous.thinking_mode,

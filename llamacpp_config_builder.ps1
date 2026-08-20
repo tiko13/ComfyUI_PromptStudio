@@ -43,6 +43,22 @@ function Get-ConfigValue {
     return $Default
 }
 
+$llmProfileConfig = @{}
+$loadedLlmProfile = Get-ConfigValue @("llm_profile") $null
+if ($null -ne $loadedLlmProfile) {
+    foreach ($property in $loadedLlmProfile.PSObject.Properties) {
+        $llmProfileConfig[$property.Name] = $property.Value
+    }
+}
+
+function Get-LlmProfileValue {
+    param([string] $Name, $Default = "")
+    if ($llmProfileConfig.ContainsKey($Name)) {
+        return $llmProfileConfig[$Name]
+    }
+    return $Default
+}
+
 function New-TextBox {
     param([string] $Text = "", [bool] $Multiline = $false)
     $control = New-Object System.Windows.Forms.TextBox
@@ -197,6 +213,42 @@ $port = New-NumericControl 1 65535 ([decimal](Get-ConfigValue @("port") 8080))
 $existingExtraArgs = @(Get-ConfigValue @("extra_args") @())
 $extraArgs = New-TextBox (($existingExtraArgs | ForEach-Object { [string] $_ }) -join "`r`n") $true
 $extraArgs.MinimumSize = New-Object System.Drawing.Size(0, 80)
+$thinkingModeOptions = @("Disabled", "Minimal", "Low", "Medium", "High", "XHigh")
+$llmThinkingMode = New-ComboBox $thinkingModeOptions ([string](Get-LlmProfileValue "thinking_mode" "Disabled"))
+$llmThinkingModes = New-TextBox (@(Get-LlmProfileValue "thinking_modes" @("Disabled", "Minimal", "Low", "Medium", "High")) -join ", ")
+$standardThinkingModesText = "Disabled, Minimal, Low, Medium, High"
+$qwen38ThinkingModesText = "XHigh, Medium, Low, Disabled"
+$applyModelThinkingModes = {
+    if (
+        $modelText.Text -match '(?i)qwen\s*3[._-]?8' -and
+        ($llmThinkingModes.Text.Trim() -eq $standardThinkingModesText -or -not $llmThinkingModes.Text.Trim())
+    ) {
+        $llmThinkingModes.Text = $qwen38ThinkingModesText
+        $llmThinkingMode.SelectedItem = "XHigh"
+    }
+}
+$modelText.Add_TextChanged($applyModelThinkingModes)
+& $applyModelThinkingModes
+$llmMaxResponseTokens = New-NumericControl 0 8192 ([decimal](Get-LlmProfileValue "max_response_tokens" 800))
+$llmReasoningCap = New-NumericControl 0 262144 ([decimal](Get-LlmProfileValue "llamacpp_reasoning_budget_tokens" 0))
+$llmSamplerSeed = New-NumericControl -1 999999 ([decimal](Get-LlmProfileValue "sampler_seed" -1))
+$llmRequestTimeout = New-NumericControl 5 600 ([decimal](Get-LlmProfileValue "request_timeout" 120))
+$llmTemperature = New-DecimalControl 0 5 ([decimal](Get-LlmProfileValue "temperature" 0.7)) 2 0.05
+$llmTopP = New-DecimalControl 0 1 ([decimal](Get-LlmProfileValue "top_p" 0.9)) 2 0.01
+$llmTopK = New-NumericControl 0 200 ([decimal](Get-LlmProfileValue "top_k" 100))
+$llmMinP = New-DecimalControl 0 1 ([decimal](Get-LlmProfileValue "min_p" 0)) 2 0.01
+$llmPresencePenalty = New-DecimalControl -2 2 ([decimal](Get-LlmProfileValue "presence_penalty" 0)) 2 0.05
+$llmRepPen = New-DecimalControl 0.5 3 ([decimal](Get-LlmProfileValue "rep_pen" 1.05)) 2 0.01
+$llmRepPenRange = New-NumericControl 0 4096 ([decimal](Get-LlmProfileValue "rep_pen_range" 360))
+$llmThinkingTemperature = New-DecimalControl 0 5 ([decimal](Get-LlmProfileValue "thinking_temperature" 0.7)) 2 0.05
+$llmThinkingTopP = New-DecimalControl 0 1 ([decimal](Get-LlmProfileValue "thinking_top_p" 0.9)) 2 0.01
+$llmThinkingTopK = New-NumericControl 0 200 ([decimal](Get-LlmProfileValue "thinking_top_k" 100))
+$llmThinkingMinP = New-DecimalControl 0 1 ([decimal](Get-LlmProfileValue "thinking_min_p" 0)) 2 0.01
+$llmThinkingPresencePenalty = New-DecimalControl -2 2 ([decimal](Get-LlmProfileValue "thinking_presence_penalty" 0)) 2 0.05
+$llmThinkingRepPen = New-DecimalControl 0.5 3 ([decimal](Get-LlmProfileValue "thinking_rep_pen" 1.05)) 2 0.01
+$llmThinkingRepPenRange = New-NumericControl 0 4096 ([decimal](Get-LlmProfileValue "thinking_rep_pen_range" 360))
+$llmStopSequence = New-TextBox ([string](Get-LlmProfileValue "stop_sequence" "")) $true
+$llmStopSequence.MinimumSize = New-Object System.Drawing.Size(0, 60)
 
 Add-Field "Model GGUF" (New-BrowseField $modelText "Select model GGUF") 0 "Required model weights file."
 Add-Field "MMProj GGUF" (New-BrowseField $mmprojText "Select multimodal projector GGUF") 1 "Optional multimodal projector for vision models."
@@ -223,6 +275,27 @@ Add-Field "MTP KV cache V" $mtpCacheTypeV 21 "Value-cache data type for the MTP 
 Add-Field "Host" $hostText 22 "Address llama-server listens on."
 Add-Field "Port" $port 23 "Port llama-server listens on."
 Add-Field "Extra arguments" $extraArgs 24 "Optional raw llama.cpp arguments, one token per line."
+Add-Field "Default thinking mode" $llmThinkingMode 25 "Default reasoning effort for this model config. Qwen 3.8 defaults to XHigh."
+Add-Field "Available thinking modes" $llmThinkingModes 26 "Comma-separated list. Qwen 3.8 uses XHigh, Medium, and Low; Disabled is its separate no-thinking switch. Other models may use Disabled, Minimal, Low, Medium, and High."
+Add-Field "Response tokens" $llmMaxResponseTokens 27 "Maximum final-answer tokens. Use 0 for the request-specific automatic limit."
+Add-Field "Reasoning token cap" $llmReasoningCap 28 "Use 0 for model-controlled reasoning. A positive value forcibly ends thinking after this many tokens."
+Add-Field "Sampler seed" $llmSamplerSeed 29 "Use -1 to let llama.cpp choose a random seed."
+Add-Field "Request timeout" $llmRequestTimeout 30 "Request timeout in seconds."
+Add-Field "Temperature" $llmTemperature 31 "Non-thinking sampler temperature."
+Add-Field "Top P" $llmTopP 32 "Non-thinking nucleus-sampling probability."
+Add-Field "Top K" $llmTopK 33 "Non-thinking top-k sampler value."
+Add-Field "Min P" $llmMinP 34 "Non-thinking minimum-token probability."
+Add-Field "Presence penalty" $llmPresencePenalty 35 "Non-thinking presence penalty."
+Add-Field "Repeat penalty" $llmRepPen 36 "Non-thinking repetition penalty."
+Add-Field "Repeat range" $llmRepPenRange 37 "Non-thinking repetition lookback range."
+Add-Field "Thinking temperature" $llmThinkingTemperature 38 "Sampler temperature used whenever thinking is enabled."
+Add-Field "Thinking Top P" $llmThinkingTopP 39 "Thinking nucleus-sampling probability."
+Add-Field "Thinking Top K" $llmThinkingTopK 40 "Thinking top-k sampler value."
+Add-Field "Thinking Min P" $llmThinkingMinP 41 "Thinking minimum-token probability."
+Add-Field "Thinking presence" $llmThinkingPresencePenalty 42 "Thinking presence penalty."
+Add-Field "Thinking repeat penalty" $llmThinkingRepPen 43 "Thinking repetition penalty."
+Add-Field "Thinking repeat range" $llmThinkingRepPenRange 44 "Thinking repetition lookback range."
+Add-Field "Stop sequences" $llmStopSequence 45 "Optional stop sequences, one per line."
 
 $statusLabel = New-Object System.Windows.Forms.Label
 $statusLabel.AutoSize = $true
@@ -281,6 +354,32 @@ $saveButton.Add_Click({
         if ($arguments.Count -gt 128 -or ($arguments | Where-Object { $_.Length -gt 4096 -or $_.Contains([char]0) })) {
             throw "Extra arguments are too large or contain invalid values."
         }
+        $requestedThinkingModes = @(
+            $llmThinkingModes.Text -split '[,\r\n]+' |
+                ForEach-Object { $_.Trim() } |
+                Where-Object { $_ }
+        )
+        if (-not $requestedThinkingModes.Count) {
+            throw "Select at least one available thinking mode."
+        }
+        $normalizedThinkingModes = New-Object System.Collections.Generic.List[string]
+        foreach ($requestedMode in $requestedThinkingModes) {
+            $normalizedMode = $thinkingModeOptions | Where-Object { $_ -ieq $requestedMode } | Select-Object -First 1
+            if (-not $normalizedMode) {
+                throw "Thinking modes may contain only: $($thinkingModeOptions -join ', ')."
+            }
+            if (-not $normalizedThinkingModes.Contains($normalizedMode)) {
+                [void] $normalizedThinkingModes.Add($normalizedMode)
+            }
+        }
+        $defaultThinkingMode = [string] $llmThinkingMode.SelectedItem
+        if (-not $normalizedThinkingModes.Contains($defaultThinkingMode)) {
+            throw "Default thinking mode must also appear in Available thinking modes."
+        }
+        $stopSequenceValue = $llmStopSequence.Text
+        if ($stopSequenceValue.Length -gt 4096 -or $stopSequenceValue.Contains([char]0)) {
+            throw "Stop sequences must not exceed 4096 characters or contain null characters."
+        }
 
         $savedConfig = [ordered]@{
             model_gguf = [System.IO.Path]::GetFullPath($model)
@@ -308,8 +407,31 @@ $saveButton.Add_Click({
             host = $hostValue
             port = [int] $port.Value
             extra_args = $arguments
+            llm_profile = [ordered]@{
+                thinking_mode = $defaultThinkingMode
+                thinking_modes = @($normalizedThinkingModes)
+                max_response_tokens = [int] $llmMaxResponseTokens.Value
+                llamacpp_reasoning_budget_tokens = [int] $llmReasoningCap.Value
+                temperature = [double] $llmTemperature.Value
+                top_p = [double] $llmTopP.Value
+                top_k = [int] $llmTopK.Value
+                min_p = [double] $llmMinP.Value
+                presence_penalty = [double] $llmPresencePenalty.Value
+                rep_pen = [double] $llmRepPen.Value
+                rep_pen_range = [int] $llmRepPenRange.Value
+                thinking_temperature = [double] $llmThinkingTemperature.Value
+                thinking_top_p = [double] $llmThinkingTopP.Value
+                thinking_top_k = [int] $llmThinkingTopK.Value
+                thinking_min_p = [double] $llmThinkingMinP.Value
+                thinking_presence_penalty = [double] $llmThinkingPresencePenalty.Value
+                thinking_rep_pen = [double] $llmThinkingRepPen.Value
+                thinking_rep_pen_range = [int] $llmThinkingRepPenRange.Value
+                sampler_seed = [int] $llmSamplerSeed.Value
+                request_timeout = [int] $llmRequestTimeout.Value
+                stop_sequence = $stopSequenceValue
+            }
         }
-        $json = $savedConfig | ConvertTo-Json -Depth 4
+        $json = $savedConfig | ConvertTo-Json -Depth 6
         $temporaryPath = "$ConfigPath.$([System.Guid]::NewGuid().ToString('N')).tmp"
         try {
             [System.IO.File]::WriteAllText($temporaryPath, $json + [Environment]::NewLine, (New-Object System.Text.UTF8Encoding($false)))

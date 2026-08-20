@@ -1073,6 +1073,12 @@ def _llamacpp_context_length(base_url, timeout, model=""):
 
 
 def _llamacpp_token_count(base_url, timeout, messages, model, reasoning_effort, enable_thinking):
+    chat_template_kwargs = {"enable_thinking": bool(enable_thinking)}
+    if enable_thinking and reasoning_effort != "none":
+        # Qwen 3.8 reads its native xhigh/medium/low level directly from the
+        # Jinja context. Keep this explicit for llama.cpp builds predating the
+        # top-level reasoning_effort forwarding path as well as current builds.
+        chat_template_kwargs["reasoning_effort"] = reasoning_effort
     try:
         result = _post_json(
             urllib.parse.urljoin(base_url + "/", "v1/chat/completions/input_tokens"),
@@ -1080,7 +1086,7 @@ def _llamacpp_token_count(base_url, timeout, messages, model, reasoning_effort, 
                 "model": model,
                 "messages": messages,
                 "reasoning_effort": reasoning_effort,
-                "chat_template_kwargs": {"enable_thinking": bool(enable_thinking)},
+                "chat_template_kwargs": chat_template_kwargs,
             },
             timeout,
             service_name="Llama.cpp",
@@ -1732,6 +1738,12 @@ def _generate_llamacpp(
     stop_sequences = _split_stop_sequences(stop_sequence)
     if include_default_continuation_stops and effort == "none":
         stop_sequences = _with_default_continuation_stops(stop_sequences)
+    chat_template_kwargs = {"enable_thinking": enable_thinking}
+    if enable_thinking:
+        # Qwen 3.8 has three model-native effort values (xhigh, medium, low).
+        # Sending the selected effort in both locations works with current
+        # llama.cpp and with builds that expose only direct template kwargs.
+        chat_template_kwargs["reasoning_effort"] = effort
     payload = {
         "model": model,
         "messages": messages,
@@ -1746,7 +1758,7 @@ def _generate_llamacpp(
         "seed": int(sampler_seed),
         "reasoning_effort": effort,
         "reasoning_format": "auto",
-        "chat_template_kwargs": {"enable_thinking": enable_thinking},
+        "chat_template_kwargs": chat_template_kwargs,
         "stop": stop_sequences,
     }
     if isinstance(response_schema, dict):

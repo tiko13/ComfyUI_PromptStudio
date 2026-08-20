@@ -86,6 +86,7 @@ export const SETTINGS_DEFAULTS = Object.freeze({
   llamacpp_model: "",
   llamacpp_executable: "",
   llamacpp_config_profile: "",
+  llamacpp_generation_settings: null,
   llamacpp_autostart: false,
   keep_models_loaded: false,
   llm_profile: "qwen3.5",

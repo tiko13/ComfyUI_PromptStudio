@@ -518,6 +518,66 @@ class RegressionTests(unittest.TestCase):
             ["Alpha.JSON", "zeta.json"],
         )
 
+    def test_llamacpp_config_owns_thinking_and_sampler_settings(self):
+        profile_path = Path(self.temp.name) / "qwen.json"
+        profile_path.write_text(json.dumps({
+            "llm_profile": {
+                "thinking_mode": "XHigh",
+                "thinking_modes": ["XHigh", "Medium", "Disabled"],
+                "temperature": 0.7,
+                "top_p": 0.8,
+                "top_k": 20,
+                "min_p": 0.0,
+                "presence_penalty": 1.5,
+                "rep_pen": 1.0,
+                "thinking_temperature": 1.0,
+                "thinking_top_p": 0.95,
+                "thinking_top_k": 20,
+                "thinking_min_p": 0.0,
+                "thinking_presence_penalty": 0.0,
+                "thinking_rep_pen": 1.0,
+            },
+        }), encoding="utf-8")
+
+        configured = self.routes._llamacpp_configured_generation_data({
+            "llm_provider": "llamacpp",
+            "llamacpp_config_profile": profile_path.name,
+            "thinking_mode": "Medium",
+            "temperature": 4.5,
+            "top_k": 199,
+            "rep_pen": 2.0,
+        })
+
+        self.assertEqual(configured["thinking_mode"], "Medium")
+        self.assertEqual(configured["temperature"], 1.0)
+        self.assertEqual(configured["top_p"], 0.95)
+        self.assertEqual(configured["top_k"], 20)
+        self.assertEqual(configured["presence_penalty"], 0.0)
+        self.assertEqual(configured["rep_pen"], 1.0)
+
+    def test_llamacpp_config_falls_back_to_config_default_for_unavailable_thinking_mode(self):
+        profile_path = Path(self.temp.name) / "qwen.json"
+        profile_path.write_text(json.dumps({
+            "llm_profile": {
+                "thinking_mode": "High",
+                "thinking_modes": ["High", "Disabled"],
+                "thinking_temperature": 1.0,
+                "thinking_top_p": 0.95,
+                "thinking_top_k": 20,
+                "thinking_rep_pen": 1.0,
+            },
+        }), encoding="utf-8")
+
+        configured = self.routes._llamacpp_configured_generation_data({
+            "llm_provider": "llamacpp",
+            "llamacpp_config_profile": profile_path.name,
+            "thinking_mode": "XHigh",
+        })
+
+        self.assertEqual(configured["thinking_mode"], "High")
+        self.assertEqual(configured["temperature"], 1.0)
+        self.assertEqual(configured["top_k"], 20)
+
     def test_llamacpp_config_builder_launches_fixed_script_without_shell(self):
         root = Path(self.temp.name)
         config_path = root / "llamacpp.json"
@@ -2322,6 +2382,7 @@ class RegressionTests(unittest.TestCase):
         self.assertEqual(payload["reasoning_effort"], "xhigh")
         self.assertEqual(payload["reasoning_format"], "auto")
         self.assertTrue(payload["chat_template_kwargs"]["enable_thinking"])
+        self.assertEqual(payload["chat_template_kwargs"]["reasoning_effort"], "xhigh")
         self.assertNotIn("thinking_budget_tokens", payload)
 
     def test_llamacpp_generation_applies_explicit_reasoning_cap(self):
@@ -2359,6 +2420,7 @@ class RegressionTests(unittest.TestCase):
         self.assertEqual(payload["max_tokens"], 1300)
         self.assertEqual(payload["thinking_budget_tokens"], 1000)
         self.assertEqual(payload["reasoning_effort"], "medium")
+        self.assertEqual(payload["chat_template_kwargs"]["reasoning_effort"], "medium")
         self.assertEqual(payload["reasoning_format"], "auto")
 
     def test_llamacpp_structured_request_uses_json_schema_response_format(self):
@@ -2375,7 +2437,9 @@ class RegressionTests(unittest.TestCase):
                 response_schema=schema,
             )
 
-        self.assertEqual(post.call_args.args[1]["response_format"]["json_schema"]["schema"], schema)
+        payload = post.call_args.args[1]
+        self.assertEqual(payload["response_format"]["json_schema"]["schema"], schema)
+        self.assertEqual(payload["chat_template_kwargs"], {"enable_thinking": False})
 
     def test_kobold_structured_request_uses_json_grammar_without_thinking(self):
         response = {"choices": [{"message": {"content": '{"ok":true}'}, "finish_reason": "stop"}]}
@@ -3637,6 +3701,10 @@ class RegressionTests(unittest.TestCase):
         self.assertEqual(data["framings"], [item["name"] for item in data["framing_templates"]])
         self.assertNotIn("additional_instruction_templates", data)
         self.assertNotIn("known_references", data)
+        self.assertEqual(
+            data["additional_instruction_template_names"],
+            [template["name"] for template in self.nodes._load_additional_instruction_templates()],
+        )
         self.assertEqual(
             data["known_reference_names"],
             [reference["name"] for reference in self.nodes._load_known_references()],

@@ -2782,6 +2782,16 @@ body.promptstudio-popout-body .promptstudio-header-actions {
   min-height: 84px;
 }
 
+#promptstudio-prompt-studio .promptstudio-additional-instructions-editor #promptstudio-additional-instructions {
+  position: relative;
+  z-index: 1;
+  display: block;
+  resize: vertical;
+  margin: 0;
+  width: 100% !important;
+  min-height: 66px;
+}
+
 .promptstudio-main-prompt-highlights {
   position: absolute;
   top: 1px;
@@ -2815,7 +2825,17 @@ body.promptstudio-popout-body .promptstudio-header-actions {
   background: transparent;
 }
 
+.promptstudio-additional-instructions-editor[data-has-highlights] #promptstudio-additional-instructions {
+  color: transparent;
+  caret-color: var(--ps-text);
+  background: transparent;
+}
+
 .promptstudio-main-prompt-editor[data-has-highlights] #promptstudio-main-prompt::placeholder {
+  color: var(--ps-muted);
+}
+
+.promptstudio-additional-instructions-editor[data-has-highlights] #promptstudio-additional-instructions::placeholder {
   color: var(--ps-muted);
 }
 

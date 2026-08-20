@@ -22,5 +22,28 @@
   "mtp_kv_cache_v": "f16",
   "host": "127.0.0.1",
   "port": 8080,
-  "extra_args": []
+  "extra_args": [],
+  "llm_profile": {
+    "thinking_mode": "XHigh",
+    "thinking_modes": ["XHigh", "Medium", "Low", "Disabled"],
+    "max_response_tokens": 800,
+    "llamacpp_reasoning_budget_tokens": 0,
+    "temperature": 0.7,
+    "top_p": 0.8,
+    "top_k": 20,
+    "min_p": 0.0,
+    "presence_penalty": 1.5,
+    "rep_pen": 1.0,
+    "rep_pen_range": 360,
+    "thinking_temperature": 1.0,
+    "thinking_top_p": 0.95,
+    "thinking_top_k": 20,
+    "thinking_min_p": 0.0,
+    "thinking_presence_penalty": 0.0,
+    "thinking_rep_pen": 1.0,
+    "thinking_rep_pen_range": 360,
+    "sampler_seed": -1,
+    "request_timeout": 120,
+    "stop_sequence": ""
+  }
 }
