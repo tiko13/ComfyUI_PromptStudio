@@ -668,7 +668,7 @@ def _expand_additional_instructions(value):
     return instruction
 
 
-def _additional_instruction_prompt_lines(value, *, main_prompt=False):
+def _additional_instruction_prompt_lines(value):
     instruction = _expand_additional_instructions(value)
     if not instruction:
         return []
@@ -680,10 +680,6 @@ def _additional_instruction_prompt_lines(value, *, main_prompt=False):
         "This guidance may refine selected style, framing, embellishment, format, or otherwise unspecified details, but it must not expand the requested edit scope, introduce unrelated subjects or scene concepts, or alter protected content.",
         "Do not copy meta-instruction language into the output unless it explicitly describes content the user wants generated.",
     ]
-    if main_prompt:
-        lines.append(
-            "For the model-neutral main prompt, use this guidance only to resolve ambiguity in durable user intent. Do not import decorative style, framing, camera, lighting, quality, format, or incidental rendered details into the main prompt."
-        )
     return lines
 
 
@@ -897,8 +893,28 @@ def _list_llamacpp_models(llamacpp_url, request_timeout=10):
 
 
 _LLAMACPP_ACTIVE_RESPONSES = {}
+_LLAMACPP_ACTIVE_STREAMS = {}
 _LLAMACPP_ABORTED_RESPONSES = set()
 _LLAMACPP_RESPONSE_LOCK = threading.Lock()
+
+
+def _llamacpp_active_stream_status(llamacpp_url):
+    """Return the exact output phase observed in Prompt Studio-owned SSE streams."""
+    base_url = _clean_llamacpp_base_url(llamacpp_url)
+    with _LLAMACPP_RESPONSE_LOCK:
+        streams = list(_LLAMACPP_ACTIVE_STREAMS.get(base_url, {}).values())
+    if not streams:
+        return None
+    phases = {
+        stream.get("generation_phase")
+        for stream in streams
+        if stream.get("generation_phase") in {"thinking", "generating"}
+    }
+    generation_phase = phases.pop() if len(phases) == 1 else "thinking_or_generating"
+    return {
+        "active_streams": len(streams),
+        "generation_phase": generation_phase,
+    }
 
 
 def _abort_llamacpp_generation(llamacpp_url):
@@ -932,11 +948,19 @@ def _post_llamacpp_chat(base_url, payload, timeout, response_hook=None, cancella
     reasoning_parts = []
     finish_reason = None
     chunks = []
+    chat_template_kwargs = payload.get("chat_template_kwargs")
+    thinking_enabled = bool(
+        chat_template_kwargs.get("enable_thinking")
+        if isinstance(chat_template_kwargs, dict) else False
+    )
     try:
         response = urllib.request.urlopen(request, timeout=int(timeout))
         response_id = id(response)
         with _LLAMACPP_RESPONSE_LOCK:
             _LLAMACPP_ACTIVE_RESPONSES.setdefault(base_url, set()).add(response)
+            _LLAMACPP_ACTIVE_STREAMS.setdefault(base_url, {})[response_id] = {
+                "generation_phase": "thinking" if thinking_enabled else "generating",
+            }
         if response_hook is not None:
             response_hook(response)
         for raw_line in response:
@@ -966,13 +990,27 @@ def _post_llamacpp_chat(base_url, payload, timeout, response_hook=None, cancella
                 continue
             delta = choice.get("delta")
             if isinstance(delta, dict):
+                content_received = False
                 if delta.get("content") is not None:
-                    content_parts.append(str(delta["content"]))
+                    content = str(delta["content"])
+                    content_parts.append(content)
+                    content_received = bool(content)
                 reasoning = delta.get("reasoning_content")
                 if reasoning is None:
                     reasoning = delta.get("reasoning")
+                reasoning_received = False
                 if reasoning is not None:
-                    reasoning_parts.append(str(reasoning))
+                    reasoning = str(reasoning)
+                    reasoning_parts.append(reasoning)
+                    reasoning_received = bool(reasoning)
+                if content_received or reasoning_received:
+                    with _LLAMACPP_RESPONSE_LOCK:
+                        stream = _LLAMACPP_ACTIVE_STREAMS.get(base_url, {}).get(response_id)
+                        if stream is not None:
+                            if content_received:
+                                stream["generation_phase"] = "generating"
+                            elif stream["generation_phase"] != "generating":
+                                stream["generation_phase"] = "thinking"
             if choice.get("finish_reason") is not None:
                 finish_reason = choice.get("finish_reason")
         with _LLAMACPP_RESPONSE_LOCK:
@@ -1005,6 +1043,11 @@ def _post_llamacpp_chat(base_url, payload, timeout, response_hook=None, cancella
                     active.discard(response)
                     if not active:
                         _LLAMACPP_ACTIVE_RESPONSES.pop(base_url, None)
+                streams = _LLAMACPP_ACTIVE_STREAMS.get(base_url)
+                if streams is not None:
+                    streams.pop(response_id, None)
+                    if not streams:
+                        _LLAMACPP_ACTIVE_STREAMS.pop(base_url, None)
                 _LLAMACPP_ABORTED_RESPONSES.discard(response_id)
     return {
         "choices": [{
@@ -2957,18 +3000,16 @@ def _build_revision_prompt(
 
 def _build_main_revision_prompt(
     current_main_prompt,
-    current_final_prompt,
     revision,
     thinking_mode,
-    additional_instructions="",
 ):
     """Build a model-neutral edit request for Prompt Studio's stored user intent."""
     prompt_parts = [
         "You are editing the model-neutral main prompt behind an image-generation prompt.",
         "Return the complete updated main prompt after applying the user's requested revision.",
         "The main prompt stores only user-requested subject matter, actions, setting, attributes, and other durable intent.",
-        "It must not absorb decorative, stylistic, framing, camera, lighting, quality, or incidental details that exist only in the rendered final prompt.",
-        "Use the rendered final prompt only to resolve what the user is referring to; do not copy its automatic details into the main prompt.",
+        "Use only the current main prompt and the user's requested revision as source content.",
+        "It must not absorb decorative, stylistic, framing, camera, lighting, quality, or incidental details supplied by rendering controls, persistent additional instructions, or the rendered final prompt.",
         "Perform the smallest coherent edit that satisfies the request and preserve everything else as closely as possible.",
         "Return one complete main prompt, never a patch or a list of changes.",
         "",
@@ -2997,7 +3038,6 @@ def _build_main_revision_prompt(
     )
     if known_reference_lines:
         prompt_parts.extend(["", *known_reference_lines])
-    prompt_parts.extend(_additional_instruction_prompt_lines(additional_instructions, main_prompt=True))
     if _reasoning_effort(thinking_mode) != "none":
         prompt_parts.extend(
             [
@@ -3012,9 +3052,6 @@ def _build_main_revision_prompt(
             "Current main prompt:",
             str(current_main_prompt or "").strip(),
             "",
-            "Current rendered final prompt (reference only):",
-            str(current_final_prompt or "").strip(),
-            "",
             "Requested revision:",
             str(revision or "").strip(),
         ]
@@ -3025,13 +3062,13 @@ def _build_main_revision_prompt(
 def _build_main_creation_prompt(
     user_request,
     thinking_mode,
-    additional_instructions="",
 ):
     """Build the first model-neutral main prompt from a creation request."""
     prompt_parts = [
         "You convert a user's first image-creation request into Prompt Studio's model-neutral main prompt.",
         "The main prompt is a direct description of the visual content the user wants, not an instruction to create, generate, draw, show, or render something.",
         "Interpret the request semantically. Separate language used only to ask for an image from language that describes the desired content.",
+        "Use only the user's image-creation request as source content. Rendering controls and persistent additional instructions belong only to the rendered final prompt.",
         "Preserve every explicitly requested subject, action, setting, relationship, attribute, medium, style, composition, camera choice, lighting choice, and other durable intent.",
         "Do not add decorative detail, automatic embellishment, inferred content, quality language, model-specific syntax, or prompt weights.",
         "Return one complete main prompt, never a response to the user, a patch, or a list of changes.",
@@ -3059,7 +3096,6 @@ def _build_main_creation_prompt(
     known_reference_lines = _known_reference_main_prompt_lines(user_request)
     if known_reference_lines:
         prompt_parts.extend(["", *known_reference_lines])
-    prompt_parts.extend(_additional_instruction_prompt_lines(additional_instructions, main_prompt=True))
     if _reasoning_effort(thinking_mode) != "none":
         prompt_parts.extend(
             [

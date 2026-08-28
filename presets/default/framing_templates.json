@@ -14,7 +14,7 @@
     },
     {
       "name": "Candid Unaware",
-      "instruction": "Frame the scene as if the subject is not posing and is unaware of being photographed. Prefer natural body language and an off-center composition. Subject does not look at the camera. This framing changes only pose, viewpoint, and composition; do not add props, events, extra subjects, landmarks, or new actions."
+      "instruction": "Frame the scene as if the subject is not posing and is unaware of being photographed. Choose one of the following: 1. Subject might be doing an activity normal to the prompt environment; do not use 'normal activity', invent an activity that is natural for the environment subject is in 2. Subject is moving somewhere 3. Subject is captured in a random moment in time. - Prefer natural body language and an off-center composition. Subject does not look at the camera. This framing changes only pose, viewpoint, and composition; do not add props, events, extra subjects, landmarks, or new actions."
     },
     {
       "name": "Close-Up Portrait",
@@ -90,19 +90,19 @@
     },
     {
       "name": "First-Person Downward View",
-      "instruction": "Use the existing viewpoint character's first-person perspective while looking downward. Show only body parts, clothing, held objects, and surroundings that are naturally visible from that viewpoint and already supported by the prompt. Preserve the established subject identity and scene; do not introduce a gender, anatomy, clothing, props, or activity merely to demonstrate the framing."
+      "instruction": "Use the existing viewpoint character's first-person perspective while looking downward. Show only body parts, clothing, held objects, and surroundings that are naturally visible from that viewpoint and already supported by the prompt. Disregard any parts of the main prompt that should not be possible to see: anything pertaining to face, makeup etc"
     },
     {
       "name": "CCTV Footage",
-      "instruction": "Frame the scene as generic CCTV footage from a high angle and far from the subject. Show broad coverage of the room or location, keep subjects relatively small and usually off-center, and make them unaware of the camera. Change the viewpoint and composition rather than merely adding a CCTV tag; do not invent suspicious behavior or new events."
+      "instruction": "Frame the scene as generic full-color CCTV footage from a high angle and far from the subject. Show broad coverage of the room or location, keep subjects relatively small and usually off-center, and make them unaware of the camera. Change the viewpoint and composition rather than merely adding a CCTV tag; do not invent suspicious behavior or new events."
     },
     {
       "name": "Fixed Ceiling CCTV",
       "instruction": "Frame the scene from a fixed ceiling-mounted security camera in a high corner. Use a very wide lens with mild barrel distortion, deep room coverage, and distant off-center subjects when compatible. Add flat automatic exposure, muted color, modest sensor noise, low-bitrate compression blocks, slight oversharpening, and subtle timestamp-like interface residue without readable text. Preserve the actual subjects and event; do not invent suspicious behavior."
     },
     {
-      "name": "Hidden Pinhole Camera",
-      "instruction": "Frame the scene as if captured unknowingly by a tiny concealed pinhole camera. Use an awkward off-center or low placement, a narrow partially obstructed view, and strong edge vignetting. Add soft miniature optics, uneven focus, dim available light, poor dynamic range, muted color, digital noise, and compressed detail. Preserve the requested scene and do not add a voyeur, camera device, or new activity."
+      "name": "Hidden Camera",
+      "instruction": "Frame the scene as if captured secretly by a concealed camera. Use an awkward off-center or low placement, a narrow partially obstructed view, and strong edge vignetting. Add soft miniature optics, uneven focus, dim available light, poor dynamic range, muted color, digital noise, and compressed detail. Preserve the requested scene and do not add a voyeur, camera device, or new activity."
     },
     {
       "name": "Doorbell Camera",

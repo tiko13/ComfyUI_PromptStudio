@@ -60,6 +60,7 @@ from .nodes import (
     _list_ollama_models,
     _list_llamacpp_models,
     _llamacpp_props,
+    _llamacpp_active_stream_status,
     _lora_names_for_type,
     _llm_vision_capability,
     _needs_expansion_retry,
@@ -107,7 +108,7 @@ COMFYUI_UPDATE_PACKAGES = (
     "comfyui-frontend-package",
     "comfyui-workflow-templates",
     "comfy-kitchen",
-    "comfyui-backend-docs",
+    "comfyui-embedded-docs",
 )
 COMFYUI_UPDATE_TIMEOUT_SECONDS = 15 * 60
 COMFYUI_UPDATE_OUTPUT_LIMIT = 32 * 1024
@@ -306,6 +307,22 @@ def _llamacpp_startup_error(return_code):
     detail = _llamacpp_error_detail(_llamacpp_output_tail())
     message = f"Llama.cpp exited during startup with code {return_code}."
     return f"{message}\n{detail}" if detail else message
+
+
+def _llamacpp_normalize_device_list(label, value):
+    raw_value = _text(value).strip()
+    if not raw_value:
+        return ""
+    devices = []
+    for raw_device in raw_value.split(","):
+        device = raw_device.strip()
+        if not device or any(character.isspace() for character in device):
+            raise ValueError(
+                f"Llama.cpp config '{label}' must be a comma-separated device list "
+                "without whitespace in device names"
+            )
+        devices.append(device)
+    return ",".join(devices)
 
 
 def _llamacpp_effective_main_gpu(main_gpu, cuda_devices):
@@ -1137,7 +1154,9 @@ def _load_llamacpp_launcher_config(data):
             raise ValueError(
                 "Llama.cpp config 'mtp_gpu_layers' must be non-negative, 'auto', or 'all'"
             )
-    mtp_device = _text(first("mtp_device", "spec_draft_device", default="")).strip()
+    mtp_device = _llamacpp_normalize_device_list(
+        "mtp_device", first("mtp_device", "spec_draft_device", default=""),
+    )
     mtp_cache_type_k = _text(first(
         "mtp_kv_cache_k", "spec_draft_cache_type_k", default="f16",
     )).strip()
@@ -1161,7 +1180,9 @@ def _load_llamacpp_launcher_config(data):
         "main_gpu", "main_gpu", "main_gpu_index", default=0, minimum=0, maximum=1024,
     )
     tensor_split = _text(first("tensor_split", default="")).strip()
-    cuda_devices = _text(first("cuda_devices", default="")).strip()
+    cuda_devices = _llamacpp_normalize_device_list(
+        "cuda_devices", first("cuda_devices", default=""),
+    )
     cuda_visible_devices = _text(first("cuda_visible_devices", default="")).strip()
     effective_main_gpu = _llamacpp_effective_main_gpu(main_gpu, cuda_devices)
     extra_args = first("extra_args", default=[])
@@ -1169,6 +1190,7 @@ def _load_llamacpp_launcher_config(data):
         raise ValueError("Llama.cpp config 'extra_args' must be a list of strings")
     if len(extra_args) > 128 or any("\x00" in value or len(value) > 4096 for value in extra_args):
         raise ValueError("Llama.cpp config 'extra_args' is too large or contains invalid values")
+    extra_args = [value.strip() for value in extra_args if value.strip()]
 
     command = [executable]
     if os.path.basename(executable).casefold() in {"llama.exe", "llama"}:
@@ -1302,6 +1324,8 @@ def _start_llamacpp_server(data, *, allow_external=True):
                 "url": launcher["url"],
             }
         environment = os.environ.copy()
+        if "CUDA_VISIBLE_DEVICES" not in launcher["environment"]:
+            environment.pop("CUDA_VISIBLE_DEVICES", None)
         environment.update(launcher["environment"])
         creation_flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
         try:
@@ -1899,6 +1923,7 @@ def _llamacpp_generation_status(data):
     models = _list_llamacpp_models(base_url, request_timeout=3)
     model = selected_model or (models[0] if len(models) == 1 else "")
     slots = _get_json(urllib.parse.urljoin(base_url + "/", "slots"), 3)
+    managed_stream = _llamacpp_active_stream_status(base_url)
     busy = None
     active_slots = 0
     generated_tokens = None
@@ -1929,6 +1954,8 @@ def _llamacpp_generation_status(data):
                 pass
         if decoded:
             generated_tokens = sum(decoded)
+    if managed_stream:
+        busy = True
     props = _llamacpp_props(base_url, 3, model) if model else {}
     modalities = props.get("modalities") if isinstance(props, dict) else None
     vision = modalities.get("vision") if isinstance(modalities, dict) else None
@@ -1943,13 +1970,22 @@ def _llamacpp_generation_status(data):
         "vision": vision if isinstance(vision, bool) else None,
         "server_process": _llamacpp_managed_process_status(data),
     }
+    if managed_stream:
+        status["managed_streams"] = managed_stream["active_streams"]
     if busy:
         thinking_enabled = _text(data.get("thinking_mode"), "Disabled").strip().casefold() not in {
             "disabled", "none",
         }
-        # The slots endpoint exposes decoded-token progress but does not separate
-        # private reasoning from final-answer tokens.
-        status["generation_phase"] = "thinking_or_generating" if thinking_enabled else "generating"
+        if managed_stream:
+            # Prompt Studio's SSE reader observes reasoning_content and final
+            # content independently, so its own streams have an exact live phase.
+            status["generation_phase"] = managed_stream["generation_phase"]
+        else:
+            # /slots exposes decoded-token progress but cannot separate private
+            # reasoning from final-answer tokens for externally owned requests.
+            status["generation_phase"] = (
+                "thinking_or_generating" if thinking_enabled else "generating"
+            )
     health_status = _text(health.get("status")).strip()
     if health_status and health_status != "ok":
         status["message"] = f"Llama.cpp: {health_status}."
@@ -3458,7 +3494,6 @@ def _revise(data):
         prompt = _build_main_creation_prompt(
             revision,
             thinking_mode,
-            additional_instructions,
         )
     elif mode == "revise":
         current_prompt = _remove_known_profile_wrappers(current_prompt)
@@ -3477,10 +3512,8 @@ def _revise(data):
     else:
         prompt = _build_main_revision_prompt(
             current_prompt,
-            _remove_known_profile_wrappers(current_final_prompt),
             revision,
             thinking_mode,
-            additional_instructions,
         )
 
     if context_image:

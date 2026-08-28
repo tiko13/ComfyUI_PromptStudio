@@ -152,6 +152,43 @@ function newChatStudioSettings(value = getSettings()) {
   }, SETTINGS_DEFAULTS);
 }
 
+function isEmptyChat(chat) {
+  if (!chat || chat.initialized) return false;
+  const prompts = [
+    chat.mainPrompt,
+    chat.renderedMainPrompt,
+    chat.finalPrompt,
+    chat.renderedFinalPrompt,
+    chat.currentPrompt,
+  ];
+  if (prompts.some((value) => String(value || "").trim())) return false;
+  if ((chat.versions || []).some((version) => (
+    String(version?.mainPrompt || "").trim()
+    || String(version?.finalPrompt || "").trim()
+  ))) return false;
+  return !(chat.messages || []).length
+    && !(chat.consultMessages || []).length
+    && !Number(chat.consultClearedAt || 0)
+    && !chat.selectedSource
+    && !chat.lastGeneration
+    && !chat.pendingGeneration
+    && !chat.consultPendingJob
+    && !chat.consultExperiment
+    && !chat.consultAgent
+    && !chat.studioDiscussion;
+}
+
+function deduplicateEmptyChats(chats, preferredChatId = "") {
+  const emptyChats = chats.filter(isEmptyChat);
+  if (emptyChats.length <= 1) return chats;
+  const retained = emptyChats.find((chat) => chat.id === preferredChatId)
+    || [...emptyChats].sort((left, right) => (
+      Number(right.createdAt || 0) - Number(left.createdAt || 0)
+      || String(left.id).localeCompare(String(right.id))
+    ))[0];
+  return chats.filter((chat) => !isEmptyChat(chat) || chat.id === retained.id);
+}
+
 function studioSettingsFromControlsFingerprint(value) {
   let fingerprint;
   try {
@@ -483,6 +520,8 @@ function normalizeChat(chat) {
 
   return {
     controlsFingerprintFromSettings,
+    deduplicateEmptyChats,
+    isEmptyChat,
     migratedStudioSettings,
     newChatStudioSettings,
     normalizeChat,

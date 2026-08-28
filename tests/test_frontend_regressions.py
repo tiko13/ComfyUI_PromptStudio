@@ -224,6 +224,37 @@ class FrontendRegressionTests(unittest.TestCase):
         self.assertIn("consultAgentMode: false", create)
         self.assertIn("consultAgentMode: false", exported)
 
+    def test_new_chat_reuses_the_only_empty_session(self):
+        model = self.function_source(
+            "isEmptyChat",
+            "deduplicateEmptyChats",
+            self.chat_model,
+        )
+        deduplicate = self.function_source(
+            "deduplicateEmptyChats",
+            "studioSettingsFromControlsFingerprint",
+            self.chat_model,
+        )
+        create = self.function_source("createChat", "deleteChat")
+
+        self.assertIn("if (!chat || chat.initialized) return false", model)
+        self.assertIn("chat.versions", model)
+        self.assertIn("chat.consultClearedAt", model)
+        self.assertIn("emptyChats.length <= 1", deduplicate)
+        self.assertIn("preferredChatId", deduplicate)
+        self.assertIn("if (isEmptyChat(activeChat())) return", create)
+        self.assertIn("const reusable = state.chats.find(isEmptyChat)", create)
+        self.assertIn("reusable.createdAt = promotedAt", create)
+        self.assertIn("activateChat(reusable.id)", create)
+        self.assertIn(
+            "deduplicateEmptyChats([...merged.values()], activeChatId)",
+            self.chat_store,
+        )
+        self.assertIn(
+            "deduplicateEmptyChats(normalizedChats, stored.activeChatId)",
+            self.chat_store,
+        )
+
     def test_llamacpp_uses_config_owned_generation_settings_instead_of_profile_ui(self):
         selected = self.function_source("selectedLlmProfile", "selectedLlamacppGenerationSettings")
         providers = self.function_source("syncLlmProviderControls", "loadConfig")
@@ -240,6 +271,8 @@ class FrontendRegressionTests(unittest.TestCase):
         self.assertIn('presence_penalty = [double] $llmPresencePenalty.Value', builder)
         self.assertIn('$qwen38ThinkingModesText = "XHigh, Medium, Low, Disabled"', builder)
         self.assertIn("Qwen 3.8 uses XHigh, Medium, and Low", builder)
+        self.assertIn('Normalize-DeviceList "CUDA devices" $cudaDevices.Text', builder)
+        self.assertIn('Normalize-DeviceList "MTP device" $mtpDevice.Text', builder)
 
     def test_new_chats_reset_generation_controls_except_thinking_and_embellishment(self):
         fresh = self.function_source(

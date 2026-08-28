@@ -135,6 +135,8 @@ const { buildWorkflowTemplate } = createWorkflowTemplateBuilder({ app, nodeClass
 const { setupVideoStudioBridge } = createVideoStudioBridge({ refreshVideoHandoffActions });
 const {
   controlsFingerprintFromSettings,
+  deduplicateEmptyChats,
+  isEmptyChat,
   migratedStudioSettings,
   newChatStudioSettings,
   normalizeChat,
@@ -161,6 +163,7 @@ const {
   setupChatSync,
 } = createChatStoreController({
   activeChat,
+  deduplicateEmptyChats,
   imageReferenceKey,
   newChatStudioSettings,
   normalizeChat,
@@ -2488,11 +2491,20 @@ function syncManualPrompt(value) {
 
 function createChat() {
   if (state.busy) return;
+  if (isEmptyChat(activeChat())) return;
   commitPromptEditorVersion();
   syncActiveChat();
   clearMainPastedImage();
   const createAction = state.panel?.querySelector('input[name="promptstudio-generation-action"][value="create"]');
   if (createAction) createAction.checked = true;
+  const reusable = state.chats.find(isEmptyChat);
+  if (reusable) {
+    const promotedAt = Math.max(Date.now(), ...state.chats.map(chatActivityAt)) + 1;
+    reusable.createdAt = promotedAt;
+    reusable.updatedAt = promotedAt;
+    activateChat(reusable.id);
+    return;
+  }
   const chat = normalizeChat({
     initialized: false,
     mainPrompt: "",

@@ -245,6 +245,34 @@ class RegressionTests(unittest.TestCase):
         self.assertEqual(status["generation_phase"], "generating")
         self.assertIs(status["vision"], True)
 
+    def test_llamacpp_status_prefers_the_exact_managed_stream_phase(self):
+        def get_json(url, _timeout):
+            if url.endswith("/health"):
+                return {"status": "ok"}
+            if url.endswith("/slots"):
+                return []
+            return None
+
+        with (
+            mock.patch.object(self.routes, "_get_json", side_effect=get_json),
+            mock.patch.object(self.routes, "_llamacpp_props", return_value={}),
+            mock.patch.object(self.routes, "_list_llamacpp_models", return_value=["model.gguf"]),
+            mock.patch.object(
+                self.routes,
+                "_llamacpp_active_stream_status",
+                return_value={"active_streams": 1, "generation_phase": "thinking"},
+            ),
+        ):
+            status = self.routes._llamacpp_generation_status({
+                "llamacpp_url": "http://127.0.0.1:8080",
+                "llamacpp_model": "model.gguf",
+                "thinking_mode": "High",
+            })
+
+        self.assertIs(status["busy"], True)
+        self.assertEqual(status["managed_streams"], 1)
+        self.assertEqual(status["generation_phase"], "thinking")
+
     def test_llamacpp_stream_is_assembled_and_can_be_registered_for_stop(self):
         class StreamResponse:
             def __init__(self):
@@ -281,6 +309,47 @@ class RegressionTests(unittest.TestCase):
         self.assertEqual(seen, [response, None])
         self.assertTrue(response.closed)
 
+    def test_llamacpp_stream_status_transitions_from_reasoning_to_final_content(self):
+        phases = []
+        nodes = self.nodes
+
+        class StreamResponse:
+            def __init__(self):
+                self.lines = iter([
+                    b'data: {"choices":[{"delta":{"reasoning_content":"think"}}]}\n',
+                    b'data: {"choices":[{"delta":{"content":"answer"}}]}\n',
+                    b'data: [DONE]\n',
+                ])
+
+            def __iter__(self):
+                return self
+
+            def __next__(self):
+                status = nodes._llamacpp_active_stream_status("http://127.0.0.1:8080")
+                phases.append(status["generation_phase"])
+                return next(self.lines)
+
+            def close(self):
+                pass
+
+        with mock.patch.object(
+            self.nodes.urllib.request,
+            "urlopen",
+            return_value=StreamResponse(),
+        ):
+            self.nodes._post_llamacpp_chat(
+                "http://127.0.0.1:8080",
+                {
+                    "model": "test",
+                    "messages": [],
+                    "chat_template_kwargs": {"enable_thinking": True},
+                },
+                10,
+            )
+
+        self.assertEqual(phases, ["thinking", "thinking", "generating"])
+        self.assertIsNone(nodes._llamacpp_active_stream_status("http://127.0.0.1:8080"))
+
     def test_llamacpp_launcher_config_maps_all_launcher_controls_without_shell(self):
         root = Path(self.temp.name)
         executable = root / "llama.exe"
@@ -297,6 +366,7 @@ class RegressionTests(unittest.TestCase):
             "gpu_layers": "all",
             "parallel_slots": 2,
             "cuda_devices": "CUDA0,CUDA1",
+            "cuda_visible_devices": "1,2",
             "split_mode": "layer",
             "main_gpu": 1,
             "tensor_split": "0,1",
@@ -339,6 +409,7 @@ class RegressionTests(unittest.TestCase):
         self.assertEqual(command[command.index("--parallel") + 1], "2")
         self.assertEqual(command[command.index("--main-gpu") + 1], "1")
         self.assertEqual(launcher["url"], "http://127.0.0.1:8080")
+        self.assertEqual(launcher["environment"], {"CUDA_VISIBLE_DEVICES": "1,2"})
 
     def test_llamacpp_launcher_omits_disabled_mtp_and_validates_draft_range(self):
         root = Path(self.temp.name)
@@ -392,6 +463,32 @@ class RegressionTests(unittest.TestCase):
         command = launcher["command"]
         self.assertEqual(command[command.index("--device") + 1], "CUDA1")
         self.assertEqual(command[command.index("--main-gpu") + 1], "0")
+
+    def test_llamacpp_launcher_trims_builder_device_values_and_extra_arguments(self):
+        root = Path(self.temp.name)
+        executable = root / "llama-server.exe"
+        model = root / "model.gguf"
+        config_path = root / "llamacpp.json"
+        executable.write_bytes(b"")
+        model.write_bytes(b"")
+        config_path.write_text(json.dumps({
+            "model": str(model),
+            "cuda_devices": " CUDA1 ",
+            "mtp_enabled": "on",
+            "mtp_device": " CUDA1 ",
+            "extra_args": [" --metrics ", "", "   "],
+        }), encoding="utf-8")
+
+        launcher = self.routes._load_llamacpp_launcher_config({
+            "llamacpp_executable": str(executable),
+            "llamacpp_config_profile": config_path.name,
+        })
+
+        command = launcher["command"]
+        self.assertEqual(command[command.index("--device") + 1], "CUDA1")
+        self.assertEqual(command[command.index("--spec-draft-device") + 1], "CUDA1")
+        self.assertIn("--metrics", command)
+        self.assertFalse(any(argument != argument.strip() for argument in command))
 
     def test_llamacpp_launcher_switches_models_with_selected_config_profile(self):
         root = Path(self.temp.name)
@@ -750,6 +847,39 @@ class RegressionTests(unittest.TestCase):
         self.assertEqual(saved["watchdog"]["grace_seconds"], 120)
         self.assertEqual(saved["watchdog"]["owner_pid"], os.getpid())
         self.assertEqual(len(saved["watchdog"]["token"]), 32)
+
+    def test_llamacpp_start_does_not_inherit_comfyui_cuda_filter(self):
+        root = Path(self.temp.name)
+        executable = root / "llama-server.exe"
+        model = root / "model.gguf"
+        profile = root / "quality.json"
+        executable.write_bytes(b"")
+        model.write_bytes(b"")
+        profile.write_text(json.dumps({"model": str(model)}), encoding="utf-8")
+        process = mock.Mock(pid=2468)
+        process.poll.return_value = None
+        process.wait.side_effect = self.routes.subprocess.TimeoutExpired(
+            "llama-server.exe", 1.25,
+        )
+        identity = {
+            "executable": str(executable),
+            "creation_marker": "windows:2468",
+        }
+
+        with (
+            mock.patch.dict(self.routes.os.environ, {"CUDA_VISIBLE_DEVICES": "0"}),
+            mock.patch.object(self.routes, "_get_json", return_value=None),
+            mock.patch.object(self.routes, "_process_snapshot", return_value=identity),
+            mock.patch.object(
+                self.routes.subprocess, "Popen", return_value=process,
+            ) as popen,
+        ):
+            self.routes._start_llamacpp_server({
+                "llamacpp_executable": str(executable),
+                "llamacpp_config_profile": profile.name,
+            })
+
+        self.assertNotIn("CUDA_VISIBLE_DEVICES", popen.call_args_list[0].kwargs["env"])
 
     def test_llamacpp_autostart_persists_validated_launcher_selection(self):
         root = Path(self.temp.name)
@@ -1576,13 +1706,12 @@ class RegressionTests(unittest.TestCase):
     def test_main_prompt_revision_keeps_auto_only_removals_out_of_positive_prompt(self):
         request = self.nodes._build_main_revision_prompt(
             "A woman in a red dress",
-            "A woman in a red silk dress wearing a pearl necklace",
             "Remove the necklace",
             "Disabled",
         )
         self.assertIn("leave the main prompt unchanged", request)
         self.assertIn("Never translate a removal into negative wording", request)
-        self.assertIn("Current rendered final prompt (reference only)", request)
+        self.assertNotIn("Current rendered final prompt", request)
         self.assertIn("Remove the necklace", request)
 
     def test_revision_prompts_replace_complete_attribute_values(self):
@@ -1599,7 +1728,6 @@ class RegressionTests(unittest.TestCase):
         )
         main_revision = self.nodes._build_main_revision_prompt(
             "A woman with dark wavy hair",
-            "A woman with dark wavy hair in soft studio lighting",
             "Make her hair blonde",
             "Disabled",
         )
@@ -1759,7 +1887,6 @@ class RegressionTests(unittest.TestCase):
             )
             main_revision = self.nodes._build_main_revision_prompt(
                 "Ciri portrait",
-                "Ciri portrait with ReferenceOnly lighting",
                 "Refine the portrait",
                 "Disabled",
             )
@@ -1856,7 +1983,6 @@ class RegressionTests(unittest.TestCase):
         with mock.patch.object(self.nodes, "KNOWN_REFERENCES_PATH", str(references_path)):
             request = self.nodes._build_main_revision_prompt(
                 "JANE using Victory Pose",
-                "A blonde woman standing with both arms raised overhead",
                 "Move JANE to a park",
                 "Disabled",
             )
@@ -2026,8 +2152,9 @@ class RegressionTests(unittest.TestCase):
         self.assertEqual(main, "A woman in a green dress")
         self.assertIn("model-neutral main prompt", generate.call_args.args[0])
         self.assertIn("direct description of the desired visual content", generate.call_args.args[0])
-        self.assertIn("Persistent additional guidance", generate.call_args.args[0])
-        self.assertIn(additional_instructions, generate.call_args.args[0])
+        self.assertNotIn("Persistent additional guidance", generate.call_args.args[0])
+        self.assertNotIn(additional_instructions, generate.call_args.args[0])
+        self.assertNotIn("A detailed woman in a red silk dress", generate.call_args.args[0])
         self.assertEqual(generate.call_args.kwargs["presence_penalty"], 1.5)
 
         with (
@@ -2064,6 +2191,7 @@ class RegressionTests(unittest.TestCase):
                 "embellishment_level": "None",
                 "mode": "create_main",
                 "revision": request,
+                "additional_instructions": "Render this as a dramatic moonlit oil painting.",
             })
 
         self.assertEqual(main, expected)
@@ -2074,6 +2202,7 @@ class RegressionTests(unittest.TestCase):
         self.assertIn("Decide this from meaning, not from a fixed phrase-removal rule", creation_prompt)
         self.assertIn("Preserve an explicitly requested style or medium", creation_prompt)
         self.assertIn(request, creation_prompt)
+        self.assertNotIn("dramatic moonlit oil painting", creation_prompt)
 
     def test_directly_typed_main_prompt_resolves_known_references_during_render(self):
         references_path = Path(self.temp.name) / "known-references.json"
@@ -3976,8 +4105,8 @@ class RegressionTests(unittest.TestCase):
                 self.nodes._build_revision_prompt(
                     profile, style, "", framing, "", "Clean", "Disabled", "A colorful portrait", "Refine it", trigger
                 ),
-                self.nodes._build_main_revision_prompt(
-                    "A colorful portrait", "A saturated close-up color photo", "Refine it", "Disabled", trigger
+                self.nodes._build_fragment_rewrite_prompt(
+                    profile, style, "", framing, "", "Clean", "Disabled", "A colorful portrait", trigger
                 ),
                 self.nodes._build_expansion_retry_prompt(
                     profile, style, "", framing, "", "Clean", "Disabled", "A colorful portrait", "A portrait", trigger
@@ -3995,7 +4124,7 @@ class RegressionTests(unittest.TestCase):
                 self.assertIn("latest request is authoritative", request)
                 self.assertIn("must not expand the requested edit scope", request)
         self.assertIn(
-            "Do not import decorative style, framing, camera, lighting, quality",
+            "Persistent additional guidance",
             requests[2],
         )
 

@@ -18,7 +18,7 @@
     },
     {
       "name": "Candid Photography",
-      "instruction": "Make the result feel like an unpolished candid phone-camera photo with everyday colors, imperfect exposure, simple lighting, and ordinary realism. This style changes only the photographic finish; do not add props, events, extra subjects, landmarks, or new actions."
+      "instruction": "Make the result feel like an unpolished candid photo, taken by a on a whim from an odd angle."
     },
     {
       "name": "Tag Dense",
@@ -433,8 +433,36 @@
       "instruction": "Do not add quality tags or hype terms such as masterpiece, best quality, ultra detailed, award winning, cinematic, professional, or 8k. Keep only subject-relevant prompt content."
     },
     {
-      "name": "Playful Anime",
-      "instruction": "Favor playful anime-style wording or tags. Avoid realism, cinematic photography, and professional studio phrasing unless requested."
+      "name": "Anime",
+      "instruction": "Favor anime-style wording. Avoid realism, cinematic photography, and professional studio phrasing unless requested."
+    },
+    {
+      "name": "Retro 90s Anime",
+      "instruction": "Use a hand-drawn 1990s anime look with crisp inked outlines, traditional cel shading, slightly muted colors, painted backgrounds, subtle analog grain, and expressive period-character styling. Preserve the prompt's subject, action, and setting."
+    },
+    {
+      "name": "Shonen Action Anime",
+      "instruction": "Use an energetic shonen anime style with bold linework, dynamic foreshortening, strong silhouettes, speed accents, high-impact poses, vivid color, and dramatic cel-shaded contrast. Keep the requested subjects and action intact without inventing powers or combat."
+    },
+    {
+      "name": "Shojo Romance Anime",
+      "instruction": "Use an elegant shojo anime style with delicate linework, expressive eyes, graceful proportions, soft pastel color, airy highlights, floral or sparkling accents, and an emotionally tender atmosphere. Do not add romance, characters, or decorative motifs that conflict with the prompt."
+    },
+    {
+      "name": "Slice-of-Life Anime",
+      "instruction": "Use a warm slice-of-life anime style with clean drawings, gentle cel shading, natural everyday colors, soft daylight, lived-in background detail, relaxed expressions, and quiet observational charm. Preserve the prompt's ordinary actions and avoid adding fantasy or melodrama."
+    },
+    {
+      "name": "Dark Fantasy Anime",
+      "instruction": "Use a dark-fantasy anime style with intricate inked forms, restrained color, ominous atmosphere, weathered environments, dramatic shadow, and richly designed clothing or creatures where already requested. Preserve the subject and avoid introducing gore, monsters, or supernatural elements on its own."
+    },
+    {
+      "name": "Chibi Anime",
+      "instruction": "Use a chibi anime style with compact proportions, oversized expressive heads, simplified rounded anatomy, clean outlines, bright flat color, small readable details, and charming facial expressions. Keep the same subjects, objects, and actions rather than making the scene childish."
+    },
+    {
+      "name": "Modern Anime Cel Shading",
+      "instruction": "Use a polished modern anime look with precise line art, controlled cel shading, luminous color, crisp facial and costume detail, clean atmospheric depth, and refined digital compositing. Preserve the requested composition and avoid drifting into photorealism or generic 3D rendering."
     },
     {
       "name": "Analog Monochrome CCTV",

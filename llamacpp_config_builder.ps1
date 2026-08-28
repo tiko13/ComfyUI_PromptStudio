@@ -43,6 +43,22 @@ function Get-ConfigValue {
     return $Default
 }
 
+function Normalize-DeviceList {
+    param([string] $Label, [string] $Value)
+    if (-not $Value.Trim()) {
+        return ""
+    }
+    $devices = New-Object System.Collections.Generic.List[string]
+    foreach ($rawDevice in $Value.Split(',')) {
+        $device = $rawDevice.Trim()
+        if (-not $device -or $device -match '\s') {
+            throw "$Label must be a comma-separated device list without whitespace in device names."
+        }
+        [void] $devices.Add($device)
+    }
+    return $devices -join ','
+}
+
 $llmProfileConfig = @{}
 $loadedLlmProfile = Get-ConfigValue @("llm_profile") $null
 if ($null -ne $loadedLlmProfile) {
@@ -256,7 +272,7 @@ Add-Field "Context size" $contextSize 2 "Maximum context tokens allocated by lla
 Add-Field "GPU layers" $gpuLayers 3 "Use 'all' or a non-negative layer count."
 Add-Field "Parallel slots" $parallelSlots 4 "Number of concurrent llama-server slots."
 Add-Field "CUDA devices" $cudaDevices 5 "Optional value for llama.cpp --device, such as CUDA0,CUDA1."
-Add-Field "CUDA visible devices" $cudaVisibleDevices 6 "Optional CUDA_VISIBLE_DEVICES environment value."
+Add-Field "CUDA visible devices" $cudaVisibleDevices 6 "Optional CUDA_VISIBLE_DEVICES override. Leave empty to expose all CUDA devices to llama.cpp."
 Add-Field "Split mode" $splitMode 7 "How model tensors are split across GPUs."
 Add-Field "Main GPU" $mainGpu 8 "Physical CUDA GPU index. When CUDA devices filters the list, Prompt Studio translates this to llama.cpp's filtered-list index."
 Add-Field "Tensor split" $tensorSplit 9 "Optional comma-separated proportions, such as 2,1,1."
@@ -335,6 +351,8 @@ $saveButton.Add_Click({
         if ($gpuLayerValue -notmatch '^(all|[0-9]+)$') {
             throw "GPU layers must be 'all' or a non-negative number."
         }
+        $cudaDeviceValue = Normalize-DeviceList "CUDA devices" $cudaDevices.Text
+        $mtpDeviceValue = Normalize-DeviceList "MTP device" $mtpDevice.Text
         $tensorSplitValue = $tensorSplit.Text.Trim()
         if ($tensorSplitValue -and $tensorSplitValue -notmatch '^[0-9]+(?:\.[0-9]+)?(?:,[0-9]+(?:\.[0-9]+)?)*$') {
             throw "Tensor split must be a comma-separated numeric list, such as 2,1,1."
@@ -387,7 +405,7 @@ $saveButton.Add_Click({
             context_size = [int] $contextSize.Value
             gpu_layers = $gpuLayerValue
             parallel_slots = [int] $parallelSlots.Value
-            cuda_devices = $cudaDevices.Text.Trim()
+            cuda_devices = $cudaDeviceValue
             cuda_visible_devices = $cudaVisibleDevices.Text.Trim()
             split_mode = [string] $splitMode.SelectedItem
             main_gpu = [int] $mainGpu.Value
@@ -401,7 +419,7 @@ $saveButton.Add_Click({
             mtp_min_draft_tokens = [int] $mtpMinDraftTokens.Value
             mtp_min_probability = [double] $mtpMinProbability.Value
             mtp_gpu_layers = $mtpGpuLayerValue
-            mtp_device = $mtpDevice.Text.Trim()
+            mtp_device = $mtpDeviceValue
             mtp_kv_cache_k = [string] $mtpCacheTypeK.SelectedItem
             mtp_kv_cache_v = [string] $mtpCacheTypeV.SelectedItem
             host = $hostValue

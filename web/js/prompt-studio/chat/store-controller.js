@@ -6,6 +6,7 @@ import { consultMessagesAfterClear } from "../consult/model.js";
 
 export function createChatStoreController({
   activeChat,
+  deduplicateEmptyChats,
   imageReferenceKey,
   newChatStudioSettings,
   normalizeChat,
@@ -89,16 +90,20 @@ function mergeChatStores(remoteStore, localStore) {
       ),
     });
   }
+  const activeChatId = localStore?.activeChatId || remoteStore?.activeChatId || null;
   return {
-    activeChatId: localStore?.activeChatId || remoteStore?.activeChatId || null,
-    chats: [...merged.values()],
+    activeChatId,
+    chats: deduplicateEmptyChats([...merged.values()], activeChatId),
   };
 }
 
 function applyChatStoreSnapshot(stored, { preserveActive = true } = {}) {
   const previousActiveId = preserveActive ? state.activeChatId : null;
   const storedChats = Array.isArray(stored?.chats) ? stored.chats : [];
-  state.chats = storedChats.map(normalizeChat);
+  state.chats = deduplicateEmptyChats(
+    storedChats.map(normalizeChat),
+    previousActiveId || stored?.activeChatId,
+  );
   state.chatRevision = Number(stored?.revision || state.chatRevision);
   state.chatStoreLoaded = true;
   state.chatPersistenceBlocked = false;
@@ -161,6 +166,7 @@ async function persistChats() {
 
 function saveChats({ immediate = false } = {}) {
   if (state.chatPersistenceBlocked || !state.chatStoreLoaded) return;
+  state.chats = deduplicateEmptyChats(state.chats, state.activeChatId);
   if (pruneExpiredConsultMessages()) renderConsultHistory();
   state.chatMutationVersion += 1;
   if (state.chatSaveTimer) clearTimeout(state.chatSaveTimer);
@@ -222,8 +228,8 @@ async function loadChats() {
     const stored = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(stored.error || `Chat load failed (${response.status}).`);
     const storedChats = Array.isArray(stored.chats) ? stored.chats : [];
-    state.chats = storedChats.map(normalizeChat);
-    recoveredOrMigratedPromptState = state.chats.some((chat, index) => {
+    const normalizedChats = storedChats.map(normalizeChat);
+    recoveredOrMigratedPromptState = normalizedChats.some((chat, index) => {
       const storedChat = storedChats[index];
       return (
         (!String(storedChat?.currentPrompt || "").trim() && Boolean(chat.currentPrompt.trim()))
@@ -235,6 +241,8 @@ async function loadChats() {
       );
     });
     state.chatRevision = Number(stored.revision || 0);
+    state.chats = deduplicateEmptyChats(normalizedChats, stored.activeChatId);
+    recoveredOrMigratedPromptState ||= state.chats.length !== normalizedChats.length;
     state.chatStoreLoaded = true;
     state.chatPersistenceBlocked = false;
     state.activeChatId = state.chats.some((chat) => chat.id === stored.activeChatId)
