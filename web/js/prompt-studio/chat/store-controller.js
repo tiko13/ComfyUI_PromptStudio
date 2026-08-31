@@ -4,6 +4,9 @@ import { CHAT_SYNC_CHANNEL } from "../core/constants.js";
 import { state } from "../core/state.js";
 import { consultMessagesAfterClear } from "../consult/model.js";
 
+const CHAT_PAGE_SIZE = 20;
+const CHAT_PAGE_MAX = 100;
+
 export function createChatStoreController({
   activeChat,
   deduplicateEmptyChats,
@@ -22,6 +25,18 @@ export function createChatStoreController({
   resumeSyncedGeneration,
   setStatus,
 }) {
+function chatPageUrl({ limit = CHAT_PAGE_SIZE, cursor = null, revision = null, includeActive = false } = {}) {
+  const params = new URLSearchParams({ limit: String(limit), offset: "0" });
+  if (cursor?.id) {
+    params.set("before_activity", String(cursor.activity || 0));
+    params.set("before_created", String(cursor.createdAt || 0));
+    params.set("before_id", String(cursor.id));
+  }
+  if (revision != null) params.set("revision", String(revision));
+  if (includeActive) params.set("include_active", "1");
+  return `/promptstudio/prompt-studio/chats?${params}`;
+}
+
 function mergeChatMessages(remoteMessages, localMessages) {
   const merged = new Map();
   for (const message of [...remoteMessages, ...localMessages]) {
@@ -77,7 +92,7 @@ function mergeChatStores(remoteStore, localStore) {
       Number(remoteChat.consultClearedAt || 0),
       Number(localChat.consultClearedAt || 0),
     );
-    merged.set(localChat.id, {
+    const combined = {
       ...older,
       ...newer,
       createdAt: Math.min(localChat.createdAt, remoteChat.createdAt),
@@ -88,7 +103,24 @@ function mergeChatStores(remoteStore, localStore) {
         mergeChatMessages(remoteChat.consultMessages, localChat.consultMessages),
         consultClearedAt,
       ),
-    });
+    };
+    // A durable plot id is monotonic for the lifetime of its chat. Do not let a
+    // stale normal-chat view erase it while resolving a cross-tab revision.
+    const plotChat = localChat.plotId ? localChat : remoteChat.plotId ? remoteChat : null;
+    if (plotChat) {
+      combined.sessionMode = "plot";
+      combined.plotId = plotChat.plotId;
+      combined.plotDraft = plotChat.plotDraft || combined.plotDraft;
+      combined.initialized = true;
+      const summaries = [remoteChat.plotSummary, localChat.plotSummary]
+        .filter((summary) => summary && typeof summary === "object" && !Array.isArray(summary));
+      if (summaries.length) {
+        combined.plotSummary = structuredClone(summaries.reduce((latest, summary) => (
+          Number(summary.updatedAt || 0) >= Number(latest.updatedAt || 0) ? summary : latest
+        )));
+      }
+    }
+    merged.set(localChat.id, combined);
   }
   const activeChatId = localStore?.activeChatId || remoteStore?.activeChatId || null;
   return {
@@ -105,6 +137,10 @@ function applyChatStoreSnapshot(stored, { preserveActive = true } = {}) {
     previousActiveId || stored?.activeChatId,
   );
   state.chatRevision = Number(stored?.revision || state.chatRevision);
+  state.chatPageOffset = Number(stored?.nextOffset ?? storedChats.length);
+  state.chatPageCursor = stored?.nextCursor || null;
+  state.chatTotal = Number(stored?.total ?? state.chats.length);
+  state.chatHasMore = Boolean(stored?.hasMore) && state.chats.length < state.chatTotal;
   state.chatStoreLoaded = true;
   state.chatPersistenceBlocked = false;
   state.activeChatId = state.chats.some((chat) => chat.id === previousActiveId)
@@ -126,38 +162,63 @@ function applyChatStoreSnapshot(stored, { preserveActive = true } = {}) {
   resumeSyncedGeneration();
 }
 
-async function writeChatStore(snapshot, revision) {
+async function writeChatStore(snapshot, revision, deletedChatIds = []) {
   return api.fetchApi("/promptstudio/prompt-studio/chats", {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ ...snapshot, revision }),
+    body: JSON.stringify({
+      ...snapshot,
+      revision,
+      partial: true,
+      deletedChatIds,
+    }),
   });
 }
 
 async function persistChats() {
   if (state.chatPersistenceBlocked || !state.chatStoreLoaded) return;
+  const saveMutationVersion = state.chatMutationVersion;
+  const deletedChatIds = [...state.chatDeletedIds];
   state.chatSaveInFlight = true;
   try {
     let snapshot = structuredClone({ activeChatId: state.activeChatId, chats: state.chats });
-    let response = await writeChatStore(snapshot, state.chatRevision);
+    let response = await writeChatStore(snapshot, state.chatRevision, deletedChatIds);
     let data = await response.json().catch(() => ({}));
     if (response.status === 409) {
-      const latestResponse = await api.fetchApi("/promptstudio/prompt-studio/chats");
+      const latestResponse = await api.fetchApi(chatPageUrl({
+        limit: Math.min(CHAT_PAGE_MAX, Math.max(CHAT_PAGE_SIZE, state.chatPageOffset)),
+        includeActive: true,
+      }));
       const latest = await latestResponse.json().catch(() => ({}));
       if (!latestResponse.ok) throw new Error(latest.error || `Chat synchronization failed (${latestResponse.status}).`);
-      snapshot = mergeChatStores(latest, {
+      const deleted = new Set(deletedChatIds);
+      const filteredLatest = {
+        ...latest,
+        chats: (latest.chats || []).filter((chat) => !deleted.has(chat?.id)),
+      };
+      snapshot = mergeChatStores(filteredLatest, {
         activeChatId: state.activeChatId,
         chats: structuredClone(state.chats),
       });
       const mergedMutationVersion = state.chatMutationVersion;
-      response = await writeChatStore(snapshot, Number(latest.revision || 0));
+      response = await writeChatStore(snapshot, Number(latest.revision || 0), deletedChatIds);
       data = await response.json().catch(() => ({}));
       if (response.ok && state.chatMutationVersion === mergedMutationVersion) {
-        applyChatStoreSnapshot({ ...snapshot, revision: data.revision }, { preserveActive: true });
+        applyChatStoreSnapshot({
+          ...snapshot,
+          revision: data.revision,
+          total: latest.total,
+          nextOffset: latest.nextOffset,
+          nextCursor: latest.nextCursor,
+          hasMore: latest.hasMore,
+        }, { preserveActive: true });
       }
     }
     if (!response.ok) throw new Error(data.error || `Chat save failed (${response.status}).`);
     state.chatRevision = Number(data.revision || state.chatRevision);
+    if (state.chatMutationVersion === saveMutationVersion) {
+      deletedChatIds.forEach((chatId) => state.chatDeletedIds.delete(chatId));
+    }
     state.chatSyncChannel?.postMessage({ type: "chat-store-updated", revision: state.chatRevision });
   } finally {
     state.chatSaveInFlight = false;
@@ -166,7 +227,12 @@ async function persistChats() {
 
 function saveChats({ immediate = false } = {}) {
   if (state.chatPersistenceBlocked || !state.chatStoreLoaded) return;
+  const previousChatIds = new Set(state.chats.map((chat) => chat.id));
   state.chats = deduplicateEmptyChats(state.chats, state.activeChatId);
+  const retainedChatIds = new Set(state.chats.map((chat) => chat.id));
+  previousChatIds.forEach((chatId) => {
+    if (!retainedChatIds.has(chatId)) state.chatDeletedIds.add(chatId);
+  });
   if (pruneExpiredConsultMessages()) renderConsultHistory();
   state.chatMutationVersion += 1;
   if (state.chatSaveTimer) clearTimeout(state.chatSaveTimer);
@@ -182,12 +248,16 @@ function saveChats({ immediate = false } = {}) {
 }
 
 async function refreshChatsFromServer({ force = false } = {}) {
-  if (!state.chatStoreLoaded || state.chatPersistenceBlocked || state.chatSyncInFlight) return;
+  if (!state.chatStoreLoaded || state.chatPersistenceBlocked || state.chatSyncInFlight || state.chatPageLoading) return;
   if (!force && (state.chatSaveTimer || state.chatSaveInFlight || state.busy)) return;
   const syncMutationVersion = state.chatMutationVersion;
   state.chatSyncInFlight = true;
   try {
-    const response = await api.fetchApi(`/promptstudio/prompt-studio/chats?revision=${encodeURIComponent(state.chatRevision)}`);
+    const response = await api.fetchApi(chatPageUrl({
+      limit: Math.min(CHAT_PAGE_MAX, Math.max(CHAT_PAGE_SIZE, state.chatPageOffset)),
+      revision: state.chatRevision,
+      includeActive: true,
+    }));
     if (response.status === 204) return;
     const stored = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(stored.error || `Chat synchronization failed (${response.status}).`);
@@ -221,10 +291,44 @@ function setupChatSync() {
   state.chatSyncChannel = channel;
 }
 
+async function loadOlderChats() {
+  if (
+    !state.chatStoreLoaded
+    || state.chatPersistenceBlocked
+    || state.chatPageLoading
+    || state.chatSyncInFlight
+    || !state.chatHasMore
+    || !state.chatPageCursor
+  ) return;
+  state.chatPageLoading = true;
+  renderChatList();
+  try {
+    const response = await api.fetchApi(chatPageUrl({ cursor: state.chatPageCursor }));
+    const stored = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(stored.error || `Older chats could not be loaded (${response.status}).`);
+    const existingIds = new Set(state.chats.map((chat) => chat.id));
+    for (const chat of Array.isArray(stored.chats) ? stored.chats.map(normalizeChat) : []) {
+      if (!existingIds.has(chat.id) && !state.chatDeletedIds.has(chat.id)) {
+        state.chats.push(chat);
+        existingIds.add(chat.id);
+      }
+    }
+    state.chatPageOffset += Number(stored.nextOffset || 0);
+    state.chatPageCursor = stored.nextCursor || null;
+    state.chatTotal = Number(stored.total ?? state.chatTotal);
+    state.chatHasMore = Boolean(stored.hasMore) && state.chats.length < state.chatTotal;
+  } catch (error) {
+    setStatus(error.message || "Older chats could not be loaded.", "warning");
+  } finally {
+    state.chatPageLoading = false;
+    renderChatList();
+  }
+}
+
 async function loadChats() {
   let recoveredOrMigratedPromptState = false;
   try {
-    const response = await api.fetchApi("/promptstudio/prompt-studio/chats");
+    const response = await api.fetchApi(chatPageUrl({ includeActive: true }));
     const stored = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(stored.error || `Chat load failed (${response.status}).`);
     const storedChats = Array.isArray(stored.chats) ? stored.chats : [];
@@ -241,7 +345,16 @@ async function loadChats() {
       );
     });
     state.chatRevision = Number(stored.revision || 0);
+    state.chatDeletedIds.clear();
     state.chats = deduplicateEmptyChats(normalizedChats, stored.activeChatId);
+    const retainedIds = new Set(state.chats.map((chat) => chat.id));
+    normalizedChats.forEach((chat) => {
+      if (!retainedIds.has(chat.id)) state.chatDeletedIds.add(chat.id);
+    });
+    state.chatPageOffset = Number(stored.nextOffset ?? storedChats.length);
+    state.chatPageCursor = stored.nextCursor || null;
+    state.chatTotal = Number(stored.total ?? state.chats.length);
+    state.chatHasMore = Boolean(stored.hasMore) && state.chats.length < state.chatTotal;
     recoveredOrMigratedPromptState ||= state.chats.length !== normalizedChats.length;
     state.chatStoreLoaded = true;
     state.chatPersistenceBlocked = false;
@@ -251,6 +364,11 @@ async function loadChats() {
   } catch (error) {
     state.chats = [];
     state.activeChatId = null;
+    state.chatDeletedIds.clear();
+    state.chatPageOffset = 0;
+    state.chatPageCursor = null;
+    state.chatTotal = 0;
+    state.chatHasMore = false;
     state.chatStoreLoaded = false;
     state.chatPersistenceBlocked = true;
     setStatus(error.message || "Chat history could not be loaded.", "warning");
@@ -273,6 +391,7 @@ async function loadChats() {
   return {
     applyChatStoreSnapshot,
     loadChats,
+    loadOlderChats,
     mergeChatMessages,
     mergeChatStores,
     persistChats,

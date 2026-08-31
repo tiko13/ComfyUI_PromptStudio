@@ -4486,6 +4486,74 @@ class KCPP_PromptStudioModelLoader:
         return loader_class().load_unet(unet_name, "default")
 
 
+class KCPP_PromptStudioSampler:
+    """A standard KSampler with an explicit Prompt Studio injection contract."""
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        import comfy.samplers
+
+        return {
+            "required": {
+                "model": ("MODEL",),
+                "seed": (
+                    "INT",
+                    {
+                        "default": 0,
+                        "min": 0,
+                        "max": 0xffffffffffffffff,
+                        "control_after_generate": True,
+                    },
+                ),
+                "steps": ("INT", {"default": 20, "min": 1, "max": 10000}),
+                "cfg": ("FLOAT", {"default": 8.0, "min": 0.0, "max": 100.0, "step": 0.1, "round": 0.01}),
+                "sampler_name": (comfy.samplers.KSampler.SAMPLERS,),
+                "scheduler": (comfy.samplers.KSampler.SCHEDULERS,),
+                "positive": ("CONDITIONING",),
+                "negative": ("CONDITIONING",),
+                "latent_image": ("LATENT",),
+                "denoise": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 1.0, "step": 0.01}),
+            },
+        }
+
+    RETURN_TYPES = ("LATENT",)
+    RETURN_NAMES = ("samples",)
+    FUNCTION = "sample"
+    CATEGORY = "Prompt Studio"
+    DESCRIPTION = (
+        "Behaves like ComfyUI's standard KSampler and exposes seed, sampler, scheduler, "
+        "steps, CFG, and denoise as explicit Prompt Studio plot controls."
+    )
+
+    def sample(
+        self,
+        model,
+        seed,
+        steps,
+        cfg,
+        sampler_name,
+        scheduler,
+        positive,
+        negative,
+        latent_image,
+        denoise=1.0,
+    ):
+        import nodes as comfy_nodes
+
+        return comfy_nodes.common_ksampler(
+            model,
+            seed,
+            steps,
+            cfg,
+            sampler_name,
+            scheduler,
+            positive,
+            negative,
+            latent_image,
+            denoise=denoise,
+        )
+
+
 NODE_CLASS_MAPPINGS = {
     "Save_as_webp_cond": Save_as_webp_cond,
     "KCPP_PromptAmplify": KCPP_PromptAmplify,
@@ -4496,6 +4564,7 @@ NODE_CLASS_MAPPINGS = {
     "KCPP_Apply": KCPP_Apply,
     "KCPP_Ideogram4": KCPP_Ideogram4,
     "KCPP_PromptStudioModelLoader": KCPP_PromptStudioModelLoader,
+    "KCPP_PromptStudioSampler": KCPP_PromptStudioSampler,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
@@ -4508,4 +4577,5 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "KCPP_Apply": "KoboldCpp Apply",
     "KCPP_Ideogram4": "Ideogram4-KoboldCPP",
     "KCPP_PromptStudioModelLoader": "Prompt Studio Model Loader",
+    "KCPP_PromptStudioSampler": "Prompt Studio Sampler",
 }

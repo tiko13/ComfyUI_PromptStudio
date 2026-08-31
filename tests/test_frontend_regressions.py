@@ -88,6 +88,9 @@ class FrontendRegressionTests(unittest.TestCase):
             / "generation"
             / "workflow-template.js"
         ).read_text(encoding="utf-8")
+        cls.plot_model = (
+            REPO_ROOT / "web" / "js" / "prompt-studio" / "plot" / "model.js"
+        ).read_text(encoding="utf-8")
         cls.styles = (REPO_ROOT / "web" / "css" / "prompt_studio.css").read_text(encoding="utf-8")
 
     def function_source(self, name, next_name=None, source=None):
@@ -119,6 +122,7 @@ class FrontendRegressionTests(unittest.TestCase):
         self.assertIn('from "./prompt-studio/generation/workflow-profile.js"', self.source)
         self.assertIn('from "./prompt-studio/generation/workflow-template.js"', self.source)
         self.assertIn('from "./prompt-studio/generation/model-name.js"', self.source)
+        self.assertIn('from "./prompt-studio/plot/model.js"', self.source)
         self.assertIn("hasPendingStudioGenerations,", self.source)
         self.assertNotIn("from ", self.constants)
         self.assertNotIn("from ", self.state)
@@ -162,6 +166,84 @@ class FrontendRegressionTests(unittest.TestCase):
         self.assertIn('from "./workflow-profile.js"', self.workflow_template)
         self.assertNotIn("from ", self.model_name)
         self.assertNotIn("prompt_studio.js", self.model_name)
+        self.assertNotIn("prompt_studio.js", self.plot_model)
+        self.assertIn('from "../core/constants.js"', self.plot_model)
+
+    def test_xyz_plot_uses_explicit_targets_and_durable_recovery(self):
+        self.assertIn("export function snapshotForPlotCell", self.plot_model)
+        self.assertIn("export function orderPlotCellsForExecution", self.plot_model)
+        self.assertIn("model: 0", self.plot_model)
+        self.assertIn("lora: 1", self.plot_model)
+        self.assertIn("lora_strength: 1", self.plot_model)
+        self.assertIn("seed: 3", self.plot_model)
+        self.assertIn("SAMPLER_CONTROL_TYPE", self.plot_model)
+        self.assertIn("Two axes cannot control the same workflow field", self.plot_model)
+        self.assertIn("PLOT_MAX_CELLS = 512", self.plot_model)
+        self.assertIn("Start XY(Z) plot", self.source)
+        self.assertIn(".promptstudio-plot-z-toggle > input", self.styles)
+        self.assertIn("width: auto;", self.styles)
+        self.assertIn("await persistPlotRun(plot)", self.function_source("submitPlotCells", "watchPlotCell"))
+        self.assertIn(
+            "const cells = orderPlotCellsForExecution(",
+            self.function_source("submitPlotCells", "watchPlotCell"),
+        )
+        self.assertIn("resumePlotRun(data)", self.function_source("loadPlotRun", "persistPlotRun"))
+        self.assertIn("Retry failed", self.function_source("renderPlotRun", "renderPlotWorkspace"))
+
+    def test_xyz_plot_retains_comfy_queue_workflow_metadata_and_repairs_old_runs(self):
+        preparation = self.function_source("preparePlotBase", "startPlotRun")
+        submission = self.function_source("submitPlotCells", "watchPlotCell")
+        self.assertIn("workflowSnapshot: structuredClone(context.snapshot)", preparation)
+        self.assertNotIn("normalizeGenerationSnapshot(structuredClone(context.snapshot))", preparation)
+        self.assertIn("if (!plot.base?.workflowSnapshot?.workflow)", submission)
+        self.assertIn("plot.base.workflowSnapshot.workflow = structuredClone(context.snapshot.workflow)", submission)
+
+    def test_xyz_plot_identity_survives_chat_normalization_and_cross_tab_merges(self):
+        self.assertIn('chat?.sessionMode === "plot" || chat?.plotId', self.chat_model)
+        self.assertIn("const plotChat = localChat.plotId ? localChat : remoteChat.plotId", self.chat_store)
+        self.assertIn('return Boolean(chat && (chat.sessionMode === "plot" || chat.plotId))', self.source)
+
+    def test_xyz_plot_load_and_progress_refresh_the_history_sidebar(self):
+        load = self.function_source("loadPlotRun", "persistPlotRun")
+        persist = self.function_source("persistPlotRun", "artifactLink")
+        self.assertIn("state.plotRuns.set(id, data);\n    renderChatList();", load)
+        self.assertIn("state.plotRuns.set(id, current);\n    renderChatList();", persist)
+
+    def test_xyz_plot_history_uses_durable_summary_before_plot_is_opened(self):
+        self.assertIn("plotSummary:", self.chat_model)
+        self.assertIn("const summaries = [remoteChat.plotSummary, localChat.plotSummary]", self.chat_store)
+        sidebar = self.function_source("renderChatList", "historyShouldStickToEnd")
+        self.assertIn("plotProgressSummaryText(chat.plotSummary)", sidebar)
+        self.assertIn('"Plot · details unavailable"', sidebar)
+        summary = self.function_source("plotProgressSummaryText", "artifactLink")
+        self.assertIn("plotProgressCountsText(summary?.counts || {}, Number(summary?.total || 0))", summary)
+
+    def test_xyz_plot_llm_mode_exposes_prompt_axes_and_reuses_rendered_groups(self):
+        self.assertIn('{ id: "style_preset", label: "Style", kind: "llm_catalog"', self.plot_model)
+        self.assertIn('{ id: "framing_preset", label: "Framing", kind: "llm_catalog"', self.plot_model)
+        self.assertIn('{ id: "additional_instructions", label: "Additional instructions", kind: "text"', self.plot_model)
+        self.assertIn("export function plotControlOverridesForCell", self.plot_model)
+        self.assertIn("export function plotPromptGroupKey", self.plot_model)
+        self.assertIn('promptNode.inputs.prompt = String(cell.finalPrompt)', self.plot_model)
+        self.assertIn("Enable LLM mode", self.source)
+        preparation = self.function_source("prepareExistingPlot", "submitPlotCells")
+        self.assertIn("const groups = new Map()", preparation)
+        self.assertIn("plotPromptGroupKey(plot, cell)", preparation)
+        self.assertIn("plot.controlSettings = structuredClone(controlSettings)", preparation)
+        self.assertIn("plot.preparationProgress.completed += 1", preparation)
+        self.assertIn("reusableFinalPrompt", preparation)
+
+    def test_xyz_plot_inspector_hides_llm_controls_and_marks_axis_owned_controls(self):
+        inspector = self.function_source("syncPlotInspectorControls", "plotProfile")
+        self.assertIn("generation.hidden = plotMode && !llmMode", inspector)
+        self.assertIn("additional.hidden = plotMode && !llmMode", inspector)
+        self.assertIn("Applied to every plot generation", inspector)
+        self.assertIn("Passed unchanged to every plot generation", inspector)
+        self.assertIn("Set by ${axis.name.toUpperCase()} plot axis", self.source)
+        self.assertIn("label.insertBefore(note, control)", self.source)
+        self.assertIn('display: inline;\n  margin-left: 5px;', self.styles)
+        self.assertIn("These LoRAs apply to every plot generation", self.source)
+        self.assertIn("state.plotPreparationControllers.get(plotId)?.abort()", self.source)
 
     def test_relocated_brand_icons_resolve_from_the_nested_core_module(self):
         self.assertIn('new URL("../../../prompt-studio-icon.svg", import.meta.url)', self.constants)
@@ -548,6 +630,25 @@ class FrontendRegressionTests(unittest.TestCase):
         self.assertNotIn("message.updatedAt", activity)
         self.assertNotIn("chat.updatedAt", activity)
         self.assertNotIn("chat.consultAgent?.updatedAt", activity)
+
+    def test_chat_history_loads_twenty_sessions_then_fetches_older_pages_on_scroll(self):
+        loader = self.function_source("loadOlderChats", "loadChats", self.chat_store)
+        writer = self.function_source("writeChatStore", "persistChats", self.chat_store)
+        build = self.function_source("buildPanel", source=self.source)
+        chat_list = self.function_source("renderChatList", "scrollHistoryToEnd")
+
+        self.assertIn("const CHAT_PAGE_SIZE = 20;", self.chat_store)
+        self.assertIn("chatPageUrl({ includeActive: true })", self.chat_store)
+        self.assertIn("cursor: state.chatPageCursor", loader)
+        self.assertIn("state.chatPageLoading", loader)
+        self.assertIn("partial: true", writer)
+        self.assertIn("deletedChatIds", writer)
+        self.assertIn('chatList.addEventListener("scroll"', build)
+        self.assertIn("if (remaining <= 160) loadOlderChats();", build)
+        self.assertIn('loadOlder.textContent = state.chatPageLoading ? "Loading older sessions…" : "Load older sessions";', chat_list)
+        self.assertIn("chatPageCursor: null", self.state)
+        self.assertIn("chatDeletedIds: new Set()", self.state)
+        self.assertIn(".promptstudio-chat-load-older", self.styles)
 
     def test_background_prompt_agent_is_visible_and_owns_its_session(self):
         chat_list = self.function_source("renderChatList", "scrollHistoryToEnd")

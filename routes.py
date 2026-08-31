@@ -76,14 +76,25 @@ from .nodes import (
     _unload_ollama_model,
     _abort_llamacpp_generation,
 )
+from .plot_store import (
+    MAX_PLOT_BYTES,
+    PlotConflictError,
+    build_plot_artifacts,
+    plot_links_by_chat,
+    read_plot,
+    write_plot,
+)
 
 
 CHAT_STORE_PATH = os.path.join(BASE_DIR, "prompt_studio_chats.json")
 CHAT_STORE_DIR = os.path.join(BASE_DIR, "prompt_studio_chats")
 CHAT_STORE_LOCK = asyncio.Lock()
+CHAT_PAGE_DEFAULT = 20
+CHAT_PAGE_MAX = 100
 CONSULT_RETENTION_SECONDS = 7 * 24 * 60 * 60
 WORKFLOW_STORE_PATH = os.path.join(BASE_DIR, "prompt_studio_workflows.json")
 WORKFLOW_STORE_LOCK = asyncio.Lock()
+PLOT_STORE_LOCK = asyncio.Lock()
 MUTATION_CONFIG_LOCK = asyncio.Lock()
 MAX_WORKFLOW_STORE_BYTES = 100 * 1024 * 1024
 MAX_MUTATION_CONFIG_BYTES = 1024 * 1024
@@ -108,6 +119,7 @@ COMFYUI_UPDATE_PACKAGES = (
     "comfyui-frontend-package",
     "comfyui-workflow-templates",
     "comfy-kitchen",
+    "comfy-aimdo",
     "comfyui-embedded-docs",
 )
 COMFYUI_UPDATE_TIMEOUT_SECONDS = 15 * 60
@@ -3098,6 +3110,81 @@ def _normalized_chat_entries(chats):
     return entries
 
 
+def _chat_timestamp(value):
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return 0
+    return number if math.isfinite(number) else 0
+
+
+def _chat_activity_at(chat):
+    newest = _chat_timestamp(chat.get("createdAt")) if isinstance(chat, dict) else 0
+    if not isinstance(chat, dict):
+        return newest
+    for key in ("messages", "consultMessages"):
+        messages = chat.get(key)
+        if not isinstance(messages, list):
+            continue
+        for message in messages:
+            if not isinstance(message, dict) or message.get("role") not in ("user", "assistant"):
+                continue
+            newest = max(newest, _chat_timestamp(message.get("createdAt")))
+    return newest
+
+
+def _chat_sort_key(chat):
+    return (
+        -_chat_activity_at(chat),
+        -_chat_timestamp(chat.get("createdAt")) if isinstance(chat, dict) else 0,
+        _text(chat.get("id")).strip() if isinstance(chat, dict) else "",
+    )
+
+
+def _chat_store_page(data, offset=0, limit=CHAT_PAGE_DEFAULT, include_active=False, before=None):
+    if not isinstance(data, dict) or not isinstance(data.get("chats"), list):
+        raise ValueError("Chat store must contain a chats list")
+    if not isinstance(offset, int) or isinstance(offset, bool) or offset < 0:
+        raise ValueError("Chat page offset must be a non-negative integer")
+    if not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= CHAT_PAGE_MAX:
+        raise ValueError(f"Chat page limit must be between 1 and {CHAT_PAGE_MAX}")
+    ordered = sorted(data["chats"], key=_chat_sort_key)
+    candidates = ordered
+    if before is not None:
+        if (
+            not isinstance(before, (tuple, list))
+            or len(before) != 3
+            or not isinstance(before[2], str)
+        ):
+            raise ValueError("Chat page cursor is invalid")
+        cursor_key = (-_chat_timestamp(before[0]), -_chat_timestamp(before[1]), before[2])
+        candidates = [chat for chat in ordered if _chat_sort_key(chat) > cursor_key]
+        offset = 0
+    end = min(len(candidates), offset + limit)
+    page_chats = list(candidates[offset:end])
+    chats = list(page_chats)
+    active_chat_id = _text(data.get("activeChatId")).strip()
+    if include_active and offset == 0 and active_chat_id:
+        active_chat = next((chat for chat in ordered if _text(chat.get("id")).strip() == active_chat_id), None)
+        if active_chat is not None and all(_text(chat.get("id")).strip() != active_chat_id for chat in chats):
+            chats.append(active_chat)
+    return {
+        "version": 2,
+        "revision": _revision(data.get("revision")),
+        "activeChatId": data.get("activeChatId"),
+        "chats": chats,
+        "total": len(ordered),
+        "offset": offset,
+        "nextOffset": end,
+        "nextCursor": {
+            "activity": _chat_activity_at(page_chats[-1]),
+            "createdAt": _chat_timestamp(page_chats[-1].get("createdAt")),
+            "id": _text(page_chats[-1].get("id")).strip(),
+        } if page_chats else None,
+        "hasMore": end < len(candidates),
+    }
+
+
 def _read_chat_index():
     try:
         with open(_chat_index_path(), "r", encoding="utf-8") as file:
@@ -3207,6 +3294,34 @@ def _archive_legacy_chat_store():
         os.replace(legacy_backup, os.path.join(_chat_backups_dir(), "legacy_previous_store.bak"))
 
 
+def _relink_plot_chats(data):
+    if not isinstance(data, dict) or not isinstance(data.get("chats"), list):
+        return data, False
+    links = plot_links_by_chat()
+    changed = False
+    for chat in data["chats"]:
+        if not isinstance(chat, dict):
+            continue
+        link = links.get(_text(chat.get("id")).strip())
+        if not link:
+            continue
+        updates = {
+            "sessionMode": "plot",
+            "plotId": link["id"],
+            "plotSummary": link["summary"],
+            "initialized": True,
+        }
+        if not _text(chat.get("mainPrompt")).strip() and link["mainPrompt"]:
+            updates["mainPrompt"] = link["mainPrompt"]
+        if not _text(chat.get("finalPrompt")).strip() and link["finalPrompt"]:
+            updates["finalPrompt"] = link["finalPrompt"]
+            updates["currentPrompt"] = link["finalPrompt"]
+        if any(chat.get(key) != value for key, value in updates.items()):
+            chat.update(updates)
+            changed = True
+    return data, changed
+
+
 def _read_chat_store():
     index = _read_chat_index()
     if index is None:
@@ -3224,7 +3339,8 @@ def _read_chat_store():
     else:
         data = _read_split_chat_store(index)
     data, pruned, removed_images = _prune_consult_history(data)
-    if pruned:
+    data, plots_relinked = _relink_plot_chats(data)
+    if pruned or plots_relinked:
         data = {
             "version": 2,
             "revision": data["revision"] + 1,
@@ -3242,6 +3358,7 @@ def _write_chat_store(data, current_revision=None):
     if current_revision is None:
         current_revision = _revision(data.get("revision"))
     data, _pruned, removed_images = _prune_consult_history(data)
+    data, _plots_relinked = _relink_plot_chats(data)
     normalized = {
         "version": 2,
         "revision": current_revision + 1,
@@ -3253,12 +3370,37 @@ def _write_chat_store(data, current_revision=None):
     return saved
 
 
+def _merge_partial_chat_store(current, update):
+    if update.get("partial") is not True:
+        return update
+    deleted_chat_ids = update.get("deletedChatIds", [])
+    if not isinstance(deleted_chat_ids, list) or any(not isinstance(chat_id, str) for chat_id in deleted_chat_ids):
+        raise ValueError("deletedChatIds must be a list of chat ids")
+    deleted = {chat_id.strip() for chat_id in deleted_chat_ids if chat_id.strip()}
+    incoming_entries = _normalized_chat_entries(update["chats"])
+    incoming = {chat_id: chat for chat_id, chat, _filename in incoming_entries}
+    merged = []
+    for chat_id, chat, _filename in _normalized_chat_entries(current.get("chats", [])):
+        if chat_id in deleted:
+            continue
+        merged.append(incoming.pop(chat_id, chat))
+    merged.extend(incoming.values())
+    return {
+        "version": 2,
+        "revision": update.get("revision"),
+        "activeChatId": update.get("activeChatId"),
+        "chats": merged,
+    }
+
+
 def _update_chat_store(data):
     if not isinstance(data, dict) or not isinstance(data.get("chats"), list):
         raise ValueError("Chat store must contain a chats list")
     current = _read_chat_store()
-    data, _pruned, removed_images = _prune_consult_history(data)
     expected = _revision(data.get("revision"))
+    data = _merge_partial_chat_store(current, data)
+    data, _pruned, removed_images = _prune_consult_history(data)
+    data, _plots_relinked = _relink_plot_chats(data)
     actual = _revision(current.get("revision"))
     if (
         data.get("activeChatId") == current.get("activeChatId")
@@ -3372,6 +3514,30 @@ def _validate_workflow_templates(templates):
             if not isinstance(api_model_node, dict) or api_model_node.get("class_type") != "KCPP_PromptStudioModelLoader":
                 raise ValueError(f"Workflow cache entry {index + 1} model node has an incompatible class")
             model_node_ids.add(model_node_id)
+        sampling_nodes = template.get("samplingNodes", [])
+        if not isinstance(sampling_nodes, list):
+            raise ValueError(f"Workflow cache entry {index + 1} sampling nodes must be a list")
+        sampling_node_ids = set()
+        for sampling_node in sampling_nodes:
+            if not isinstance(sampling_node, dict):
+                raise ValueError(f"Workflow cache entry {index + 1} has an invalid sampling node")
+            sampling_node_id = _text(sampling_node.get("id")).strip()
+            if (
+                not sampling_node_id
+                or sampling_node_id in sampling_node_ids
+                or sampling_node_id not in output
+            ):
+                raise ValueError(f"Workflow cache entry {index + 1} has an invalid executable sampling node")
+            api_sampling_node = output[sampling_node_id]
+            if (
+                not isinstance(api_sampling_node, dict)
+                or api_sampling_node.get("class_type") != "KCPP_PromptStudioSampler"
+            ):
+                raise ValueError(f"Workflow cache entry {index + 1} sampling node has an incompatible class")
+            controls = sampling_node.get("controls", {})
+            if not isinstance(controls, dict):
+                raise ValueError(f"Workflow cache entry {index + 1} sampling controls must be an object")
+            sampling_node_ids.add(sampling_node_id)
         result_node_ids = template.get("resultNodeIds", [])
         if (
             not isinstance(result_node_ids, list)
@@ -5234,6 +5400,8 @@ async def prompt_studio_update_comfyui(request):
 
 @PromptServer.instance.routes.get("/promptstudio/prompt-studio/config")
 async def prompt_studio_config(request):
+    import comfy.samplers
+
     additional_instruction_templates = _load_additional_instruction_templates()
     style_templates = _load_style_templates()
     framing_templates = _load_framing_templates()
@@ -5273,6 +5441,8 @@ async def prompt_studio_config(request):
                 template["name"] for template in additional_instruction_templates
             ],
             "known_reference_names": [reference["name"] for reference in known_references],
+            "image_samplers": list(comfy.samplers.KSampler.SAMPLERS),
+            "image_schedulers": list(comfy.samplers.KSampler.SCHEDULERS),
             "thinking_modes": ["Disabled", "Minimal", "Low", "Medium", "High", "XHigh"],
             "embellishment_levels": [
                 "None",
@@ -5464,7 +5634,33 @@ async def prompt_studio_get_chats(request):
         requested_revision = request.query.get("revision")
         if requested_revision is not None and _revision(requested_revision) == data["revision"]:
             return web.Response(status=204, headers={"X-PromptStudio-Revision": str(data["revision"])})
+        requested_limit = request.query.get("limit")
+        if requested_limit is not None:
+            try:
+                limit = int(requested_limit)
+                offset = int(request.query.get("offset", "0"))
+            except (TypeError, ValueError) as exc:
+                raise ValueError("Chat page offset and limit must be integers") from exc
+            before = None
+            cursor_values = [
+                request.query.get("before_activity"),
+                request.query.get("before_created"),
+                request.query.get("before_id"),
+            ]
+            if any(value is not None for value in cursor_values):
+                if any(value is None for value in cursor_values):
+                    raise ValueError("Chat page cursor is incomplete")
+                before = cursor_values
+            data = _chat_store_page(
+                data,
+                offset=offset,
+                limit=limit,
+                include_active=request.query.get("include_active") == "1",
+                before=before,
+            )
         return web.json_response(data)
+    except ValueError as exc:
+        return web.json_response({"error": str(exc)}, status=400)
     except Exception as exc:
         return web.json_response({"error": str(exc)}, status=500)
 
@@ -5519,6 +5715,57 @@ async def prompt_studio_save_workflows(request):
     except StoreConflictError as exc:
         return web.json_response({"error": str(exc)}, status=409)
     except (ValueError, json.JSONDecodeError) as exc:
+        return web.json_response({"error": str(exc)}, status=400)
+    except Exception as exc:
+        return web.json_response({"error": str(exc)}, status=500)
+
+
+@PromptServer.instance.routes.get("/promptstudio/prompt-studio/plots/{plot_id}")
+async def prompt_studio_get_plot(request):
+    try:
+        async with PLOT_STORE_LOCK:
+            plot = await asyncio.to_thread(read_plot, request.match_info.get("plot_id", ""))
+        if plot is None:
+            return web.json_response({"error": "Plot was not found"}, status=404)
+        return web.json_response(plot)
+    except ValueError as exc:
+        return web.json_response({"error": str(exc)}, status=400)
+    except Exception as exc:
+        return web.json_response({"error": str(exc)}, status=500)
+
+
+@PromptServer.instance.routes.put("/promptstudio/prompt-studio/plots/{plot_id}")
+async def prompt_studio_save_plot(request):
+    try:
+        if request.content_length is not None and request.content_length > MAX_PLOT_BYTES:
+            raise ValueError("Prompt Studio plot request exceeds the 32 MB limit")
+        plot = await request.json()
+        if not isinstance(plot, dict):
+            raise ValueError("Plot request must be an object")
+        if str(plot.get("id") or "") != str(request.match_info.get("plot_id") or ""):
+            raise ValueError("Plot id does not match the requested resource")
+        async with PLOT_STORE_LOCK:
+            saved = await asyncio.to_thread(write_plot, plot)
+        return web.json_response(saved)
+    except PlotConflictError as exc:
+        return web.json_response({"error": str(exc)}, status=409)
+    except (ValueError, json.JSONDecodeError) as exc:
+        return web.json_response({"error": str(exc)}, status=400)
+    except Exception as exc:
+        return web.json_response({"error": str(exc)}, status=500)
+
+
+@PromptServer.instance.routes.post("/promptstudio/prompt-studio/plots/{plot_id}/composite")
+async def prompt_studio_plot_composite(request):
+    try:
+        async with PLOT_STORE_LOCK:
+            saved = await asyncio.to_thread(build_plot_artifacts, request.match_info.get("plot_id", ""))
+        return web.json_response(saved)
+    except FileNotFoundError as exc:
+        return web.json_response({"error": str(exc)}, status=404)
+    except PlotConflictError as exc:
+        return web.json_response({"error": str(exc)}, status=409)
+    except ValueError as exc:
         return web.json_response({"error": str(exc)}, status=400)
     except Exception as exc:
         return web.json_response({"error": str(exc)}, status=500)

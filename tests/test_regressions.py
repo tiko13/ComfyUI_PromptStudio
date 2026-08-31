@@ -1320,6 +1320,7 @@ class RegressionTests(unittest.TestCase):
         pip_command = run.call_args_list[3].args[0]
         self.assertEqual(pip_command[:4], [sys.executable, "-m", "pip", "install"])
         self.assertIn("--upgrade", pip_command)
+        self.assertIn("comfy-aimdo", pip_command)
         for package in self.routes.COMFYUI_UPDATE_PACKAGES:
             self.assertIn(package, pip_command)
 
@@ -4332,6 +4333,64 @@ class RegressionTests(unittest.TestCase):
             index = json.loads((Path(chat_dir) / "index.json").read_text(encoding="utf-8"))
             self.assertEqual(index["revision"], 1)
 
+    def test_chat_store_pages_newest_sessions_and_keeps_an_older_active_chat_visible(self):
+        chats = [
+            {
+                "id": f"chat-{index:02d}",
+                "createdAt": index,
+                "messages": [{"role": "user", "createdAt": index}],
+            }
+            for index in range(45)
+        ]
+        chats[3]["messages"].append({"role": "status", "createdAt": 10_000})
+        store = {"revision": 7, "activeChatId": "chat-00", "chats": chats}
+
+        first = self.routes._chat_store_page(store, limit=20, include_active=True)
+        self.assertEqual([chat["id"] for chat in first["chats"][:20]], [
+            f"chat-{index:02d}" for index in range(44, 24, -1)
+        ])
+        self.assertEqual(first["chats"][-1]["id"], "chat-00")
+        self.assertEqual(first["total"], 45)
+        self.assertTrue(first["hasMore"])
+
+        cursor = first["nextCursor"]
+        second = self.routes._chat_store_page(
+            store,
+            limit=20,
+            before=(cursor["activity"], cursor["createdAt"], cursor["id"]),
+        )
+        self.assertEqual([chat["id"] for chat in second["chats"]], [
+            f"chat-{index:02d}" for index in range(24, 4, -1)
+        ])
+
+    def test_partial_chat_store_update_preserves_unloaded_chats_and_applies_deletions(self):
+        chat_path = str(Path(self.temp.name) / "chats.json")
+        chat_dir = str(Path(self.temp.name) / "chats")
+        chats = [
+            {"id": "chat-1", "messages": []},
+            {"id": "chat-2", "messages": []},
+            {"id": "chat-3", "messages": []},
+        ]
+        with (
+            mock.patch.object(self.routes, "CHAT_STORE_PATH", chat_path),
+            mock.patch.object(self.routes, "CHAT_STORE_DIR", chat_dir),
+        ):
+            first = self.routes._update_chat_store({
+                "revision": 0,
+                "activeChatId": "chat-2",
+                "chats": chats,
+            })
+            updated = self.routes._update_chat_store({
+                "revision": first["revision"],
+                "activeChatId": "chat-2",
+                "partial": True,
+                "deletedChatIds": ["chat-1"],
+                "chats": [{"id": "chat-2", "messages": [{"id": "new"}]}],
+            })
+
+        self.assertEqual([chat["id"] for chat in updated["chats"]], ["chat-2", "chat-3"])
+        self.assertEqual(updated["chats"][0]["messages"], [{"id": "new"}])
+
     def test_chat_store_prunes_a_stale_noop_before_comparing_revisions(self):
         chat_path = str(Path(self.temp.name) / "chats.json")
         chat_dir = str(Path(self.temp.name) / "chats")
@@ -4737,6 +4796,151 @@ class RegressionTests(unittest.TestCase):
         with mock.patch.object(self.routes, "WORKFLOW_STORE_PATH", str(workflow_path)):
             loaded = self.routes._read_workflow_store()
         self.assertEqual(loaded, {"version": 3, "revision": 7, "templates": []})
+
+
+class PlotRegressionTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.nodes, self.routes = load_modules(self.temp.name)
+        self.plot_store = sys.modules["ComfyUI_PromptStudio.plot_store"]
+        self.plot_store.PLOT_STORE_DIR = str(Path(self.temp.name) / "plots")
+        self.plot_store.PLOT_BACKUP_DIR = str(Path(self.temp.name) / "plots" / "_backups")
+        self.plot_store.folder_paths.get_output_directory = lambda: self.temp.name
+        self.routes.CHAT_STORE_DIR = str(Path(self.temp.name) / "chats")
+        self.routes.CHAT_STORE_PATH = str(Path(self.temp.name) / "legacy-chats.json")
+
+    def tearDown(self):
+        self.temp.cleanup()
+
+    def sample_plot(self):
+        image_path = Path(self.temp.name) / "cell.png"
+        Image.new("RGB", (64, 48), "#c86432").save(image_path)
+        created = 1_700_000_000_000
+        return {
+            "version": 1,
+            "revision": 0,
+            "id": "plot-test",
+            "chatId": "chat-test",
+            "title": "Seed x sampler",
+            "status": "complete",
+            "createdAt": created,
+            "updatedAt": created,
+            "axes": [
+                {
+                    "id": "x", "name": "x", "type": "seed", "label": "Seed",
+                    "targetKey": "sampling:7:seed", "targetNodeId": "7",
+                    "values": [{"id": "x1", "label": "1", "value": 1}],
+                },
+                {
+                    "id": "y", "name": "y", "type": "sampler", "label": "Sampler",
+                    "targetKey": "sampling:7:sampler_name", "targetNodeId": "7",
+                    "values": [{"id": "y1", "label": "euler", "value": "euler"}],
+                },
+            ],
+            "base": {
+                "workflowSnapshot": {"output": {}},
+                "finalPrompt": "A durable plot test",
+                "resultNodeIds": ["9"],
+                "resultFields": ["images"],
+            },
+            "cells": [{
+                "id": "cell-1", "coordinate": [0, 0], "status": "complete",
+                "promptId": "prompt-1", "images": [{
+                    "filename": image_path.name, "subfolder": "", "type": "output",
+                }],
+                "error": "", "attempts": 1, "createdAt": created, "updatedAt": created,
+            }],
+            "artifacts": {"composites": [], "overview": None, "manifest": None},
+        }
+
+    def test_sampler_node_exposes_explicit_standard_controls(self):
+        comfy = types.ModuleType("comfy")
+        samplers = types.ModuleType("comfy.samplers")
+        samplers.KSampler = types.SimpleNamespace(
+            SAMPLERS=["euler", "dpmpp_2m"],
+            SCHEDULERS=["normal", "karras"],
+        )
+        comfy.samplers = samplers
+        sys.modules["comfy"] = comfy
+        sys.modules["comfy.samplers"] = samplers
+        inputs = self.nodes.KCPP_PromptStudioSampler.INPUT_TYPES()["required"]
+        self.assertEqual(inputs["sampler_name"], (["euler", "dpmpp_2m"],))
+        self.assertEqual(inputs["scheduler"], (["normal", "karras"],))
+        self.assertIn("seed", inputs)
+        self.assertIs(
+            self.nodes.NODE_CLASS_MAPPINGS["KCPP_PromptStudioSampler"],
+            self.nodes.KCPP_PromptStudioSampler,
+        )
+
+    def test_plot_manifest_is_revisioned_and_builds_a_labeled_composite(self):
+        first = self.plot_store.write_plot(self.sample_plot())
+        self.assertEqual(first["revision"], 1)
+        loaded = self.plot_store.read_plot("plot-test")
+        self.assertEqual(loaded["cells"][0]["promptId"], "prompt-1")
+        with self.assertRaises(self.plot_store.PlotConflictError):
+            self.plot_store.write_plot(self.sample_plot(), expected_revision=0)
+        rendered = self.plot_store.build_plot_artifacts("plot-test")
+        self.assertEqual(rendered["revision"], 2)
+        self.assertEqual(len(rendered["artifacts"]["composites"]), 1)
+        composite = rendered["artifacts"]["composites"][0]
+        composite_path = Path(self.temp.name) / composite["subfolder"] / composite["filename"]
+        self.assertTrue(composite_path.is_file())
+        with Image.open(composite_path) as image:
+            self.assertGreater(image.width, 64)
+            self.assertGreater(image.height, 48)
+
+    def test_durable_plot_relinks_a_chat_overwritten_by_a_stale_normal_view(self):
+        plot = self.plot_store.write_plot(self.sample_plot())
+        store = self.routes._write_chat_store({
+            "revision": 0,
+            "activeChatId": "chat-test",
+            "chats": [{
+                "id": "chat-test",
+                "sessionMode": "chat",
+                "plotId": "",
+                "initialized": False,
+                "messages": [],
+                "createdAt": 1,
+                "updatedAt": 2,
+            }],
+        }, 0)
+        chat = store["chats"][0]
+        self.assertEqual(chat["sessionMode"], "plot")
+        self.assertEqual(chat["plotId"], plot["id"])
+        self.assertTrue(chat["initialized"])
+        self.assertEqual(chat["finalPrompt"], "A durable plot test")
+        self.assertEqual(chat["plotSummary"]["total"], 1)
+        self.assertEqual(chat["plotSummary"]["counts"], {"complete": 1})
+
+        stored = self.routes._read_chat_store()
+        self.assertEqual(stored["chats"][0]["plotId"], plot["id"])
+
+    def test_plot_validation_rejects_duplicate_targets(self):
+        plot = self.sample_plot()
+        plot["axes"][1]["targetKey"] = plot["axes"][0]["targetKey"]
+        with self.assertRaisesRegex(ValueError, "same injection target"):
+            self.plot_store.validate_plot(plot)
+
+    def test_z_plot_builds_one_composite_per_slice_and_an_overview(self):
+        plot = self.sample_plot()
+        plot["id"] = "plot-z-test"
+        plot["axes"].append({
+            "id": "z", "name": "z", "type": "scheduler", "label": "Scheduler",
+            "targetKey": "sampling:7:scheduler", "targetNodeId": "7",
+            "values": [
+                {"id": "z1", "label": "normal", "value": "normal"},
+                {"id": "z2", "label": "karras", "value": "karras"},
+            ],
+        })
+        original = plot["cells"][0]
+        plot["cells"] = [
+            {**original, "id": "cell-z1", "coordinate": [0, 0, 0]},
+            {**original, "id": "cell-z2", "coordinate": [0, 0, 1]},
+        ]
+        self.plot_store.write_plot(plot)
+        rendered = self.plot_store.build_plot_artifacts(plot["id"])
+        self.assertEqual(len(rendered["artifacts"]["composites"]), 2)
+        self.assertIsNotNone(rendered["artifacts"]["overview"])
 
 
 if __name__ == "__main__":

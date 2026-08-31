@@ -3,6 +3,7 @@ import {
   IMAGE_SOURCE_TYPE,
   LORA_LOADER_TYPE,
   MODEL_LOADER_TYPE,
+  SAMPLER_CONTROL_TYPE,
   SLOT_TYPE,
   UPSCALE_TYPE,
 } from "../core/constants.js";
@@ -103,6 +104,20 @@ export function createWorkflowTemplateBuilder({ app, nodeClassName }) {
         modelType: String(node.inputs?.model_type || "").trim(),
         modelName: cleanModelName(node.inputs?.unet_name),
       }));
+    const samplingNodes = Object.entries(output)
+      .filter(([, node]) => node?.class_type === SAMPLER_CONTROL_TYPE)
+      .map(([id, node]) => ({
+        id: String(id),
+        label: String((graph.getNodeById?.(Number(id)) || graph.getNodeById?.(id))?.title || `Sampler ${id}`).trim(),
+        controls: {
+          seed: Number(node.inputs?.seed ?? 0),
+          steps: Number(node.inputs?.steps ?? 20),
+          cfg: Number(node.inputs?.cfg ?? 8),
+          sampler: String(node.inputs?.sampler_name || ""),
+          scheduler: String(node.inputs?.scheduler || ""),
+          denoise: Number(node.inputs?.denoise ?? 1),
+        },
+      }));
     const imageOutputs = (graph._nodes || []).filter((node) => (
       Object.hasOwn(output, String(node.id)) && imageOutputNode(node)
     ));
@@ -120,6 +135,7 @@ export function createWorkflowTemplateBuilder({ app, nodeClassName }) {
       upscaleNodeId: upscaleWorkflow ? String(upscaleNode.id) : "",
       loraNodes,
       modelNodes,
+      samplingNodes,
       resultNodeIds: [String(imageOutputs[0].id)],
       snapshot,
       updatedAt: Date.now(),

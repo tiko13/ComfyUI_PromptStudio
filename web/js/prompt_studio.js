@@ -91,6 +91,20 @@ import {
   workflowNameFromPath,
 } from "./prompt-studio/generation/workflow-profile.js";
 import { createWorkflowTemplateBuilder } from "./prompt-studio/generation/workflow-template.js";
+import {
+  PLOT_AXIS_TYPES,
+  buildPlotRun,
+  isLlmPlotAxisType,
+  normalizePlotDraft,
+  orderPlotCellsForExecution,
+  plotAxisTargets,
+  plotAxisType,
+  plotCellLabel,
+  plotControlOverridesForCell,
+  plotPromptGroupKey,
+  snapshotForPlotCell,
+  validatePlotDraft,
+} from "./prompt-studio/plot/model.js";
 import { normalizeImageReference } from "./prompt-studio/chat/image-reference.js";
 import { createChatModel } from "./prompt-studio/chat/model.js";
 import { createChatStoreController } from "./prompt-studio/chat/store-controller.js";
@@ -159,6 +173,7 @@ const {
 });
 const {
   loadChats,
+  loadOlderChats,
   saveChats,
   setupChatSync,
 } = createChatStoreController({
@@ -301,21 +316,27 @@ function renderLlmThinkingModeOptions(requestedMode = null) {
   }
 }
 
-function llmProfileGenerationSettings() {
-  const profile = selectedLlmProfile();
+function llmProfileGenerationSettings(thinkingModeOverride = null, profileOverride = null) {
+  const profile = profileOverride || selectedLlmProfile();
   const thinkingMode = selectedLlmThinkingMode();
+  const requestedMode = String(thinkingModeOverride || "").trim();
+  const effectiveThinkingMode = profile.thinking_modes.find((mode) => mode.toLowerCase() === requestedMode.toLowerCase())
+    || thinkingMode;
   const thinkingEnabled = thinkingModeEnablesReasoning(thinkingMode);
+  const effectiveThinkingEnabled = effectiveThinkingMode === thinkingMode
+    ? thinkingEnabled
+    : thinkingModeEnablesReasoning(effectiveThinkingMode);
   return {
-    thinking_mode: thinkingMode,
+    thinking_mode: effectiveThinkingMode,
     max_response_tokens: profile.max_response_tokens,
     llamacpp_reasoning_budget_tokens: profile.llamacpp_reasoning_budget_tokens,
-    temperature: thinkingEnabled ? profile.thinking_temperature : profile.temperature,
-    top_p: thinkingEnabled ? profile.thinking_top_p : profile.top_p,
-    top_k: thinkingEnabled ? profile.thinking_top_k : profile.top_k,
-    min_p: thinkingEnabled ? profile.thinking_min_p : profile.min_p,
-    presence_penalty: thinkingEnabled ? profile.thinking_presence_penalty : profile.presence_penalty,
-    rep_pen: thinkingEnabled ? profile.thinking_rep_pen : profile.rep_pen,
-    rep_pen_range: thinkingEnabled ? profile.thinking_rep_pen_range : profile.rep_pen_range,
+    temperature: effectiveThinkingEnabled ? profile.thinking_temperature : profile.temperature,
+    top_p: effectiveThinkingEnabled ? profile.thinking_top_p : profile.top_p,
+    top_k: effectiveThinkingEnabled ? profile.thinking_top_k : profile.top_k,
+    min_p: effectiveThinkingEnabled ? profile.thinking_min_p : profile.min_p,
+    presence_penalty: effectiveThinkingEnabled ? profile.thinking_presence_penalty : profile.presence_penalty,
+    rep_pen: effectiveThinkingEnabled ? profile.thinking_rep_pen : profile.rep_pen,
+    rep_pen_range: effectiveThinkingEnabled ? profile.thinking_rep_pen_range : profile.rep_pen_range,
     sampler_seed: profile.sampler_seed,
     request_timeout: profile.request_timeout,
     stop_sequence: profile.stop_sequence,
@@ -2225,6 +2246,7 @@ function compareChatsNewestFirst(left, right) {
 function renderChatList() {
   const list = state.panel?.querySelector("#promptstudio-chat-list");
   if (!list) return;
+  const previousScrollTop = list.scrollTop;
   list.replaceChildren();
   const ordered = [...state.chats].sort(compareChatsNewestFirst);
   for (const chat of ordered) {
@@ -2239,6 +2261,8 @@ function renderChatList() {
     const preparationCount = [...state.studioPreparations.values()]
       .filter((preparation) => preparation.chatId === chat.id).length;
     const consultationPending = Boolean(chat.consultPendingJob);
+    const plot = chat.plotId ? state.plotRuns.get(chat.plotId) : null;
+    const plotPending = Boolean(plot?.cells?.some((cell) => ["pending", "submitting", "queued", "generating"].includes(cell.status)));
     const row = document.createElement("div");
     row.className = "promptstudio-chat-row";
     row.dataset.active = chat.id === state.activeChatId ? "true" : "false";
@@ -2251,7 +2275,15 @@ function renderChatList() {
     title.textContent = chatTitle(chat.createdAt);
     const date = document.createElement("span");
     date.className = "promptstudio-chat-date";
-    date.textContent = `${chat.messages.length} message${chat.messages.length === 1 ? "" : "s"}`
+    date.textContent = isPlotChat(chat)
+      ? (plot
+        ? `Plot · ${plotProgressText(plot)}`
+        : (chat.plotSummary
+          ? `Plot · ${plotProgressSummaryText(chat.plotSummary)}`
+          : (chat.plotId
+            ? (state.plotLoads.has(chat.plotId) ? "Plot · loading" : "Plot · details unavailable")
+            : "New XY(Z) plot")))
+      : `${chat.messages.length} message${chat.messages.length === 1 ? "" : "s"}`
       + (preparationCount ? ` · ${preparationCount} preparing` : "")
       + (generationCount ? ` · ${generationCount} in queue` : "")
       + (agent ? ` · Agent: ${promptAgentStatusLabel(agent)}` : "");
@@ -2261,9 +2293,9 @@ function renderChatList() {
     remove.type = "button";
     remove.className = "promptstudio-chat-delete";
     remove.dataset.disableBusy = "";
-    remove.disabled = state.busy || preparationCount > 0 || generationCount > 0 || operationCount > 0 || consultationPending || agent?.active;
+    remove.disabled = state.busy || preparationCount > 0 || generationCount > 0 || operationCount > 0 || consultationPending || agent?.active || plotPending;
     remove.textContent = "Delete";
-    remove.title = preparationCount || generationCount || operationCount || consultationPending || agent?.active
+    remove.title = preparationCount || generationCount || operationCount || consultationPending || agent?.active || plotPending
       ? "Wait for this chat's pending Studio or Prompt Agent work to finish before deleting it."
       : `Delete chat from ${chatTitle(chat.createdAt)}`;
     remove.setAttribute("aria-label", remove.title);
@@ -2271,6 +2303,16 @@ function renderChatList() {
     row.append(button, remove);
     list.appendChild(row);
   }
+  if (state.chatPageLoading || state.chatHasMore) {
+    const loadOlder = document.createElement("button");
+    loadOlder.type = "button";
+    loadOlder.className = "promptstudio-chat-load-older";
+    loadOlder.disabled = state.chatPageLoading;
+    loadOlder.textContent = state.chatPageLoading ? "Loading older sessions…" : "Load older sessions";
+    loadOlder.addEventListener("click", loadOlderChats);
+    list.appendChild(loadOlder);
+  }
+  list.scrollTop = previousScrollTop;
 }
 
 function scrollElementToEnd(history, { instant = false, revisionKey = "historyScrollRevision" } = {}) {
@@ -2347,6 +2389,1275 @@ function setImageDropFeedback(text, kind = "") {
   feedback.dataset.kind = kind;
 }
 
+function isPlotChat(chat = activeChat()) {
+  return Boolean(chat && (chat.sessionMode === "plot" || chat.plotId));
+}
+
+const PLOT_LLM_CONTROL_IDS = Object.freeze({
+  model_profile: "promptstudio-profile",
+  style_preset: "promptstudio-style",
+  framing_preset: "promptstudio-framing",
+  style_modifier: "promptstudio-style-modifier",
+  framing_modifier: "promptstudio-framing-modifier",
+  embellishment_level: "promptstudio-embellishment",
+  thinking_mode: "promptstudio-thinking",
+  target_output_length: "promptstudio-output-length",
+  additional_instructions: "promptstudio-additional-instructions",
+});
+
+function activePlotDefinition(chat = activeChat()) {
+  if (!isPlotChat(chat)) return null;
+  return (chat.plotId && state.plotRuns.get(chat.plotId)) || chat.plotDraft || null;
+}
+
+function activePlotAxes(chat = activeChat()) {
+  const plot = activePlotDefinition(chat);
+  const axes = Array.isArray(plot?.axes) ? plot.axes : [];
+  const count = Object.hasOwn(plot || {}, "zEnabled") ? (plot.zEnabled ? 3 : 2) : Math.min(3, axes.length);
+  return axes.slice(0, count);
+}
+
+function activePlotAxisForTarget(targetKey, chat = activeChat()) {
+  return activePlotAxes(chat).find((axis) => axis.targetKey === targetKey) || null;
+}
+
+function setPlotAxisOverride(control, axis) {
+  if (!control) return;
+  const label = control.closest("label");
+  label?.querySelector('[data-promptstudio-plot-axis-note="true"]')?.remove();
+  label?.classList.remove("promptstudio-plot-axis-controlled");
+  if (!axis) {
+    if (Object.hasOwn(control.dataset, "promptstudioPlotWasDisabled")) {
+      control.disabled = control.dataset.promptstudioPlotWasDisabled === "true";
+      delete control.dataset.promptstudioPlotWasDisabled;
+    }
+    delete control.dataset.promptstudioPlotAxis;
+    return;
+  }
+  if (!Object.hasOwn(control.dataset, "promptstudioPlotWasDisabled")) {
+    control.dataset.promptstudioPlotWasDisabled = String(control.disabled);
+  }
+  control.disabled = true;
+  control.dataset.promptstudioPlotAxis = axis.name;
+  label?.classList.add("promptstudio-plot-axis-controlled");
+  if (label) {
+    const note = document.createElement("small");
+    note.dataset.promptstudioPlotAxisNote = "true";
+    note.textContent = `Set by ${axis.name.toUpperCase()} plot axis`;
+    label.insertBefore(note, control);
+  }
+}
+
+function syncPlotInspectorControls() {
+  const panel = state.panel;
+  if (!panel) return;
+  const chat = activeChat();
+  const plotMode = isPlotChat(chat);
+  const definition = activePlotDefinition(chat);
+  const llmMode = plotMode && definition?.llmEnabled === true;
+  panel.dataset.plotMode = plotMode ? "true" : "false";
+  panel.dataset.plotLlmMode = llmMode ? "true" : "false";
+  for (const id of ["promptstudio-main-prompt-details", "promptstudio-final-prompt-details"]) {
+    const details = panel.querySelector(`#${id}`);
+    if (details) details.hidden = plotMode;
+  }
+  const llmToggle = panel.querySelector("#promptstudio-llm-mode-control");
+  if (llmToggle) llmToggle.hidden = plotMode;
+  const generation = panel.querySelector("#promptstudio-generation-controls");
+  if (generation) generation.hidden = plotMode && !llmMode;
+  const additional = panel.querySelector("#promptstudio-additional-details");
+  if (additional) additional.hidden = plotMode && !llmMode;
+  const generationSummary = panel.querySelector("#promptstudio-generation-controls-summary");
+  if (generationSummary) {
+    generationSummary.textContent = llmMode
+      ? "Global values; axis-controlled values are locked"
+      : "Model, style and prompt shaping";
+  }
+  const resolutionSummary = panel.querySelector("#promptstudio-resolution-summary");
+  if (resolutionSummary) {
+    resolutionSummary.textContent = plotMode ? "Applied to every plot generation" : "Create size; Edit preserves source";
+  }
+  const secondarySummary = panel.querySelector("#promptstudio-secondary-summary");
+  if (secondarySummary) {
+    secondarySummary.textContent = plotMode ? "Passed unchanged to every plot generation" : "Text passed through unchanged";
+  }
+  for (const [key, id] of Object.entries(PLOT_LLM_CONTROL_IDS)) {
+    const axis = llmMode ? activePlotAxisForTarget(`llm:${key}`, chat) : null;
+    setPlotAxisOverride(panel.querySelector(`#${id}`), axis);
+  }
+}
+
+function plotProfile(draft = activeChat()?.plotDraft) {
+  const requested = workflowProfileById(draft?.workflowProfileId);
+  if (requested?.kind === "create" && requested.promptNodeId) return requested;
+  return state.workflowProfiles.find((profile) => profile.kind === "create" && profile.promptNodeId) || null;
+}
+
+function updatePlotChat(mutator, { render = true } = {}) {
+  const chat = activeChat();
+  if (!isPlotChat(chat)) return;
+  const profile = plotProfile(chat.plotDraft);
+  chat.plotDraft = normalizePlotDraft(chat.plotDraft, profile);
+  mutator(chat.plotDraft, chat);
+  chat.plotDraft = normalizePlotDraft(chat.plotDraft, plotProfile(chat.plotDraft));
+  chat.updatedAt = Date.now();
+  saveChats();
+  renderChatList();
+  syncPlotInspectorControls();
+  if (render) {
+    refreshModelSection();
+    refreshLoraSection();
+    renderPlotWorkspace();
+  }
+}
+
+function startPlotSession() {
+  const chat = activeChat();
+  if (!chat || chat.initialized || chat.messages.length) return;
+  const profile = plotProfile(null);
+  chat.sessionMode = "plot";
+  chat.plotId = "";
+  chat.plotDraft = normalizePlotDraft({
+    prompt: state.currentPrompt || state.mainPrompt || "",
+    workflowProfileId: profile?.id || "",
+  }, profile);
+  saveChats();
+  renderChatList();
+  syncPlotInspectorControls();
+  renderChatHistory({ forceEnd: true });
+}
+
+function leavePlotSession() {
+  const chat = activeChat();
+  if (!isPlotChat(chat) || chat.plotId) return;
+  chat.sessionMode = "chat";
+  chat.plotDraft = null;
+  saveChats();
+  renderChatList();
+  syncPlotInspectorControls();
+  renderChatHistory({ forceEnd: true });
+}
+
+function plotButton(label, onClick, className = "") {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.textContent = label;
+  if (className) button.className = className;
+  button.addEventListener("click", onClick);
+  return button;
+}
+
+function plotField(label, control, className = "") {
+  const field = document.createElement("label");
+  field.className = `promptstudio-plot-field ${className}`.trim();
+  const caption = document.createElement("span");
+  caption.textContent = label;
+  field.append(caption, control);
+  return field;
+}
+
+function plotWorkflowOptions(select, selectedId) {
+  const profiles = state.workflowProfiles.filter((profile) => profile.kind === "create" && profile.promptNodeId);
+  for (const profile of profiles) {
+    const option = new Option(profile.name, profile.id, false, profile.id === selectedId);
+    select.appendChild(option);
+  }
+  if (!profiles.length) select.appendChild(new Option("No [PS] creation workflow", ""));
+}
+
+async function plotCatalogForAxis(axis, profile) {
+  const target = plotAxisTargets(profile, axis.type).find((item) => item.key === axis.targetKey);
+  if (axis.type === "model") return loadModelCatalog(target?.catalogType);
+  if (["lora", "lora_strength"].includes(axis.type)) return loadLoraCatalog(target?.catalogType);
+  if (axis.type === "sampler") {
+    return (state.config?.image_samplers || []).map((value) => ({ name: value, label: value }));
+  }
+  if (axis.type === "scheduler") {
+    return (state.config?.image_schedulers || []).map((value) => ({ name: value, label: value }));
+  }
+  const llmValues = {
+    model_profile: state.config?.profiles,
+    style_preset: state.config?.styles,
+    framing_preset: state.config?.framings,
+    embellishment_level: state.config?.embellishment_levels,
+    thinking_mode: selectedLlmProfile()?.thinking_modes,
+  }[axis.type];
+  if (Array.isArray(llmValues)) {
+    return llmValues.map((value) => ({ name: String(value), label: String(value) }));
+  }
+  return [];
+}
+
+function addPlotAxisValues(axisIndex, entries) {
+  updatePlotChat((draft) => {
+    const axis = draft.axes[axisIndex];
+    const existing = new Set(axis.values.map((item) => JSON.stringify(item.value)));
+    for (const entry of entries) {
+      if (!entry || existing.has(JSON.stringify(entry.value))) continue;
+      axis.values.push({ id: makeId(), label: String(entry.label), value: entry.value });
+      existing.add(JSON.stringify(entry.value));
+    }
+  });
+}
+
+function renderPlotAxisValues(container, axis, axisIndex) {
+  container.replaceChildren();
+  for (const [valueIndex, value] of axis.values.entries()) {
+    const chip = document.createElement("span");
+    chip.className = "promptstudio-plot-chip";
+    chip.title = String(value.label);
+    const text = document.createElement("span");
+    text.textContent = value.label;
+    const remove = plotButton("×", () => updatePlotChat((draft) => {
+      draft.axes[axisIndex].values.splice(valueIndex, 1);
+    }));
+    remove.title = `Remove ${value.label}`;
+    remove.setAttribute("aria-label", remove.title);
+    chip.append(text, remove);
+    container.appendChild(chip);
+  }
+  if (!axis.values.length) {
+    const empty = document.createElement("small");
+    empty.className = "promptstudio-plot-axis-empty";
+    empty.textContent = "Add at least one value.";
+    container.appendChild(empty);
+  }
+}
+
+async function populatePlotCatalogControls(select, add, addAll, axis, profile, axisIndex) {
+  try {
+    const catalog = await plotCatalogForAxis(axis, profile);
+    if (!select.isConnected) return;
+    select.replaceChildren();
+    for (const item of catalog) select.appendChild(new Option(item.label, item.name));
+    if (!catalog.length) select.appendChild(new Option("No values available", ""));
+    select.disabled = !catalog.length;
+    add.disabled = !catalog.length;
+    addAll.disabled = !catalog.length;
+    add.onclick = () => {
+      const item = catalog.find((entry) => entry.name === select.value);
+      if (!item) return;
+      const value = axis.type === "lora" ? { name: item.name, strength: 1 } : item.name;
+      addPlotAxisValues(axisIndex, [{ label: item.label, value }]);
+    };
+    addAll.onclick = () => addPlotAxisValues(axisIndex, catalog.map((item) => ({
+      label: item.label,
+      value: axis.type === "lora" ? { name: item.name, strength: 1 } : item.name,
+    })));
+  } catch (error) {
+    if (!select.isConnected) return;
+    select.replaceChildren(new Option(error.message || "Values unavailable", ""));
+    select.disabled = true;
+    add.disabled = true;
+    addAll.disabled = true;
+  }
+}
+
+function renderPlotValueEditor(card, axis, profile, axisIndex) {
+  const type = plotAxisType(axis.type);
+  const editor = document.createElement("div");
+  editor.className = "promptstudio-plot-value-editor";
+  if (["catalog", "sampler", "scheduler", "llm_catalog"].includes(type.kind)) {
+    const select = document.createElement("select");
+    select.appendChild(new Option("Loading…", ""));
+    const add = plotButton("Add", () => {});
+    const addAll = plotButton("Add all", () => {});
+    add.disabled = true;
+    addAll.disabled = true;
+    editor.append(select, add, addAll);
+    if (axis.type === "lora") {
+      editor.appendChild(plotButton("Add none", () => addPlotAxisValues(axisIndex, [{ label: "None", value: null }])));
+    }
+    populatePlotCatalogControls(select, add, addAll, axis, profile, axisIndex);
+  } else if (type.kind === "text") {
+    const value = document.createElement("textarea");
+    value.rows = 2;
+    value.placeholder = `Enter a ${type.label.toLowerCase()} value`;
+    const add = plotButton("Add", () => {
+      const text = value.value.trim();
+      if (!text) return;
+      addPlotAxisValues(axisIndex, [{ label: text, value: text }]);
+      value.value = "";
+    });
+    const addEmpty = plotButton("Add empty", () => addPlotAxisValues(axisIndex, [{ label: "None", value: "" }]));
+    const row = document.createElement("span");
+    row.className = "promptstudio-plot-value-row promptstudio-plot-text-row";
+    row.append(value, add, addEmpty);
+    editor.appendChild(row);
+  } else {
+    const value = document.createElement("input");
+    value.type = "number";
+    value.min = String(type.min);
+    value.max = String(type.max);
+    value.step = String(type.step);
+    value.placeholder = "Value";
+    const add = plotButton("Add", () => {
+      const numeric = Number(value.value);
+      if (!Number.isFinite(numeric)) return;
+      const normalized = type.kind === "integer" ? Math.trunc(numeric) : numeric;
+      addPlotAxisValues(axisIndex, [{ label: String(normalized), value: normalized }]);
+      value.value = "";
+    });
+    const start = value.cloneNode();
+    const end = value.cloneNode();
+    const step = value.cloneNode();
+    start.placeholder = "From";
+    end.placeholder = "To";
+    step.placeholder = "Step";
+    step.value = String(type.step);
+    const addRange = plotButton("Add range", () => {
+      const first = Number(start.value);
+      const last = Number(end.value);
+      const increment = Math.abs(Number(step.value));
+      if (![first, last, increment].every(Number.isFinite) || increment <= 0) return;
+      const direction = first <= last ? 1 : -1;
+      const values = [];
+      for (let current = first, guard = 0;
+        (direction > 0 ? current <= last + increment / 1000 : current >= last - increment / 1000) && guard < 128;
+        current += direction * increment, guard += 1) {
+        const normalized = type.kind === "integer" ? Math.trunc(current) : Number(current.toFixed(8));
+        values.push({ label: String(normalized), value: normalized });
+      }
+      addPlotAxisValues(axisIndex, values);
+    });
+    const single = document.createElement("span");
+    single.className = "promptstudio-plot-value-row";
+    single.append(value, add);
+    const range = document.createElement("span");
+    range.className = "promptstudio-plot-value-row promptstudio-plot-range-row";
+    range.append(start, end, step, addRange);
+    editor.append(single, range);
+    if (axis.type === "seed") {
+      editor.appendChild(plotButton("Add 4 random seeds", () => addPlotAxisValues(axisIndex,
+        Array.from({ length: 4 }, () => {
+          const seed = Math.floor(Math.random() * 0x100000000);
+          return { label: String(seed), value: seed };
+        }))));
+    }
+  }
+  card.appendChild(editor);
+}
+
+function renderPlotAxis(axis, profile, axisIndex) {
+  const card = document.createElement("section");
+  card.className = "promptstudio-plot-axis";
+  card.dataset.axis = axis.name;
+  const heading = document.createElement("header");
+  const title = document.createElement("strong");
+  title.textContent = `${axis.name.toUpperCase()} axis`;
+  const count = document.createElement("small");
+  count.textContent = `${axis.values.length} value${axis.values.length === 1 ? "" : "s"}`;
+  heading.append(title, count);
+  card.appendChild(heading);
+
+  const typeSelect = document.createElement("select");
+  const llmEnabled = activeChat()?.plotDraft?.llmEnabled === true;
+  for (const entry of PLOT_AXIS_TYPES.filter((item) => llmEnabled || item.scope !== "llm")) {
+    const label = entry.scope === "llm" ? `LLM · ${entry.label}` : entry.label;
+    typeSelect.appendChild(new Option(label, entry.id, false, entry.id === axis.type));
+  }
+  typeSelect.addEventListener("change", () => updatePlotChat((draft) => {
+    draft.axes[axisIndex] = normalizePlotDraft({ axes: draft.axes.map((item, index) => (
+      index === axisIndex
+        ? { ...item, type: typeSelect.value, label: "", targetKey: "", values: [], targetName: "" }
+        : item
+    )) }, profile).axes[axisIndex];
+  }));
+  const targetSelect = document.createElement("select");
+  const targets = plotAxisTargets(profile, axis.type);
+  for (const target of targets) targetSelect.appendChild(new Option(target.label, target.key, false, target.key === axis.targetKey));
+  if (!targets.length) targetSelect.appendChild(new Option("No compatible workflow target", ""));
+  targetSelect.disabled = !targets.length || isLlmPlotAxisType(axis.type);
+  targetSelect.addEventListener("change", () => updatePlotChat((draft) => {
+    const target = plotAxisTargets(profile, draft.axes[axisIndex].type).find((item) => item.key === targetSelect.value);
+    Object.assign(draft.axes[axisIndex], {
+      targetKey: target?.key || "", targetNodeId: target?.nodeId || "", values: [], targetName: "",
+    });
+  }));
+  const fields = document.createElement("div");
+  fields.className = "promptstudio-plot-axis-fields";
+  fields.append(plotField("Type", typeSelect), plotField("Workflow target", targetSelect));
+  if (axis.type === "lora_strength") {
+    const loraSelect = document.createElement("select");
+    const baseNames = selectionsForLoraNode(profile.id, axis.targetNodeId).map((item) => item.name);
+    for (const name of baseNames) loraSelect.appendChild(new Option(name, name, false, name === axis.targetName));
+    if (!baseNames.length) loraSelect.appendChild(new Option("Select this LoRA in Generation controls first", ""));
+    loraSelect.disabled = !baseNames.length;
+    loraSelect.addEventListener("change", () => updatePlotChat((draft) => {
+      draft.axes[axisIndex].targetName = loraSelect.value;
+    }, { render: false }));
+    fields.appendChild(plotField("LoRA", loraSelect));
+  }
+  card.appendChild(fields);
+  renderPlotValueEditor(card, axis, profile, axisIndex);
+  const chips = document.createElement("div");
+  chips.className = "promptstudio-plot-chips";
+  renderPlotAxisValues(chips, axis, axisIndex);
+  card.appendChild(chips);
+  return card;
+}
+
+function renderPlotBuilder(history, chat) {
+  const profile = plotProfile(chat.plotDraft);
+  chat.plotDraft = normalizePlotDraft(chat.plotDraft, profile);
+  const draft = chat.plotDraft;
+  const shell = document.createElement("div");
+  shell.className = "promptstudio-plot-workspace promptstudio-plot-builder";
+  const header = document.createElement("header");
+  const heading = document.createElement("div");
+  heading.innerHTML = "<strong>Build an XY(Z) plot</strong><small>Choose variables, then fill the comparison grid in real time.</small>";
+  header.append(heading, plotButton("Back to chat", leavePlotSession));
+  shell.appendChild(header);
+
+  const basics = document.createElement("section");
+  basics.className = "promptstudio-plot-basics";
+  const title = document.createElement("input");
+  title.type = "text";
+  title.placeholder = "Optional plot title";
+  title.value = draft.title;
+  title.addEventListener("input", () => updatePlotChat((value) => { value.title = title.value; }, { render: false }));
+  const workflow = document.createElement("select");
+  plotWorkflowOptions(workflow, draft.workflowProfileId);
+  workflow.addEventListener("change", () => updatePlotChat((value) => {
+    const selected = workflowProfileById(workflow.value);
+    const prompt = value.prompt;
+    const titleValue = value.title;
+    const zEnabled = value.zEnabled;
+    Object.assign(value, normalizePlotDraft({
+      prompt,
+      title: titleValue,
+      zEnabled,
+      workflowProfileId: workflow.value,
+      axes: value.axes,
+    }, selected));
+  }));
+  const prompt = document.createElement("textarea");
+  prompt.rows = 4;
+  prompt.placeholder = "Describe the base image. Every cell uses this prompt.";
+  prompt.value = draft.prompt;
+  prompt.addEventListener("input", () => updatePlotChat((value) => { value.prompt = prompt.value; }, { render: false }));
+  basics.append(plotField("Title", title), plotField("Creation workflow", workflow), plotField("Base prompt", prompt, "promptstudio-plot-wide"));
+  shell.appendChild(basics);
+
+  const llmToggle = document.createElement("label");
+  llmToggle.className = "promptstudio-plot-llm-toggle";
+  const llmInput = document.createElement("input");
+  llmInput.type = "checkbox";
+  llmInput.checked = draft.llmEnabled;
+  const llmCopy = document.createElement("span");
+  llmCopy.innerHTML = "<strong>Enable LLM mode</strong><small>Render the base prompt through the LLM and unlock prompt-shaping axes such as Style and Framing.</small>";
+  llmInput.addEventListener("change", () => updatePlotChat((value) => {
+    value.llmEnabled = llmInput.checked;
+    if (!value.llmEnabled) {
+      const fallbacks = ["seed", "sampler", "scheduler"];
+      value.axes = value.axes.map((item, index) => (
+        isLlmPlotAxisType(item.type)
+          ? { ...item, type: fallbacks[index], label: "", targetKey: "", targetNodeId: "", targetName: "", values: [] }
+          : item
+      ));
+    }
+  }));
+  llmToggle.append(llmInput, llmCopy);
+  shell.appendChild(llmToggle);
+
+  const axes = document.createElement("div");
+  axes.className = "promptstudio-plot-axes";
+  axes.append(renderPlotAxis(draft.axes[0], profile, 0), renderPlotAxis(draft.axes[1], profile, 1));
+  if (draft.zEnabled) axes.appendChild(renderPlotAxis(draft.axes[2], profile, 2));
+  shell.appendChild(axes);
+  const zToggle = document.createElement("label");
+  zToggle.className = "promptstudio-plot-z-toggle";
+  const zInput = document.createElement("input");
+  zInput.type = "checkbox";
+  zInput.checked = draft.zEnabled;
+  zInput.addEventListener("change", () => updatePlotChat((value) => { value.zEnabled = zInput.checked; }));
+  zToggle.append(zInput, document.createTextNode(" Add a Z axis (separate grid slices)"));
+  shell.appendChild(zToggle);
+  const validation = validatePlotDraft(draft);
+  const footer = document.createElement("footer");
+  const summary = document.createElement("span");
+  summary.className = "promptstudio-plot-validation";
+  const plotError = state.plotErrors.get(chat.id);
+  const preparing = state.plotSubmitting.has(chat.id);
+  summary.dataset.kind = plotError || !validation.valid ? "error" : "ready";
+  summary.textContent = preparing
+    ? (draft.llmEnabled ? "Preparing LLM prompts and the base workflow…" : "Preparing the base workflow…")
+    : plotError || (validation.valid
+      ? `${validation.total} image${validation.total === 1 ? "" : "s"} will be generated.`
+      : validation.errors.join(" "));
+  const start = plotButton(`Start ${validation.total || ""} image plot`.replace(/\s+/g, " "), startPlotRun, "promptstudio-primary");
+  start.disabled = !validation.valid || state.plotSubmitting.has(chat.id) || !state.apiConnected;
+  footer.append(summary, start);
+  shell.appendChild(footer);
+  history.appendChild(shell);
+}
+
+function plotCellCounts(plot) {
+  return plot.cells.reduce((counts, cell) => {
+    counts[cell.status] = (counts[cell.status] || 0) + 1;
+    return counts;
+  }, {});
+}
+
+function plotProgressText(plot) {
+  return plotProgressCountsText(plotCellCounts(plot), plot.cells.length);
+}
+
+function plotProgressSummaryText(summary) {
+  return plotProgressCountsText(summary?.counts || {}, Number(summary?.total || 0));
+}
+
+function plotProgressCountsText(counts, total) {
+  const finished = (counts.complete || 0) + (counts.failed || 0) + (counts.cancelled || 0);
+  const parts = [`${finished}/${total} finished`];
+  if (counts.complete) parts.push(`${counts.complete} complete`);
+  if (counts.failed) parts.push(`${counts.failed} failed`);
+  if (counts.queued || counts.generating || counts.submitting) {
+    parts.push(`${(counts.queued || 0) + (counts.generating || 0) + (counts.submitting || 0)} active`);
+  }
+  return parts.join(" · ");
+}
+
+async function loadPlotRun(plotId, { refresh = false } = {}) {
+  const id = String(plotId || "");
+  if (!id) return null;
+  if (!refresh && state.plotRuns.has(id)) return state.plotRuns.get(id);
+  if (!refresh && state.plotLoads.has(id)) return state.plotLoads.get(id);
+  const request = (async () => {
+    const response = await api.fetchApi(`/promptstudio/prompt-studio/plots/${encodeURIComponent(id)}`);
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.error || `Plot could not be loaded (${response.status}).`);
+    state.plotRuns.set(id, data);
+    renderChatList();
+    resumePlotRun(data);
+    return data;
+  })().finally(() => state.plotLoads.delete(id));
+  state.plotLoads.set(id, request);
+  return request;
+}
+
+function persistPlotRun(plot, { render = true } = {}) {
+  const id = String(plot?.id || "");
+  if (!id) return Promise.reject(new Error("Plot id is missing."));
+  const previous = state.plotSaveChains.get(id) || Promise.resolve();
+  const next = previous.catch(() => {}).then(async () => {
+    const current = state.plotRuns.get(id) || plot;
+    const response = await api.fetchApi(`/promptstudio/prompt-studio/plots/${encodeURIComponent(id)}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(current),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      if (response.status === 409) {
+        state.plotRuns.delete(id);
+        throw new Error(`${data.error || "Plot changed in another window."} Reload this session to continue safely.`);
+      }
+      throw new Error(data.error || `Plot could not be saved (${response.status}).`);
+    }
+    current.revision = data.revision;
+    current.updatedAt = data.updatedAt;
+    if (data.artifacts) current.artifacts = data.artifacts;
+    state.plotRuns.set(id, current);
+    renderChatList();
+    if (render && activeChat()?.plotId === id) renderPlotWorkspace();
+    return current;
+  });
+  state.plotSaveChains.set(id, next);
+  next.finally(() => {
+    if (state.plotSaveChains.get(id) === next) state.plotSaveChains.delete(id);
+  }).catch(() => {});
+  return next;
+}
+
+function artifactLink(reference, label) {
+  if (!reference) return null;
+  const link = document.createElement("a");
+  link.href = imageReferenceUrl(reference);
+  link.target = "_blank";
+  link.rel = "noopener";
+  link.textContent = label;
+  return link;
+}
+
+function runPlotAction(plotId, action) {
+  Promise.resolve().then(action).catch((error) => {
+    const plot = state.plotRuns.get(plotId);
+    if (plot) plot.error = error.message || String(error);
+    if (activeChat()?.plotId === plotId) renderPlotWorkspace();
+  });
+}
+
+function renderPlotCell(plot, cell) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "promptstudio-plot-cell";
+  button.dataset.status = cell.status;
+  button.title = plotCellLabel(plot, cell);
+  const image = cell.images?.[0];
+  if (image) {
+    const preview = document.createElement("img");
+    preview.src = imageReferenceUrl(image);
+    preview.alt = plotCellLabel(plot, cell);
+    button.appendChild(preview);
+    button.addEventListener("click", () => openImageLightbox(preview.src, preview.alt, button));
+  } else {
+    const stateLabel = document.createElement("strong");
+    stateLabel.textContent = ({
+      pending: "Waiting", submitting: "Submitting…", queued: "Queued", generating: "Generating…",
+      failed: "Failed", cancelled: "Cancelled",
+    })[cell.status] || cell.status;
+    button.appendChild(stateLabel);
+    if (cell.error) {
+      const error = document.createElement("small");
+      error.textContent = cell.error;
+      button.appendChild(error);
+    }
+    if (["failed", "cancelled"].includes(cell.status)) {
+      const retry = document.createElement("span");
+      retry.textContent = "Retry";
+      retry.className = "promptstudio-plot-cell-action";
+      button.appendChild(retry);
+      button.addEventListener("click", () => runPlotAction(plot.id, () => retryPlotCells(plot.id, [cell.id])));
+    } else button.disabled = true;
+  }
+  return button;
+}
+
+function renderPlotGrid(shell, plot) {
+  const xAxis = plot.axes[0];
+  const yAxis = plot.axes[1];
+  const zAxis = plot.axes[2];
+  const zCount = zAxis?.values.length || 1;
+  const requestedZ = state.plotActiveZ.get(plot.id) || 0;
+  const zIndex = Math.min(zCount - 1, Math.max(0, requestedZ));
+  if (zAxis) {
+    const tabs = document.createElement("div");
+    tabs.className = "promptstudio-plot-z-tabs";
+    for (const [index, value] of zAxis.values.entries()) {
+      const tab = plotButton(value.label, () => {
+        state.plotActiveZ.set(plot.id, index);
+        renderPlotWorkspace();
+      });
+      tab.setAttribute("aria-pressed", index === zIndex ? "true" : "false");
+      tabs.appendChild(tab);
+    }
+    shell.appendChild(tabs);
+  }
+  const scroller = document.createElement("div");
+  scroller.className = "promptstudio-plot-grid-scroller";
+  const grid = document.createElement("div");
+  grid.className = "promptstudio-plot-grid";
+  grid.style.setProperty("--ps-plot-columns", String(xAxis.values.length));
+  grid.style.setProperty("--ps-plot-cell", `${state.plotCellSize}px`);
+  const corner = document.createElement("div");
+  corner.className = "promptstudio-plot-corner";
+  corner.textContent = `${yAxis.label} ↓ / ${xAxis.label} →`;
+  grid.appendChild(corner);
+  for (const value of xAxis.values) {
+    const label = document.createElement("div");
+    label.className = "promptstudio-plot-column-label";
+    label.textContent = value.label;
+    label.title = value.label;
+    grid.appendChild(label);
+  }
+  for (const [y, yValue] of yAxis.values.entries()) {
+    const rowLabel = document.createElement("div");
+    rowLabel.className = "promptstudio-plot-row-label";
+    rowLabel.textContent = yValue.label;
+    rowLabel.title = yValue.label;
+    grid.appendChild(rowLabel);
+    for (let x = 0; x < xAxis.values.length; x += 1) {
+      const cell = plot.cells.find((item) => item.coordinate[0] === x
+        && item.coordinate[1] === y && (zAxis ? item.coordinate[2] === zIndex : true));
+      grid.appendChild(renderPlotCell(plot, cell));
+    }
+  }
+  scroller.appendChild(grid);
+  shell.appendChild(scroller);
+}
+
+function renderPlotRun(history, plot) {
+  const shell = document.createElement("div");
+  shell.className = "promptstudio-plot-workspace promptstudio-plot-run";
+  const header = document.createElement("header");
+  const heading = document.createElement("div");
+  const title = document.createElement("strong");
+  title.textContent = plot.title;
+  const progress = document.createElement("small");
+  const preparation = plot.preparationProgress;
+  progress.textContent = plot.status === "preparing" && preparation?.phase === "llm"
+    ? `LLM prompts ${preparation.completed}/${preparation.total} · preparing`
+    : `${plotProgressText(plot)} · ${plot.status}`;
+  heading.append(title, progress);
+  const actions = document.createElement("div");
+  actions.className = "promptstudio-plot-run-actions";
+  const pending = plot.cells.some((cell) => ["pending", "submitting", "queued", "generating"].includes(cell.status));
+  const waiting = plot.cells.some((cell) => cell.status === "pending");
+  const failed = plot.cells.some((cell) => ["failed", "cancelled"].includes(cell.status));
+  if (plot.prepared === false && !state.plotSubmitting.has(plot.id)) {
+    actions.appendChild(plotButton("Retry preparation", () => runPlotAction(plot.id, () => prepareExistingPlot(plot.id))));
+  } else if (waiting && !state.plotSubmitting.has(plot.id)) {
+    actions.appendChild(plotButton("Resume pending", () => runPlotAction(plot.id, () => submitPlotCells(plot.id))));
+  }
+  if (pending) actions.appendChild(plotButton("Cancel remaining", () => runPlotAction(plot.id, () => cancelPlotRemaining(plot.id))));
+  if (failed && plot.prepared !== false) {
+    actions.appendChild(plotButton("Retry failed", () => runPlotAction(plot.id, () => retryPlotCells(plot.id))));
+  }
+  const rebuild = plotButton("Rebuild composite", () => buildPlotComposite(plot.id));
+  rebuild.disabled = !plot.cells.some((cell) => cell.status === "complete");
+  actions.appendChild(rebuild);
+  header.append(heading, actions);
+  shell.appendChild(header);
+  if (plot.error || plot.artifactError) {
+    const error = document.createElement("div");
+    error.className = "promptstudio-plot-run-error";
+    error.textContent = plot.error || plot.artifactError;
+    shell.appendChild(error);
+  }
+
+  const toolbar = document.createElement("div");
+  toolbar.className = "promptstudio-plot-toolbar";
+  const size = document.createElement("input");
+  size.type = "range";
+  size.min = "120";
+  size.max = "420";
+  size.step = "20";
+  size.value = String(state.plotCellSize);
+  size.addEventListener("input", () => {
+    state.plotCellSize = Number(size.value);
+    shell.style.setProperty("--ps-plot-cell", `${state.plotCellSize}px`);
+    shell.querySelector(".promptstudio-plot-grid")?.style.setProperty("--ps-plot-cell", `${state.plotCellSize}px`);
+  });
+  toolbar.append(document.createTextNode("Cell size "), size);
+  const artifactLinks = document.createElement("span");
+  artifactLinks.className = "promptstudio-plot-artifacts";
+  const overview = artifactLink(plot.artifacts?.overview, "Open overview");
+  if (overview) artifactLinks.appendChild(overview);
+  for (const [index, reference] of (plot.artifacts?.composites || []).entries()) {
+    const link = artifactLink(reference, plot.axes.length === 3 ? `Open slice ${index + 1}` : "Open composite");
+    if (link) artifactLinks.appendChild(link);
+  }
+  const manifest = artifactLink(plot.artifacts?.manifest, "Open plot data");
+  if (manifest) artifactLinks.appendChild(manifest);
+  toolbar.appendChild(artifactLinks);
+  shell.appendChild(toolbar);
+  renderPlotGrid(shell, plot);
+  history.appendChild(shell);
+}
+
+function renderPlotWorkspace() {
+  const history = state.panel?.querySelector("#promptstudio-history");
+  const chat = activeChat();
+  if (!history || !isPlotChat(chat)) return;
+  history.replaceChildren();
+  if (!chat.plotId) {
+    renderPlotBuilder(history, chat);
+    return;
+  }
+  const plot = state.plotRuns.get(chat.plotId);
+  if (plot) {
+    renderPlotRun(history, plot);
+    return;
+  }
+  const loading = document.createElement("div");
+  loading.className = "promptstudio-plot-loading";
+  loading.textContent = "Loading plot…";
+  history.appendChild(loading);
+  loadPlotRun(chat.plotId).then(() => {
+    if (activeChat()?.plotId === chat.plotId) renderPlotWorkspace();
+  }).catch((error) => {
+    if (activeChat()?.plotId !== chat.plotId) return;
+    loading.textContent = error.message || String(error);
+    loading.dataset.kind = "error";
+    loading.appendChild(plotButton("Retry", () => {
+      state.plotRuns.delete(chat.plotId);
+      renderPlotWorkspace();
+    }));
+  });
+}
+
+function plotLlmControlValues(settings) {
+  return Object.fromEntries(Object.keys(PLOT_LLM_CONTROL_IDS).map((key) => [key, settings?.[key]]));
+}
+
+async function preparePlotMainPrompt(draft, controls, warnings, signal) {
+  const source = String(draft.prompt || "").trim();
+  if (!draft.llmEnabled) return source;
+  return requestPromptRevision(
+    collectRevisionPayload(source, "create_main", "", "", null, controls),
+    "Plot main-prompt creation",
+    warnings,
+    signal,
+  );
+}
+
+async function renderPlotFinalPrompt(mainPrompt, controls, warnings, signal) {
+  return requestPromptRevision(
+    collectRevisionPayload(mainPrompt, "render", "", "", null, controls),
+    "Plot prompt rendering",
+    warnings,
+    signal,
+  );
+}
+
+async function preparePlotBase(draft, mainPrompt, finalPrompt, controlSettings = null) {
+  const context = await workflowQueueContext("create", draft.workflowProfileId);
+  const apiNode = context.snapshot.output?.[String(context.promptNodeId)];
+  if (!apiNode || ![SLOT_TYPE, AMPLIFY_TYPE].includes(apiNode.class_type)) {
+    throw new Error("The selected plot workflow no longer contains its Prompt Studio prompt node.");
+  }
+  const frozenSettings = normalizeStudioSettings(controlSettings || activeChat()?.studioSettings || getSettings());
+  const resolution = {
+    aspect_ratio: frozenSettings.resolution_aspect_ratio,
+    megapixels: frozenSettings.resolution_megapixels,
+    multiple: frozenSettings.resolution_multiple,
+    resolution_width: 0,
+    resolution_height: 0,
+  };
+  const secondaryInstructions = frozenSettings.secondary_instructions || "";
+  if (apiNode.class_type === AMPLIFY_TYPE) {
+    const slotName = apiNode.inputs?.slot_name || context.workflowName;
+    apiNode.class_type = SLOT_TYPE;
+    apiNode.inputs = {
+      prompt: finalPrompt,
+      slot_name: slotName,
+      secondary_instructions: secondaryInstructions,
+      ...resolution,
+    };
+  } else {
+    apiNode.inputs ||= {};
+    apiNode.inputs.prompt = finalPrompt;
+    apiNode.inputs.secondary_instructions = secondaryInstructions;
+    Object.assign(apiNode.inputs, resolution);
+  }
+
+  const loraState = generationLoraState(context.profile, context.loraNodes, frozenSettings.lora_selections);
+  for (const descriptor of context.loraNodes || []) {
+    const node = context.snapshot.output?.[String(descriptor.id)];
+    if (!node || node.class_type !== LORA_LOADER_TYPE) throw new Error(`LoRA target node ${descriptor.id} is unavailable.`);
+    node.inputs ||= {};
+    node.inputs.lora_stack_json = JSON.stringify(
+      loraState.find((entry) => entry.nodeId === String(descriptor.id))?.selections || [],
+    );
+  }
+  const modelState = generationModelState(context.profile, context.modelNodes, frozenSettings.model_selections);
+  for (const descriptor of context.modelNodes || []) {
+    const node = context.snapshot.output?.[String(descriptor.id)];
+    const selected = modelState.find((entry) => entry.nodeId === String(descriptor.id));
+    if (!node || node.class_type !== MODEL_LOADER_TYPE) throw new Error(`Model target node ${descriptor.id} is unavailable.`);
+    if (!selected?.modelName) throw new Error(`Select a diffusion model for node ${descriptor.id} before starting the plot.`);
+    const catalog = descriptor.modelType ? await loadModelCatalog(descriptor.modelType) : [];
+    const canonical = catalog.find((item) => modelNameKey(item.name) === modelNameKey(selected.modelName));
+    if (descriptor.modelType && !canonical) {
+      throw new Error(`Diffusion model '${selected.modelName}' is no longer available in '${descriptor.modelType}'.`);
+    }
+    selected.modelName = canonical?.name || selected.modelName;
+    node.inputs ||= {};
+    node.inputs.unet_name = selected.modelName;
+  }
+  return {
+    // ComfyUI's queue client needs both the executable output and the serialized
+    // workflow. The latter carries widget metadata used while queueing subgraphs.
+    // Keep one shared envelope in the plot manifest rather than one per cell.
+    workflowSnapshot: structuredClone(context.snapshot),
+    promptNodeId: String(context.promptNodeId),
+    mainPrompt,
+    finalPrompt,
+    executionPrompt: finalPrompt,
+    loraState,
+    modelState,
+    resultNodeIds: context.resultNodeIds,
+    resultFields: context.resultFields,
+    resolution,
+    secondaryInstructions,
+  };
+}
+
+async function startPlotRun() {
+  const chat = activeChat();
+  if (!isPlotChat(chat) || chat.plotId || state.plotSubmitting.has(chat.id)) return;
+  const profile = plotProfile(chat.plotDraft);
+  chat.plotDraft = normalizePlotDraft(chat.plotDraft, profile);
+  const validation = validatePlotDraft(chat.plotDraft);
+  if (!validation.valid) {
+    state.plotErrors.set(chat.id, validation.errors.join(" "));
+    renderPlotWorkspace();
+    return;
+  }
+  state.plotSubmitting.add(chat.id);
+  state.plotErrors.delete(chat.id);
+  renderPlotWorkspace();
+  const plotId = makeId();
+  try {
+    const sourcePrompt = String(chat.plotDraft.prompt || "").trim();
+    const plot = buildPlotRun({
+      draft: chat.plotDraft,
+      profile,
+      plotId,
+      chatId: chat.id,
+      base: {
+        workflowSnapshot: { output: {} },
+        mainPrompt: sourcePrompt,
+        finalPrompt: sourcePrompt,
+        executionPrompt: sourcePrompt,
+        loraState: [],
+        modelState: [],
+        resultNodeIds: [],
+        resultFields: ["images", "gifs"],
+      },
+    });
+    plot.controlSettings = captureStudioSettings(chat);
+    plot.prepared = false;
+    plot.status = "preparing";
+    state.plotRuns.set(plotId, plot);
+    chat.plotId = plotId;
+    chat.initialized = true;
+    chat.mainPrompt = sourcePrompt;
+    chat.finalPrompt = sourcePrompt;
+    chat.updatedAt = Date.now();
+    await persistPlotRun(plot, { render: false });
+    saveChats();
+    renderChatList();
+    renderPlotWorkspace();
+    prepareExistingPlot(plotId);
+  } catch (error) {
+    state.plotRuns.delete(plotId);
+    if (chat.plotId === plotId) {
+      chat.plotId = "";
+      chat.initialized = false;
+    }
+    state.plotErrors.set(chat.id, error.message || String(error));
+  } finally {
+    state.plotSubmitting.delete(chat.id);
+    if (activeChat()?.id === chat.id) renderPlotWorkspace();
+  }
+}
+
+async function prepareExistingPlot(plotId) {
+  const plot = state.plotRuns.get(plotId) || await loadPlotRun(plotId);
+  const chat = state.chats.find((item) => item.id === plot?.chatId);
+  if (!plot || !chat || state.plotSubmitting.has(plotId)) return;
+  state.plotSubmitting.add(plotId);
+  const controller = new AbortController();
+  state.plotPreparationControllers.set(plotId, controller);
+  if (plot.prepared === false && plot.status === "cancelled") {
+    for (const cell of plot.cells) {
+      if (cell.status === "cancelled") cell.status = "pending";
+    }
+  }
+  plot.status = "preparing";
+  plot.error = "";
+  if (activeChat()?.plotId === plotId) renderPlotWorkspace();
+  try {
+    const sourcePrompt = String(chat.plotDraft.prompt || "").trim();
+    const controlSettings = normalizeStudioSettings(plot.controlSettings || chat.studioSettings || getSettings());
+    plot.controlSettings = structuredClone(controlSettings);
+    const baseControls = { ...controlSettings, ...plotLlmControlValues(controlSettings) };
+    const warnings = Array.isArray(plot.warnings) ? [...plot.warnings] : [];
+    const groups = new Map();
+    for (const cell of plot.cells) {
+      const key = plotPromptGroupKey(plot, cell);
+      if (!groups.has(key)) groups.set(key, { cells: [], overrides: plotControlOverridesForCell(plot, cell) });
+      groups.get(key).cells.push(cell);
+    }
+    const llmTotal = chat.plotDraft.llmEnabled ? groups.size + 1 : 0;
+    plot.preparationProgress = { phase: chat.plotDraft.llmEnabled ? "llm" : "workflow", completed: 0, total: llmTotal };
+    const resumableBase = chat.plotDraft.llmEnabled
+      && String(plot.base?.promptNodeId || "").trim()
+      && plot.base?.workflowSnapshot?.output
+      && String(plot.base?.mainPrompt || "").trim()
+      && plot.cells.some((cell) => String(cell.finalPrompt || "").trim());
+    const mainPrompt = resumableBase
+      ? String(plot.base.mainPrompt)
+      : await preparePlotMainPrompt(chat.plotDraft, baseControls, warnings, controller.signal);
+    if (chat.plotDraft.llmEnabled && !resumableBase) {
+      plot.preparationProgress.completed = 1;
+      await persistPlotRun(plot);
+    } else if (resumableBase) {
+      plot.preparationProgress.completed = 1;
+    }
+    if (!resumableBase) {
+      plot.base = await preparePlotBase(chat.plotDraft, mainPrompt, mainPrompt, controlSettings);
+    }
+    let firstFinalPrompt = mainPrompt;
+    let hasFinalPrompt = false;
+    if (chat.plotDraft.llmEnabled) {
+      for (const group of groups.values()) {
+        if (controller.signal.aborted || plot.status === "cancelled") throw new DOMException("Plot preparation cancelled.", "AbortError");
+        const savedFinalPrompt = String(group.cells[0]?.finalPrompt || "").trim();
+        const reusableFinalPrompt = savedFinalPrompt
+          && group.cells.every((cell) => cell.mainPrompt === mainPrompt && cell.finalPrompt === savedFinalPrompt);
+        const finalPrompt = reusableFinalPrompt
+          ? savedFinalPrompt
+          : await renderPlotFinalPrompt(
+            mainPrompt,
+            { ...baseControls, ...group.overrides },
+            warnings,
+            controller.signal,
+          );
+        if (!hasFinalPrompt) {
+          firstFinalPrompt = finalPrompt;
+          hasFinalPrompt = true;
+        }
+        if (!reusableFinalPrompt) {
+          for (const cell of group.cells) {
+            cell.mainPrompt = mainPrompt;
+            cell.finalPrompt = finalPrompt;
+          }
+        }
+        plot.preparationProgress.completed += 1;
+        if (!reusableFinalPrompt) await persistPlotRun(plot);
+      }
+    } else {
+      for (const cell of plot.cells) {
+        cell.mainPrompt = sourcePrompt;
+        cell.finalPrompt = sourcePrompt;
+      }
+    }
+    if (controller.signal.aborted || plot.status === "cancelled") throw new DOMException("Plot preparation cancelled.", "AbortError");
+    plot.base.mainPrompt = mainPrompt;
+    plot.base.finalPrompt = firstFinalPrompt;
+    plot.base.executionPrompt = firstFinalPrompt;
+    plot.warnings = warnings;
+    plot.preparationProgress = { phase: "complete", completed: llmTotal, total: llmTotal };
+    plot.prepared = true;
+    plot.status = "running";
+    chat.mainPrompt = mainPrompt;
+    chat.finalPrompt = firstFinalPrompt;
+    chat.updatedAt = Date.now();
+    if (chat.id === state.activeChatId) {
+      state.mainPrompt = mainPrompt;
+      state.currentPrompt = firstFinalPrompt;
+    }
+    saveChats();
+    await persistPlotRun(plot);
+  } catch (error) {
+    if (error?.name === "AbortError" || controller.signal.aborted || plot.status === "cancelled") {
+      plot.prepared = false;
+      plot.status = "cancelled";
+      plot.error = "Plot preparation cancelled.";
+      await persistPlotRun(plot).catch(() => {});
+      return;
+    }
+    plot.prepared = false;
+    plot.status = "failed";
+    plot.error = error.message || String(error);
+    await persistPlotRun(plot).catch(() => {});
+    return;
+  } finally {
+    if (state.plotPreparationControllers.get(plotId) === controller) {
+      state.plotPreparationControllers.delete(plotId);
+    }
+    state.plotSubmitting.delete(plotId);
+    if (activeChat()?.plotId === plotId) renderPlotWorkspace();
+  }
+  submitPlotCells(plotId).catch((error) => {
+    plot.status = "failed";
+    plot.error = error.message || String(error);
+    persistPlotRun(plot).catch(() => {});
+  });
+}
+
+async function submitPlotCells(plotId, requestedIds = null) {
+  const plot = state.plotRuns.get(plotId) || await loadPlotRun(plotId);
+  if (!plot || plot.prepared === false || state.plotSubmitting.has(plotId)) return;
+  state.plotSubmitting.add(plotId);
+  const requested = requestedIds ? new Set(requestedIds.map(String)) : null;
+  const cells = orderPlotCellsForExecution(
+    plot,
+    plot.cells.filter((cell) => cell.status === "pending" && (!requested || requested.has(cell.id))),
+  );
+  if (!cells.length) {
+    state.plotSubmitting.delete(plotId);
+    return;
+  }
+  plot.status = "running";
+  plot.error = "";
+  let handoffToken = "";
+  try {
+    if (!plot.base?.workflowSnapshot?.workflow) {
+      // Plot manifests created before the workflow envelope was retained can be
+      // repaired from their saved [PS] profile when the user retries them.
+      const context = await workflowQueueContext(plot.action || "create", plot.workflowProfileId);
+      if (!context.snapshot?.workflow) {
+        throw new Error("The selected [PS] workflow has no queue metadata. Refresh its saved workflow and retry.");
+      }
+      plot.base.workflowSnapshot.workflow = structuredClone(context.snapshot.workflow);
+    }
+    await persistPlotRun(plot);
+    handoffToken = await releaseLlmBeforeGeneration();
+    for (const cell of cells) {
+      if (plot.status === "cancelled") break;
+      cell.status = "submitting";
+      cell.error = "";
+      cell.updatedAt = Date.now();
+      if (activeChat()?.plotId === plotId) renderPlotWorkspace();
+      try {
+        const snapshot = snapshotForPlotCell(plot, cell);
+        const queued = await api.queuePrompt(-1, snapshot);
+        const promptId = String(queued?.prompt_id || "");
+        if (!promptId) throw new Error("ComfyUI did not return a prompt ID.");
+        cell.promptId = promptId;
+        cell.status = "queued";
+        cell.attempts = Number(cell.attempts || 0) + 1;
+        cell.updatedAt = Date.now();
+        await persistPlotRun(plot);
+        watchPlotCell(plotId, cell.id);
+      } catch (error) {
+        cell.status = "failed";
+        cell.error = error.message || String(error);
+        cell.updatedAt = Date.now();
+        await persistPlotRun(plot);
+      }
+    }
+  } finally {
+    await completeLlmHandoff(handoffToken);
+    state.plotSubmitting.delete(plotId);
+    await finalizePlotIfDone(plotId);
+  }
+}
+
+function watchPlotCell(plotId, cellId) {
+  const key = `${plotId}\u0000${cellId}`;
+  if (state.plotWatchers.has(key)) return state.plotWatchers.get(key);
+  const watcher = (async () => {
+    while (true) {
+      const plot = state.plotRuns.get(plotId);
+      const cell = plot?.cells.find((item) => item.id === cellId);
+      if (!plot || !cell || !["queued", "generating"].includes(cell.status) || !cell.promptId) return;
+      try {
+        const response = await api.fetchApi(`/history/${encodeURIComponent(cell.promptId)}`);
+        if (response.ok) {
+          const data = await response.json().catch(() => ({}));
+          const item = data[cell.promptId] || Object.values(data)[0];
+          if (item) {
+            const failure = generationFailureMessage(item);
+            const images = historyImages(item, plot.base.resultNodeIds, plot.base.resultFields);
+            const finished = failure || images.length || item.status?.completed === true;
+            if (finished) {
+              cell.images = images;
+              cell.status = images.length ? "complete" : "failed";
+              cell.error = images.length ? "" : (failure || "Generation completed without a configured image output.");
+              cell.updatedAt = Date.now();
+              await persistPlotRun(plot);
+              await finalizePlotIfDone(plotId);
+              return;
+            }
+          }
+        }
+      } catch (_) {
+        // Network interruptions are recoverable; the durable prompt id remains watchable.
+      }
+      await new Promise((resolve) => setTimeout(resolve, 900));
+    }
+  })().catch((error) => {
+    const plot = state.plotRuns.get(plotId);
+    if (plot) plot.error = error.message || String(error);
+    if (activeChat()?.plotId === plotId) renderPlotWorkspace();
+  }).finally(() => state.plotWatchers.delete(key));
+  state.plotWatchers.set(key, watcher);
+  return watcher;
+}
+
+function resumePlotRun(plot) {
+  if (!plot || !Array.isArray(plot.cells)) return;
+  if (plot.status === "preparing" && plot.prepared === false) {
+    prepareExistingPlot(plot.id).catch((error) => {
+      plot.status = "failed";
+      plot.error = error.message || String(error);
+      persistPlotRun(plot).catch(() => {});
+    });
+    return;
+  }
+  let changed = false;
+  for (const cell of plot.cells) {
+    if (cell.status === "submitting" && !cell.promptId) {
+      cell.status = "failed";
+      cell.error = "Prompt Studio closed while this cell was being submitted. Retry it to avoid an unnoticed duplicate.";
+      changed = true;
+    }
+    if (["queued", "generating"].includes(cell.status) && cell.promptId) watchPlotCell(plot.id, cell.id);
+  }
+  if (changed) persistPlotRun(plot).catch(() => {});
+  if (["pending", "running"].includes(plot.status) && plot.cells.some((cell) => cell.status === "pending")) {
+    submitPlotCells(plot.id).catch((error) => {
+      plot.error = error.message || String(error);
+      persistPlotRun(plot).catch(() => {});
+    });
+  } else finalizePlotIfDone(plot.id).catch(() => {});
+}
+
+async function cancelPlotRemaining(plotId) {
+  const plot = state.plotRuns.get(plotId) || await loadPlotRun(plotId);
+  plot.status = "cancelled";
+  state.plotPreparationControllers.get(plotId)?.abort();
+  const cancellable = plot.cells.filter((cell) => ["pending", "submitting", "queued", "generating"].includes(cell.status));
+  await Promise.all(cancellable.map((cell) => cancelComfyPrompt(cell.promptId)));
+  for (const cell of cancellable) {
+    cell.status = "cancelled";
+    cell.error = "Cancelled by user.";
+    cell.updatedAt = Date.now();
+  }
+  await persistPlotRun(plot);
+  await finalizePlotIfDone(plotId);
+}
+
+async function retryPlotCells(plotId, cellIds = null) {
+  const plot = state.plotRuns.get(plotId) || await loadPlotRun(plotId);
+  const requested = cellIds ? new Set(cellIds.map(String)) : null;
+  const retry = plot.cells.filter((cell) => ["failed", "cancelled"].includes(cell.status)
+    && (!requested || requested.has(cell.id)));
+  for (const cell of retry) {
+    cell.status = "pending";
+    cell.promptId = "";
+    cell.images = [];
+    cell.error = "";
+    cell.updatedAt = Date.now();
+  }
+  plot.status = "running";
+  plot.artifacts = { composites: [], overview: null, manifest: null };
+  await persistPlotRun(plot);
+  return submitPlotCells(plotId, retry.map((cell) => cell.id));
+}
+
+async function buildPlotComposite(plotId) {
+  if (state.plotCompositeBuilding.has(plotId)) return;
+  state.plotCompositeBuilding.add(plotId);
+  try {
+    await state.plotSaveChains.get(plotId);
+    const response = await api.fetchApi(
+      `/promptstudio/prompt-studio/plots/${encodeURIComponent(plotId)}/composite`,
+      { method: "POST" },
+    );
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.error || `Composite could not be built (${response.status}).`);
+    state.plotRuns.set(plotId, data);
+    if (activeChat()?.plotId === plotId) renderPlotWorkspace();
+  } catch (error) {
+    const plot = state.plotRuns.get(plotId);
+    if (plot) plot.artifactError = error.message || String(error);
+    if (activeChat()?.plotId === plotId) renderPlotWorkspace();
+  } finally {
+    state.plotCompositeBuilding.delete(plotId);
+  }
+}
+
+async function finalizePlotIfDone(plotId) {
+  const plot = state.plotRuns.get(plotId);
+  if (!plot || plot.cells.some((cell) => !["complete", "failed", "cancelled"].includes(cell.status))) return;
+  const complete = plot.cells.filter((cell) => cell.status === "complete").length;
+  const failed = plot.cells.some((cell) => cell.status === "failed");
+  const nextStatus = complete === plot.cells.length
+    ? "complete"
+    : (complete ? "partial" : (failed ? "failed" : "cancelled"));
+  if (plot.status !== nextStatus) {
+    plot.status = nextStatus;
+    await persistPlotRun(plot);
+  }
+  if (complete && !(plot.artifacts?.composites || []).length) await buildPlotComposite(plotId);
+}
+
 function refreshEmptyImageDropZone() {
   const history = state.panel?.querySelector("#promptstudio-history");
   if (!history) return;
@@ -2357,7 +3668,7 @@ function refreshEmptyImageDropZone() {
     return;
   }
   if (existing) {
-    existing.querySelector("button").disabled = state.busy;
+    existing.querySelectorAll("button").forEach((button) => { button.disabled = state.busy; });
     existing.querySelector(".promptstudio-empty-drop-copy").textContent =
       `${llmProviderName()} will read it and build a prompt with the selected profile and style.`;
     return;
@@ -2368,12 +3679,16 @@ function refreshEmptyImageDropZone() {
     <span class="promptstudio-empty-drop-icon" aria-hidden="true">+</span>
     <strong>Type a prompt or drop an image to start</strong>
     <span class="promptstudio-empty-drop-copy">${llmProviderName()} will read it and build a prompt with the selected profile and style.</span>
-    <button type="button" data-disable-busy>Choose image</button>
+    <span class="promptstudio-empty-actions">
+      <button type="button" data-empty-action="image" data-disable-busy>Choose image</button>
+      <button type="button" data-empty-action="plot" data-disable-busy>Start XY(Z) plot</button>
+    </span>
     <small class="promptstudio-empty-drop-feedback" aria-live="polite">A vision-capable model must be active to import an image.</small>`;
-  zone.querySelector("button").disabled = state.busy;
-  zone.querySelector("button").addEventListener("click", () => {
+  zone.querySelectorAll("button").forEach((button) => { button.disabled = state.busy; });
+  zone.querySelector('[data-empty-action="image"]').addEventListener("click", () => {
     state.panel?.querySelector("#promptstudio-image-import")?.click();
   });
+  zone.querySelector('[data-empty-action="plot"]').addEventListener("click", startPlotSession);
   history.appendChild(zone);
 }
 
@@ -2383,6 +3698,12 @@ function renderChatHistory({ forceEnd = false } = {}) {
   const wasNearEnd = forceEnd || historyShouldStickToEnd(history);
   const previousScrollTop = history.scrollTop;
   history.replaceChildren();
+  syncPlotInspectorControls();
+  if (isPlotChat()) {
+    renderPlotWorkspace();
+    updateComposeMode();
+    return;
+  }
   for (const message of activeChat()?.messages || []) renderMessage(message, { scroll: false });
   refreshEmptyImageDropZone();
   renderStudioDiscussionContext();
@@ -2393,6 +3714,10 @@ function renderChatHistory({ forceEnd = false } = {}) {
 
 function updateComposeMode() {
   if (!state.panel) return;
+  const plotMode = isPlotChat();
+  const compose = state.panel.querySelector(".promptstudio-compose");
+  if (compose) compose.hidden = plotMode;
+  if (plotMode) return;
   const createAction = state.panel.querySelector('input[name="promptstudio-generation-action"][value="create"]');
   const editAction = state.panel.querySelector('input[name="promptstudio-generation-action"][value="edit"]');
   const canEdit = Boolean(editingSource());
@@ -2542,6 +3867,7 @@ function deleteChat(chatId) {
   const view = state.panel?.ownerDocument.defaultView;
   if (!view?.confirm(`Delete the chat from ${chatTitle(chat.createdAt)}? This cannot be undone.`)) return;
   const wasActive = chat.id === state.activeChatId;
+  state.chatDeletedIds.add(chat.id);
   state.chats.splice(index, 1);
   if (!state.chats.length) {
     const replacement = normalizeChat({ studioSettings: newChatStudioSettings(captureStudioSettings()) });
@@ -2644,8 +3970,8 @@ function modelSelectionKey(profileId, nodeId) {
   return `${String(profileId || "")}\u0000${String(nodeId || "")}`;
 }
 
-function selectionForModelNode(profileId, descriptor) {
-  const stored = cleanModelName(state.modelSelections[modelSelectionKey(profileId, descriptor?.id)]);
+function selectionForModelNode(profileId, descriptor, storedSelections = state.modelSelections) {
+  const stored = cleanModelName(storedSelections?.[modelSelectionKey(profileId, descriptor?.id)]);
   return stored || cleanModelName(descriptor?.modelName);
 }
 
@@ -2658,13 +3984,13 @@ function setSelectionForModelNode(profileId, nodeId, modelName) {
   syncActiveChatSettings();
 }
 
-function generationModelState(profile, descriptors = profile?.modelNodes) {
+function generationModelState(profile, descriptors = profile?.modelNodes, storedSelections = state.modelSelections) {
   if (!profile || !Array.isArray(descriptors)) return [];
   return descriptors
     .map((descriptor) => ({
       nodeId: String(descriptor?.id || "").trim(),
       modelType: String(descriptor?.modelType || "").trim(),
-      modelName: selectionForModelNode(profile.id, descriptor),
+      modelName: selectionForModelNode(profile.id, descriptor, storedSelections),
     }))
     .filter((entry) => entry.nodeId && entry.modelName);
 }
@@ -2673,8 +3999,8 @@ function loraSelectionKey(profileId, nodeId) {
   return `${String(profileId || "")}\u0000${String(nodeId || "")}`;
 }
 
-function selectionsForLoraNode(profileId, nodeId) {
-  const stored = state.loraSelections[loraSelectionKey(profileId, nodeId)];
+function selectionsForLoraNode(profileId, nodeId, storedSelections = state.loraSelections) {
+  const stored = storedSelections?.[loraSelectionKey(profileId, nodeId)];
   return normalizeLoraStack(stored);
 }
 
@@ -2686,13 +4012,13 @@ function setSelectionsForLoraNode(profileId, nodeId, selections) {
   syncActiveChatSettings();
 }
 
-function generationLoraState(profile, descriptors = profile?.loraNodes) {
+function generationLoraState(profile, descriptors = profile?.loraNodes, storedSelections = state.loraSelections) {
   if (!profile || !Array.isArray(descriptors)) return [];
   return descriptors
     .map((descriptor) => ({
       nodeId: String(descriptor?.id || "").trim(),
       loraType: String(descriptor?.loraType || "").trim(),
-      selections: selectionsForLoraNode(profile.id, descriptor?.id),
+      selections: selectionsForLoraNode(profile.id, descriptor?.id, storedSelections),
     }))
     .filter((entry) => entry.nodeId);
 }
@@ -2802,6 +4128,16 @@ function buildModelNodeControls(profile, descriptor, catalog) {
     setSelectionForModelNode(profile.id, descriptor.id, select.value);
   });
   group.appendChild(select);
+  const plotAxis = activePlotAxisForTarget(`model:${descriptor.id}`);
+  if (plotAxis) {
+    select.disabled = true;
+    select.dataset.promptstudioPlotAxis = plotAxis.name;
+    group.dataset.plotAxisControlled = "true";
+    const note = document.createElement("small");
+    note.className = "promptstudio-plot-global-note";
+    note.textContent = `Set by ${plotAxis.name.toUpperCase()} plot axis.`;
+    group.appendChild(note);
+  }
   return group;
 }
 
@@ -2829,7 +4165,10 @@ async function refreshModelSection({ refresh = false } = {}) {
     container.replaceChildren(
       ...descriptors.map((descriptor, index) => buildModelNodeControls(profile, descriptor, catalogs[index])),
     );
-    summary.textContent = `${descriptors.length} loader${descriptors.length === 1 ? "" : "s"}`;
+    const controlled = descriptors.filter((descriptor) => activePlotAxisForTarget(`model:${descriptor.id}`));
+    summary.textContent = controlled.length
+      ? `${descriptors.length} loader${descriptors.length === 1 ? "" : "s"} · ${controlled.length} set by plot axis`
+      : `${descriptors.length} loader${descriptors.length === 1 ? "" : "s"}`;
   } catch (error) {
     if (token !== state.modelRenderToken) return;
     summary.textContent = "Unavailable";
@@ -3012,7 +4351,19 @@ async function refreshLoraSection({ refresh = false } = {}) {
       (count, descriptor) => count + selectionsForLoraNode(profile.id, descriptor.id).length,
       0,
     );
-    summary.textContent = `${selectedCount} selected`;
+    summary.textContent = isPlotChat() ? `${selectedCount} global · every cell` : `${selectedCount} selected`;
+    if (isPlotChat()) {
+      const varied = activePlotAxes().filter((axis) => ["lora", "lora_strength"].includes(axis.type));
+      const note = document.createElement("p");
+      note.className = "promptstudio-plot-global-note promptstudio-plot-lora-note";
+      const axisText = varied.map((axis) => (
+        axis.type === "lora_strength"
+          ? `${axis.name.toUpperCase()} varies the strength of ${axis.targetName || "a selected LoRA"}`
+          : `${axis.name.toUpperCase()} supplies the varied LoRA on its targeted loader`
+      )).join("; ");
+      note.textContent = `These LoRAs apply to every plot generation${axisText ? `. ${axisText}; the other selected LoRAs remain global` : ""}.`;
+      container.prepend(note);
+    }
   } catch (error) {
     if (token !== state.loraRenderToken) return;
     summary.textContent = "Unavailable";
@@ -4924,31 +6275,45 @@ function collectRevisionPayload(
   currentPrompt = state.currentPrompt,
   currentFinalPrompt = state.currentPrompt,
   contextImage = null,
+  controlOverrides = {},
 ) {
   const value = (id) => state.panel.querySelector(`#${id}`)?.value;
+  const controlValue = (key, id) => Object.hasOwn(controlOverrides, key) ? controlOverrides[key] : value(id);
+  const profileGenerationSettings = { ...llmProfileGenerationSettings() };
+  const frozenProfile = controlOverrides.llm_provider === "llamacpp" && controlOverrides.llamacpp_generation_settings
+    ? normalizeLlmProfile({ ...controlOverrides.llamacpp_generation_settings, id: "plot", name: "Plot" })
+    : availableLlmProfiles().find((profile) => profile.id === controlOverrides.llm_profile) || null;
+  if (controlOverrides.thinking_mode || frozenProfile) {
+    Object.assign(
+      profileGenerationSettings,
+      llmProfileGenerationSettings(controlOverrides.thinking_mode, frozenProfile),
+    );
+  }
   const payload = {
     current_prompt: currentPrompt,
     current_final_prompt: currentFinalPrompt,
     revision,
     mode,
-    llm_provider: value("promptstudio-llm-provider"),
-    kobold_url: value("promptstudio-kobold-url"),
-    ollama_url: value("promptstudio-ollama-url"),
-    ollama_model: value("promptstudio-ollama-model"),
-    llamacpp_url: value("promptstudio-llamacpp-url"),
-    llamacpp_model: value("promptstudio-llamacpp-model"),
-    llamacpp_executable: value("promptstudio-llamacpp-executable"),
-    llamacpp_config_profile: value("promptstudio-llamacpp-config-profile"),
-    keep_models_loaded: Boolean(state.panel.querySelector("#promptstudio-keep-models-loaded")?.checked),
-    ...llmProfileGenerationSettings(),
-    model_profile: value("promptstudio-profile"),
-    style_preset: value("promptstudio-style"),
-    framing_preset: value("promptstudio-framing"),
-    style_modifier: value("promptstudio-style-modifier"),
-    framing_modifier: value("promptstudio-framing-modifier"),
-    additional_instructions: value("promptstudio-additional-instructions"),
-    embellishment_level: value("promptstudio-embellishment"),
-    target_output_length: Number(value("promptstudio-output-length") || 35),
+    llm_provider: controlValue("llm_provider", "promptstudio-llm-provider"),
+    kobold_url: controlValue("kobold_url", "promptstudio-kobold-url"),
+    ollama_url: controlValue("ollama_url", "promptstudio-ollama-url"),
+    ollama_model: controlValue("ollama_model", "promptstudio-ollama-model"),
+    llamacpp_url: controlValue("llamacpp_url", "promptstudio-llamacpp-url"),
+    llamacpp_model: controlValue("llamacpp_model", "promptstudio-llamacpp-model"),
+    llamacpp_executable: controlValue("llamacpp_executable", "promptstudio-llamacpp-executable"),
+    llamacpp_config_profile: controlValue("llamacpp_config_profile", "promptstudio-llamacpp-config-profile"),
+    keep_models_loaded: Object.hasOwn(controlOverrides, "keep_models_loaded")
+      ? Boolean(controlOverrides.keep_models_loaded)
+      : Boolean(state.panel.querySelector("#promptstudio-keep-models-loaded")?.checked),
+    ...profileGenerationSettings,
+    model_profile: controlValue("model_profile", "promptstudio-profile"),
+    style_preset: controlValue("style_preset", "promptstudio-style"),
+    framing_preset: controlValue("framing_preset", "promptstudio-framing"),
+    style_modifier: controlValue("style_modifier", "promptstudio-style-modifier"),
+    framing_modifier: controlValue("framing_modifier", "promptstudio-framing-modifier"),
+    additional_instructions: controlValue("additional_instructions", "promptstudio-additional-instructions"),
+    embellishment_level: controlValue("embellishment_level", "promptstudio-embellishment"),
+    target_output_length: Number(controlValue("target_output_length", "promptstudio-output-length") || 35),
   };
   const storedContextImage = storedImageReference(contextImage);
   if (storedContextImage) payload.context_image = storedContextImage;
@@ -5225,6 +6590,21 @@ function setStudioGenerationState(promptId, generationState) {
   queueMicrotask(syncBackgroundActivityIndicator);
 }
 
+function updatePlotPromptState(promptId, status, error = "") {
+  const id = String(promptId || "");
+  if (!id) return;
+  for (const plot of state.plotRuns.values()) {
+    const cell = plot.cells?.find((item) => item.promptId === id);
+    if (!cell || !["queued", "generating"].includes(cell.status)) continue;
+    cell.status = status;
+    cell.error = error;
+    cell.updatedAt = Date.now();
+    if (status === "failed") persistPlotRun(plot).then(() => finalizePlotIfDone(plot.id)).catch(() => {});
+    else if (activeChat()?.plotId === plot.id) renderPlotWorkspace();
+    break;
+  }
+}
+
 function setupGenerationProgressEvents() {
   const eventPromptId = (event) => String(
     event?.detail?.prompt_id || event?.detail?.promptId || state.activeGenerationPromptId || "",
@@ -5235,6 +6615,7 @@ function setupGenerationProgressEvents() {
       state.activeGenerationPromptId = promptId;
       setStudioGenerationState(promptId, "generating");
     }
+    updatePlotPromptState(promptId, "generating");
     updateGenerationProgress(promptId, { phase: "generating" });
   });
   api.addEventListener("executing", (event) => {
@@ -5265,7 +6646,9 @@ function setupGenerationProgressEvents() {
   for (const eventName of ["execution_error", "execution_interrupted"]) {
     api.addEventListener(eventName, (event) => {
       const promptId = eventPromptId(event);
-      failTrackedGeneration(promptId, executionFailureMessage(eventName, event?.detail));
+      const message = executionFailureMessage(eventName, event?.detail);
+      failTrackedGeneration(promptId, message);
+      updatePlotPromptState(promptId, "failed", message);
     });
   }
 }
@@ -11215,26 +12598,26 @@ function buildPanel() {
           <button id="promptstudio-close" type="button" title="Close Prompt Studio" aria-label="Close Prompt Studio">×</button>
         </div>
       </header>
-      <section class="promptstudio-mode-control">
+      <section id="promptstudio-llm-mode-control" class="promptstudio-mode-control">
         <label>
           <input id="promptstudio-use-llm-amplification" type="checkbox" ${settings.use_llm_amplification ? "checked" : ""} />
           <span><strong>Use LLM amplification</strong><small id="promptstudio-llm-amplification-help">Rewrite prompts through ${llmProviderDisplayName(settings.llm_provider)}</small></span>
         </label>
       </section>
       <section class="promptstudio-control-deck">
-        <details class="promptstudio-current-details" data-promptstudio-sidebar-group="main-prompt" open>
+        <details id="promptstudio-main-prompt-details" class="promptstudio-current-details" data-promptstudio-sidebar-group="main-prompt" open>
           <summary><span>Main prompt</span><small>Editable source intent</small></summary>
           <div class="promptstudio-main-prompt-editor">
             <div id="promptstudio-main-prompt-highlights" class="promptstudio-main-prompt-highlights" aria-hidden="true"><pre id="promptstudio-main-prompt-highlight-content"></pre></div>
             <textarea id="promptstudio-main-prompt" rows="5" aria-label="Main prompt" placeholder="The user's model-neutral image description"></textarea>
           </div>
         </details>
-        <details class="promptstudio-current-details" data-promptstudio-sidebar-group="final-prompt" open>
+        <details id="promptstudio-final-prompt-details" class="promptstudio-current-details" data-promptstudio-sidebar-group="final-prompt" open>
           <summary><span>Final prompt</span><small>Editable; rebuilt when controls change</small></summary>
           <textarea id="promptstudio-current-prompt" rows="8" aria-label="Final prompt" placeholder="The rendered prompt sent to the selected workflow"></textarea>
         </details>
-        <details class="promptstudio-settings" data-promptstudio-sidebar-group="generation-controls" open>
-          <summary><span>Generation controls</span><small>Model, style and prompt shaping</small></summary>
+        <details id="promptstudio-generation-controls" class="promptstudio-settings" data-promptstudio-sidebar-group="generation-controls" open>
+          <summary><span>Generation controls</span><small id="promptstudio-generation-controls-summary">Model, style and prompt shaping</small></summary>
           <div class="promptstudio-settings-grid">
             <label class="promptstudio-control-wide">Model profile<select id="promptstudio-profile"></select></label>
             <label>Style<select id="promptstudio-style"></select></label>
@@ -11274,23 +12657,23 @@ function buildPanel() {
           </summary>
           <div id="promptstudio-model-groups" class="promptstudio-lora-groups"></div>
         </details>
-        <details class="promptstudio-resolution-details" data-promptstudio-sidebar-group="resolution" open>
-          <summary><span>Resolution</span><small>Create size; Edit preserves source</small></summary>
+        <details id="promptstudio-resolution-details" class="promptstudio-resolution-details" data-promptstudio-sidebar-group="resolution" open>
+          <summary><span>Resolution</span><small id="promptstudio-resolution-summary">Create size; Edit preserves source</small></summary>
           <div class="promptstudio-resolution-grid">
             <label>Aspect ratio<select id="promptstudio-resolution-aspect-ratio">${RESOLUTION_ASPECT_RATIOS.map((value) => `<option value="${value}">${value}</option>`).join("")}</select></label>
             <label>Megapixels<input id="promptstudio-resolution-megapixels" type="number" min="0.1" max="16" step="0.1" value="1" /></label>
             <label>Multiple<input id="promptstudio-resolution-multiple" type="number" min="8" max="128" step="4" value="8" /></label>
           </div>
         </details>
-        <details class="promptstudio-secondary-details promptstudio-additional-details" data-promptstudio-sidebar-group="additional-instructions" open>
+        <details id="promptstudio-additional-details" class="promptstudio-secondary-details promptstudio-additional-details" data-promptstudio-sidebar-group="additional-instructions" open>
           <summary><span>Additional instructions</span><small>Steering guidance for the LLM</small></summary>
           <div class="promptstudio-main-prompt-editor promptstudio-additional-instructions-editor">
             <div id="promptstudio-additional-instruction-highlights" class="promptstudio-main-prompt-highlights" aria-hidden="true"><pre id="promptstudio-additional-instruction-highlight-content"></pre></div>
             <textarea id="promptstudio-additional-instructions" rows="3" aria-label="Additional instructions" placeholder="Explain intent or give rewrite guidance without changing the selected style or framing"></textarea>
           </div>
         </details>
-        <details class="promptstudio-secondary-details" data-promptstudio-sidebar-group="secondary-instructions" open>
-          <summary><span>Unmodified part</span><small>Text passed through unchanged</small></summary>
+        <details id="promptstudio-secondary-details" class="promptstudio-secondary-details" data-promptstudio-sidebar-group="secondary-instructions" open>
+          <summary><span>Unmodified part</span><small id="promptstudio-secondary-summary">Text passed through unchanged</small></summary>
           <textarea id="promptstudio-secondary-instructions" rows="3" aria-label="Unmodified part" placeholder="Phrases that must remain unchanged, such as LoRA trigger words"></textarea>
         </details>
       </section>
@@ -11691,6 +13074,11 @@ function buildPanel() {
   installTypeAnywhereFocus(panel.ownerDocument);
   const history = panel.querySelector("#promptstudio-history");
   const consultHistory = panel.querySelector("#promptstudio-consult-history");
+  const chatList = panel.querySelector("#promptstudio-chat-list");
+  chatList.addEventListener("scroll", () => {
+    const remaining = chatList.scrollHeight - chatList.clientHeight - chatList.scrollTop;
+    if (remaining <= 160) loadOlderChats();
+  }, { passive: true });
   history.addEventListener("scroll", () => {
     state.historyWasNearEnd = historyIsNearEnd(history);
   }, { passive: true });

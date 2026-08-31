@@ -164,6 +164,14 @@ Prompt preparation and ComfyUI submission run without locking the main interface
 
 Prompt changes keep the current ComfyUI seed, making before-and-after comparisons easier. **New seed on reroll** randomizes widgets named `seed` or `noise_seed` only when **Reroll**, or an unchanged **Generate**, queues the same prompt and controls again. Turn it off to keep the current seed on rerolls too.
 
+### XY(Z) image plots
+
+A new empty session offers **Start XY(Z) plot** alongside ordinary prompt and image-import actions. The plot builder uses the selected `[PS]` creation workflow and supports X and Y axes plus an optional Z axis. Each axis independently targets a workflow-owned model, LoRA, LoRA strength, seed, sampler, scheduler, step count, CFG, or denoise strength. Model and LoRA axes can add one item or every available item; numerical axes accept individual values, ranges, and random seed batches. Duplicate workflow targets and plots larger than 512 cells are rejected before submission.
+
+Starting a plot immediately creates the complete labelled grid, then fills each cell as its ComfyUI result arrives. Z values are navigated as separate grid slices, the cell-size control supports both overview and detail inspection, and completed images open in the normal full-size viewer. The run can cancel remaining cells or retry one failed cell or all failures without rebuilding the plot inputs.
+
+Plot state lives under the ignored `prompt_studio_plots/` runtime directory. Its manifest contains one base executable workflow snapshot, axis overrides, prompt IDs, statuses, and references to the original ComfyUI output images; it does not copy each generated image. This lets a refreshed browser resume queued results. When all cells reach a terminal state, Prompt Studio writes a labelled PNG composite to `output/PromptStudio/Plots/` (one PNG per Z slice plus an overview for multi-slice plots) and a portable JSON sidecar. **Rebuild composite** regenerates those artifacts after retries.
+
 If you change the model profile, style, framing, modifiers, embellishment level, or target length, **Reroll** or an empty **Revise & Generate** rebuilds the final prompt from the main prompt. This clean render prevents details from an older control setting from leaking into the new result. Endpoint, thinking, and temperature changes do not mark the final prompt stale. A direct ComfyUI reroll is used when the prompt-shaping controls already match.
 
 **Target length** is a user-facing approximate output goal. Natural-language profiles use a 20–200 word slider; tag-based profiles automatically switch to 5–40 tags. The highlighted mark shows the default for the current model profile and embellishment level. Dragging creates a custom value for that combination. Changing either the model profile or embellishment level clears the custom value and moves the slider to the new highlighted default. Fresh renders use the target, while precision revisions preserve the existing prompt outside the requested edit scope. Prompt Studio converts the target into a larger hidden final-answer token allowance so local-model output is not cut off.
@@ -317,6 +325,12 @@ Using Prompt Amplify as the prompt input does not cause double amplification. Pr
 Both nodes return the image prompt and unchanged `secondary_instructions` as their first two outputs, followed by optional integer `width` and `height` outputs. Prompt Studio supplies the resolution from its **Resolution** controls whenever it queues either node. Prompt Amplify also exposes the same controls on the ComfyUI canvas for normal workflow runs; Prompt Slot keeps them Studio-only. The aspect-ratio presets, megapixel range, multiple range, defaults, and rounding match ComfyUI's built-in **Resolution Selector**.
 
 If a `[PS]` workflow contains more than one compatible prompt node, Prompt Studio uses the first executable one in graph order.
+
+## Prompt Studio Sampler
+
+Use **Prompt Studio Sampler** in place of the standard KSampler when a saved `[PS]` workflow should expose deterministic sampling controls to XY(Z) plots. It is a drop-in sampler with the same model, conditioning, latent, seed, steps, CFG, sampler, scheduler, and denoise inputs and the same latent output. Normal ComfyUI execution still calls the standard `common_ksampler` implementation.
+
+Prompt Studio discovers only this explicit node contract for seed and sampling axes. It never searches arbitrary workflow inputs named `seed`, `cfg`, or `scheduler`, which prevents a plot from silently changing an unrelated node. Multiple Prompt Studio Samplers are supported; the axis builder names the exact target node.
 
 ## Prompt Studio LoRA Loader
 
@@ -629,6 +643,13 @@ Prompt Agent's isolated `compile`, `architect`, and `evaluate` phases use:
 
 ```text
 POST /promptstudio/prompt-studio/agent
+```
+
+Durable XY(Z) manifests and composite rendering use:
+
+```text
+GET|PUT /promptstudio/prompt-studio/plots/{plot_id}
+POST    /promptstudio/prompt-studio/plots/{plot_id}/composite
 ```
 
 The browser uses `create_main` to semantically convert the first creation request into direct model-neutral visual intent, `revise_main` to precision-edit that intent, `revise` to precision-edit the existing final prompt, and `render` to build a fresh final prompt. Ordinary revisions run the two precision edits independently; a control change renders only from the updated main prompt. Revision requests may include one stored `context_image` reference when the user enables latest-image context.

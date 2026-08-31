@@ -8,6 +8,7 @@ export const IMAGE_SOURCE_TYPE = "KCPP_ChatImageInput";
 export const UPSCALE_TYPE = "KCPP_PromptStudioUpscale";
 export const LORA_LOADER_TYPE = "KCPP_PromptStudioLoraLoader";
 export const MODEL_LOADER_TYPE = "KCPP_PromptStudioModelLoader";
+export const SAMPLER_CONTROL_TYPE = "KCPP_PromptStudioSampler";
 
 export const STORAGE_KEY = "promptstudio.promptStudio.settings.v1";
 export const LORA_STORAGE_KEY = "promptstudio.promptStudio.loras.v1";

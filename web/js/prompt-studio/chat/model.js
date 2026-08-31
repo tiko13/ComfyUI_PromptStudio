@@ -154,6 +154,7 @@ function newChatStudioSettings(value = getSettings()) {
 
 function isEmptyChat(chat) {
   if (!chat || chat.initialized) return false;
+  if (chat.sessionMode === "plot" || chat.plotId) return false;
   const prompts = [
     chat.mainPrompt,
     chat.renderedMainPrompt,
@@ -487,6 +488,14 @@ function normalizeChat(chat) {
     createdAt,
     updatedAt,
     initialized: recoverGeneratedPrompt || (chat?.initialized == null ? Boolean(finalPrompt) : Boolean(chat.initialized)),
+    sessionMode: chat?.sessionMode === "plot" || chat?.plotId ? "plot" : "chat",
+    plotId: String(chat?.plotId || ""),
+    plotSummary: chat?.plotSummary && typeof chat.plotSummary === "object" && !Array.isArray(chat.plotSummary)
+      ? structuredClone(chat.plotSummary)
+      : null,
+    plotDraft: chat?.plotDraft && typeof chat.plotDraft === "object" && !Array.isArray(chat.plotDraft)
+      ? structuredClone(chat.plotDraft)
+      : null,
     mainPrompt,
     renderedMainPrompt,
     mainPromptDirty: mainPrompt !== renderedMainPrompt,

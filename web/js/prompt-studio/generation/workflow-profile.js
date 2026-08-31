@@ -1,6 +1,7 @@
 import {
   LORA_LOADER_TYPE,
   MODEL_LOADER_TYPE,
+  SAMPLER_CONTROL_TYPE,
 } from "../core/constants.js";
 import { cleanModelName } from "./model-name.js";
 
@@ -46,6 +47,34 @@ export function normalizeWorkflowProfile(profile) {
       modelName: cleanModelName(node?.modelName),
     })).filter((node) => node.id)
     : snapshotModelNodes;
+  const snapshotSamplingNodes = Object.entries(snapshot?.output || {})
+    .filter(([, node]) => node?.class_type === SAMPLER_CONTROL_TYPE)
+    .map(([id, node]) => ({
+      id: String(id),
+      label: `Sampler ${id}`,
+      controls: {
+        seed: Number(node.inputs?.seed ?? 0),
+        steps: Number(node.inputs?.steps ?? 20),
+        cfg: Number(node.inputs?.cfg ?? 8),
+        sampler: String(node.inputs?.sampler_name || ""),
+        scheduler: String(node.inputs?.scheduler || ""),
+        denoise: Number(node.inputs?.denoise ?? 1),
+      },
+    }));
+  const samplingNodes = Array.isArray(profile?.samplingNodes)
+    ? profile.samplingNodes.map((node) => ({
+      id: String(node?.id || ""),
+      label: String(node?.label || `Sampler ${node?.id || ""}`).trim(),
+      controls: {
+        seed: Number(node?.controls?.seed ?? 0),
+        steps: Number(node?.controls?.steps ?? 20),
+        cfg: Number(node?.controls?.cfg ?? 8),
+        sampler: String(node?.controls?.sampler || ""),
+        scheduler: String(node?.controls?.scheduler || ""),
+        denoise: Number(node?.controls?.denoise ?? 1),
+      },
+    })).filter((node) => node.id)
+    : snapshotSamplingNodes;
   return {
     id: path,
     path,
@@ -57,6 +86,7 @@ export function normalizeWorkflowProfile(profile) {
     upscaleNodeId: String(profile?.upscaleNodeId || ""),
     loraNodes,
     modelNodes,
+    samplingNodes,
     resultNodeIds: Array.isArray(profile?.resultNodeIds) ? profile.resultNodeIds.map(String) : [],
     resultFields: ["images", "gifs"],
     snapshot,

@@ -64,6 +64,7 @@ prompt_studio_chats.json.tmp
 prompt_studio_chats/
 prompt_studio_workflows.json
 prompt_studio_workflows.json.tmp
+prompt_studio_plots/
 prompt_studio_llamacpp_process.json
 prompt_studio_llamacpp_process.json.tmp
 prompt_studio_llamacpp_autostart.json

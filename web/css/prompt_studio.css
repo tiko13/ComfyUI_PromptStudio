@@ -2871,6 +2871,37 @@ body.promptstudio-popout-body .promptstudio-header-actions {
   min-height: 120px;
 }
 
+#promptstudio-prompt-studio[data-plot-llm-mode="true"] #promptstudio-generation-controls {
+  display: block;
+}
+
+#promptstudio-prompt-studio[data-plot-mode="true"] #promptstudio-llm-mode-control,
+#promptstudio-prompt-studio[data-plot-mode="true"] #promptstudio-main-prompt-details,
+#promptstudio-prompt-studio[data-plot-mode="true"] #promptstudio-final-prompt-details,
+#promptstudio-prompt-studio[data-plot-mode="true"][data-plot-llm-mode="false"] #promptstudio-generation-controls,
+#promptstudio-prompt-studio[data-plot-mode="true"][data-plot-llm-mode="false"] #promptstudio-additional-details {
+  display: none !important;
+}
+
+.promptstudio-plot-axis-controlled {
+  color: var(--ps-muted);
+}
+
+.promptstudio-plot-axis-controlled > small[data-promptstudio-plot-axis-note="true"] {
+  display: inline;
+  margin-left: 5px;
+  color: var(--ps-accent-strong);
+  font-size: 9px;
+  font-weight: 650;
+}
+
+#promptstudio-prompt-studio [data-promptstudio-plot-axis]:disabled,
+#promptstudio-prompt-studio .promptstudio-model-group[data-plot-axis-controlled="true"] > select:disabled {
+  color: var(--ps-muted);
+  background: rgba(21, 23, 31, 0.82);
+  opacity: 0.62;
+}
+
 .promptstudio-settings-grid,
 .promptstudio-resolution-grid {
   display: grid;
@@ -3086,6 +3117,20 @@ body.promptstudio-popout-body .promptstudio-header-actions {
 .promptstudio-lora-empty {
   margin: 1px 0;
   line-height: 1.4;
+}
+
+.promptstudio-plot-global-note {
+  color: var(--ps-accent-strong);
+  font-size: 9px;
+  line-height: 1.45;
+}
+
+.promptstudio-plot-lora-note {
+  margin: 0;
+  padding: 8px;
+  border: 1px solid rgba(141, 115, 255, 0.22);
+  border-radius: 8px;
+  background: rgba(141, 115, 255, 0.06);
 }
 
 .promptstudio-lora-rows {
@@ -5155,4 +5200,232 @@ body.promptstudio-popout-body #promptstudio-prompt-studio.promptstudio-chats-ope
   .promptstudio-actions {
     position: static;
   }
+}
+
+#promptstudio-prompt-studio .promptstudio-chat-load-older {
+  width: 100%;
+  min-height: 34px;
+  margin: 4px 0 2px;
+  color: var(--ps-muted);
+  background: rgba(255, 255, 255, 0.025);
+  border-color: rgba(255, 255, 255, 0.08);
+  font-size: 10px;
+}
+
+/* XY(Z) plot workspace */
+.promptstudio-compose[hidden] { display: none !important; }
+
+.promptstudio-empty-actions,
+.promptstudio-plot-run-actions,
+.promptstudio-plot-artifacts,
+.promptstudio-plot-toolbar,
+.promptstudio-plot-z-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.promptstudio-empty-actions { justify-content: center; gap: 10px; }
+
+.promptstudio-plot-workspace {
+  width: min(100%, 1500px);
+  margin: 0 auto;
+  padding: 22px;
+  color: var(--ps-text);
+}
+
+.promptstudio-plot-workspace > header,
+.promptstudio-plot-workspace > footer,
+.promptstudio-plot-axis > header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.promptstudio-plot-workspace > header strong { display: block; font-size: 1.15rem; }
+.promptstudio-plot-workspace > header small,
+.promptstudio-plot-axis > header small { display: block; margin-top: 3px; color: var(--ps-muted); }
+
+.promptstudio-plot-basics {
+  display: grid;
+  grid-template-columns: minmax(180px, 1fr) minmax(220px, 1fr);
+  gap: 14px;
+  margin: 20px 0;
+  padding: 16px;
+  border: 1px solid var(--ps-border);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.025);
+}
+
+.promptstudio-plot-field { display: grid; gap: 6px; min-width: 0; color: var(--ps-muted); font-size: 12px; }
+.promptstudio-plot-field > span { font-weight: 650; }
+.promptstudio-plot-wide { grid-column: 1 / -1; }
+.promptstudio-plot-basics textarea { resize: vertical; }
+
+.promptstudio-plot-llm-toggle {
+  display: flex;
+  align-items: flex-start;
+  gap: 11px;
+  margin: 0 0 18px;
+  padding: 13px 15px;
+  border: 1px solid var(--ps-border);
+  border-radius: 13px;
+  background: rgba(141, 115, 255, 0.07);
+  cursor: pointer;
+}
+
+#promptstudio-prompt-studio .promptstudio-plot-llm-toggle > input {
+  width: auto;
+  margin-top: 2px;
+}
+
+.promptstudio-plot-llm-toggle > span { display: grid; gap: 3px; }
+.promptstudio-plot-llm-toggle small { color: var(--ps-muted); line-height: 1.4; }
+
+.promptstudio-plot-axes {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 340px), 1fr));
+  gap: 14px;
+}
+
+.promptstudio-plot-axis {
+  min-width: 0;
+  padding: 16px;
+  border: 1px solid var(--ps-border);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.025);
+}
+.promptstudio-plot-axis[data-axis="x"] { border-top: 3px solid #5b8def; }
+.promptstudio-plot-axis[data-axis="y"] { border-top: 3px solid #d96b9b; }
+.promptstudio-plot-axis[data-axis="z"] { border-top: 3px solid #8d72e1; }
+
+.promptstudio-plot-axis-fields {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 10px;
+  margin: 14px 0 10px;
+}
+
+.promptstudio-plot-value-editor,
+.promptstudio-plot-value-row { display: flex; flex-wrap: wrap; align-items: center; gap: 7px; }
+.promptstudio-plot-value-editor > select { flex: 1 1 180px; min-width: 0; }
+.promptstudio-plot-value-row input { width: 92px; }
+.promptstudio-plot-range-row { flex-basis: 100%; }
+.promptstudio-plot-text-row { flex: 1 1 100%; }
+#promptstudio-prompt-studio .promptstudio-plot-text-row textarea { flex: 1 1 220px; min-width: 0; resize: vertical; }
+
+.promptstudio-plot-chips { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 12px; min-height: 30px; }
+.promptstudio-plot-chip {
+  display: inline-flex;
+  align-items: center;
+  max-width: 100%;
+  border: 1px solid var(--ps-border);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.045);
+  overflow: hidden;
+}
+.promptstudio-plot-chip > span { max-width: 220px; padding: 5px 2px 5px 10px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#promptstudio-prompt-studio .promptstudio-plot-chip button { width: 28px; min-width: 28px; padding: 3px; border: 0; background: transparent; }
+.promptstudio-plot-axis-empty { color: var(--ps-muted); }
+.promptstudio-plot-z-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 15px 2px;
+  cursor: pointer;
+}
+#promptstudio-prompt-studio .promptstudio-plot-z-toggle > input {
+  flex: 0 0 auto;
+  width: auto;
+  margin: 0;
+}
+.promptstudio-plot-builder > footer { margin-top: 18px; padding-top: 16px; border-top: 1px solid var(--ps-border); }
+.promptstudio-plot-validation { color: var(--ps-muted); }
+.promptstudio-plot-validation[data-kind="error"],
+.promptstudio-plot-loading[data-kind="error"] { color: var(--ps-error); }
+.promptstudio-plot-run-error {
+  margin-top: 12px;
+  padding: 10px 12px;
+  border: 1px solid rgba(224, 82, 82, 0.35);
+  border-radius: 10px;
+  color: var(--ps-error);
+  background: rgba(224, 82, 82, 0.1);
+}
+
+.promptstudio-plot-toolbar { justify-content: space-between; margin: 16px 0 10px; color: var(--ps-muted); font-size: 12px; }
+.promptstudio-plot-artifacts a { color: var(--ps-accent-strong); }
+.promptstudio-plot-z-tabs { margin: 10px 0; padding-bottom: 3px; overflow-x: auto; flex-wrap: nowrap; }
+.promptstudio-plot-z-tabs button[aria-pressed="true"] { border-color: var(--ps-accent-strong); color: var(--ps-accent-strong); }
+
+.promptstudio-plot-grid-scroller {
+  max-width: 100%;
+  max-height: calc(100vh - 250px);
+  overflow: auto;
+  border: 1px solid var(--ps-border);
+  border-radius: 12px;
+  background: rgba(0, 0, 0, 0.16);
+}
+.promptstudio-plot-grid {
+  display: grid;
+  grid-template-columns: 150px repeat(var(--ps-plot-columns), var(--ps-plot-cell));
+  grid-auto-rows: var(--ps-plot-cell);
+  width: max-content;
+  min-width: 100%;
+}
+.promptstudio-plot-corner,
+.promptstudio-plot-column-label,
+.promptstudio-plot-row-label {
+  position: sticky;
+  z-index: 2;
+  display: grid;
+  place-items: center;
+  padding: 10px;
+  border-right: 1px solid var(--ps-border);
+  border-bottom: 1px solid var(--ps-border);
+  background: #191821;
+  text-align: center;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.promptstudio-plot-corner,
+.promptstudio-plot-column-label { top: 0; }
+.promptstudio-plot-corner,
+.promptstudio-plot-row-label { left: 0; }
+.promptstudio-plot-corner { z-index: 4; }
+
+#promptstudio-prompt-studio .promptstudio-plot-cell {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  width: var(--ps-plot-cell);
+  height: var(--ps-plot-cell);
+  min-width: 0;
+  padding: 6px;
+  border: 0;
+  border-right: 1px solid var(--ps-border);
+  border-bottom: 1px solid var(--ps-border);
+  border-radius: 0;
+  background: #10141a;
+  color: var(--ps-muted);
+  overflow: hidden;
+}
+.promptstudio-plot-cell img { width: 100%; height: 100%; object-fit: contain; }
+.promptstudio-plot-cell small { display: -webkit-box; max-height: 5em; overflow: hidden; -webkit-line-clamp: 4; -webkit-box-orient: vertical; }
+.promptstudio-plot-cell[data-status="failed"] { background: rgba(224, 82, 82, 0.12); }
+.promptstudio-plot-cell[data-status="complete"] { cursor: zoom-in; }
+.promptstudio-plot-cell-action { color: var(--ps-accent-strong); font-weight: 700; }
+.promptstudio-plot-loading { display: flex; align-items: center; justify-content: center; gap: 10px; min-height: 260px; }
+
+@media (max-width: 720px) {
+  .promptstudio-plot-workspace { padding: 14px; }
+  .promptstudio-plot-basics { grid-template-columns: 1fr; }
+  .promptstudio-plot-wide { grid-column: auto; }
+  .promptstudio-plot-workspace > header,
+  .promptstudio-plot-workspace > footer { align-items: flex-start; flex-direction: column; }
+  .promptstudio-plot-grid { grid-template-columns: 105px repeat(var(--ps-plot-columns), var(--ps-plot-cell)); }
 }
