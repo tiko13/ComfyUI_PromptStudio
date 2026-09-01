@@ -25,6 +25,7 @@ import {
   retainedConsultMessages,
 } from "../consult/model.js";
 import { getSettings } from "../settings/storage.js";
+import { normalizePromptStudioInputSelections } from "../generation/prompt-studio-input.js";
 
 export function createChatModel({
   getDefaultLoraSelections,
@@ -115,6 +116,7 @@ function normalizeStudioSettings(value, fallback = getSettings()) {
     generation_action: source.generation_action === "edit" ? "edit" : "create",
     lora_selections: normalizeSessionLoraSelections(source.lora_selections),
     model_selections: normalizeSessionModelSelections(source.model_selections),
+    additional_input_selections: normalizePromptStudioInputSelections(source.additional_input_selections),
   };
 }
 
@@ -149,6 +151,7 @@ function newChatStudioSettings(value = getSettings()) {
     generation_action: "create",
     lora_selections: previous.lora_selections,
     model_selections: previous.model_selections,
+    additional_input_selections: previous.additional_input_selections,
   }, SETTINGS_DEFAULTS);
 }
 

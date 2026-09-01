@@ -4,6 +4,7 @@ import {
   SAMPLER_CONTROL_TYPE,
 } from "../core/constants.js";
 import { cleanModelName } from "./model-name.js";
+import { normalizePromptStudioInputDescriptors } from "./prompt-studio-input.js";
 
 export function workflowNameFromPath(path) {
   const filename = String(path || "").replaceAll("\\", "/").split("/").pop() || "";
@@ -87,6 +88,8 @@ export function normalizeWorkflowProfile(profile) {
     loraNodes,
     modelNodes,
     samplingNodes,
+    additionalInputs: normalizePromptStudioInputDescriptors(profile?.additionalInputs),
+    promptStudioInputVersion: Number(profile?.promptStudioInputVersion || 0),
     resultNodeIds: Array.isArray(profile?.resultNodeIds) ? profile.resultNodeIds.map(String) : [],
     resultFields: ["images", "gifs"],
     snapshot,

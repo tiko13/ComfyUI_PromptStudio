@@ -2879,7 +2879,7 @@ def _empty_chat_store():
 
 
 def _empty_workflow_store():
-    return {"version": 3, "revision": 0, "templates": []}
+    return {"version": 4, "revision": 0, "templates": []}
 
 
 def _revision(value):
@@ -3377,13 +3377,33 @@ def _merge_partial_chat_store(current, update):
     if not isinstance(deleted_chat_ids, list) or any(not isinstance(chat_id, str) for chat_id in deleted_chat_ids):
         raise ValueError("deletedChatIds must be a list of chat ids")
     deleted = {chat_id.strip() for chat_id in deleted_chat_ids if chat_id.strip()}
+    deleted_message_ids = update.get("deletedMessageIds", {})
+    if not isinstance(deleted_message_ids, dict):
+        raise ValueError("deletedMessageIds must be an object keyed by chat id")
+    normalized_deleted_messages = {}
+    for chat_id, message_ids in deleted_message_ids.items():
+        if not isinstance(chat_id, str) or not isinstance(message_ids, list) or any(
+            not isinstance(message_id, str) for message_id in message_ids
+        ):
+            raise ValueError("deletedMessageIds values must be lists of message ids")
+        normalized_deleted_messages[chat_id.strip()] = {
+            message_id.strip() for message_id in message_ids if message_id.strip()
+        }
     incoming_entries = _normalized_chat_entries(update["chats"])
     incoming = {chat_id: chat for chat_id, chat, _filename in incoming_entries}
     merged = []
     for chat_id, chat, _filename in _normalized_chat_entries(current.get("chats", [])):
         if chat_id in deleted:
             continue
-        merged.append(incoming.pop(chat_id, chat))
+        selected = incoming.pop(chat_id, chat)
+        removed_messages = normalized_deleted_messages.get(chat_id, set())
+        if removed_messages and isinstance(selected.get("messages"), list):
+            selected = dict(selected)
+            selected["messages"] = [
+                message for message in selected["messages"]
+                if not isinstance(message, dict) or message.get("id") not in removed_messages
+            ]
+        merged.append(selected)
     merged.extend(incoming.values())
     return {
         "version": 2,
@@ -3391,6 +3411,36 @@ def _merge_partial_chat_store(current, update):
         "activeChatId": update.get("activeChatId"),
         "chats": merged,
     }
+
+
+def _delete_chat_image_files(images):
+    if not isinstance(images, list) or not images or len(images) > 64:
+        raise ValueError("images must contain between 1 and 64 image references")
+    paths = []
+    missing = 0
+    seen = set()
+    for image in images:
+        if not isinstance(image, dict):
+            raise ValueError("Every image must be an image reference object")
+        try:
+            _reference, path = _parse_chat_image_reference(json.dumps(image))
+        except ValueError as exc:
+            if "Referenced image does not exist:" in str(exc):
+                missing += 1
+                continue
+            raise
+        canonical = os.path.normcase(os.path.realpath(path))
+        if canonical not in seen:
+            seen.add(canonical)
+            paths.append(path)
+    deleted = 0
+    for path in paths:
+        try:
+            os.remove(path)
+            deleted += 1
+        except FileNotFoundError:
+            missing += 1
+    return {"deleted": deleted, "missing": missing}
 
 
 def _update_chat_store(data):
@@ -3429,9 +3479,22 @@ def _read_workflow_store():
     if isinstance(data.get("profiles"), list) and "templates" not in data:
         # Version 1 stored manually captured profiles. They are intentionally not
         # migrated because ComfyUI's live [PS] workflows are now the source of truth.
-        return {"version": 3, "revision": _revision(data.get("revision")), "templates": []}
-    if data.get("version") != 3:
-        return {"version": 3, "revision": _revision(data.get("revision")), "templates": []}
+        return {"version": 4, "revision": _revision(data.get("revision")), "templates": []}
+    if data.get("version") == 3:
+        legacy_templates = data.get("templates")
+        if not isinstance(legacy_templates, list):
+            raise RuntimeError("Prompt Studio workflow cache must contain a templates list")
+        data = {
+            "version": 4,
+            "revision": _revision(data.get("revision")),
+            "templates": [
+                ({**template, "additionalInputs": template.get("additionalInputs", [])}
+                 if isinstance(template, dict) else template)
+                for template in legacy_templates
+            ],
+        }
+    if data.get("version") != 4:
+        return {"version": 4, "revision": _revision(data.get("revision")), "templates": []}
     if not isinstance(data.get("templates"), list):
         raise RuntimeError("Prompt Studio workflow cache must contain a templates list")
     try:
@@ -3538,6 +3601,38 @@ def _validate_workflow_templates(templates):
             if not isinstance(controls, dict):
                 raise ValueError(f"Workflow cache entry {index + 1} sampling controls must be an object")
             sampling_node_ids.add(sampling_node_id)
+        additional_inputs = template.get("additionalInputs", [])
+        if not isinstance(additional_inputs, list) or len(additional_inputs) > 1000:
+            raise ValueError(f"Workflow cache entry {index + 1} Additional Inputs must be a list")
+        additional_input_ids = set()
+        for descriptor in additional_inputs:
+            if not isinstance(descriptor, dict):
+                raise ValueError(f"Workflow cache entry {index + 1} has an invalid Additional Input")
+            source_id = _text(descriptor.get("id")).strip()
+            target_id = _text(descriptor.get("targetNodeId")).strip()
+            input_name = _text(descriptor.get("targetInputName")).strip()
+            schema = descriptor.get("schema")
+            input_type = _text(schema.get("type") if isinstance(schema, dict) else "").strip().upper()
+            if not source_id or source_id in additional_input_ids:
+                raise ValueError(f"Workflow cache entry {index + 1} has duplicate Additional Input nodes")
+            if not target_id or target_id not in output or not input_name:
+                raise ValueError(f"Workflow cache entry {index + 1} has an invalid Additional Input target")
+            target_inputs = output[target_id].get("inputs") if isinstance(output[target_id], dict) else None
+            if not isinstance(target_inputs, dict) or input_name not in target_inputs:
+                raise ValueError(f"Workflow cache entry {index + 1} has a missing Additional Input target")
+            if input_type not in {"INT", "FLOAT", "BOOLEAN", "STRING", "COMBO"}:
+                raise ValueError(f"Workflow cache entry {index + 1} has an unsupported Additional Input type")
+            if input_type == "COMBO" and not isinstance(schema.get("options"), list):
+                raise ValueError(f"Workflow cache entry {index + 1} has invalid Additional Input options")
+            if input_type == "COMBO" and any(
+                not isinstance(option, (str, int, float)) or isinstance(option, bool)
+                for option in schema.get("options", [])
+            ):
+                raise ValueError(f"Workflow cache entry {index + 1} has invalid Additional Input options")
+            default_value = descriptor.get("defaultValue")
+            if default_value is not None and not isinstance(default_value, (str, int, float, bool)):
+                raise ValueError(f"Workflow cache entry {index + 1} has an invalid Additional Input default")
+            additional_input_ids.add(source_id)
         result_node_ids = template.get("resultNodeIds", [])
         if (
             not isinstance(result_node_ids, list)
@@ -3556,7 +3651,7 @@ def _write_workflow_store(data, current_revision=None):
     _validate_workflow_templates(data["templates"])
     if current_revision is None:
         current_revision = _revision(data.get("revision"))
-    normalized = {"version": 3, "revision": current_revision + 1, "templates": data["templates"]}
+    normalized = {"version": 4, "revision": current_revision + 1, "templates": data["templates"]}
     return _atomic_write_store(
         WORKFLOW_STORE_PATH,
         normalized,
@@ -5576,6 +5671,22 @@ async def prompt_studio_image(request):
         return response
     except (ValueError, OSError) as exc:
         return web.json_response({"error": str(exc)}, status=404)
+
+
+@PromptServer.instance.routes.post("/promptstudio/prompt-studio/delete-image-files")
+async def prompt_studio_delete_image_files(request):
+    try:
+        if request.content_length is not None and request.content_length > MAX_IMAGE_REFERENCE_BYTES:
+            raise ValueError("Prompt Studio image deletion request exceeds the 16 KB limit")
+        data = await request.json()
+        if not isinstance(data, dict):
+            raise ValueError("JSON body must be an object")
+        result = await asyncio.to_thread(_delete_chat_image_files, data.get("images"))
+        return web.json_response({"ok": True, **result})
+    except (ValueError, json.JSONDecodeError, OSError) as exc:
+        return web.json_response({"error": str(exc)}, status=400)
+    except Exception as exc:
+        return web.json_response({"error": str(exc)}, status=500)
 
 
 @PromptServer.instance.routes.post("/promptstudio/prompt-studio/vision-capability")

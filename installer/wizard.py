@@ -20,7 +20,6 @@ import shutil
 import socket
 import ssl
 import subprocess
-import sys
 import tempfile
 import threading
 import time

@@ -129,6 +129,24 @@ function mergeChatStores(remoteStore, localStore) {
   };
 }
 
+function deletedMessageIdsPayload() {
+  return Object.fromEntries(
+    [...state.chatDeletedMessageIds.entries()]
+      .map(([chatId, messageIds]) => [chatId, [...messageIds]])
+      .filter(([chatId, messageIds]) => chatId && messageIds.length),
+  );
+}
+
+function withoutDeletedMessages(store, deletedMessageIds) {
+  const chats = (store?.chats || []).map((chat) => {
+    const deleted = new Set(deletedMessageIds[chat?.id] || []);
+    return deleted.size
+      ? { ...chat, messages: (chat.messages || []).filter((message) => !deleted.has(message?.id)) }
+      : chat;
+  });
+  return { ...store, chats };
+}
+
 function applyChatStoreSnapshot(stored, { preserveActive = true } = {}) {
   const previousActiveId = preserveActive ? state.activeChatId : null;
   const storedChats = Array.isArray(stored?.chats) ? stored.chats : [];
@@ -162,7 +180,7 @@ function applyChatStoreSnapshot(stored, { preserveActive = true } = {}) {
   resumeSyncedGeneration();
 }
 
-async function writeChatStore(snapshot, revision, deletedChatIds = []) {
+async function writeChatStore(snapshot, revision, deletedChatIds = [], deletedMessageIds = {}) {
   return api.fetchApi("/promptstudio/prompt-studio/chats", {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
@@ -171,6 +189,7 @@ async function writeChatStore(snapshot, revision, deletedChatIds = []) {
       revision,
       partial: true,
       deletedChatIds,
+      deletedMessageIds,
     }),
   });
 }
@@ -179,10 +198,11 @@ async function persistChats() {
   if (state.chatPersistenceBlocked || !state.chatStoreLoaded) return;
   const saveMutationVersion = state.chatMutationVersion;
   const deletedChatIds = [...state.chatDeletedIds];
+  const deletedMessageIds = deletedMessageIdsPayload();
   state.chatSaveInFlight = true;
   try {
     let snapshot = structuredClone({ activeChatId: state.activeChatId, chats: state.chats });
-    let response = await writeChatStore(snapshot, state.chatRevision, deletedChatIds);
+    let response = await writeChatStore(snapshot, state.chatRevision, deletedChatIds, deletedMessageIds);
     let data = await response.json().catch(() => ({}));
     if (response.status === 409) {
       const latestResponse = await api.fetchApi(chatPageUrl({
@@ -192,16 +212,16 @@ async function persistChats() {
       const latest = await latestResponse.json().catch(() => ({}));
       if (!latestResponse.ok) throw new Error(latest.error || `Chat synchronization failed (${latestResponse.status}).`);
       const deleted = new Set(deletedChatIds);
-      const filteredLatest = {
+      const filteredLatest = withoutDeletedMessages({
         ...latest,
         chats: (latest.chats || []).filter((chat) => !deleted.has(chat?.id)),
-      };
+      }, deletedMessageIds);
       snapshot = mergeChatStores(filteredLatest, {
         activeChatId: state.activeChatId,
         chats: structuredClone(state.chats),
       });
       const mergedMutationVersion = state.chatMutationVersion;
-      response = await writeChatStore(snapshot, Number(latest.revision || 0), deletedChatIds);
+      response = await writeChatStore(snapshot, Number(latest.revision || 0), deletedChatIds, deletedMessageIds);
       data = await response.json().catch(() => ({}));
       if (response.ok && state.chatMutationVersion === mergedMutationVersion) {
         applyChatStoreSnapshot({
@@ -218,6 +238,11 @@ async function persistChats() {
     state.chatRevision = Number(data.revision || state.chatRevision);
     if (state.chatMutationVersion === saveMutationVersion) {
       deletedChatIds.forEach((chatId) => state.chatDeletedIds.delete(chatId));
+      for (const [chatId, messageIds] of Object.entries(deletedMessageIds)) {
+        const pending = state.chatDeletedMessageIds.get(chatId);
+        messageIds.forEach((messageId) => pending?.delete(messageId));
+        if (!pending?.size) state.chatDeletedMessageIds.delete(chatId);
+      }
     }
     state.chatSyncChannel?.postMessage({ type: "chat-store-updated", revision: state.chatRevision });
   } finally {

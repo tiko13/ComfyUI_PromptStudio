@@ -133,6 +133,15 @@ export function normalizePlotDraft(value, profile) {
   };
 }
 
+export function pairedLoraAxis(axes, strengthAxis) {
+  if (strengthAxis?.type !== "lora_strength") return null;
+  return (Array.isArray(axes) ? axes : []).find((axis) => (
+    axis !== strengthAxis
+    && axis?.type === "lora"
+    && String(axis.targetNodeId || "") === String(strengthAxis.targetNodeId || "")
+  )) || null;
+}
+
 export function plotCellCount(axes) {
   return axes.reduce((total, axis) => total * Math.max(0, axis.values?.length || 0), 1);
 }
@@ -151,7 +160,9 @@ export function validatePlotDraft(draft) {
     if (!axis.values.length) errors.push(`${axis.name.toUpperCase()} needs at least one value.`);
     if (axis.targetKey && targets.has(axis.targetKey)) errors.push("Two axes cannot control the same workflow field.");
     targets.add(axis.targetKey);
-    if (axis.type === "lora_strength" && !axis.targetName) errors.push(`${axis.name.toUpperCase()} LoRA strength needs a LoRA name.`);
+    if (axis.type === "lora_strength" && !axis.targetName && !pairedLoraAxis(axes, axis)) {
+      errors.push(`${axis.name.toUpperCase()} LoRA strength needs a LoRA name or a LoRA axis on the same workflow target.`);
+    }
   }
   const total = plotCellCount(axes);
   if (total > PLOT_MAX_CELLS) errors.push(`Plots support at most ${PLOT_MAX_CELLS} cells.`);
@@ -241,7 +252,13 @@ export function snapshotForPlotCell(plot, cell) {
     promptNode.inputs.prompt = String(cell.finalPrompt);
   }
   const loraStacks = new Map();
-  for (let axisIndex = 0; axisIndex < plot.axes.length; axisIndex += 1) {
+  const axisIndexes = plot.axes
+    .map((_axis, index) => index)
+    .sort((left, right) => {
+      const rank = (axis) => axis?.type === "lora" ? 0 : axis?.type === "lora_strength" ? 1 : 2;
+      return rank(plot.axes[left]) - rank(plot.axes[right]) || left - right;
+    });
+  for (const axisIndex of axisIndexes) {
     const axis = plot.axes[axisIndex];
     const selected = selectedAxisValue(plot, cell, axisIndex);
     if (!selected) continue;
@@ -263,9 +280,15 @@ export function snapshotForPlotCell(plot, cell) {
     } else if (axis.type === "lora_strength") {
       if (node.class_type !== LORA_LOADER_TYPE) throw new Error("LoRA strength target is incompatible.");
       const stack = loraStacks.get(axis.targetNodeId) || loraStateFor(plot, axis.targetNodeId);
-      const requested = String(axis.targetName || "");
+      const paired = pairedLoraAxis(plot.axes, axis);
+      const pairedIndex = paired ? plot.axes.indexOf(paired) : -1;
+      const pairedValue = pairedIndex >= 0 ? selectedAxisValue(plot, cell, pairedIndex)?.value : null;
+      const requested = paired
+        ? String(pairedValue?.name || "")
+        : String(axis.targetName || "");
+      if (!requested && paired) continue;
       const item = stack.find((entry) => String(entry.name || "") === requested);
-      if (!item) throw new Error(`LoRA '${requested}' is not present in the base stack.`);
+      if (!item) throw new Error(`LoRA '${requested}' is not present in the plot LoRA stack.`);
       item.strength = Number(selected.value);
       loraStacks.set(axis.targetNodeId, stack);
       node.inputs.lora_stack_json = JSON.stringify(stack);

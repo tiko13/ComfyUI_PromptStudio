@@ -674,7 +674,7 @@ Run these checks from the repository root after making changes:
 ```powershell
 python -c "from pathlib import Path; [compile(Path(p).read_text(encoding='utf-8'), p, 'exec') for p in ('nodes.py', 'routes.py')]"
 node --check web/js/prompt_studio.js
-node --check web/js/prompt_studio_standalone.js
+node --check web/js/prompt_studio_shell.js
 python -m unittest discover -s tests -v
 git diff --check
 ```

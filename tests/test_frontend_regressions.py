@@ -9,9 +9,6 @@ class FrontendRegressionTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.source = (REPO_ROOT / "web" / "js" / "prompt_studio.js").read_text(encoding="utf-8")
-        cls.standalone = (
-            REPO_ROOT / "web" / "js" / "prompt_studio_standalone.js"
-        ).read_text(encoding="utf-8")
         cls.shell = (
             REPO_ROOT / "web" / "js" / "prompt_studio_shell.js"
         ).read_text(encoding="utf-8")
@@ -88,6 +85,14 @@ class FrontendRegressionTests(unittest.TestCase):
             / "generation"
             / "workflow-template.js"
         ).read_text(encoding="utf-8")
+        cls.prompt_studio_input = (
+            REPO_ROOT
+            / "web"
+            / "js"
+            / "prompt-studio"
+            / "generation"
+            / "prompt-studio-input.js"
+        ).read_text(encoding="utf-8")
         cls.plot_model = (
             REPO_ROOT / "web" / "js" / "prompt-studio" / "plot" / "model.js"
         ).read_text(encoding="utf-8")
@@ -121,6 +126,7 @@ class FrontendRegressionTests(unittest.TestCase):
         self.assertIn('from "./prompt-studio/consult/model.js"', self.source)
         self.assertIn('from "./prompt-studio/generation/workflow-profile.js"', self.source)
         self.assertIn('from "./prompt-studio/generation/workflow-template.js"', self.source)
+        self.assertIn('from "./prompt-studio/generation/prompt-studio-input.js"', self.source)
         self.assertIn('from "./prompt-studio/generation/model-name.js"', self.source)
         self.assertIn('from "./prompt-studio/plot/model.js"', self.source)
         self.assertIn("hasPendingStudioGenerations,", self.source)
@@ -164,10 +170,30 @@ class FrontendRegressionTests(unittest.TestCase):
         self.assertIn('from "../core/constants.js"', self.workflow_template)
         self.assertIn('from "./model-name.js"', self.workflow_template)
         self.assertIn('from "./workflow-profile.js"', self.workflow_template)
+        self.assertIn('from "./prompt-studio-input.js"', self.workflow_template)
+        self.assertNotIn("prompt_studio.js", self.prompt_studio_input)
         self.assertNotIn("from ", self.model_name)
         self.assertNotIn("prompt_studio.js", self.model_name)
         self.assertNotIn("prompt_studio.js", self.plot_model)
         self.assertIn('from "../core/constants.js"', self.plot_model)
+
+    def test_prompt_studio_input_is_adaptive_durable_and_replay_safe(self):
+        self.assertIn('PROMPT_STUDIO_INPUT_TYPE = "PromptStudioInput"', self.prompt_studio_input)
+        self.assertIn('PROMPT_STUDIO_INPUT_TITLE = "Prompt Studio Input"', self.prompt_studio_input)
+        self.assertIn("extends PrimitiveNode", self.prompt_studio_input)
+        self.assertIn('new Set(["INT", "FLOAT", "BOOLEAN", "STRING", "COMBO"])', self.prompt_studio_input)
+        self.assertIn("this.outputs?.[slot]?.links?.length", self.prompt_studio_input)
+        self.assertIn("DEFAULT_NODE_TITLES.has(title)", self.prompt_studio_input)
+        self.assertIn("defaultValue: output[targetNodeId].inputs[targetInputName]", self.prompt_studio_input)
+        self.assertIn("schemaFingerprint", self.prompt_studio_input)
+        self.assertIn("extractSerializedSubgraphInputs", self.prompt_studio_input)
+        self.assertIn("PROMPT_STUDIO_INPUT_PROFILE_VERSION", self.source)
+        self.assertIn("applyPromptStudioInputValues", self.source)
+        self.assertIn('id="promptstudio-additional-inputs-details"', self.source)
+        self.assertIn("frozenSettings.additional_input_selections", self.source)
+        queue = self.function_source("queueGeneration", "queueUpscale")
+        self.assertIn("if (!replayExactGeneration)", queue)
+        self.assertIn("state.additionalInputSelections", queue)
 
     def test_xyz_plot_uses_explicit_targets_and_durable_recovery(self):
         self.assertIn("export function snapshotForPlotCell", self.plot_model)
@@ -208,6 +234,30 @@ class FrontendRegressionTests(unittest.TestCase):
         persist = self.function_source("persistPlotRun", "artifactLink")
         self.assertIn("state.plotRuns.set(id, data);\n    renderChatList();", load)
         self.assertIn("state.plotRuns.set(id, current);\n    renderChatList();", persist)
+
+    def test_xyz_plot_rerenders_preserve_the_live_grid_viewport(self):
+        cell = self.function_source("renderPlotCell", "plotCellRenderKey")
+        refresh = self.function_source("refreshPlotGridScroller", "renderPlotGrid")
+        render_run = self.function_source("renderPlotRun", "capturePlotViewport")
+        capture = self.function_source("capturePlotViewport", "restorePlotViewport")
+        restore = self.function_source("restorePlotViewport", "renderPlotWorkspace")
+        workspace = self.function_source("renderPlotWorkspace", "plotLlmControlValues")
+        history = self.function_source("renderChatHistory", "updateComposeMode")
+
+        self.assertIn("shell.dataset.plotId", render_run)
+        self.assertIn("button.dataset.renderKey = plotCellRenderKey(cell)", cell)
+        self.assertIn("button.replaceWith(renderPlotCell(plot, cell))", refresh)
+        self.assertIn("gridScroller", render_run)
+        self.assertIn("grid?.scrollLeft", capture)
+        self.assertIn("grid?.scrollTop", capture)
+        self.assertIn("tabs?.scrollLeft", capture)
+        self.assertIn("grid.scrollLeft = viewport.gridLeft", restore)
+        self.assertIn("grid.scrollTop = viewport.gridTop", restore)
+        self.assertIn("tabs.scrollLeft = viewport.tabsLeft", restore)
+        self.assertIn("const viewport = capturePlotViewport(history, chat.plotId)", workspace)
+        self.assertIn("renderPlotRun(next, plot, { gridScroller })", workspace)
+        self.assertIn("restorePlotViewport(history, plot.id, viewport)", workspace)
+        self.assertLess(history.index("if (isPlotChat())"), history.index("history.replaceChildren()"))
 
     def test_xyz_plot_history_uses_durable_summary_before_plot_is_opened(self):
         self.assertIn("plotSummary:", self.chat_model)
@@ -1029,6 +1079,51 @@ class FrontendRegressionTests(unittest.TestCase):
         self.assertIn('dialog._upscaleTrigger = dialog.ownerDocument.activeElement', open_upscale)
         self.assertIn('trigger?.focus({ preventScroll: true })', close_upscale)
 
+    def test_each_studio_message_has_guarded_delete_with_image_file_choice(self):
+        render = self.function_source("renderMessage", "appendMessage")
+        delete = self.function_source("messageImageReferences", "renderGenerationProgress")
+        store = self.chat_store
+
+        self.assertIn("renderMessageDeleteAction(message, data)", render)
+        self.assertIn('button.textContent = "×"', delete)
+        self.assertIn('button.className = "promptstudio-message-delete"', delete)
+        self.assertIn("Do you really want to delete this message?", self.source)
+        self.assertIn(">Delete message</button>", self.source)
+        self.assertIn(">Delete message and file</button>", self.source)
+        self.assertIn('/promptstudio/prompt-studio/delete-image-files', delete)
+        self.assertIn("chatDeletedMessageIds: new Map()", self.state)
+        self.assertIn("deletedMessageIds", store)
+        self.assertIn("withoutDeletedMessages", store)
+        self.assertIn(".promptstudio-message-delete", self.styles)
+        self.assertIn("right: 42px", self.styles)
+
+    def test_hidden_modals_do_not_block_native_comfyui_keybindings(self):
+        lifecycle = self.function_source("setModalOpen", "openPromptStudioDialog")
+        self.assertIn('dialog.setAttribute("aria-modal", "true")', lifecycle)
+        self.assertIn('dialog.removeAttribute("aria-modal")', lifecycle)
+        self.assertLess(
+            lifecycle.index('dialog.removeAttribute("aria-modal")'),
+            lifecycle.index("dialog.hidden = true"),
+        )
+
+        for dialog_id in (
+            "promptstudio-backend-settings-dialog",
+            "promptstudio-mutation-editor",
+            "promptstudio-llm-profile-editor",
+            "promptstudio-lightbox",
+            "promptstudio-upscale-dialog",
+            "promptstudio-video-handoff-dialog",
+            "promptstudio-message-delete-dialog",
+            "promptstudio-generation-failure-dialog",
+        ):
+            start = self.source.index(f'id="{dialog_id}"')
+            opening_tag = self.source[start:self.source.index(">", start)]
+            self.assertIn('role="dialog"', opening_tag)
+            self.assertIn("hidden", opening_tag)
+            self.assertNotIn('aria-modal="true"', opening_tag)
+
+        self.assertGreaterEqual(self.source.count("setModalOpen("), 15)
+
     def test_accessibility_and_cleanup_basics_are_kept_release_ready(self):
         self.assertIn("button:focus-visible", self.styles)
         self.assertIn("prefers-reduced-motion: reduce", self.styles)
@@ -1051,7 +1146,8 @@ class FrontendRegressionTests(unittest.TestCase):
             self.assertNotIn(dead_name, self.source)
 
     def test_cancelled_refresh_does_not_detach_the_standalone_panel(self):
-        for source in (self.source, self.standalone, self.shell):
+        self.assertFalse((REPO_ROOT / "web" / "js" / "prompt_studio_standalone.js").exists())
+        for source in (self.source, self.shell):
             self.assertNotIn('addEventListener("beforeunload"', source)
             self.assertIn('addEventListener("pagehide"', source)
 

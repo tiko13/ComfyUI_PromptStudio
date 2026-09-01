@@ -4208,6 +4208,24 @@ class RegressionTests(unittest.TestCase):
         reference = json.dumps({"filename": path.name, "subfolder": "", "type": "output"})
         self.assertEqual(self.nodes._chat_image_dimensions(reference), (1237, 811))
 
+    def test_chat_image_file_deletion_is_scoped_and_idempotent(self):
+        path = Path(self.temp.name) / "delete-me.png"
+        Image.new("RGB", (16, 16), color="red").save(path)
+        reference = {"filename": path.name, "subfolder": "", "type": "output"}
+
+        result = self.routes._delete_chat_image_files([reference, reference])
+
+        self.assertEqual(result, {"deleted": 1, "missing": 0})
+        self.assertFalse(path.exists())
+        self.assertEqual(
+            self.routes._delete_chat_image_files([reference]),
+            {"deleted": 0, "missing": 1},
+        )
+        with self.assertRaisesRegex(ValueError, "cannot leave"):
+            self.routes._delete_chat_image_files([{
+                "filename": "outside.png", "subfolder": "..", "type": "output",
+            }])
+
     def test_dropped_images_are_sanitized_to_dedicated_lossy_webp_storage(self):
         source = Image.new("RGB", (4096, 1024), color="navy")
         metadata = PngImagePlugin.PngInfo()
@@ -4369,7 +4387,7 @@ class RegressionTests(unittest.TestCase):
         chats = [
             {"id": "chat-1", "messages": []},
             {"id": "chat-2", "messages": []},
-            {"id": "chat-3", "messages": []},
+            {"id": "chat-3", "messages": [{"id": "keep"}, {"id": "remove"}]},
         ]
         with (
             mock.patch.object(self.routes, "CHAT_STORE_PATH", chat_path),
@@ -4385,11 +4403,13 @@ class RegressionTests(unittest.TestCase):
                 "activeChatId": "chat-2",
                 "partial": True,
                 "deletedChatIds": ["chat-1"],
+                "deletedMessageIds": {"chat-3": ["remove"]},
                 "chats": [{"id": "chat-2", "messages": [{"id": "new"}]}],
             })
 
         self.assertEqual([chat["id"] for chat in updated["chats"]], ["chat-2", "chat-3"])
         self.assertEqual(updated["chats"][0]["messages"], [{"id": "new"}])
+        self.assertEqual(updated["chats"][1]["messages"], [{"id": "keep"}])
 
     def test_chat_store_prunes_a_stale_noop_before_comparing_revisions(self):
         chat_path = str(Path(self.temp.name) / "chats.json")
@@ -4765,6 +4785,31 @@ class RegressionTests(unittest.TestCase):
             }
             with self.assertRaisesRegex(ValueError, "model node has an incompatible class"):
                 self.routes._validate_workflow_templates([incompatible_model_loader])
+            with_additional_input = {
+                **template,
+                "additionalInputs": [{
+                    "id": "10",
+                    "targetNodeId": "2",
+                    "targetInputName": "filename_prefix",
+                    "label": "Output prefix",
+                    "schema": {"type": "STRING", "options": []},
+                    "defaultValue": "PromptStudio",
+                }],
+                "snapshot": {"output": {
+                    "1": {"class_type": "KCPP_PromptSlot", "inputs": {}},
+                    "2": {"class_type": "SaveImage", "inputs": {"filename_prefix": "PromptStudio"}},
+                }},
+            }
+            self.routes._validate_workflow_templates([with_additional_input])
+            missing_additional_target = {
+                **with_additional_input,
+                "additionalInputs": [{
+                    **with_additional_input["additionalInputs"][0],
+                    "targetInputName": "missing",
+                }],
+            }
+            with self.assertRaisesRegex(ValueError, "missing Additional Input target"):
+                self.routes._validate_workflow_templates([missing_additional_target])
             upscale = {
                 **template,
                 "path": "[PS] Upscale.json",
@@ -4795,7 +4840,14 @@ class RegressionTests(unittest.TestCase):
         workflow_path.write_text(json.dumps({"version": 1, "revision": 7, "profiles": [{}]}), encoding="utf-8")
         with mock.patch.object(self.routes, "WORKFLOW_STORE_PATH", str(workflow_path)):
             loaded = self.routes._read_workflow_store()
-        self.assertEqual(loaded, {"version": 3, "revision": 7, "templates": []})
+        self.assertEqual(loaded, {"version": 4, "revision": 7, "templates": []})
+
+    def test_version_three_workflow_cache_adds_empty_additional_inputs(self):
+        workflow_path = Path(self.temp.name) / "v3-workflows.json"
+        workflow_path.write_text(json.dumps({"version": 3, "revision": 4, "templates": []}), encoding="utf-8")
+        with mock.patch.object(self.routes, "WORKFLOW_STORE_PATH", str(workflow_path)):
+            loaded = self.routes._read_workflow_store()
+        self.assertEqual(loaded, {"version": 4, "revision": 4, "templates": []})
 
 
 class PlotRegressionTests(unittest.TestCase):

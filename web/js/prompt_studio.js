@@ -5,7 +5,6 @@ import {
   ADVANCED_LLM_ACK_STORAGE_KEY,
   AMPLIFY_TYPE,
   CHAT_SCROLL_STICK_THRESHOLD,
-  CHAT_SYNC_CHANNEL,
   COMFY_RESTART_ENDPOINTS,
   CONSULT_CHAT_ENDPOINT,
   CONSULT_EXPERIMENT_MARKER,
@@ -37,8 +36,6 @@ import {
   LORA_STORAGE_KEY,
   MANAGER_QUEUE_START_ENDPOINTS,
   MANAGER_UPDATE_ALL_ENDPOINTS,
-  MAX_CONSULT_EXPERIMENT_GUIDANCE_CHARS,
-  MAX_CONSULT_EXPERIMENT_PROMPT_CHARS,
   MAX_DROPPED_IMAGE_BYTES,
   MODEL_LOADER_TYPE,
   MODEL_STORAGE_KEY,
@@ -48,11 +45,9 @@ import {
   PROMPT_AGENT_CANCEL_ENDPOINT,
   PROMPT_AGENT_DEFAULT_MAX_ITERATIONS,
   PROMPT_AGENT_ENDPOINT,
-  PROMPT_AGENT_MAX_CONTEXT_CHARS,
   PROMPT_AGENT_MAX_CONTEXT_MESSAGES,
   PROMPT_AGENT_MAX_GOAL_CHARS,
   PROMPT_AGENT_MAX_ITERATIONS,
-  PROMPT_AGENT_MAX_SAVED_ITERATIONS,
   PROMPT_AGENT_MIN_CONFIDENCE,
   PROMPT_AGENT_TARGET_SCORE,
   PROMPTSTUDIO_COMFY_UPDATE_ENDPOINT,
@@ -65,7 +60,6 @@ import {
   STANDALONE_CHANNEL,
   STUDIO_DISCUSS_ENDPOINT,
   STUDIO_ROUTE_ENDPOINT,
-  STUDIO_SETTINGS_VERSION,
   STORAGE_KEY,
   TYPE_ANYWHERE_WINDOWS,
   UPSCALE_TYPE,
@@ -92,11 +86,20 @@ import {
 } from "./prompt-studio/generation/workflow-profile.js";
 import { createWorkflowTemplateBuilder } from "./prompt-studio/generation/workflow-template.js";
 import {
+  PROMPT_STUDIO_INPUT_PROFILE_VERSION,
+  applyPromptStudioInputValues,
+  promptStudioInputSelectionKey,
+  promptStudioInputValue,
+  registerPromptStudioInputNode,
+  selectedPromptStudioInputValue,
+} from "./prompt-studio/generation/prompt-studio-input.js";
+import {
   PLOT_AXIS_TYPES,
   buildPlotRun,
   isLlmPlotAxisType,
   normalizePlotDraft,
   orderPlotCellsForExecution,
+  pairedLoraAxis,
   plotAxisTargets,
   plotAxisType,
   plotCellLabel,
@@ -110,9 +113,7 @@ import { createChatModel } from "./prompt-studio/chat/model.js";
 import { createChatStoreController } from "./prompt-studio/chat/store-controller.js";
 import {
   consultMessagesAfterClear,
-  consultTimestampMs,
   normalizeConsultAgent,
-  normalizeConsultContext,
   normalizeConsultExperiment,
   normalizeConsultExperimentGeneration,
   normalizeConsultExperimentProposal,
@@ -417,14 +418,14 @@ function openLlmProfileEditor(trigger = null, { create = false } = {}) {
   editor.querySelector("#promptstudio-delete-llm-profile").hidden = create;
   editor.querySelector("#promptstudio-llm-profile-editor-error").textContent = "";
   state.llmProfileEditorTrigger = trigger || state.panel.ownerDocument.activeElement;
-  editor.hidden = false;
+  setModalOpen(editor, true);
   editor.querySelector('[name="name"]')?.focus({ preventScroll: true });
 }
 
 function closeLlmProfileEditor({ restoreFocus = true } = {}) {
   const editor = state.panel?.querySelector("#promptstudio-llm-profile-editor");
   if (!editor || editor.hidden) return;
-  editor.hidden = true;
+  setModalOpen(editor, false);
   const trigger = state.llmProfileEditorTrigger;
   state.llmProfileEditorTrigger = null;
   state.llmProfileEditorId = null;
@@ -896,14 +897,14 @@ function openMutationEditor(index = null) {
   enabledRow.hidden = category === "protected_words";
   editor.querySelector("#promptstudio-mutation-editor-enabled").checked = item?.enabled !== false;
   editor.querySelector("#promptstudio-mutation-editor-error").textContent = "";
-  editor.hidden = false;
+  setModalOpen(editor, true);
   nameInput.focus({ preventScroll: true });
 }
 
 function closeMutationEditor({ restoreFocus = true } = {}) {
   const editor = state.panel?.querySelector("#promptstudio-mutation-editor");
   if (!editor || editor.hidden) return;
-  editor.hidden = true;
+  setModalOpen(editor, false);
   state.mutationEditorIndex = null;
   state.mutationEditorDirty = false;
   if (state.mutationConfigPending) {
@@ -1031,7 +1032,7 @@ function toggleStudioSettings(force) {
 function openBackendSettings() {
   const dialog = state.panel?.querySelector("#promptstudio-backend-settings-dialog");
   if (!dialog) return;
-  dialog.hidden = false;
+  setModalOpen(dialog, true);
   syncLlmProviderControls();
   const provider = selectedLlmProvider();
   if (provider === "ollama") loadOllamaModels({ announce: false });
@@ -1050,7 +1051,7 @@ function openBackendSettings() {
 function closeBackendSettings({ restoreFocus = true } = {}) {
   const dialog = state.panel?.querySelector("#promptstudio-backend-settings-dialog");
   if (!dialog || dialog.hidden) return;
-  dialog.hidden = true;
+  setModalOpen(dialog, false);
   saveSettings();
   if (restoreFocus) state.panel?.querySelector("#promptstudio-open-backend-settings")?.focus({ preventScroll: true });
 }
@@ -1327,6 +1328,18 @@ function isEditableTarget(target) {
     target.closest?.("input, textarea, select, [role=\"textbox\"]")
     || target.isContentEditable,
   );
+}
+
+function setModalOpen(dialog, open) {
+  if (!dialog) return false;
+  if (open) {
+    dialog.hidden = false;
+    dialog.setAttribute("aria-modal", "true");
+  } else {
+    dialog.removeAttribute("aria-modal");
+    dialog.hidden = true;
+  }
+  return true;
 }
 
 function openPromptStudioDialog() {
@@ -1726,6 +1739,7 @@ function captureStudioSettings(chat = activeChat()) {
     generation_action: selectedAction(),
     lora_selections: structuredClone(state.loraSelections),
     model_selections: structuredClone(state.modelSelections),
+    additional_input_selections: structuredClone(state.additionalInputSelections),
   }, fallback);
 }
 
@@ -1740,6 +1754,7 @@ function applyStudioSettings(chat) {
   chat.studioSettings = settings;
   state.loraSelections = structuredClone(settings.lora_selections);
   state.modelSelections = structuredClone(settings.model_selections);
+  state.additionalInputSelections = structuredClone(settings.additional_input_selections);
   if (!state.panel) return;
 
   const setValue = (id, value) => {
@@ -1823,6 +1838,7 @@ function applyStudioSettings(chat) {
   syncLlmProviderControls();
   updateAmplificationMode({ announce: false, persist: false });
   renderAdditionalInstructionTemplateHighlights();
+  refreshAdditionalInputsSection();
 }
 
 function syncActiveChatSettings({ persist = true } = {}) {
@@ -1958,7 +1974,7 @@ async function saveWorkflowProfiles() {
       const response = await api.fetchApi("/promptstudio/prompt-studio/workflows", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ version: 3, revision: state.workflowRevision, templates: snapshot }),
+        body: JSON.stringify({ version: 4, revision: state.workflowRevision, templates: snapshot }),
       });
       const data = await response.json().catch(() => ({}));
       if (!response.ok) {
@@ -1992,7 +2008,11 @@ async function refreshWorkflowTemplates({ announce = true } = {}) {
 
     for (const file of files) {
       const cached = cachedByPath.get(file.path);
-      if (cached && !cached.stale && cached.sourceModified === Number(file.modified || 0)) {
+      if (
+        cached && !cached.stale
+        && cached.sourceModified === Number(file.modified || 0)
+        && cached.promptStudioInputVersion === PROMPT_STUDIO_INPUT_PROFILE_VERSION
+      ) {
         next.push(cached);
         continue;
       }
@@ -2779,14 +2799,21 @@ function renderPlotAxis(axis, profile, axisIndex) {
   fields.append(plotField("Type", typeSelect), plotField("Workflow target", targetSelect));
   if (axis.type === "lora_strength") {
     const loraSelect = document.createElement("select");
-    const baseNames = selectionsForLoraNode(profile.id, axis.targetNodeId).map((item) => item.name);
-    for (const name of baseNames) loraSelect.appendChild(new Option(name, name, false, name === axis.targetName));
-    if (!baseNames.length) loraSelect.appendChild(new Option("Select this LoRA in Generation controls first", ""));
-    loraSelect.disabled = !baseNames.length;
-    loraSelect.addEventListener("change", () => updatePlotChat((draft) => {
-      draft.axes[axisIndex].targetName = loraSelect.value;
-    }, { render: false }));
-    fields.appendChild(plotField("LoRA", loraSelect));
+    const paired = pairedLoraAxis(activePlotAxes(), axis);
+    if (paired) {
+      loraSelect.appendChild(new Option(`From ${paired.name.toUpperCase()} LoRA axis`, "", true, true));
+      loraSelect.disabled = true;
+      loraSelect.title = `Each cell uses the LoRA selected by the ${paired.name.toUpperCase()} axis.`;
+    } else {
+      const baseNames = selectionsForLoraNode(profile.id, axis.targetNodeId).map((item) => item.name);
+      for (const name of baseNames) loraSelect.appendChild(new Option(name, name, false, name === axis.targetName));
+      if (!baseNames.length) loraSelect.appendChild(new Option("Select this LoRA in Generation controls first", ""));
+      loraSelect.disabled = !baseNames.length;
+      loraSelect.addEventListener("change", () => updatePlotChat((draft) => {
+        draft.axes[axisIndex].targetName = loraSelect.value;
+      }, { render: false }));
+    }
+    fields.appendChild(plotField("LoRA source", loraSelect));
   }
   card.appendChild(fields);
   renderPlotValueEditor(card, axis, profile, axisIndex);
@@ -2992,7 +3019,9 @@ function renderPlotCell(plot, cell) {
   const button = document.createElement("button");
   button.type = "button";
   button.className = "promptstudio-plot-cell";
+  button.dataset.cellId = String(cell.id || "");
   button.dataset.status = cell.status;
+  button.dataset.renderKey = plotCellRenderKey(cell);
   button.title = plotCellLabel(plot, cell);
   const image = cell.images?.[0];
   if (image) {
@@ -3024,7 +3053,56 @@ function renderPlotCell(plot, cell) {
   return button;
 }
 
-function renderPlotGrid(shell, plot) {
+function plotCellRenderKey(cell) {
+  return JSON.stringify([
+    String(cell?.id || ""),
+    String(cell?.status || ""),
+    String(cell?.error || ""),
+    imageReferenceKey(cell?.images?.[0]) || "",
+  ]);
+}
+
+function plotGridSignature(plot) {
+  return JSON.stringify(plot.axes.slice(0, 2).map((axis) => [
+    String(axis?.targetKey || ""),
+    String(axis?.label || ""),
+    (axis?.values || []).map((value) => String(value?.label || "")),
+  ]));
+}
+
+function visiblePlotCells(plot, zIndex) {
+  const xCount = plot.axes[0].values.length;
+  const yCount = plot.axes[1].values.length;
+  const hasZ = Boolean(plot.axes[2]);
+  const cellsByCoordinate = new Map(
+    plot.cells.map((cell) => [cell.coordinate.join(","), cell]),
+  );
+  const cells = [];
+  for (let y = 0; y < yCount; y += 1) {
+    for (let x = 0; x < xCount; x += 1) {
+      cells.push(cellsByCoordinate.get(hasZ ? `${x},${y},${zIndex}` : `${x},${y}`));
+    }
+  }
+  return cells.every(Boolean) ? cells : null;
+}
+
+function refreshPlotGridScroller(scroller, plot, zIndex) {
+  if (scroller.dataset.gridSignature !== plotGridSignature(plot)) return false;
+  const cells = visiblePlotCells(plot, zIndex);
+  const buttons = [...scroller.querySelectorAll(".promptstudio-plot-cell")];
+  if (!cells || buttons.length !== cells.length) return false;
+  scroller.querySelector(".promptstudio-plot-grid")
+    ?.style.setProperty("--ps-plot-cell", `${state.plotCellSize}px`);
+  for (const [index, cell] of cells.entries()) {
+    const button = buttons[index];
+    if (button.dataset.cellId === String(cell.id || "")
+      && button.dataset.renderKey === plotCellRenderKey(cell)) continue;
+    button.replaceWith(renderPlotCell(plot, cell));
+  }
+  return true;
+}
+
+function renderPlotGrid(shell, plot, reusableScroller = null) {
   const xAxis = plot.axes[0];
   const yAxis = plot.axes[1];
   const zAxis = plot.axes[2];
@@ -3044,8 +3122,13 @@ function renderPlotGrid(shell, plot) {
     }
     shell.appendChild(tabs);
   }
+  if (reusableScroller && refreshPlotGridScroller(reusableScroller, plot, zIndex)) {
+    shell.appendChild(reusableScroller);
+    return;
+  }
   const scroller = document.createElement("div");
   scroller.className = "promptstudio-plot-grid-scroller";
+  scroller.dataset.gridSignature = plotGridSignature(plot);
   const grid = document.createElement("div");
   grid.className = "promptstudio-plot-grid";
   grid.style.setProperty("--ps-plot-columns", String(xAxis.values.length));
@@ -3061,25 +3144,27 @@ function renderPlotGrid(shell, plot) {
     label.title = value.label;
     grid.appendChild(label);
   }
-  for (const [y, yValue] of yAxis.values.entries()) {
+  const cells = visiblePlotCells(plot, zIndex) || [];
+  let cellIndex = 0;
+  for (const yValue of yAxis.values) {
     const rowLabel = document.createElement("div");
     rowLabel.className = "promptstudio-plot-row-label";
     rowLabel.textContent = yValue.label;
     rowLabel.title = yValue.label;
     grid.appendChild(rowLabel);
     for (let x = 0; x < xAxis.values.length; x += 1) {
-      const cell = plot.cells.find((item) => item.coordinate[0] === x
-        && item.coordinate[1] === y && (zAxis ? item.coordinate[2] === zIndex : true));
-      grid.appendChild(renderPlotCell(plot, cell));
+      grid.appendChild(renderPlotCell(plot, cells[cellIndex]));
+      cellIndex += 1;
     }
   }
   scroller.appendChild(grid);
   shell.appendChild(scroller);
 }
 
-function renderPlotRun(history, plot) {
+function renderPlotRun(history, plot, { gridScroller = null } = {}) {
   const shell = document.createElement("div");
   shell.className = "promptstudio-plot-workspace promptstudio-plot-run";
+  shell.dataset.plotId = String(plot.id || "");
   const header = document.createElement("header");
   const heading = document.createElement("div");
   const title = document.createElement("strong");
@@ -3142,24 +3227,60 @@ function renderPlotRun(history, plot) {
   if (manifest) artifactLinks.appendChild(manifest);
   toolbar.appendChild(artifactLinks);
   shell.appendChild(toolbar);
-  renderPlotGrid(shell, plot);
+  renderPlotGrid(shell, plot, gridScroller);
   history.appendChild(shell);
+}
+
+function capturePlotViewport(history, plotId) {
+  const workspace = history.querySelector(".promptstudio-plot-run");
+  if (!workspace || workspace.dataset.plotId !== String(plotId || "")) return null;
+  const grid = workspace.querySelector(".promptstudio-plot-grid-scroller");
+  const tabs = workspace.querySelector(".promptstudio-plot-z-tabs");
+  return {
+    historyTop: history.scrollTop,
+    gridLeft: grid?.scrollLeft || 0,
+    gridTop: grid?.scrollTop || 0,
+    tabsLeft: tabs?.scrollLeft || 0,
+  };
+}
+
+function restorePlotViewport(history, plotId, viewport) {
+  if (!viewport) return;
+  const workspace = history.querySelector(".promptstudio-plot-run");
+  if (!workspace || workspace.dataset.plotId !== String(plotId || "")) return;
+  history.scrollTop = viewport.historyTop;
+  const grid = workspace.querySelector(".promptstudio-plot-grid-scroller");
+  if (grid) {
+    grid.scrollLeft = viewport.gridLeft;
+    grid.scrollTop = viewport.gridTop;
+  }
+  const tabs = workspace.querySelector(".promptstudio-plot-z-tabs");
+  if (tabs) tabs.scrollLeft = viewport.tabsLeft;
 }
 
 function renderPlotWorkspace() {
   const history = state.panel?.querySelector("#promptstudio-history");
   const chat = activeChat();
   if (!history || !isPlotChat(chat)) return;
-  history.replaceChildren();
+  const viewport = capturePlotViewport(history, chat.plotId);
   if (!chat.plotId) {
+    history.replaceChildren();
     renderPlotBuilder(history, chat);
     return;
   }
   const plot = state.plotRuns.get(chat.plotId);
   if (plot) {
-    renderPlotRun(history, plot);
+    const workspace = history.querySelector(".promptstudio-plot-run");
+    const gridScroller = workspace?.dataset.plotId === String(plot.id || "")
+      ? workspace.querySelector(".promptstudio-plot-grid-scroller")
+      : null;
+    const next = document.createDocumentFragment();
+    renderPlotRun(next, plot, { gridScroller });
+    history.replaceChildren(next);
+    restorePlotViewport(history, plot.id, viewport);
     return;
   }
+  history.replaceChildren();
   const loading = document.createElement("div");
   loading.className = "promptstudio-plot-loading";
   loading.textContent = "Loading plot…";
@@ -3256,6 +3377,11 @@ async function preparePlotBase(draft, mainPrompt, finalPrompt, controlSettings =
     node.inputs ||= {};
     node.inputs.unet_name = selected.modelName;
   }
+  applyPromptStudioInputValues(
+    context.snapshot,
+    context.profile,
+    frozenSettings.additional_input_selections,
+  );
   return {
     // ComfyUI's queue client needs both the executable output and the serialized
     // workflow. The latter carries widget metadata used while queueing subgraphs.
@@ -3695,15 +3821,15 @@ function refreshEmptyImageDropZone() {
 function renderChatHistory({ forceEnd = false } = {}) {
   const history = state.panel?.querySelector("#promptstudio-history");
   if (!history) return;
-  const wasNearEnd = forceEnd || historyShouldStickToEnd(history);
-  const previousScrollTop = history.scrollTop;
-  history.replaceChildren();
   syncPlotInspectorControls();
   if (isPlotChat()) {
     renderPlotWorkspace();
     updateComposeMode();
     return;
   }
+  const wasNearEnd = forceEnd || historyShouldStickToEnd(history);
+  const previousScrollTop = history.scrollTop;
+  history.replaceChildren();
   for (const message of activeChat()?.messages || []) renderMessage(message, { scroll: false });
   refreshEmptyImageDropZone();
   renderStudioDiscussionContext();
@@ -4023,6 +4149,119 @@ function generationLoraState(profile, descriptors = profile?.loraNodes, storedSe
     .filter((entry) => entry.nodeId);
 }
 
+function setPromptStudioInputSelection(profile, descriptor, value) {
+  const key = promptStudioInputSelectionKey(profile?.id, descriptor?.id);
+  const normalized = promptStudioInputValue(descriptor, value);
+  if (normalized === descriptor.defaultValue) delete state.additionalInputSelections[key];
+  else {
+    state.additionalInputSelections[key] = {
+      value: normalized,
+      schemaFingerprint: descriptor.schemaFingerprint,
+    };
+  }
+  syncActiveChatSettings();
+  refreshStudioStatus();
+}
+
+function resetPromptStudioInputSelection(profile, descriptor) {
+  delete state.additionalInputSelections[promptStudioInputSelectionKey(profile?.id, descriptor?.id)];
+  syncActiveChatSettings();
+  refreshAdditionalInputsSection();
+  refreshStudioStatus();
+}
+
+function buildAdditionalInputControl(profile, descriptor) {
+  const row = document.createElement("div");
+  row.className = "promptstudio-additional-input-row";
+  const heading = document.createElement("div");
+  heading.className = "promptstudio-additional-input-heading";
+  const copy = document.createElement("span");
+  const label = document.createElement("strong");
+  label.textContent = descriptor.label;
+  const context = document.createElement("small");
+  context.textContent = `${descriptor.targetNodeLabel} · ${descriptor.targetLabel}`;
+  copy.append(label, context);
+  const reset = document.createElement("button");
+  reset.type = "button";
+  reset.textContent = "Reset";
+  reset.title = `Reset ${descriptor.label} to its workflow default`;
+  reset.addEventListener("click", () => resetPromptStudioInputSelection(profile, descriptor));
+  heading.append(copy, reset);
+  row.appendChild(heading);
+
+  const selected = selectedPromptStudioInputValue(profile.id, descriptor, state.additionalInputSelections);
+  const schema = descriptor.schema;
+  let control;
+  if (schema.type === "COMBO") {
+    control = document.createElement("select");
+    schema.options.forEach((optionValue, index) => {
+      const option = document.createElement("option");
+      option.value = String(index);
+      option.textContent = String(optionValue);
+      option.selected = optionValue === selected;
+      control.appendChild(option);
+    });
+    control.addEventListener("change", () => {
+      setPromptStudioInputSelection(profile, descriptor, schema.options[Number(control.value)]);
+    });
+  } else if (schema.type === "BOOLEAN") {
+    const booleanLabel = document.createElement("label");
+    booleanLabel.className = "promptstudio-additional-input-boolean";
+    control = document.createElement("input");
+    control.type = "checkbox";
+    control.checked = Boolean(selected);
+    const stateLabel = document.createElement("span");
+    const updateStateLabel = () => {
+      stateLabel.textContent = control.checked ? schema.labelOn : schema.labelOff;
+    };
+    updateStateLabel();
+    control.addEventListener("change", () => {
+      updateStateLabel();
+      setPromptStudioInputSelection(profile, descriptor, control.checked);
+    });
+    booleanLabel.append(control, stateLabel);
+    row.appendChild(booleanLabel);
+    control.setAttribute("aria-label", descriptor.label);
+    return row;
+  } else if (schema.type === "STRING" && schema.multiline) {
+    control = document.createElement("textarea");
+    control.rows = 3;
+    control.value = String(selected ?? "");
+    control.addEventListener("change", () => setPromptStudioInputSelection(profile, descriptor, control.value));
+  } else {
+    control = document.createElement("input");
+    if (["INT", "FLOAT"].includes(schema.type)) {
+      control.type = "number";
+      if (schema.min != null) control.min = String(schema.min);
+      if (schema.max != null) control.max = String(schema.max);
+      control.step = String(schema.step ?? (schema.type === "INT" ? 1 : "any"));
+      control.value = String(selected);
+      control.addEventListener("change", () => setPromptStudioInputSelection(profile, descriptor, control.valueAsNumber));
+    } else {
+      control.type = "text";
+      control.value = String(selected ?? "");
+      control.addEventListener("change", () => setPromptStudioInputSelection(profile, descriptor, control.value));
+    }
+  }
+  control.setAttribute("aria-label", descriptor.label);
+  row.appendChild(control);
+  return row;
+}
+
+function refreshAdditionalInputsSection() {
+  const details = state.panel?.querySelector("#promptstudio-additional-inputs-details");
+  const container = state.panel?.querySelector("#promptstudio-additional-inputs-controls");
+  const summary = state.panel?.querySelector("#promptstudio-additional-inputs-summary");
+  if (!details || !container || !summary) return;
+  const profile = selectedWorkflowProfile(selectedAction());
+  const descriptors = Array.isArray(profile?.additionalInputs) ? profile.additionalInputs : [];
+  details.hidden = !descriptors.length;
+  container.replaceChildren(...descriptors.map((descriptor) => buildAdditionalInputControl(profile, descriptor)));
+  summary.textContent = descriptors.length
+    ? `${descriptors.length} workflow control${descriptors.length === 1 ? "" : "s"}`
+    : "No connected inputs";
+}
+
 function generationUiFingerprint() {
   if (!state.panel) return "";
   const controls = [
@@ -4048,6 +4287,7 @@ function generationUiFingerprint() {
     sourceImage: action === "create" ? null : storedImageReference(editingSource()),
     loraState: generationLoraState(profile),
     modelState: generationModelState(profile),
+    additionalInputSelections: state.additionalInputSelections,
     controls,
   });
 }
@@ -4380,6 +4620,7 @@ function announceWorkflowSelection(action, { persist = true } = {}) {
   refreshSecondaryInstructionsControl();
   refreshLoraSection();
   refreshModelSection();
+  refreshAdditionalInputsSection();
   if (action === selectedAction()) {
     refreshStudioStatus();
     return;
@@ -4445,6 +4686,7 @@ function refreshWorkflowControls() {
   renderWorkflowStatus();
   refreshLoraSection();
   refreshModelSection();
+  refreshAdditionalInputsSection();
 }
 
 function renderWorkflowStatus() {
@@ -4605,7 +4847,7 @@ function setBusy(busy) {
 function closeImageLightbox() {
   const lightbox = state.panel?.querySelector("#promptstudio-lightbox");
   if (!lightbox || lightbox.hidden) return;
-  lightbox.hidden = true;
+  setModalOpen(lightbox, false);
   const image = lightbox.querySelector("#promptstudio-lightbox-image");
   if (image) image.removeAttribute("src");
   state.lightboxTrigger?.focus({ preventScroll: true });
@@ -4621,14 +4863,14 @@ function openImageLightbox(url, alt, trigger) {
   image.alt = alt;
   open.href = url;
   state.lightboxTrigger = trigger;
-  lightbox.hidden = false;
+  setModalOpen(lightbox, true);
   lightbox.focus({ preventScroll: true });
 }
 
 function closeGenerationFailureDialog({ clearRetry = true, restoreFocus = true } = {}) {
   const dialog = state.panel?.querySelector("#promptstudio-generation-failure-dialog");
   if (!dialog || dialog.hidden) return;
-  dialog.hidden = true;
+  setModalOpen(dialog, false);
   if (clearRetry) state.generationRetry = null;
   if (restoreFocus) state.generationFailureTrigger?.focus({ preventScroll: true });
   state.generationFailureTrigger = null;
@@ -4645,7 +4887,7 @@ function showGenerationFailure(message, retry) {
   state.generationRetry = typeof retry === "function" ? retry : null;
   state.generationFailureTrigger = state.panel.ownerDocument.activeElement;
   dialog.querySelector("#promptstudio-generation-failure-message").textContent = text;
-  dialog.hidden = false;
+  setModalOpen(dialog, true);
   dialog.querySelector("#promptstudio-generation-failure-retry").focus({ preventScroll: true });
 }
 
@@ -4689,7 +4931,7 @@ async function retryGeneration(options) {
 function closeUpscaleDialog() {
   const dialog = state.panel?.querySelector("#promptstudio-upscale-dialog");
   if (!dialog || dialog.hidden) return;
-  dialog.hidden = true;
+  setModalOpen(dialog, false);
   dialog._upscaleRequest = null;
   const trigger = dialog._upscaleTrigger;
   dialog._upscaleTrigger = null;
@@ -4708,7 +4950,7 @@ function requestImageUpscale(reference, generationData = null) {
   dialog._upscaleRequest = { source, generationData, workflowProfileId: profile.id };
   dialog._upscaleTrigger = dialog.ownerDocument.activeElement;
   factor.value = "2";
-  dialog.hidden = false;
+  setModalOpen(dialog, true);
   factor.focus({ preventScroll: true });
   factor.select();
 }
@@ -5107,7 +5349,7 @@ function refreshVideoHandoffActions() {
 function settleVideoHandoffChoice(choice = null) {
   const dialog = state.panel?.querySelector("#promptstudio-video-handoff-dialog");
   if (!dialog || dialog.hidden) return;
-  dialog.hidden = true;
+  setModalOpen(dialog, false);
   const resolve = dialog._resolveChoice;
   const trigger = dialog._choiceTrigger;
   dialog._resolveChoice = null;
@@ -5122,7 +5364,7 @@ function chooseVideoHandoffTarget(target, trigger) {
   if (!dialog) return Promise.resolve("current");
   settleVideoHandoffChoice();
   dialog.querySelector("#promptstudio-video-handoff-project-name").textContent = target.projectName || "Untitled video";
-  dialog.hidden = false;
+  setModalOpen(dialog, true);
   dialog._choiceTrigger = trigger;
   dialog.querySelector("#promptstudio-video-handoff-current").focus({ preventScroll: true });
   return new Promise(resolve => { dialog._resolveChoice = resolve; });
@@ -5397,6 +5639,121 @@ function renderPromptInfo(message, data) {
   message.appendChild(details);
 }
 
+function messageImageReferences(data) {
+  const references = new Map();
+  for (const item of Array.isArray(data?.images) ? data.images : []) {
+    const reference = normalizeImageReference(item);
+    const key = imageReferenceKey(reference);
+    if (reference && key) references.set(key, reference);
+  }
+  return [...references.values()];
+}
+
+function settleMessageDeleteChoice(choice = null) {
+  const dialog = state.panel?.querySelector("#promptstudio-message-delete-dialog");
+  if (!dialog || dialog.hidden) return;
+  setModalOpen(dialog, false);
+  const resolve = dialog._resolveChoice;
+  const trigger = dialog._choiceTrigger;
+  dialog._resolveChoice = null;
+  dialog._choiceTrigger = null;
+  resolve?.(choice);
+  dialog.ownerDocument.defaultView?.setTimeout(() => trigger?.focus({ preventScroll: true }));
+}
+
+function chooseMessageDeleteAction(data, trigger) {
+  const dialog = state.panel?.querySelector("#promptstudio-message-delete-dialog");
+  if (!dialog) return Promise.resolve(null);
+  settleMessageDeleteChoice();
+  const hasImages = messageImageReferences(data).length > 0;
+  dialog.querySelector("#promptstudio-message-delete-cancel").textContent = hasImages ? "Cancel" : "No";
+  dialog.querySelector("#promptstudio-message-delete-yes").hidden = hasImages;
+  dialog.querySelector("#promptstudio-message-delete-only").hidden = !hasImages;
+  dialog.querySelector("#promptstudio-message-delete-files").hidden = !hasImages;
+  dialog._choiceTrigger = trigger;
+  setModalOpen(dialog, true);
+  dialog.querySelector("#promptstudio-message-delete-cancel")?.focus({ preventScroll: true });
+  return new Promise((resolve) => { dialog._resolveChoice = resolve; });
+}
+
+async function deleteMessageImageFiles(images) {
+  const response = await api.fetchApi("/promptstudio/prompt-studio/delete-image-files", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ images }),
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(data.error || `Image files could not be deleted (${response.status}).`);
+  return data;
+}
+
+function rememberDeletedMessage(chatId, messageId) {
+  if (!state.chatDeletedMessageIds.has(chatId)) state.chatDeletedMessageIds.set(chatId, new Set());
+  state.chatDeletedMessageIds.get(chatId).add(messageId);
+}
+
+function clearDeletedMessageReferences(chat, data) {
+  const deletedImages = new Set(messageImageReferences(data).map(imageReferenceKey));
+  if (deletedImages.has(imageReferenceKey(chat.selectedSource))) chat.selectedSource = null;
+  if (deletedImages.has(imageReferenceKey(chat.pendingGeneration?.sourceImage))) chat.pendingGeneration = null;
+  if (chat.studioDiscussion?.targetMessageId === data.id) chat.studioDiscussion = null;
+  if (data.promptId) {
+    const promptId = String(data.promptId);
+    state.generationJobs.delete(promptId);
+    state.generationProgress.delete(promptId);
+    state.generationFailures.delete(promptId);
+    if (state.activeGenerationPromptId === promptId) state.activeGenerationPromptId = "";
+  }
+  if (data.operationId) state.operationControllers.delete(String(data.operationId));
+}
+
+async function deleteChatMessage(messageId, trigger) {
+  const chat = activeChat();
+  const message = chat?.messages.find((item) => item.id === messageId);
+  if (!chat || !message) return;
+  const choice = await chooseMessageDeleteAction(message, trigger);
+  if (!choice) return;
+  try {
+    if (message.operationId && !["complete", "error", "cancelled"].includes(message.operationPhase)) {
+      await cancelStudioOperation(message.id);
+    } else if (message.promptId && ["queued", "generating"].includes(message.generationState)) {
+      state.generationJobs.delete(String(message.promptId));
+      await cancelComfyPrompt(message.promptId);
+    }
+    const images = messageImageReferences(message);
+    if (choice === "message-and-files" && images.length) await deleteMessageImageFiles(images);
+    const liveChat = state.chats.find((item) => item.id === chat.id);
+    const liveMessage = liveChat?.messages.find((item) => item.id === message.id);
+    const index = liveChat?.messages.findIndex((item) => item.id === message.id) ?? -1;
+    if (index < 0) return;
+    liveChat.messages.splice(index, 1);
+    clearDeletedMessageReferences(liveChat, liveMessage || message);
+    rememberDeletedMessage(liveChat.id, message.id);
+    liveChat.updatedAt = Date.now();
+    saveChats({ immediate: true });
+    renderChatHistory();
+    renderChatList();
+    refreshLatestImageContextControl();
+    refreshStudioStatus();
+    setStatus(choice === "message-and-files" ? "Message and image file deleted." : "Message deleted.", "ready");
+  } catch (error) {
+    setStatus(error.message || "The message could not be deleted.", "error");
+  }
+}
+
+function renderMessageDeleteAction(message, data) {
+  if (!message || !data?.id || message.querySelector(".promptstudio-message-delete")) return;
+  message.classList.add("promptstudio-has-delete");
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "promptstudio-message-delete";
+  button.textContent = "×";
+  button.title = "Delete this message";
+  button.setAttribute("aria-label", button.title);
+  button.addEventListener("click", () => deleteChatMessage(data.id, button));
+  message.appendChild(button);
+}
+
 function renderGenerationProgress(message, data) {
   if (!message) return;
   message.querySelector(".promptstudio-generation-progress")?.remove();
@@ -5571,6 +5928,7 @@ function renderMessage(data, { scroll = true } = {}) {
   renderGenerationProgress(message, data);
   renderImageGallery(message, data.images, data);
   renderPromptInfo(message, data);
+  renderMessageDeleteAction(message, data);
   renderVideoHandoffAction(message, data);
   renderStudioProposalCard(message, data);
 
@@ -7445,6 +7803,14 @@ async function queueGeneration({
     }
     modelNode.inputs ||= {};
     modelNode.inputs.unet_name = storedState.modelName;
+  }
+
+  if (!replayExactGeneration) {
+    applyPromptStudioInputValues(
+      context.snapshot,
+      context.profile,
+      state.additionalInputSelections,
+    );
   }
 
   if (operationCancelled()) return false;
@@ -12626,7 +12992,7 @@ function buildPanel() {
             <label id="promptstudio-thinking-control">Thinking<select id="promptstudio-thinking"></select></label>
             <label class="promptstudio-control-wide" title="Additional guidance applied together with the selected style preset. Select None for modifier-only behavior.">Style modifier<textarea id="promptstudio-style-modifier" rows="2" placeholder="Further style guidance added to the selected preset"></textarea></label>
             <label class="promptstudio-control-wide" title="Additional guidance applied together with the selected framing preset. Select None for modifier-only behavior.">Framing modifier<textarea id="promptstudio-framing-modifier" rows="2" placeholder="Further framing guidance added to the selected preset"></textarea></label>
-            <label id="promptstudio-output-length-control" class="promptstudio-control-wide">Target length
+            <label class="promptstudio-control-wide">Target length
               <span id="promptstudio-output-length-value" class="promptstudio-output-length-value">~35 words</span>
               <span id="promptstudio-output-length-track" class="promptstudio-output-length-track">
                 <input id="promptstudio-output-length" type="range" min="20" max="200" step="5" value="35" aria-describedby="promptstudio-output-length-help" />
@@ -12665,6 +13031,10 @@ function buildPanel() {
             <label>Multiple<input id="promptstudio-resolution-multiple" type="number" min="8" max="128" step="4" value="8" /></label>
           </div>
         </details>
+        <details id="promptstudio-additional-inputs-details" class="promptstudio-additional-inputs-details" data-promptstudio-sidebar-group="additional-inputs" open hidden>
+          <summary><span>Additional Inputs</span><small id="promptstudio-additional-inputs-summary">No connected inputs</small></summary>
+          <div id="promptstudio-additional-inputs-controls" class="promptstudio-additional-inputs-controls"></div>
+        </details>
         <details id="promptstudio-additional-details" class="promptstudio-secondary-details promptstudio-additional-details" data-promptstudio-sidebar-group="additional-instructions" open>
           <summary><span>Additional instructions</span><small>Steering guidance for the LLM</small></summary>
           <div class="promptstudio-main-prompt-editor promptstudio-additional-instructions-editor">
@@ -12701,7 +13071,7 @@ function buildPanel() {
                 <button id="promptstudio-open-backend-settings" type="button">Backend settings</button>
               </span>
             </div>
-            <div id="promptstudio-backend-settings-dialog" class="promptstudio-backend-settings-dialog" role="dialog" aria-modal="true" aria-labelledby="promptstudio-backend-settings-title" hidden>
+            <div id="promptstudio-backend-settings-dialog" class="promptstudio-backend-settings-dialog" role="dialog" aria-labelledby="promptstudio-backend-settings-title" hidden>
               <section class="promptstudio-backend-settings-card">
                 <header class="promptstudio-backend-settings-header">
                   <div><strong id="promptstudio-backend-settings-title">Backend settings</strong><span>Connection, model, memory, and managed-server options</span></div>
@@ -12851,7 +13221,7 @@ function buildPanel() {
           <output id="promptstudio-mutation-manager-count"></output>
         </div>
         <div id="promptstudio-mutation-list" class="promptstudio-mutation-list"></div>
-        <div id="promptstudio-mutation-editor" class="promptstudio-mutation-editor" role="dialog" aria-modal="true" aria-labelledby="promptstudio-mutation-editor-title" hidden>
+        <div id="promptstudio-mutation-editor" class="promptstudio-mutation-editor" role="dialog" aria-labelledby="promptstudio-mutation-editor-title" hidden>
           <form class="promptstudio-mutation-editor-card">
             <header><div><strong id="promptstudio-mutation-editor-title"></strong><span>Changes are saved to the corresponding local configuration file.</span></div><button id="promptstudio-mutation-editor-close" type="button" aria-label="Close editor">×</button></header>
             <div class="promptstudio-mutation-editor-fields">
@@ -12865,7 +13235,7 @@ function buildPanel() {
           </form>
         </div>
       </section>
-      <div id="promptstudio-llm-profile-editor" class="promptstudio-llm-profile-editor" role="dialog" aria-modal="true" aria-labelledby="promptstudio-llm-profile-editor-title" hidden>
+      <div id="promptstudio-llm-profile-editor" class="promptstudio-llm-profile-editor" role="dialog" aria-labelledby="promptstudio-llm-profile-editor-title" hidden>
         <form class="promptstudio-llm-profile-editor-card">
           <header>
             <div><strong id="promptstudio-llm-profile-editor-title">Edit LLM profile</strong><span>These settings are used for prompt rewriting, local model chat, and Prompt Agent.</span></div>
@@ -13024,14 +13394,14 @@ function buildPanel() {
       </footer>
       <input id="promptstudio-consult-file" type="file" accept="image/*" hidden />
     </section>
-    <div id="promptstudio-lightbox" class="promptstudio-lightbox" role="dialog" aria-modal="true" aria-label="Image preview" tabindex="-1" hidden>
+    <div id="promptstudio-lightbox" class="promptstudio-lightbox" role="dialog" aria-label="Image preview" tabindex="-1" hidden>
       <img id="promptstudio-lightbox-image" alt="" />
       <div class="promptstudio-lightbox-actions">
         <a id="promptstudio-lightbox-open" href="#" target="_blank" rel="noopener" title="Open image in new tab" aria-label="Open image in new tab">↗</a>
         <button id="promptstudio-lightbox-close" type="button" title="Close image preview" aria-label="Close image preview">×</button>
       </div>
     </div>
-    <div id="promptstudio-upscale-dialog" class="promptstudio-upscale-dialog" role="dialog" aria-modal="true" aria-labelledby="promptstudio-upscale-title" hidden>
+    <div id="promptstudio-upscale-dialog" class="promptstudio-upscale-dialog" role="dialog" aria-labelledby="promptstudio-upscale-title" hidden>
       <form id="promptstudio-upscale-form" class="promptstudio-upscale-card">
         <strong id="promptstudio-upscale-title">Upscale image</strong>
         <label for="promptstudio-upscale-factor">Upscale factor</label>
@@ -13042,7 +13412,7 @@ function buildPanel() {
         </div>
       </form>
     </div>
-    <div id="promptstudio-video-handoff-dialog" class="promptstudio-video-handoff-dialog" role="dialog" aria-modal="true" aria-labelledby="promptstudio-video-handoff-title" aria-describedby="promptstudio-video-handoff-message" hidden>
+    <div id="promptstudio-video-handoff-dialog" class="promptstudio-video-handoff-dialog" role="dialog" aria-labelledby="promptstudio-video-handoff-title" aria-describedby="promptstudio-video-handoff-message" hidden>
       <div class="promptstudio-video-handoff-card">
         <strong id="promptstudio-video-handoff-title">Add image to Video Studio</strong>
         <p id="promptstudio-video-handoff-message">The current session "<span id="promptstudio-video-handoff-project-name"></span>" already contains work. Where should this image go?</p>
@@ -13053,7 +13423,19 @@ function buildPanel() {
         </div>
       </div>
     </div>
-    <div id="promptstudio-generation-failure-dialog" class="promptstudio-generation-failure-dialog" role="dialog" aria-modal="true" aria-labelledby="promptstudio-generation-failure-title" aria-describedby="promptstudio-generation-failure-message promptstudio-generation-failure-help" hidden>
+    <div id="promptstudio-message-delete-dialog" class="promptstudio-message-delete-dialog" role="dialog" aria-labelledby="promptstudio-message-delete-title" aria-describedby="promptstudio-message-delete-question" hidden>
+      <div class="promptstudio-message-delete-card">
+        <strong id="promptstudio-message-delete-title">Delete message</strong>
+        <p id="promptstudio-message-delete-question">Do you really want to delete this message?</p>
+        <div class="promptstudio-message-delete-dialog-actions">
+          <button id="promptstudio-message-delete-cancel" type="button">No</button>
+          <button id="promptstudio-message-delete-yes" class="promptstudio-danger-button" type="button">Yes</button>
+          <button id="promptstudio-message-delete-only" type="button" hidden>Delete message</button>
+          <button id="promptstudio-message-delete-files" class="promptstudio-danger-button" type="button" hidden>Delete message and file</button>
+        </div>
+      </div>
+    </div>
+    <div id="promptstudio-generation-failure-dialog" class="promptstudio-generation-failure-dialog" role="dialog" aria-labelledby="promptstudio-generation-failure-title" aria-describedby="promptstudio-generation-failure-message promptstudio-generation-failure-help" hidden>
       <div class="promptstudio-generation-failure-card">
         <strong id="promptstudio-generation-failure-title">Generation failed</strong>
         <p id="promptstudio-generation-failure-message" class="promptstudio-generation-failure-message"></p>
@@ -13357,6 +13739,16 @@ function buildPanel() {
   panel.querySelector("#promptstudio-video-handoff-cancel").addEventListener("click", () => settleVideoHandoffChoice());
   panel.querySelector("#promptstudio-video-handoff-new").addEventListener("click", () => settleVideoHandoffChoice("new"));
   panel.querySelector("#promptstudio-video-handoff-current").addEventListener("click", () => settleVideoHandoffChoice("current"));
+  panel.querySelector("#promptstudio-message-delete-dialog").addEventListener("click", (event) => {
+    if (event.target === event.currentTarget) settleMessageDeleteChoice();
+  });
+  panel.querySelector("#promptstudio-message-delete-dialog").addEventListener("keydown", (event) => {
+    if (event.key === "Escape") settleMessageDeleteChoice();
+  });
+  panel.querySelector("#promptstudio-message-delete-cancel").addEventListener("click", () => settleMessageDeleteChoice());
+  panel.querySelector("#promptstudio-message-delete-yes").addEventListener("click", () => settleMessageDeleteChoice("message"));
+  panel.querySelector("#promptstudio-message-delete-only").addEventListener("click", () => settleMessageDeleteChoice("message"));
+  panel.querySelector("#promptstudio-message-delete-files").addEventListener("click", () => settleMessageDeleteChoice("message-and-files"));
   panel.querySelector("#promptstudio-generation-failure-dialog").addEventListener("click", (event) => {
     if (event.target === event.currentTarget) closeGenerationFailureDialog();
   });
@@ -13748,6 +14140,9 @@ async function togglePanel(force) {
 
 app.registerExtension({
   name: EXTENSION_NAME,
+  registerCustomNodes() {
+    registerPromptStudioInputNode();
+  },
   beforeRegisterNodeDef(_nodeType, nodeData) {
     if (nodeData?.name !== LORA_LOADER_TYPE) return;
     if (nodeData.input?.optional) delete nodeData.input.optional.lora_stack_json;

@@ -12,6 +12,10 @@ import {
   normalizeWorkflowProfile,
   workflowNameFromPath,
 } from "./workflow-profile.js";
+import {
+  PROMPT_STUDIO_INPUT_PROFILE_VERSION,
+  extractPromptStudioInputs,
+} from "./prompt-studio-input.js";
 
 export function createWorkflowTemplateBuilder({ app, nodeClassName }) {
   function imageOutputNode(node) {
@@ -118,6 +122,7 @@ export function createWorkflowTemplateBuilder({ app, nodeClassName }) {
           denoise: Number(node.inputs?.denoise ?? 1),
         },
       }));
+    const additionalInputs = extractPromptStudioInputs(graph, snapshot, workflowData);
     const imageOutputs = (graph._nodes || []).filter((node) => (
       Object.hasOwn(output, String(node.id)) && imageOutputNode(node)
     ));
@@ -136,6 +141,8 @@ export function createWorkflowTemplateBuilder({ app, nodeClassName }) {
       loraNodes,
       modelNodes,
       samplingNodes,
+      additionalInputs,
+      promptStudioInputVersion: PROMPT_STUDIO_INPUT_PROFILE_VERSION,
       resultNodeIds: [String(imageOutputs[0].id)],
       snapshot,
       updatedAt: Date.now(),
