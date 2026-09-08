@@ -66,5 +66,19 @@
     "size": 66958607,
     "sha256": "1d1b0078fe71446e0469d8d4df59e96baa80d83cda600d68237d655830821bcc",
     "url": "https://huggingface.co/Kalashnikov/NMKD-superscale/resolve/124142c8ec8be80cc2e69d5bf06f4a9e05fa7da7/4x_NMKD-Superscale-SP_178000_G.pth?download=true"
+  },
+  {
+    "id": "krea2_identity_edit_v1_2",
+    "name": "Krea 2 Identity Edit v1.2 LoRA",
+    "category": "loras",
+    "relative_path": "Krea2/_krea2_identity_edit_v1_2.safetensors",
+    "aliases": [
+      "Krea2/krea2_identity_edit_v1_2.safetensors",
+      "krea2_identity_edit_v1_2.safetensors"
+    ],
+    "size": 1828256432,
+    "sha256": "6adf9a69cc9502d286db7b69964d37da7e9cfe4b05b4d004bc275f087d3fd3cf",
+    "url": "https://huggingface.co/conradlocke/krea2-identity-edit/resolve/89e9e7a09ee2e5c9331e952063d79b1b8a703280/krea2_identity_edit_v1_2.safetensors?download=true",
+    "source_url": "https://huggingface.co/conradlocke/krea2-identity-edit"
   }
 ]

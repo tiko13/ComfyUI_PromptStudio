@@ -1,8 +1,8 @@
 {
   "id": "6361f484-6432-4e6f-b2c3-2f763292f3de",
-  "revision": 0,
-  "last_node_id": 112,
-  "last_link_id": 192,
+  "revision": 1,
+  "last_node_id": 119,
+  "last_link_id": 31,
   "nodes": [
     {
       "id": 82,
@@ -26,7 +26,7 @@
           "widget": {
             "name": "width"
           },
-          "link": 174
+          "link": 14
         },
         {
           "localized_name": "height",
@@ -35,7 +35,7 @@
           "widget": {
             "name": "height"
           },
-          "link": 176
+          "link": 15
         },
         {
           "localized_name": "batch_size",
@@ -53,7 +53,8 @@
           "name": "LATENT",
           "type": "LATENT",
           "links": [
-            131
+            5,
+            24
           ]
         }
       ],
@@ -100,13 +101,13 @@
           "localized_name": "pixels",
           "name": "pixels",
           "type": "IMAGE",
-          "link": 117
+          "link": 4
         },
         {
           "localized_name": "vae",
           "name": "vae",
           "type": "VAE",
-          "link": 106
+          "link": 3
         }
       ],
       "outputs": [
@@ -115,7 +116,7 @@
           "name": "LATENT",
           "type": "LATENT",
           "links": [
-            132
+            6
           ]
         }
       ],
@@ -158,13 +159,13 @@
           "localized_name": "samples",
           "name": "samples",
           "type": "LATENT",
-          "link": 78
+          "link": 1
         },
         {
           "localized_name": "vae",
           "name": "vae",
           "type": "VAE",
-          "link": 79
+          "link": 2
         }
       ],
       "outputs": [
@@ -174,7 +175,7 @@
           "type": "IMAGE",
           "slot_index": 0,
           "links": [
-            165
+            13
           ]
         }
       ],
@@ -208,7 +209,7 @@
           "localized_name": "images",
           "name": "images",
           "type": "IMAGE",
-          "link": 165
+          "link": 13
         },
         {
           "localized_name": "filename_prefix",
@@ -252,7 +253,7 @@
           "localized_name": "IMAGE",
           "name": "IMAGE",
           "type": "IMAGE",
-          "links": null
+          "links": []
         }
       ],
       "properties": {
@@ -326,8 +327,8 @@
           "name": "CLIP",
           "type": "CLIP",
           "links": [
-            137,
-            139
+            7,
+            9
           ]
         }
       ],
@@ -380,14 +381,14 @@
           "localized_name": "clip",
           "name": "clip",
           "type": "CLIP",
-          "link": 137
+          "link": 7
         },
         {
           "localized_name": "image",
           "name": "image",
           "shape": 7,
           "type": "IMAGE",
-          "link": 141
+          "link": 10
         },
         {
           "localized_name": "image_b",
@@ -403,7 +404,7 @@
           "widget": {
             "name": "prompt"
           },
-          "link": 182
+          "link": 16
         },
         {
           "localized_name": "grounding_px",
@@ -413,7 +414,7 @@
           "widget": {
             "name": "grounding_px"
           },
-          "link": null
+          "link": 27
         },
         {
           "localized_name": "system_prompt",
@@ -432,14 +433,14 @@
           "name": "CONDITIONING",
           "type": "CONDITIONING",
           "links": [
-            138
+            8
           ]
         }
       ],
       "properties": {
         "Node name for S&R": "Krea2EditGroundedEncode",
         "cnr_id": "comfyui-krea2edit",
-        "ver": "e55907682a3821c834693b47594f829da119be4b",
+        "ver": "86f886dac23013d88996e3a2e99093ba44d322fb",
         "aux_id": "lbouaraba/comfyui-krea2edit",
         "ue_properties": {
           "widget_ue_connectable": {},
@@ -449,12 +450,12 @@
       },
       "widgets_values": [
         "",
-        1024,
+        768,
         ""
       ],
       "widgets_values_named": {
         "prompt": "",
-        "grounding_px": 1024,
+        "grounding_px": 768,
         "system_prompt": ""
       },
       "color": "#432",
@@ -479,14 +480,14 @@
           "localized_name": "clip",
           "name": "clip",
           "type": "CLIP",
-          "link": 139
+          "link": 9
         },
         {
           "localized_name": "image",
           "name": "image",
           "shape": 7,
           "type": "IMAGE",
-          "link": 142
+          "link": 11
         },
         {
           "localized_name": "image_b",
@@ -512,7 +513,7 @@
           "widget": {
             "name": "grounding_px"
           },
-          "link": null
+          "link": 28
         },
         {
           "localized_name": "system_prompt",
@@ -531,14 +532,14 @@
           "name": "CONDITIONING",
           "type": "CONDITIONING",
           "links": [
-            151
+            12
           ]
         }
       ],
       "properties": {
         "Node name for S&R": "Krea2EditGroundedEncode",
         "cnr_id": "comfyui-krea2edit",
-        "ver": "e55907682a3821c834693b47594f829da119be4b",
+        "ver": "86f886dac23013d88996e3a2e99093ba44d322fb",
         "aux_id": "lbouaraba/comfyui-krea2edit",
         "ue_properties": {
           "widget_ue_connectable": {},
@@ -548,12 +549,12 @@
       },
       "widgets_values": [
         "",
-        1024,
+        768,
         ""
       ],
       "widgets_values_named": {
         "prompt": "",
-        "grounding_px": 1024,
+        "grounding_px": 768,
         "system_prompt": ""
       },
       "color": "#432",
@@ -599,14 +600,17 @@
           "name": "image",
           "type": "IMAGE",
           "links": [
-            166
+            4,
+            10,
+            11,
+            18
           ]
         },
         {
           "localized_name": "mask",
           "name": "mask",
           "type": "MASK",
-          "links": null
+          "links": []
         }
       ],
       "properties": {
@@ -626,114 +630,6 @@
       "widgets_values_named": {
         "image_ref": "",
         "source_name": "Edit Source"
-      }
-    },
-    {
-      "id": 77,
-      "type": "ResizeImageMaskNode",
-      "pos": [
-        1378.3876566868828,
-        211.73426621943585
-      ],
-      "size": [
-        263.82050974160984,
-        154
-      ],
-      "flags": {},
-      "order": 7,
-      "mode": 0,
-      "inputs": [
-        {
-          "localized_name": "input",
-          "name": "input",
-          "type": "IMAGE,MASK",
-          "link": 166
-        },
-        {
-          "localized_name": "resize_type",
-          "name": "resize_type",
-          "type": "COMFY_DYNAMICCOMBO_V3",
-          "widget": {
-            "name": "resize_type"
-          },
-          "link": null
-        },
-        {
-          "localized_name": "width",
-          "name": "resize_type.width",
-          "type": "INT",
-          "widget": {
-            "name": "resize_type.width"
-          },
-          "link": 175
-        },
-        {
-          "localized_name": "height",
-          "name": "resize_type.height",
-          "type": "INT",
-          "widget": {
-            "name": "resize_type.height"
-          },
-          "link": 177
-        },
-        {
-          "localized_name": "crop",
-          "name": "resize_type.crop",
-          "type": "COMBO",
-          "widget": {
-            "name": "resize_type.crop"
-          },
-          "link": null
-        },
-        {
-          "localized_name": "scale_method",
-          "name": "scale_method",
-          "type": "COMBO",
-          "widget": {
-            "name": "scale_method"
-          },
-          "link": null
-        }
-      ],
-      "outputs": [
-        {
-          "localized_name": "resized",
-          "name": "resized",
-          "type": "IMAGE",
-          "links": [
-            117,
-            141,
-            142,
-            184
-          ]
-        }
-      ],
-      "properties": {
-        "Node name for S&R": "ResizeImageMaskNode",
-        "cnr_id": "comfy-core",
-        "ver": "0.26.0",
-        "ue_properties": {
-          "widget_ue_connectable": {
-            "resize_type.width": true,
-            "resize_type.height": true
-          },
-          "version": "7.8",
-          "input_ue_unconnectable": {}
-        }
-      },
-      "widgets_values": [
-        "scale dimensions",
-        1024,
-        1024,
-        "center",
-        "area"
-      ],
-      "widgets_values_named": {
-        "resize_type": "scale dimensions",
-        "resize_type.width": 1024,
-        "resize_type.height": 1024,
-        "resize_type.crop": "center",
-        "scale_method": "area"
       }
     },
     {
@@ -767,9 +663,9 @@
           "name": "VAE",
           "type": "VAE",
           "links": [
-            79,
-            106,
-            185
+            2,
+            3,
+            19
           ]
         }
       ],
@@ -818,13 +714,13 @@
           "localized_name": "model",
           "name": "model",
           "type": "MODEL",
-          "link": 186
+          "link": 20
         },
         {
           "localized_name": "source_latent",
           "name": "source_latent",
           "type": "LATENT",
-          "link": 132
+          "link": 6
         },
         {
           "localized_name": "source_latent_b",
@@ -845,14 +741,14 @@
           "name": "vae",
           "shape": 7,
           "type": "VAE",
-          "link": 185
+          "link": 19
         },
         {
           "localized_name": "source_image",
           "name": "source_image",
           "shape": 7,
           "type": "IMAGE",
-          "link": 184
+          "link": 18
         },
         {
           "localized_name": "source_image_b",
@@ -862,6 +758,12 @@
           "link": null
         },
         {
+          "name": "target_latent",
+          "type": "LATENT",
+          "shape": 7,
+          "link": 24
+        },
+        {
           "localized_name": "ref_boost",
           "name": "ref_boost",
           "shape": 7,
@@ -869,7 +771,7 @@
           "widget": {
             "name": "ref_boost"
           },
-          "link": null
+          "link": 26
         },
         {
           "localized_name": "ref_boost_a",
@@ -898,14 +800,14 @@
           "name": "MODEL",
           "type": "MODEL",
           "links": [
-            183
+            17
           ]
         }
       ],
       "properties": {
         "Node name for S&R": "Krea2EditModelPatch",
         "cnr_id": "comfyui-krea2edit",
-        "ver": "e55907682a3821c834693b47594f829da119be4b",
+        "ver": "86f886dac23013d88996e3a2e99093ba44d322fb",
         "aux_id": "lbouaraba/comfyui-krea2edit",
         "ue_properties": {
           "widget_ue_connectable": {},
@@ -914,12 +816,12 @@
         }
       },
       "widgets_values": [
-        1,
+        4,
         1,
         "fit"
       ],
       "widgets_values_named": {
-        "ref_boost": 1,
+        "ref_boost": 4,
         "ref_boost_a": 1,
         "fit_mode": "fit"
       }
@@ -943,7 +845,7 @@
           "localized_name": "model",
           "name": "model",
           "type": "MODEL",
-          "link": 192
+          "link": 23
         },
         {
           "localized_name": "lora_name",
@@ -970,7 +872,7 @@
           "name": "MODEL",
           "type": "MODEL",
           "links": [
-            186
+            25
           ]
         }
       ],
@@ -982,7 +884,8 @@
           "widget_ue_connectable": {},
           "input_ue_unconnectable": {},
           "version": "7.8"
-        }
+        },
+        "promptstudio_asset": "textfusion"
       },
       "widgets_values": [
         "Krea2\\_Krea2_TextFusion_Refusal_Reduction.safetensors",
@@ -1043,7 +946,7 @@
           "name": "prompt",
           "type": "STRING",
           "links": [
-            190
+            21
           ]
         },
         {
@@ -1051,7 +954,7 @@
           "name": "secondary_instructions",
           "type": "STRING",
           "links": [
-            191
+            22
           ]
         },
         {
@@ -1059,8 +962,7 @@
           "name": "width",
           "type": "INT",
           "links": [
-            174,
-            175
+            14
           ]
         },
         {
@@ -1068,8 +970,7 @@
           "name": "height",
           "type": "INT",
           "links": [
-            176,
-            177
+            15
           ]
         }
       ],
@@ -1134,7 +1035,7 @@
           "name": "MODEL",
           "type": "MODEL",
           "links": [
-            192
+            23
           ]
         }
       ],
@@ -1169,25 +1070,25 @@
           "localized_name": "model",
           "name": "model",
           "type": "MODEL",
-          "link": 183
+          "link": 17
         },
         {
           "localized_name": "positive",
           "name": "positive",
           "type": "CONDITIONING",
-          "link": 138
+          "link": 8
         },
         {
           "localized_name": "negative",
           "name": "negative",
           "type": "CONDITIONING",
-          "link": 151
+          "link": 12
         },
         {
           "localized_name": "latent_image",
           "name": "latent_image",
           "type": "LATENT",
-          "link": 131
+          "link": 5
         },
         {
           "localized_name": "seed",
@@ -1205,7 +1106,7 @@
           "widget": {
             "name": "steps"
           },
-          "link": null
+          "link": 29
         },
         {
           "localized_name": "cfg",
@@ -1223,7 +1124,7 @@
           "widget": {
             "name": "sampler_name"
           },
-          "link": null
+          "link": 30
         },
         {
           "localized_name": "scheduler",
@@ -1232,7 +1133,7 @@
           "widget": {
             "name": "scheduler"
           },
-          "link": null
+          "link": 31
         },
         {
           "localized_name": "denoise",
@@ -1251,7 +1152,7 @@
           "type": "LATENT",
           "slot_index": 0,
           "links": [
-            78
+            1
           ]
         }
       ],
@@ -1268,19 +1169,19 @@
       "widgets_values": [
         1,
         "fixed",
-        8,
+        10,
         1,
-        "er_sde",
-        "beta",
+        "euler",
+        "simple",
         1
       ],
       "widgets_values_named": {
         "seed": 1,
         "control_after_generate": "fixed",
-        "steps": 8,
+        "steps": 10,
         "cfg": 1,
-        "sampler_name": "er_sde",
-        "scheduler": "beta",
+        "sampler_name": "euler",
+        "scheduler": "simple",
         "denoise": 1
       }
     },
@@ -1306,7 +1207,7 @@
           "widget": {
             "name": "string_a"
           },
-          "link": 191
+          "link": 22
         },
         {
           "localized_name": "string_b",
@@ -1315,7 +1216,7 @@
           "widget": {
             "name": "string_b"
           },
-          "link": 190
+          "link": 21
         },
         {
           "localized_name": "delimiter",
@@ -1333,7 +1234,7 @@
           "name": "STRING",
           "type": "STRING",
           "links": [
-            182
+            16
           ]
         }
       ],
@@ -1357,11 +1258,403 @@
         "string_b": "",
         "delimiter": ", "
       }
+    },
+    {
+      "id": 113,
+      "type": "LoraLoaderModelOnly",
+      "pos": [
+        728.913216655514,
+        603.2706992357771
+      ],
+      "size": [
+        270,
+        82
+      ],
+      "flags": {},
+      "order": 8,
+      "mode": 0,
+      "inputs": [
+        {
+          "localized_name": "model",
+          "name": "model",
+          "type": "MODEL",
+          "link": 25
+        },
+        {
+          "localized_name": "lora_name",
+          "name": "lora_name",
+          "type": "COMBO",
+          "widget": {
+            "name": "lora_name"
+          },
+          "link": null
+        },
+        {
+          "localized_name": "strength_model",
+          "name": "strength_model",
+          "type": "FLOAT",
+          "widget": {
+            "name": "strength_model"
+          },
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "localized_name": "MODEL",
+          "name": "MODEL",
+          "type": "MODEL",
+          "links": [
+            20
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "LoraLoaderModelOnly",
+        "cnr_id": "comfy-core",
+        "ver": "0.28.0",
+        "ue_properties": {
+          "widget_ue_connectable": {},
+          "input_ue_unconnectable": {},
+          "version": "7.8"
+        },
+        "promptstudio_asset": "identity_edit"
+      },
+      "widgets_values": [
+        "Krea2\\_krea2_identity_edit_v1_2.safetensors",
+        1.0
+      ],
+      "widgets_values_named": {
+        "lora_name": "Krea2\\_krea2_identity_edit_v1_2.safetensors",
+        "strength_model": 1.0
+      },
+      "title": "Krea2 Identity Edit v1.2"
+    },
+    {
+      "id": 114,
+      "type": "PromptStudioInput",
+      "title": "Reference fidelity",
+      "pos": [
+        1390.8218238477837,
+        785.2706992357771
+      ],
+      "size": [
+        370,
+        110
+      ],
+      "flags": {},
+      "order": 0,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "FLOAT",
+          "type": "FLOAT",
+          "links": [
+            26
+          ],
+          "widget": {
+            "name": "ref_boost",
+            "config": [
+              "FLOAT",
+              {
+                "default": 1.0,
+                "min": 0.0,
+                "max": 1000.0,
+                "step": 0.01,
+                "round": 0.001,
+                "tooltip": "reference-fidelity dial: multiplies target->reference attention. Applies to the LAST ref (= the subject in two-ref workflows, the only ref in single-ref). 1.0 = off, >1 pulls harder toward the reference's appearance, <1 loosens. Optimal value is model-specific"
+              }
+            ]
+          }
+        }
+      ],
+      "properties": {
+        "promptStudioInput": true
+      },
+      "widgets_values": [
+        4
+      ]
+    },
+    {
+      "id": 115,
+      "type": "PromptStudioInput",
+      "title": "Positive grounding resolution",
+      "pos": [
+        1820.8218238477837,
+        785.2706992357771
+      ],
+      "size": [
+        370,
+        110
+      ],
+      "flags": {},
+      "order": 0,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "INT",
+          "type": "INT",
+          "links": [
+            27
+          ],
+          "widget": {
+            "name": "grounding_px",
+            "config": [
+              "INT",
+              {
+                "default": 768,
+                "min": 0,
+                "max": 4096,
+                "step": 64,
+                "tooltip": "cap longest side fed to Qwen3-VL; 0 = native"
+              }
+            ]
+          }
+        }
+      ],
+      "properties": {
+        "promptStudioInput": true
+      },
+      "widgets_values": [
+        768,
+        "fixed"
+      ]
+    },
+    {
+      "id": 116,
+      "type": "PromptStudioInput",
+      "title": "Negative grounding resolution",
+      "pos": [
+        2250.821823847784,
+        785.2706992357771
+      ],
+      "size": [
+        370,
+        110
+      ],
+      "flags": {},
+      "order": 0,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "INT",
+          "type": "INT",
+          "links": [
+            28
+          ],
+          "widget": {
+            "name": "grounding_px",
+            "config": [
+              "INT",
+              {
+                "default": 768,
+                "min": 0,
+                "max": 4096,
+                "step": 64,
+                "tooltip": "cap longest side fed to Qwen3-VL; 0 = native"
+              }
+            ]
+          }
+        }
+      ],
+      "properties": {
+        "promptStudioInput": true
+      },
+      "widgets_values": [
+        768,
+        "fixed"
+      ]
+    },
+    {
+      "id": 117,
+      "type": "PromptStudioInput",
+      "title": "Steps",
+      "pos": [
+        1390.8218238477837,
+        955.2706992357771
+      ],
+      "size": [
+        370,
+        110
+      ],
+      "flags": {},
+      "order": 0,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "INT",
+          "type": "INT",
+          "links": [
+            29
+          ],
+          "widget": {
+            "name": "steps",
+            "config": [
+              "INT",
+              {
+                "default": 20,
+                "min": 1,
+                "max": 10000,
+                "tooltip": "The number of steps used in the denoising process."
+              }
+            ]
+          }
+        }
+      ],
+      "properties": {
+        "promptStudioInput": true
+      },
+      "widgets_values": [
+        10,
+        "fixed"
+      ]
+    },
+    {
+      "id": 118,
+      "type": "PromptStudioInput",
+      "title": "Sampler",
+      "pos": [
+        1820.8218238477837,
+        955.2706992357771
+      ],
+      "size": [
+        370,
+        110
+      ],
+      "flags": {},
+      "order": 0,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "COMBO",
+          "type": "COMBO",
+          "links": [
+            30
+          ],
+          "widget": {
+            "name": "sampler_name",
+            "config": [
+              [
+                "euler",
+                "euler_cfg_pp",
+                "euler_ancestral",
+                "euler_ancestral_cfg_pp",
+                "heun",
+                "heunpp2",
+                "exp_heun_2_x0",
+                "exp_heun_2_x0_sde",
+                "dpm_2",
+                "dpm_2_ancestral",
+                "lms",
+                "dpm_fast",
+                "dpm_adaptive",
+                "dpmpp_2s_ancestral",
+                "dpmpp_2s_ancestral_cfg_pp",
+                "dpmpp_sde",
+                "dpmpp_sde_gpu",
+                "dpmpp_2m",
+                "dpmpp_2m_cfg_pp",
+                "dpmpp_2m_sde",
+                "dpmpp_2m_sde_gpu",
+                "dpmpp_2m_sde_heun",
+                "dpmpp_2m_sde_heun_gpu",
+                "dpmpp_3m_sde",
+                "dpmpp_3m_sde_gpu",
+                "ddpm",
+                "lcm",
+                "ipndm",
+                "ipndm_v",
+                "deis",
+                "cfgpp_ud10_ab",
+                "res_multistep",
+                "res_multistep_cfg_pp",
+                "res_multistep_ancestral",
+                "res_multistep_ancestral_cfg_pp",
+                "gradient_estimation",
+                "gradient_estimation_cfg_pp",
+                "er_sde",
+                "seeds_2",
+                "seeds_3",
+                "sa_solver",
+                "sa_solver_pece",
+                "ddim",
+                "uni_pc",
+                "uni_pc_bh2"
+              ],
+              {
+                "tooltip": "The algorithm used when sampling, this can affect the quality, speed, and style of the generated output."
+              }
+            ]
+          }
+        }
+      ],
+      "properties": {
+        "promptStudioInput": true
+      },
+      "widgets_values": [
+        "euler"
+      ]
+    },
+    {
+      "id": 119,
+      "type": "PromptStudioInput",
+      "title": "Scheduler",
+      "pos": [
+        2250.821823847784,
+        955.2706992357771
+      ],
+      "size": [
+        370,
+        110
+      ],
+      "flags": {},
+      "order": 0,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "COMBO",
+          "type": "COMBO",
+          "links": [
+            31
+          ],
+          "widget": {
+            "name": "scheduler",
+            "config": [
+              [
+                "simple",
+                "sgm_uniform",
+                "karras",
+                "exponential",
+                "ddim_uniform",
+                "beta",
+                "normal",
+                "linear_quadratic",
+                "kl_optimal"
+              ],
+              {
+                "tooltip": "The scheduler controls how noise is gradually removed to form the image."
+              }
+            ]
+          }
+        }
+      ],
+      "properties": {
+        "promptStudioInput": true
+      },
+      "widgets_values": [
+        "simple"
+      ]
     }
   ],
   "links": [
     [
-      78,
+      1,
       53,
       0,
       54,
@@ -1369,7 +1662,7 @@
       "LATENT"
     ],
     [
-      79,
+      2,
       57,
       0,
       54,
@@ -1377,7 +1670,7 @@
       "VAE"
     ],
     [
-      106,
+      3,
       57,
       0,
       73,
@@ -1385,15 +1678,15 @@
       "VAE"
     ],
     [
-      117,
-      77,
+      4,
+      106,
       0,
       73,
       0,
       "IMAGE"
     ],
     [
-      131,
+      5,
       82,
       0,
       53,
@@ -1401,7 +1694,7 @@
       "LATENT"
     ],
     [
-      132,
+      6,
       73,
       0,
       79,
@@ -1409,7 +1702,7 @@
       "LATENT"
     ],
     [
-      137,
+      7,
       56,
       0,
       84,
@@ -1417,7 +1710,7 @@
       "CLIP"
     ],
     [
-      138,
+      8,
       84,
       0,
       53,
@@ -1425,7 +1718,7 @@
       "CONDITIONING"
     ],
     [
-      139,
+      9,
       56,
       0,
       85,
@@ -1433,23 +1726,23 @@
       "CLIP"
     ],
     [
-      141,
-      77,
+      10,
+      106,
       0,
       84,
       1,
       "IMAGE"
     ],
     [
-      142,
-      77,
+      11,
+      106,
       0,
       85,
       1,
       "IMAGE"
     ],
     [
-      151,
+      12,
       85,
       0,
       53,
@@ -1457,7 +1750,7 @@
       "CONDITIONING"
     ],
     [
-      165,
+      13,
       54,
       0,
       105,
@@ -1465,15 +1758,7 @@
       "IMAGE"
     ],
     [
-      166,
-      106,
-      0,
-      77,
-      0,
-      "IMAGE"
-    ],
-    [
-      174,
+      14,
       109,
       2,
       82,
@@ -1481,15 +1766,7 @@
       "INT"
     ],
     [
-      175,
-      109,
-      2,
-      77,
-      2,
-      "INT"
-    ],
-    [
-      176,
+      15,
       109,
       3,
       82,
@@ -1497,15 +1774,7 @@
       "INT"
     ],
     [
-      177,
-      109,
-      3,
-      77,
-      3,
-      "INT"
-    ],
-    [
-      182,
+      16,
       111,
       0,
       84,
@@ -1513,7 +1782,7 @@
       "STRING"
     ],
     [
-      183,
+      17,
       79,
       0,
       53,
@@ -1521,15 +1790,15 @@
       "MODEL"
     ],
     [
-      184,
-      77,
+      18,
+      106,
       0,
       79,
       5,
       "IMAGE"
     ],
     [
-      185,
+      19,
       57,
       0,
       79,
@@ -1537,15 +1806,15 @@
       "VAE"
     ],
     [
-      186,
-      110,
+      20,
+      113,
       0,
       79,
       0,
       "MODEL"
     ],
     [
-      190,
+      21,
       109,
       0,
       111,
@@ -1553,7 +1822,7 @@
       "STRING"
     ],
     [
-      191,
+      22,
       109,
       1,
       111,
@@ -1561,12 +1830,76 @@
       "STRING"
     ],
     [
-      192,
+      23,
       112,
       0,
       110,
       0,
       "MODEL"
+    ],
+    [
+      24,
+      82,
+      0,
+      79,
+      7,
+      "LATENT"
+    ],
+    [
+      25,
+      110,
+      0,
+      113,
+      0,
+      "MODEL"
+    ],
+    [
+      26,
+      114,
+      0,
+      79,
+      8,
+      "FLOAT"
+    ],
+    [
+      27,
+      115,
+      0,
+      84,
+      4,
+      "INT"
+    ],
+    [
+      28,
+      116,
+      0,
+      85,
+      4,
+      "INT"
+    ],
+    [
+      29,
+      117,
+      0,
+      53,
+      5,
+      "INT"
+    ],
+    [
+      30,
+      118,
+      0,
+      53,
+      7,
+      "COMBO"
+    ],
+    [
+      31,
+      119,
+      0,
+      53,
+      8,
+      "COMBO"
     ]
   ],
   "groups": [

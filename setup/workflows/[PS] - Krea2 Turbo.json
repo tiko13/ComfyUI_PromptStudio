@@ -1597,7 +1597,8 @@
                 "widget_ue_connectable": {},
                 "input_ue_unconnectable": {},
                 "version": "7.8"
-              }
+              },
+              "promptstudio_asset": "textfusion"
             },
             "widgets_values": [
               "Krea2\\_Krea2_TextFusion_Refusal_Reduction.safetensors",

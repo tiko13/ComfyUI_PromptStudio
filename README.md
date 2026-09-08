@@ -23,6 +23,14 @@ differs, setup installs a separate numbered Setup copy and reuses that copy on
 subsequent runs. ComfyUI Manager installs missing third-party node packs using
 its existing security policy; these installs require a ComfyUI restart.
 
+Edit includes Identity Edit v1.2 at strength 1 alongside TextFusion. Its defaults
+are 10 steps, CFG 1, Euler/simple, reference fidelity 4 and grounding 768 for both
+encoders. The original reference image is fitted without a preliminary crop.
+Fidelity, grounding, steps, sampler and scheduler are exposed in Studio. Setup
+verifies the Identity Edit download and checks that the Krea2 Edit nodes support
+`target_latent` (node pack v1.2.5 or newer); older nodes must be updated and
+ComfyUI restarted before setup can complete.
+
 Downloads show byte progress, transfer speed and remaining time, followed by
 separate checksum verification. Pause/resume retains partial downloads. Closing
 the wizard does not stop setup; use the header activity button to reconnect.

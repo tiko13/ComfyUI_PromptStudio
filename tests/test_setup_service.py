@@ -138,6 +138,7 @@ class SetupTests(unittest.TestCase):
     def test_workflow_selection_limits_requirements(self):
         plan = self.service.plan(self.user, {"packs": ["create"]})
         self.assertNotIn("upscaler", [row["id"] for row in plan["requirements"]])
+        self.assertNotIn("identity_edit", [row["id"] for row in plan["requirements"]])
         self.assertEqual(plan["node_packs"], [])
         self.assertTrue(all(row["used_by"] == ["Create"] for row in plan["requirements"]))
 
@@ -183,6 +184,49 @@ class SetupTests(unittest.TestCase):
         results = [{"path": w["path"], "role": w["role"], "error": ""} for w in job["workflows"]]
         self.service.finish(self.user, job["id"], results)
         self.assertEqual(self.service.status(self.user)["onboarding"], "complete")
+
+    def test_edit_requires_new_patch_capability_but_create_does_not(self):
+        class OldPatch:
+            @classmethod
+            def INPUT_TYPES(cls):
+                return {"required": {"model": ("MODEL",)}}
+        self.service.nodes["Krea2EditModelPatch"] = OldPatch
+        plan = self.service.plan(self.user, {"packs": ["edit"]})
+        self.assertTrue(any("target_latent" in b for b in plan["blockers"]))
+        self.assertEqual(plan["node_packs"][0]["status"], "update")
+        plan = self.service.plan(self.user, {"packs": ["create"]})
+        self.assertFalse(any("target_latent" in b for b in plan["blockers"]))
+        class NewPatch:
+            @classmethod
+            def INPUT_TYPES(cls):
+                return {"optional": {"target_latent": ("LATENT",)}}
+        self.service.nodes["Krea2EditModelPatch"] = NewPatch
+        self.assertFalse(any("target_latent" in b for b in self.service.plan(self.user)["blockers"]))
+
+    def test_frontend_edit_controls_do_not_require_backend_registration(self):
+        self.service.nodes.pop("PromptStudioInput")
+        plan = self.service.plan(self.user, {"packs": ["edit"]})
+        self.assertFalse(any("PromptStudioInput" in b for b in plan["blockers"]))
+
+    def test_identity_alias_keeps_registered_path_and_separate_textfusion(self):
+        for name in ("shared/krea2_identity_edit_v1_2.safetensors", "shared\\krea2_identity_edit_v1_2.safetensors"):
+            with self.subTest(name=name):
+                self.add_assets()
+                asset = self.service.assets["krea2_identity_edit_v1_2"]
+                self.paths.files.pop(("loras", asset["relative_path"]))
+                self.paths.add("loras", name)
+                self.service.start(self.user, {"packs": ["edit"]})
+                job = self.wait_job()
+                self.assertEqual(job["status"], "awaiting_validation", job.get("error"))
+                flow = json.loads((self.user / "workflows" / job["workflows"][0]["path"]).read_text(encoding="utf-8"))
+                loras = {n["properties"]["promptstudio_asset"]: n["widgets_values"][0]
+                         for n in SETUP.workflow_nodes(flow) if n["type"] == "LoraLoaderModelOnly"}
+                self.assertEqual(set(loras), {"identity_edit", "textfusion"})
+                self.assertEqual(loras["identity_edit"], name)
+                textfusion = next(r for r in self.catalog["requirements"] if r["id"] == "textfusion")
+                self.assertEqual(loras["textfusion"], self.service.assets[textfusion["default_asset"]]["relative_path"])
+                self.service.finish(self.user, job["id"], [{"path": w["path"], "role": w["role"], "error": ""} for w in job["workflows"]])
+                self.paths.files.pop(("loras", name))
 
     def test_root_model_clears_folder_restriction(self):
         self.add_assets()

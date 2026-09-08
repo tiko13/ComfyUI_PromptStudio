@@ -282,10 +282,28 @@ class SetupService:
             if not used:
                 continue
             missing = [n for n in dep["classes"] if n in required_nodes and n not in self.nodes]
-            node_rows.append({**dep, "used_by": used, "missing": missing, "status": "install" if missing else "available"})
+            outdated = []
+            for name, fields in dep.get("required_inputs", {}).items():
+                if name not in required_nodes or name not in self.nodes:
+                    continue
+                get_inputs = getattr(self.nodes[name], "INPUT_TYPES", None)
+                if not callable(get_inputs):
+                    continue
+                try:
+                    schema = get_inputs()
+                    inputs = {**schema.get("required", {}), **schema.get("optional", {})}
+                    absent = sorted(set(fields) - set(inputs))
+                except Exception:
+                    absent = fields
+                if absent:
+                    outdated.append(name)
+                    blockers.append(f"Update {dep['name']} from {dep['url']} and restart ComfyUI: {name} requires inputs {', '.join(absent)}.")
+            node_rows.append({**dep, "used_by": used, "missing": missing, "outdated": outdated,
+                              "status": "update" if outdated else "install" if missing else "available"})
             if missing and not self.manager_available():
                 blockers.append(f"Install {dep['name']} through ComfyUI Manager or from {dep['url']}, then restart ComfyUI.")
-        missing_core = sorted(required_nodes - definitions - third_party - set(self.nodes))
+        # This frontend control is resolved to a literal during Studio conversion.
+        missing_core = sorted(required_nodes - definitions - third_party - set(self.nodes) - {"PromptStudioInput"})
         if missing_core:
             blockers.append("Update ComfyUI / Prompt Studio and restart to load: " + ", ".join(missing_core))
         # Aggregate required space by the actual destination volume, including
@@ -489,6 +507,8 @@ class SetupService:
                     binding, value = req["binding"], replacements[req["id"]]
                     for node in workflow_nodes(flow):
                         if node["type"] != binding["type"]:
+                            continue
+                        if binding.get("asset") and node.get("properties", {}).get("promptstudio_asset") != binding["asset"]:
                             continue
                         node["widgets_values"][binding["index"]] = value
                         node.setdefault("widgets_values_named", {})[binding["field"]] = value

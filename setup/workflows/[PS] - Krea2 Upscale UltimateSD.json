@@ -896,7 +896,8 @@
           "input_ue_unconnectable": {}
         },
         "cnr_id": "comfy-core",
-        "ver": "0.28.0"
+        "ver": "0.28.0",
+        "promptstudio_asset": "textfusion"
       },
       "widgets_values": [
         "Krea2\\_Krea2_TextFusion_Refusal_Reduction.safetensors",

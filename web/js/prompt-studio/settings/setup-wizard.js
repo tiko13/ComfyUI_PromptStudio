@@ -184,7 +184,7 @@ export function createSetupWizard({ panel, api, buildWorkflow, refreshWorkflows,
     for (const dep of plan.node_packs) {
       const row = el("section", "promptstudio-setup-requirement");
       const heading = el("div", "promptstudio-setup-row-heading");
-      heading.append(el("h3", "", dep.name), el("span", "promptstudio-setup-badge", dep.missing.length ? "Install with Manager" : "Already loaded"));
+      heading.append(el("h3", "", dep.name), el("span", "promptstudio-setup-badge", dep.outdated?.length ? "Update required" : dep.missing.length ? "Install with Manager" : "Already loaded"));
       row.append(heading, el("p", "promptstudio-setup-used", `Used by ${dep.used_by.join(" · ")}`));
       const link = el("a", "", dep.url); link.href = dep.url; link.target = "_blank"; link.rel = "noreferrer"; row.append(link);
       if (dep.missing.length) row.append(el("p", "", "ComfyUI Manager will install this node pack. A restart is required before validation."));
