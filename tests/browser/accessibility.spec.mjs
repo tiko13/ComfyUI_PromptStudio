@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import {writeFile,mkdir} from 'node:fs/promises';
 import {resolve} from 'node:path';
 import AxeBuilder from '@axe-core/playwright';
-import {startFixture,attachVideo,root} from './fixture.mjs';
+import {startFixture,attachVideo,root,videoEnabled} from './fixture.mjs';
 const fixture=await startFixture();
 const reports=[];
 try {
@@ -29,21 +29,24 @@ try {
  await page.keyboard.press('Escape');
  await page.keyboard.press('Escape');
  assert.equal(await page.locator('[aria-modal="true"]:visible').count(),0);
- await attachVideo(page);
- await page.locator('#psvstudio-new-project').click();
- await scan('video','.psvstudio-app');
- await page.getByRole('button',{name:'Edit shot',exact:true}).click();
- await page.locator('dialog[open]').waitFor();
- await scan('shot dialog','dialog[open]');
- for(const key of ['Tab','Shift+Tab']) for(let i=0;i<30;i++) {
-  await page.keyboard.press(key);
-  assert.equal(await page.locator('dialog[open]').evaluate(el=>el.contains(document.activeElement)),true);
+ if (videoEnabled) {
+   await attachVideo(page);
+   await page.locator('#psvstudio-new-project').click();
+   await scan('video','.psvstudio-app');
+   await page.getByRole('button',{name:'Edit shot',exact:true}).click();
+   await page.locator('dialog[open]').waitFor();
+   await scan('shot dialog','dialog[open]');
+   for(const key of ['Tab','Shift+Tab']) for(let i=0;i<30;i++) {
+    await page.keyboard.press(key);
+    assert.equal(await page.locator('dialog[open]').evaluate(el=>el.contains(document.activeElement)),true);
+   }
+   await page.keyboard.press('Escape');
+   await page.emulateMedia({forcedColors:'active',reducedMotion:'reduce'});
+   assert.equal(await page.locator('dialog[open]').count(),0);
+   assert.equal(await page.locator('#psvstudio-status').getAttribute('aria-live'),'polite');
  }
- await page.keyboard.press('Escape');
  await page.emulateMedia({forcedColors:'active',reducedMotion:'reduce'});
- assert.equal(await page.locator('dialog[open]').count(),0);
- assert.equal(await page.locator('#psvstudio-status').getAttribute('aria-live'),'polite');
- await scan('forced colors','.psvstudio-app');
+ await scan('forced colors',videoEnabled ? '.psvstudio-app' : '#promptstudio-prompt-studio');
  assert.deepEqual(fixture.errors,[]);
  await mkdir(resolve(root,'test-results/browser'),{recursive:true});
  await page.screenshot({path:resolve(root,'test-results/browser/forced-colors.png')});

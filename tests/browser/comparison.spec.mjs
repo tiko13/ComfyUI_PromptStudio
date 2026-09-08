@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import {startFixture,attachVideo,config} from './fixture.mjs';
+import {startFixture,attachVideo,config,videoEnabled} from './fixture.mjs';
 
 const fixture=await startFixture();
 const savedSnapshot={workflow:{nodes:[],extra:{comparison:true}},output:{
@@ -92,36 +92,39 @@ try {
   await page.setViewportSize({width:390,height:844});await page.locator('#compare-test').click();
   assert.equal(await dialog.evaluate(node=>node.scrollWidth<=node.clientWidth),true);
   await page.keyboard.press('Escape');assert.deepEqual(fixture.errors,[]);
-  await page.setViewportSize({width:1440,height:1000});await attachVideo(page);
-  await page.locator('[data-generation-id="saved-video"]').getByRole('button',{name:'Compare saved inputs'}).click();
-  await page.getByRole('button',{name:'Restore candidate inputs'}).click();
-  await page.waitForFunction(()=>document.querySelector('.ps-result-comparison [role="status"]')?.textContent.includes('restored'));
-  assert.equal(await page.evaluate(()=>window.comparisonQueued?.length||0),0);
-  assert.ok(fixture.projects.projects[0].pending_generation_restore);
-  await page.keyboard.press('Escape');await page.reload();await page.waitForFunction(()=>window.studioReady||window.bootError);await attachVideo(page);
-  assert.match(await page.locator('#psvstudio-run-summary').textContent(),/Next generation uses saved inputs/);
-  // Background progress is not an authored edit and must not disarm saved inputs.
-  assert.equal(await page.evaluate(async()=>{const video=await import('/extensions/PromptStudio_Video/js/promptstudio_video_studio.js');
-    const project=video.state.projects[0];project.generations[0].updated_at++;video.markProjectChanged({project});return !!video.pendingGenerationRestore(project);}),true);
-  await page.locator('#psvstudio-generate').click();
-  await page.getByRole('dialog',{name:'Review saved replay'}).getByRole('button',{name:'Cancel',exact:true}).click();
-  assert.match(await page.locator('#psvstudio-run-summary').textContent(),/Next generation uses saved inputs/);
-  assert.equal(await page.evaluate(()=>window.comparisonQueued?.length||0),0);
-  await page.locator('#psvstudio-generate').click();
-  await page.getByRole('button',{name:'Replay saved inputs',exact:true}).click();
-  await page.waitForFunction(()=>window.comparisonQueued?.length===1);
-  const queued=await page.evaluate(()=>window.comparisonQueued[0]);assert.deepEqual(queued.workflow,savedSnapshot.workflow);assert.equal(queued.output['2'].inputs.seed,1729);
-  await page.waitForFunction(()=>!document.querySelector('#psvstudio-run-summary')?.textContent.includes('Next generation uses saved inputs'));
-  assert.deepEqual(fixture.projects.projects[0].generations.find(item=>item.id==='saved-video').workflow_snapshot,savedSnapshot);
-  // Arm again after marking the synthetic replay finished, then edit the document.
-  await page.evaluate(async()=>{const video=await import('/extensions/PromptStudio_Video/js/promptstudio_video_studio.js');
-    for(const generation of video.state.projects[0].generations)generation.status='complete';});
-  await page.locator('[data-generation-id="saved-video"]').getByRole('button',{name:'Compare saved inputs'}).click();
-  await page.getByRole('button',{name:'Restore candidate inputs'}).click();
-  await page.waitForFunction(()=>document.querySelector('.ps-result-comparison [role="status"]')?.textContent.includes('restored'));
-  await page.keyboard.press('Escape');
-  assert.equal(await page.evaluate(async()=>{const video=await import('/extensions/PromptStudio_Video/js/promptstudio_video_studio.js');
-    const project=video.state.projects[0];project.document.shots[0].composition='An explicit authored edit.';video.markProjectChanged({project,render:true});return !!project.pending_generation_restore;}),false);
+  await page.setViewportSize({width:1440,height:1000});
+  if (videoEnabled) {
+    await attachVideo(page);
+    await page.locator('[data-generation-id="saved-video"]').getByRole('button',{name:'Compare saved inputs'}).click();
+    await page.getByRole('button',{name:'Restore candidate inputs'}).click();
+    await page.waitForFunction(()=>document.querySelector('.ps-result-comparison [role="status"]')?.textContent.includes('restored'));
+    assert.equal(await page.evaluate(()=>window.comparisonQueued?.length||0),0);
+    assert.ok(fixture.projects.projects[0].pending_generation_restore);
+    await page.keyboard.press('Escape');await page.reload();await page.waitForFunction(()=>window.studioReady||window.bootError);await attachVideo(page);
+    assert.match(await page.locator('#psvstudio-run-summary').textContent(),/Next generation uses saved inputs/);
+    // Background progress is not an authored edit and must not disarm saved inputs.
+    assert.equal(await page.evaluate(async()=>{const video=await import('/extensions/PromptStudio_Video/js/promptstudio_video_studio.js');
+      const project=video.state.projects[0];project.generations[0].updated_at++;video.markProjectChanged({project});return !!video.pendingGenerationRestore(project);}),true);
+    await page.locator('#psvstudio-generate').click();
+    await page.getByRole('dialog',{name:'Review saved replay'}).getByRole('button',{name:'Cancel',exact:true}).click();
+    assert.match(await page.locator('#psvstudio-run-summary').textContent(),/Next generation uses saved inputs/);
+    assert.equal(await page.evaluate(()=>window.comparisonQueued?.length||0),0);
+    await page.locator('#psvstudio-generate').click();
+    await page.getByRole('button',{name:'Replay saved inputs',exact:true}).click();
+    await page.waitForFunction(()=>window.comparisonQueued?.length===1);
+    const queued=await page.evaluate(()=>window.comparisonQueued[0]);assert.deepEqual(queued.workflow,savedSnapshot.workflow);assert.equal(queued.output['2'].inputs.seed,1729);
+    await page.waitForFunction(()=>!document.querySelector('#psvstudio-run-summary')?.textContent.includes('Next generation uses saved inputs'));
+    assert.deepEqual(fixture.projects.projects[0].generations.find(item=>item.id==='saved-video').workflow_snapshot,savedSnapshot);
+    // Arm again after marking the synthetic replay finished, then edit the document.
+    await page.evaluate(async()=>{const video=await import('/extensions/PromptStudio_Video/js/promptstudio_video_studio.js');
+      for(const generation of video.state.projects[0].generations)generation.status='complete';});
+    await page.locator('[data-generation-id="saved-video"]').getByRole('button',{name:'Compare saved inputs'}).click();
+    await page.getByRole('button',{name:'Restore candidate inputs'}).click();
+    await page.waitForFunction(()=>document.querySelector('.ps-result-comparison [role="status"]')?.textContent.includes('restored'));
+    await page.keyboard.press('Escape');
+    assert.equal(await page.evaluate(async()=>{const video=await import('/extensions/PromptStudio_Video/js/promptstudio_video_studio.js');
+      const project=video.state.projects[0];project.document.shots[0].composition='An explicit authored edit.';video.markProjectChanged({project,render:true});return !!project.pending_generation_restore;}),false);
+  }
   await page.evaluate(async()=>{
     document.querySelector('#promptstudio-video-mount').hidden=true;document.querySelector('#promptstudio-image-mount').hidden=false;
     window.__promptstudioPromptStudioHost.setStandaloneVisibility(true);await window.__promptstudioPromptStudioHost.attach(window);

@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import {startFixture, attachVideo, config} from './fixture.mjs';
+import {startFixture, attachVideo, config, videoEnabled} from './fixture.mjs';
 
 const fixture = await startFixture();
 fixture.projects = {revision:1,active_project_id:'history-project',projects:[{
@@ -78,27 +78,29 @@ try {
     imageResult.deletion = !before[250].isConnected && before.filter((_,i)=>i!==250).every(card=>card.isConnected);
     return {image:imageResult,consult:consultResult};
   });
-  await attachVideo(page);
-  results.director = await page.evaluate(async () => {
-    const video = await import('/extensions/PromptStudio_Video/js/promptstudio_video_studio.js');
-    const session = video.directorSession();
-    session.messages = Array.from({length:500},(_,i)=>({id:`director-${i}`,role:i%2?'assistant':'user',text:`Director message ${i}`}));
-    const dialog = video.ensureDirectorDialog(); dialog.showModal(); video.renderDirectorDialog();
-    const history = dialog.querySelector('#psvstudio-director-history');
-    const cards = [...history.children]; const anchor = cards[200];
-    history.scrollTop = anchor.offsetTop-history.offsetTop;
-    const top = anchor.getBoundingClientRect().top;
-    const text = anchor.querySelector('.psvstudio-director-message-text').firstChild;
-    const range = document.createRange(); range.setStart(text,0); range.setEnd(text,8);
-    getSelection().removeAllRanges(); getSelection().addRange(range);
-    const times = []; let mutations = 0;
-    const observer = new MutationObserver(()=>{}); observer.observe(history,{childList:true,subtree:true,characterData:true});
-    for(let i=0;i<20;i++) {session.messages[499].variants[0].text=`Pending ${i}`;const start=performance.now();video.renderDirectorDialog();times.push(performance.now()-start);mutations+=observer.takeRecords().length;}
-    observer.disconnect();
-    return {count:cards.length,identical:cards.every((card,i)=>history.children[i]===card),selection:getSelection().toString()==='Director',
-      textIdentity:anchor.querySelector('.psvstudio-director-message-text').firstChild===text,
-      anchorDelta:Math.abs(anchor.getBoundingClientRect().top-top),mutations,medianMs:times.sort((a,b)=>a-b)[10],maxMs:Math.max(...times)};
-  });
+  if (videoEnabled) {
+    await attachVideo(page);
+    results.director = await page.evaluate(async () => {
+      const video = await import('/extensions/PromptStudio_Video/js/promptstudio_video_studio.js');
+      const session = video.directorSession();
+      session.messages = Array.from({length:500},(_,i)=>({id:`director-${i}`,role:i%2?'assistant':'user',text:`Director message ${i}`}));
+      const dialog = video.ensureDirectorDialog(); dialog.showModal(); video.renderDirectorDialog();
+      const history = dialog.querySelector('#psvstudio-director-history');
+      const cards = [...history.children]; const anchor = cards[200];
+      history.scrollTop = anchor.offsetTop-history.offsetTop;
+      const top = anchor.getBoundingClientRect().top;
+      const text = anchor.querySelector('.psvstudio-director-message-text').firstChild;
+      const range = document.createRange(); range.setStart(text,0); range.setEnd(text,8);
+      getSelection().removeAllRanges(); getSelection().addRange(range);
+      const times = []; let mutations = 0;
+      const observer = new MutationObserver(()=>{}); observer.observe(history,{childList:true,subtree:true,characterData:true});
+      for(let i=0;i<20;i++) {session.messages[499].variants[0].text=`Pending ${i}`;const start=performance.now();video.renderDirectorDialog();times.push(performance.now()-start);mutations+=observer.takeRecords().length;}
+      observer.disconnect();
+      return {count:cards.length,identical:cards.every((card,i)=>history.children[i]===card),selection:getSelection().toString()==='Director',
+        textIdentity:anchor.querySelector('.psvstudio-director-message-text').firstChild===text,
+        anchorDelta:Math.abs(anchor.getBoundingClientRect().top-top),mutations,medianMs:times.sort((a,b)=>a-b)[10],maxMs:Math.max(...times)};
+    });
+  }
   results.playback = await page.evaluate(async () => {
     const {reconcileKeyedHistory} = await import('/extensions/ComfyUI_PromptStudio/js/prompt-studio/ui/keyed-history.js');
     const history = document.createElement('div'); document.body.append(history);
@@ -118,7 +120,7 @@ try {
     const result={identity:history.querySelector('video')===media,playing:!media.paused,advanced:media.currentTime>start,counts};
     clearInterval(paint);stream.getTracks().forEach(track=>track.stop());history.remove();return result;
   });
-  for(const name of ['image','consult','director']) {
+  for(const name of ['image','consult',...(videoEnabled ? ['director'] : [])]) {
     const result=results[name];assert.equal(result.count,500,name);assert.equal(result.identical,true,name);
     assert.equal(result.selection,true,name);assert.equal(result.textIdentity,true,name);assert.ok(result.anchorDelta<2,JSON.stringify(result));
     assert.ok(result.mutations<200,`${name}: ${result.mutations} mutations`);

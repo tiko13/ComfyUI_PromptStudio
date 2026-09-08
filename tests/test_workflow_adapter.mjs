@@ -1,14 +1,12 @@
 import assert from 'node:assert/strict';
 import {test} from 'node:test';
 import {readFileSync} from 'node:fs';
+import {videoTestOptions} from './integration-mode.mjs';
 import {createHash} from 'node:crypto';
 import {sha256Fallback} from '../web/js/prompt-studio/generation/sha256.js';
 import {createWorkflowAdapter, workflowCacheIdentity, workflowResultOutputs, discoverWorkflowFiles} from '../web/js/prompt-studio/generation/workflow-adapter.js';
 import {serializedWorkflowNodes, PROMPT_STUDIO_INPUT_TYPE} from '../web/js/prompt-studio/generation/prompt-studio-input.js';
 import {createWorkflowTemplateBuilder} from '../web/js/prompt-studio/generation/workflow-template.js';
-const shared = new URL('../web/js/prompt-studio/generation/workflow-adapter.js', import.meta.url).href;
-const videoSource = readFileSync(new URL('../../PromptStudio_Video/web/js/workflow-adapter.js',import.meta.url),'utf8').replaceAll('/extensions/ComfyUI_PromptStudio/js/prompt-studio/generation/workflow-adapter.js',shared);
-const {createVideoWorkflowTemplateBuilder} = await import(`data:text/javascript;base64,${Buffer.from(videoSource).toString('base64')}`);
 
 class Events extends EventTarget {dispatch(name,detail){this.dispatchEvent(new CustomEvent(name,{detail}));}}
 class Graph {
@@ -88,7 +86,10 @@ test('temporary subgraphs restore after errors and Image/Video conversion serial
   assert.equal(env.root.subgraphs.get('outer'),original);assert.equal(globalThis.LiteGraph.registered_node_types.outer,Existing);
 });
 
-test('Video retains native Director/SaveVideo rules with flattened IDs',async()=>{
+test('Video retains native Director/SaveVideo rules with flattened IDs',videoTestOptions,async()=>{
+  const shared = new URL('../web/js/prompt-studio/generation/workflow-adapter.js', import.meta.url).href;
+  const videoSource = readFileSync(new URL('../../PromptStudio_Video/web/js/workflow-adapter.js',import.meta.url),'utf8').replaceAll('/extensions/ComfyUI_PromptStudio/js/prompt-studio/generation/workflow-adapter.js',shared);
+  const {createVideoWorkflowTemplateBuilder} = await import(`data:text/javascript;base64,${Buffer.from(videoSource).toString('base64')}`);
   const env=setup();const workflow=nested();workflow.definitions.subgraphs[1].nodes=[{id:1,type:'PSV_MiniMaxH3Director'},{id:2,type:'SaveVideo'}];
   workflow.executable={'30:10:1':{class_type:'PSV_MiniMaxH3Director',inputs:{}},'30:10:2':{class_type:'SaveVideo',inputs:{}}};
   const build=createVideoWorkflowTemplateBuilder({app:env.app});const result=await build(file,workflow);

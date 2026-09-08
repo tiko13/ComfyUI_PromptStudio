@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import {startFixture, attachVideo, config} from './fixture.mjs';
+import {startFixture, attachVideo, config, videoEnabled} from './fixture.mjs';
 
 const fixture=await startFixture();
 const doc=structuredClone(config.default_document);
@@ -24,7 +24,7 @@ try {
   await fixture.context.route('**/lifecycle-popup',route=>route.fulfill({status:200,contentType:'text/html',body:
     '<!doctype html><html><body><main id="promptstudio-image-mount"></main><main id="promptstudio-video-mount"></main></body></html>'}));
   const page=await fixture.newPage();
-  assert.equal(compiling,true);
+  assert.equal(compiling,videoEnabled);
   const owner=await page.evaluate(async()=>{
     const {state}=await import('/extensions/ComfyUI_PromptStudio/js/prompt-studio/core/state.js');
     const chat=state.chats.find(item=>item.id===state.activeChatId);
@@ -42,19 +42,21 @@ try {
       status:state.chats.find(item=>item.id===owner).messages.find(item=>item.promptId==='image-a').generationState,
       progress:state.generationProgress.get('image-a')?.value};
   },owner),{switched:true,owner,status:'generating',progress:3});
-  await attachVideo(page);
-  await page.locator('.psvstudio-project').filter({hasText:'Project B'}).click();
-  const queued=page.waitForResponse(async response=>response.url().endsWith('/promptstudio-video/projects')
-    &&response.request().method()==='PUT'&&response.request().postData()?.includes('"prompt_id":"video-a"'));
-  releaseCompile();await queued;
-  await page.evaluate(async()=>{
-    const {api}=await import('/scripts/api.js');
-    api.dispatchEvent(new CustomEvent('execution_start',{detail:{prompt_id:'video-a'}}));
-    api.dispatchEvent(new CustomEvent('progress',{detail:{prompt_id:'video-a',value:4,max:10}}));
-  });
-  await page.locator('.psvstudio-project').filter({hasText:'Project A'}).click();
-  await page.waitForFunction(()=>document.querySelector('#psvstudio-generation-list .psvstudio-progress span')?.style.getPropertyValue('--progress')==='40%');
-  assert.equal(fixture.projects.projects.find(item=>item.id==='b').generations.length,0);
+  if (videoEnabled) {
+    await attachVideo(page);
+    await page.locator('.psvstudio-project').filter({hasText:'Project B'}).click();
+    const queued=page.waitForResponse(response=>response.url().endsWith('/promptstudio-video/projects')
+      &&response.request().method()==='PUT'&&response.request().postData()?.includes('"prompt_id":"video-a"'));
+    releaseCompile();await queued;
+    await page.evaluate(async()=>{
+      const {api}=await import('/scripts/api.js');
+      api.dispatchEvent(new CustomEvent('execution_start',{detail:{prompt_id:'video-a'}}));
+      api.dispatchEvent(new CustomEvent('progress',{detail:{prompt_id:'video-a',value:4,max:10}}));
+    });
+    await page.locator('.psvstudio-project').filter({hasText:'Project A'}).click();
+    await page.waitForFunction(()=>document.querySelector('#psvstudio-generation-list .psvstudio-progress span')?.style.getPropertyValue('--progress')==='40%');
+    assert.equal(fixture.projects.projects.find(item=>item.id==='b').generations.length,0);
+  }
   await page.evaluate(async()=>{
     const {state}=await import('/extensions/ComfyUI_PromptStudio/js/prompt-studio/core/state.js');
     state.popup=null;state.panel.hidden=false;document.querySelector('#promptstudio-image-mount').hidden=false;
@@ -70,22 +72,24 @@ try {
   });
   assert.deepEqual(await popup.evaluate(()=>({same:document.activeElement===opener.__lifecycleImageInput,
     selection:[document.activeElement.selectionStart,document.activeElement.selectionEnd]})),{same:true,selection:[3,8]});
-  await page.evaluate(async()=>{
-    const input=document.querySelector('#psvstudio-project-title');input.focus();input.setSelectionRange(1,5);window.__lifecycleVideoInput=input;
-    const video=document.createElement('video');video.dataset.lifecycle='preserved';document.querySelector('#psvstudio-preview').append(video);window.__lifecycleVideo=video;
-    await window.__promptstudioVideoStudioHost.attach(window.__lifecyclePopup);
-    await window.__promptstudioVideoStudioHost.attach(window.__lifecyclePopup);
-  });
-  assert.deepEqual(await popup.evaluate(()=>({same:document.activeElement===opener.__lifecycleVideoInput,
-    selection:[document.activeElement.selectionStart,document.activeElement.selectionEnd],
-    media:document.querySelector('[data-lifecycle="preserved"]')===opener.__lifecycleVideo})),{same:true,selection:[1,5],media:true});
+  if (videoEnabled) {
+    await page.evaluate(async()=>{
+      const input=document.querySelector('#psvstudio-project-title');input.focus();input.setSelectionRange(1,5);window.__lifecycleVideoInput=input;
+      const video=document.createElement('video');video.dataset.lifecycle='preserved';document.querySelector('#psvstudio-preview').append(video);window.__lifecycleVideo=video;
+      await window.__promptstudioVideoStudioHost.attach(window.__lifecyclePopup);
+      await window.__promptstudioVideoStudioHost.attach(window.__lifecyclePopup);
+    });
+    assert.deepEqual(await popup.evaluate(()=>({same:document.activeElement===opener.__lifecycleVideoInput,
+      selection:[document.activeElement.selectionStart,document.activeElement.selectionEnd],
+      media:document.querySelector('[data-lifecycle="preserved"]')===opener.__lifecycleVideo})),{same:true,selection:[1,5],media:true});
+  }
   await popup.close();
-  await page.waitForFunction(()=>document.querySelector('#promptstudio-revision')&&document.querySelector('#psvstudio-project-title'));
-  const registrations=await page.evaluate(async()=>{
+  await page.waitForFunction(video=>document.querySelector('#promptstudio-revision')&&(!video||document.querySelector('#psvstudio-project-title')),videoEnabled);
+  const registrations=await page.evaluate(async video=>{
     const {extensions}=await import('/scripts/app.js');
     await import('/extensions/ComfyUI_PromptStudio/js/prompt_studio.js');
-    await import('/extensions/PromptStudio_Video/js/promptstudio_video_studio.js');return extensions.map(item=>item.name);
-  });
+    if (video) await import('/extensions/PromptStudio_Video/js/promptstudio_video_studio.js');return extensions.map(item=>item.name);
+  },videoEnabled);
   assert.equal(new Set(registrations).size,registrations.length);
   assert.equal(fixture.requests.some(request=>request.path==='/interrupt'),false);
   assert.deepEqual(fixture.errors,[]);

@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {readFile} from 'node:fs/promises';
+import {videoTestOptions} from './integration-mode.mjs';
 import {createFeatureController} from '../web/js/prompt-studio/ui/feature-controller.js';
 import {createImageGenerationProgressController} from '../web/js/prompt-studio/ui/generation-progress-controller.js';
 import {createImageFocusController} from '../web/js/prompt-studio/ui/focus-controller.js';
@@ -62,7 +63,7 @@ test('Image progress stays bound to originating job when active chat changes', (
   feature.dispose();assert.equal(preparation.signal.aborted,false);assert.equal(state.studioPreparations.size,1);
 });
 
-test('Video progress and observer ownership do not dispose jobs belonging to another project', async () => {
+test('Video progress and observer ownership do not dispose jobs belonging to another project', videoTestOptions, async () => {
   const {createVideoGenerationProgressController}=await videoModule('generation-progress-controller');
   const api=events(), job=new AbortController();let renders=0,disconnected=0;
   const state={generationProgress:new Map(),generationControllers:new Map([['prepare-a',job]]),panel:{},apiConnected:true};
@@ -88,7 +89,7 @@ test('Image focus controller detaches old documents and never double-registers',
   windowB.emit('click');assert.equal(queries,8);feature.dispose();windowB.emit('click');assert.equal(queries,8);
 });
 
-test('Video editor document teardown removes media handlers, without cancelling pending imports', async () => {
+test('Video editor document teardown removes media handlers, without cancelling pending imports', videoTestOptions, async () => {
   const {createVideoDocumentInteractionController}=await videoModule('document-interaction-controller');
   const docA=events(),docB=events();for(const doc of [docA,docB])doc.body={classList:{add(){},remove(){}}};
   let imported=0,cleared=0;const state={panel:{hidden:false,ownerDocument:docA},mediaDropDepth:new Map()};

@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import {startFixture, attachVideo, config} from './fixture.mjs';
+import {startFixture, attachVideo, config, videoEnabled} from './fixture.mjs';
 
 const fixture = await startFixture();
 let indexed = false, fail = true, videoIndexed = false;
@@ -41,9 +41,11 @@ try {
   assert.deepEqual(batches,[{offset:0,limit:100},{offset:100,limit:100},{offset:200,limit:100}]);
   assert.equal(await page.locator('#promptstudio-main-prompt').inputValue(),'Saved main 0');
   assert.equal(fixture.chats.chats.length,205);
-  await attachVideo(page);
-  assert.equal(videoIndexed,true);
-  assert.equal(await page.locator('#psvstudio-project-title').inputValue(),'Saved Video session');
+  if (videoEnabled) {
+    await attachVideo(page);
+    assert.equal(videoIndexed,true);
+    assert.equal(await page.locator('#psvstudio-project-title').inputValue(),'Saved Video session');
+  }
   await page.reload();await page.waitForFunction(()=>window.studioReady);
   assert.equal(await page.locator('.promptstudio-popout-loading').count(),0);
   assert.equal(await page.locator('#promptstudio-main-prompt').inputValue(),'Saved main 0');

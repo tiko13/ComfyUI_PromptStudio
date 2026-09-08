@@ -1,11 +1,18 @@
 import assert from 'node:assert/strict';
 import {mkdir} from 'node:fs/promises';
 import {resolve} from 'node:path';
-import {startFixture,attachVideo,root} from './fixture.mjs';
+import {startFixture,attachVideo,root,videoEnabled} from './fixture.mjs';
 const fixture=await startFixture();
 const {context,origin,errors,requests}=fixture;
 try {
  const page=await fixture.newPage();
+ if (!videoEnabled) {
+  assert.equal(await page.evaluate(()=>typeof window.__promptstudioVideoStudioHost),'undefined');
+  assert.equal(requests.some(request=>request.path.startsWith('/extensions/PromptStudio_Video/')),false,
+    'Prompt Studio startup must not load Video Studio assets');
+  assert.ok(requests.filter(request=>request.path.startsWith('/promptstudio-video/')).every(request=>request.path==='/promptstudio-video/capabilities'),
+    'Only the optional capability probe may contact an absent Video Studio');
+ }
  await page.locator('#promptstudio-new-chat').click();
  await page.locator('#promptstudio-new-chat').click();
  const emptyCount = await page.evaluate(async () => {
@@ -33,35 +40,37 @@ try {
  await page.setViewportSize({width:390, height:844});
  await page.screenshot({path: resolve(root, 'test-results/browser/image-narrow.png')});
  await page.setViewportSize({width:1440, height:1000});
- await attachVideo(page);
- await page.screenshot({path: resolve(root, 'test-results/browser/video-desktop.png')});
- await page.locator('#psvstudio-new-project').click();
- await page.locator('#psvstudio-project-title').fill('Browser fixture A');
- await page.waitForFunction(() => document.querySelector('#psvstudio-save-state').textContent === 'Saved');
- assert.equal(fixture.projects.projects[0].name, 'Browser fixture A');
- await page.reload();
- await page.waitForFunction(() => window.studioReady || window.bootError);
- assert.equal(await page.evaluate(() => window.bootError), undefined);
- assert.equal(await page.locator('#psvstudio-project-title').inputValue(), 'Browser fixture A', 'Saved Video project survives reload');
- await attachVideo(page);
- const second = await context.newPage();
- second.on('pageerror', e => errors.push(e.message));
- await second.goto(origin);
- await second.waitForFunction(() => window.studioReady || window.bootError);
- assert.equal(await second.evaluate(() => window.bootError), undefined);
- await attachVideo(second);
- await page.locator('#psvstudio-project-title').fill('Server version');
- await page.waitForFunction(() => document.querySelector('#psvstudio-save-state').textContent === 'Saved');
- await second.locator('#psvstudio-project-title').fill('Local version');
- await second.getByRole('button', {name:'Review conflicts', exact:true}).waitFor();
- assert.equal(fixture.projects.projects[0].name, 'Server version', 'Conflicting save must not overwrite server');
- await second.getByRole('button', {name:'Review conflicts', exact:true}).click();
- await second.getByRole('dialog', {name:/Conflicting edits/}).waitFor();
- await second.screenshot({path:resolve(root, 'test-results/browser/video-save-conflict.png')});
- await second.getByRole('button', {name:'Keep my version', exact:true}).click();
- await second.waitForFunction(() => document.querySelector('#psvstudio-save-state').textContent === 'Saved');
- assert.equal(fixture.projects.projects[0].name, 'Local version', 'Explicit conflict choice persists');
- assert.deepEqual(errors, [], 'Cross-studio actions must have no uncaught errors');
- console.log(JSON.stringify({passed: ['dual-studio initialization', 'one-empty-chat', 'keyboard modal focus/escape/return', 'reduced-motion render', 'Video save/reload', 'two-client conflict review and retry'], requests: requests.length}));
+ if (videoEnabled) {
+   await attachVideo(page);
+   await page.screenshot({path: resolve(root, 'test-results/browser/video-desktop.png')});
+   await page.locator('#psvstudio-new-project').click();
+   await page.locator('#psvstudio-project-title').fill('Browser fixture A');
+   await page.waitForFunction(() => document.querySelector('#psvstudio-save-state').textContent === 'Saved');
+   assert.equal(fixture.projects.projects[0].name, 'Browser fixture A');
+   await page.reload();
+   await page.waitForFunction(() => window.studioReady || window.bootError);
+   assert.equal(await page.evaluate(() => window.bootError), undefined);
+   assert.equal(await page.locator('#psvstudio-project-title').inputValue(), 'Browser fixture A', 'Saved Video project survives reload');
+   await attachVideo(page);
+   const second = await context.newPage();
+   second.on('pageerror', e => errors.push(e.message));
+   await second.goto(origin);
+   await second.waitForFunction(() => window.studioReady || window.bootError);
+   assert.equal(await second.evaluate(() => window.bootError), undefined);
+   await attachVideo(second);
+   await page.locator('#psvstudio-project-title').fill('Server version');
+   await page.waitForFunction(() => document.querySelector('#psvstudio-save-state').textContent === 'Saved');
+   await second.locator('#psvstudio-project-title').fill('Local version');
+   await second.getByRole('button', {name:'Review conflicts', exact:true}).waitFor();
+   assert.equal(fixture.projects.projects[0].name, 'Server version', 'Conflicting save must not overwrite server');
+   await second.getByRole('button', {name:'Review conflicts', exact:true}).click();
+   await second.getByRole('dialog', {name:/Conflicting edits/}).waitFor();
+   await second.screenshot({path:resolve(root, 'test-results/browser/video-save-conflict.png')});
+   await second.getByRole('button', {name:'Keep my version', exact:true}).click();
+   await second.waitForFunction(() => document.querySelector('#psvstudio-save-state').textContent === 'Saved');
+   assert.equal(fixture.projects.projects[0].name, 'Local version', 'Explicit conflict choice persists');
+ }
+ assert.deepEqual(errors, [], 'Studio actions must have no uncaught errors');
+ console.log(JSON.stringify({passed: ['independent Image initialization', 'one-empty-chat', 'keyboard modal focus/escape/return', 'reduced-motion render', ...(videoEnabled ? ['Video save/reload', 'two-client conflict review and retry'] : [])], requests: requests.length}));
 
 } finally {await fixture.close();}

@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import {startFixture, attachVideo} from './fixture.mjs';
+import {startFixture, attachVideo, videoEnabled} from './fixture.mjs';
 
 const fixture = await startFixture();
 try {
@@ -127,8 +127,10 @@ try {
     assert.equal(sourceAfter.sessionMode,sourceBefore.sessionMode);
   }
   assert.equal(fixture.requests.filter(r=>r.path==='/prompt'||r.path.includes('/revise')).length,0,'Handoff never queues generation or calls the LLM');
-  await attachVideo(page);
-  assert.equal(await page.locator('#promptstudio-video-mount').isVisible(),true);
+  if (videoEnabled) {
+    await attachVideo(page);
+    assert.equal(await page.locator('#promptstudio-video-mount').isVisible(),true);
+  }
   assert.deepEqual(fixture.errors,[]);
   console.log('Plot handoff passed: placement, cancel/Escape, both modes, settings, frozen inputs, reload, source preservation, Video compatibility.');
 } finally { await fixture.close(); }

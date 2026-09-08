@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import {startFixture, attachVideo} from './fixture.mjs';
+import {startFixture, attachVideo, videoEnabled} from './fixture.mjs';
 
 const fixture = await startFixture();
 try {
@@ -86,28 +86,30 @@ try {
   await page.waitForFunction(() => !document.querySelector('#promptstudio-send').disabled);
   assert.equal(await page.locator('#promptstudio-revision').inputValue(), 'Retry this request');
 
-  await attachVideo(page);
-  await page.locator('#psvstudio-new-project').click();
-  const videoTyping = await page.evaluate(async () => {
-    const {state} = await import('/extensions/PromptStudio_Video/js/promptstudio_video_studio.js');
-    const title = document.querySelector('#psvstudio-project-title');
-    const stringify = JSON.stringify;
-    let snapshots = 0;
-    JSON.stringify = function(value, ...args) {
-      if (value?.projects || value === state.projects) snapshots++;
-      return stringify(value, ...args);
-    };
-    try {
-      for (const character of 'Responsive video title') {
-        title.value += character;
-        title.dispatchEvent(new Event('input', {bubbles:true}));
-      }
-      return {snapshots, title:title.value};
-    } finally { JSON.stringify = stringify; }
-  });
-  assert.equal(videoTyping.snapshots, 0, 'Video input must not copy/serialize the project archive');
-  await page.waitForFunction(() => document.querySelector('#psvstudio-save-state').textContent === 'Saved');
-  assert.equal(fixture.projects.projects[0].name, videoTyping.title);
+  if (videoEnabled) {
+    await attachVideo(page);
+    await page.locator('#psvstudio-new-project').click();
+    const videoTyping = await page.evaluate(async () => {
+      const {state} = await import('/extensions/PromptStudio_Video/js/promptstudio_video_studio.js');
+      const title = document.querySelector('#psvstudio-project-title');
+      const stringify = JSON.stringify;
+      let snapshots = 0;
+      JSON.stringify = function(value, ...args) {
+        if (value?.projects || value === state.projects) snapshots++;
+        return stringify(value, ...args);
+      };
+      try {
+        for (const character of 'Responsive video title') {
+          title.value += character;
+          title.dispatchEvent(new Event('input', {bubbles:true}));
+        }
+        return {snapshots, title:title.value};
+      } finally { JSON.stringify = stringify; }
+    });
+    assert.equal(videoTyping.snapshots, 0, 'Video input must not copy/serialize the project archive');
+    await page.waitForFunction(() => document.querySelector('#psvstudio-save-state').textContent === 'Saved');
+    assert.equal(fixture.projects.projects[0].name, videoTyping.title);
+  }
   assert.deepEqual(fixture.errors, []);
-  console.log(JSON.stringify({typing, passed:['composer draft reload','immediate receipt for five routes','no duplicate messages','next draft preserved','routing failure retry','Video batched save']}));
+  console.log(JSON.stringify({typing, passed:['composer draft reload','immediate receipt for five routes','no duplicate messages','next draft preserved','routing failure retry',...(videoEnabled ? ['Video batched save'] : [])]}));
 } finally {await fixture.close();}

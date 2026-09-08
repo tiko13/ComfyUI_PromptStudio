@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import {startFixture,attachVideo} from './fixture.mjs';
+import {startFixture,attachVideo,videoEnabled} from './fixture.mjs';
 const fixture=await startFixture();
 let requests=0,active=0,maximum=0,baselineRequests=0;
 try {
@@ -15,21 +15,22 @@ try {
   requests++;maximum=Math.max(maximum,++active);await new Promise(resolve=>setTimeout(resolve,60));active--;
   await route.fulfill({json:{provider:'koboldcpp',reachable:true,busy:false}});
  });
- const page=await fixture.newPage();await attachVideo(page);
+ const page=await fixture.newPage();if (videoEnabled) await attachVideo(page);
  const intervals=await page.evaluate(()=>window.activeIntervals.size);
- for(let i=0;i<10;i++)await page.evaluate(async()=>{
-  await window.__promptstudioPromptStudioHost.attach(window);await window.__promptstudioVideoStudioHost.attach(window);
- });
+ for(let i=0;i<10;i++)await page.evaluate(async video=>{
+  await window.__promptstudioPromptStudioHost.attach(window);if (video) await window.__promptstudioVideoStudioHost.attach(window);
+ },videoEnabled);
  assert.equal(await page.evaluate(()=>window.activeIntervals.size),intervals,'Reattachment must not add interval owners');
  await page.evaluate(()=>{
   document.querySelector('#promptstudio-image-mount').hidden=false;document.querySelector('#promptstudio-video-mount').hidden=false;
-  document.querySelector('#promptstudio-prompt-studio').hidden=false;document.querySelector('.psvstudio-app').hidden=false;
+  document.querySelector('#promptstudio-prompt-studio').hidden=false;
+  const video=document.querySelector('.psvstudio-app');if(video)video.hidden=false;
   document.dispatchEvent(new Event('visibilitychange'));
  });
  await page.waitForTimeout(2100);const before=requests;
  await page.evaluate(()=>document.dispatchEvent(new Event('visibilitychange')));
  await page.waitForTimeout(300);
- assert.equal(requests-before,1,'Two visible studios share one fresh provider-health request');
+ assert.equal(requests-before,1,'Visible studios share one fresh provider-health request');
  assert.equal(maximum,1,'Identical provider-health requests must not overlap');
  const start=requests;await page.waitForTimeout(6500);const measured=requests-start;
  assert.ok(measured<=3,`Expected one shared 3-second loop, observed ${measured} requests`);

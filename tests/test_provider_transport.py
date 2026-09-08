@@ -84,7 +84,16 @@ class ProviderTransportTests(unittest.TestCase):
 
     def test_real_http_parser_and_headers_use_bounded_socket_reads(self):
         for trickle in (False, True):
-            reader, writer = socket.socketpair()
+            # HTTPConnection sets TCP_NODELAY. socketpair() uses AF_UNIX on
+            # Linux, so it cannot stand in for the transport's TCP connection.
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
+                listener.bind(("127.0.0.1", 0))
+                listener.listen(1)
+                listener.settimeout(1)
+                reader = socket.create_connection(listener.getsockname(), timeout=1)
+                self.addCleanup(reader.close)
+                writer, _ = listener.accept()
+            writer.settimeout(1)
             def serve():
                 try:
                     writer.recv(4096)

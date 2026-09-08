@@ -4,6 +4,8 @@ import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
 import { resolve, extname, sep } from 'node:path';
 import { createRequire } from 'node:module';
+import {videoEnabled} from '../integration-mode.mjs';
+export {videoEnabled};
 const require = createRequire(import.meta.url);
 const { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
 export const root = resolve(import.meta.dirname, '../..');
@@ -17,13 +19,13 @@ export const app = {registerExtension: x => extensions.push(x),
  graph: {_nodes: [], links: {}, serialize: () => ({nodes: [], links: []})},
  canvas: {setDirty() {}}, extensionManager: {setting: {get: () => null}},
  ui: {settings: {getSettingValue: () => null}}, graphToPrompt: async () => ({workflow: {}, output: {}})};`;
-const html = `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><link rel="stylesheet" href="/extensions/PromptStudio_Video/css/promptstudio_video_studio.css"></head><body class="promptstudio-popout-body">
+const html = `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width">${videoEnabled ? '<link rel="stylesheet" href="/extensions/PromptStudio_Video/css/promptstudio_video_studio.css">' : ''}</head><body class="promptstudio-popout-body">
 <main id="promptstudio-popout-mount" class="promptstudio-popout-mount"><section id="promptstudio-image-mount" class="promptstudio-studio-view" data-studio-mode="image"><div class="promptstudio-popout-loading"><strong>Prompt Studio</strong><span>Connecting to ComfyUI…</span></div></section><section id="promptstudio-video-mount" class="promptstudio-studio-view" data-studio-mode="video" hidden></section></main>
 <script type="module">
 import {extensions} from '/scripts/app.js';
 try {
  await import('/extensions/ComfyUI_PromptStudio/js/prompt_studio.js');
- await import('/extensions/PromptStudio_Video/js/promptstudio_video_studio.js');
+ ${videoEnabled ? "await import('/extensions/PromptStudio_Video/js/promptstudio_video_studio.js');" : ''}
  for (const extension of extensions) await extension.setup();
  await window.__promptstudioPromptStudioHost.attach(window);
  window.studioReady = true;
@@ -43,6 +45,9 @@ const server = createServer(async (req, res) => {
   const path = new URL(req.url, 'http://fixture').pathname;
   const requestRecord = {path, method: req.method};
   requests.push(requestRecord);
+  if (!videoEnabled && (path.startsWith('/extensions/PromptStudio_Video/') || path.startsWith('/promptstudio-video/'))) {
+   res.statusCode = 404; return res.end('Video Studio is not installed');
+  }
   if (path === '/') {res.setHeader('Content-Type', 'text/html'); return res.end(html);}
   if (path === '/scripts/api.js' || path === '/scripts/app.js') {
    res.setHeader('Content-Type', 'text/javascript'); return res.end(path.includes('api.js') ? apiSource : appSource);

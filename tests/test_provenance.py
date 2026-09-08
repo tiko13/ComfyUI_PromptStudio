@@ -5,6 +5,7 @@ from pathlib import Path
 import tempfile
 import threading
 import unittest
+from unittest import mock
 
 spec = importlib.util.spec_from_file_location("shared_provenance_test", Path(__file__).resolve().parents[1] / "provenance.py")
 provenance = importlib.util.module_from_spec(spec)
@@ -89,9 +90,31 @@ class ProvenanceTests(unittest.TestCase):
         self.assertEqual(result["assets"][0]["status"], "missing")
         self.assertEqual(result["assets"][0]["name"], "missing.safetensors")
 
+    def test_image_metadata_works_without_a_video_checkout(self):
+        from test_regressions import load_modules
+        with tempfile.TemporaryDirectory() as directory:
+            load_modules(directory)
+            route_spec = importlib.util.spec_from_file_location(
+                "ComfyUI_PromptStudio.provenance_routes_test",
+                Path(__file__).resolve().parents[1] / "provenance_routes.py",
+            )
+            routes = importlib.util.module_from_spec(route_spec)
+            route_spec.loader.exec_module(routes)
+            root = Path(directory) / "ComfyUI_PromptStudio"
+            root.mkdir()
+            self.assertFalse((root.parent / "PromptStudio_Video").exists())
+            with mock.patch.object(routes, "ROOT", root), mock.patch.object(
+                routes, "_pure_video_module", side_effect=AssertionError("Image metadata must not load Video Studio"),
+            ) as video_loader:
+                result = routes.metadata_for_snapshot({"output": {}}, "image")
+            self.assertEqual(result["assets"], [])
+            self.assertNotIn("video_extension", result["versions"])
+            video_loader.assert_not_called()
+
+    @unittest.skipUnless(os.environ.get("STUDIO_TEST_VIDEO") == "1", "Video integration is opt-in (STUDIO_TEST_VIDEO=1)")
     def test_video_filter_tracks_only_effective_turbo_assets_without_changing_snapshot(self):
         from types import SimpleNamespace
-        path = Path(__file__).resolve().parents[2] / "PromptStudio_Video/video/provenance.py"
+        path = Path(__file__).resolve().parents[2] / "PromptStudio_Video" / "video" / "provenance.py"
         video_spec = importlib.util.spec_from_file_location("video_provenance_test", path)
         video = importlib.util.module_from_spec(video_spec)
         video_spec.loader.exec_module(video)

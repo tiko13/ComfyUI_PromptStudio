@@ -3889,6 +3889,14 @@ body.promptstudio-popout-body #promptstudio-prompt-studio.promptstudio-chats-ope
   background: var(--studio-accent-fill);
 }
 
+@media (forced-colors: active) {
+  .promptstudio-generation-action input:checked + span {
+    color: HighlightText;
+    background: Highlight;
+    forced-color-adjust: none;
+  }
+}
+
 .promptstudio-generation-action input:disabled + span {
   cursor: not-allowed;
   opacity: 0.45;
