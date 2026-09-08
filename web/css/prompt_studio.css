@@ -1,4 +1,5 @@
 @import url("./studio-tokens.css");
+@import url("./prompt_studio_setup.css");
 
 #promptstudio-prompt-studio,
 body.promptstudio-popout-body {

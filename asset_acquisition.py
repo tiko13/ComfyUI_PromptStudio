@@ -88,7 +88,7 @@ def verified_file(path, expected_size, expected_sha256, progress=None):
 
 @contextmanager
 def _target_lock(target):
-    """An OS-owned lock also excludes a concurrently running standalone installer."""
+    """An OS-owned lock excludes concurrent acquisition in either Studio."""
     lock_path = target.with_name(target.name + ".acquire.lock")
     with lock_path.open("a+b") as handle:
         if handle.tell() == 0:

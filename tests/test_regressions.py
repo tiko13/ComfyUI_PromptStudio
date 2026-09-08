@@ -4257,6 +4257,47 @@ class RegressionTests(unittest.TestCase):
         reference = json.dumps({"filename": path.name, "subfolder": "", "type": "output"})
         self.assertEqual(self.nodes._chat_image_dimensions(reference), (1237, 811))
 
+    def test_image_reference_resolves_both_subfolder_separator_styles(self):
+        path = Path(self.temp.name) / "nested" / "images" / "image.png"
+        path.parent.mkdir(parents=True)
+        Image.new("RGB", (8, 6), color="navy").save(path)
+        for subfolder in ("nested/images", r"nested\images"):
+            with self.subTest(subfolder=subfolder):
+                reference = json.dumps({"filename": path.name, "subfolder": subfolder, "type": "output"})
+                _, resolved = self.nodes._parse_chat_image_reference(reference)
+                self.assertEqual(Path(resolved), path.resolve())
+
+    def test_image_reference_rejects_foreign_absolute_paths_and_path_filenames(self):
+        for filename, subfolder in (
+            (r"nested\image.png", ""), ("nested/image.png", ""), ("C:image.png", ""),
+            ("image.png", r"C:\images"), ("image.png", "/images"),
+            ("image.png", r"\\server\images"), ("image.png", r"..\outside"),
+        ):
+            with self.subTest(filename=filename, subfolder=subfolder), self.assertRaises(ValueError):
+                self.nodes._parse_chat_image_reference(json.dumps({
+                    "filename": filename, "subfolder": subfolder, "type": "output",
+                }))
+
+    def test_webp_output_prefix_accepts_both_separator_styles(self):
+        class ImageTensor:
+            shape = (6, 8, 3)
+
+            def cpu(self):
+                return self
+
+            def numpy(self):
+                return np.zeros(self.shape, dtype=np.float32)
+
+        saver = self.nodes.Save_as_webp_cond()
+        for prefix in ("nested/images/frame", r"nested\images\frame"):
+            with self.subTest(prefix=prefix):
+                output = saver.Save_as_webp_cond("lossy", 80, [ImageTensor()], "yes", prefix)
+                reference = output["ui"]["images"][0]
+                expected_subfolder = "/".join(("nested", "images", str(self.nodes.date.today())))
+                self.assertEqual(reference["subfolder"], expected_subfolder)
+                _, resolved = self.nodes._parse_chat_image_reference(json.dumps(reference))
+                self.assertEqual(Path(resolved).parent, Path(self.temp.name) / "nested" / "images" / str(self.nodes.date.today()))
+
     def test_chat_image_file_deletion_is_scoped_and_idempotent(self):
         path = Path(self.temp.name) / "delete-me.png"
         Image.new("RGB", (16, 16), color="red").save(path)

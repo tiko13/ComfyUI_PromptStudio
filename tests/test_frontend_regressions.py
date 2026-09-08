@@ -1110,7 +1110,8 @@ class FrontendRegressionTests(unittest.TestCase):
         self.assertIn("deletedMessageIds", store)
         self.assertIn("withoutDeletedMessages", store)
         self.assertIn(".promptstudio-message-delete", self.styles)
-        self.assertIn("right: 42px", self.styles)
+        delete_styles = self.styles.split("#promptstudio-prompt-studio .promptstudio-message-delete {", 1)[1].split("}", 1)[0]
+        self.assertIn("right: 8px", delete_styles)
 
     def test_hidden_modals_do_not_block_native_comfyui_keybindings(self):
         lifecycle = self.function_source("setModalOpen", "openPromptStudioDialog")

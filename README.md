@@ -2,28 +2,34 @@
 
 Create, refine, edit, and upscale ComfyUI images in a chat-first studio powered by your local KoboldCpp, Ollama, or Llama.cpp model.
 
-## Browser setup wizard
+## In-app setup wizard
 
-The source-readable Windows setup wizard is under `installer/`. Double-click
-`Start Prompt Studio Setup.vbs`; it opens a private loopback browser wizard with no terminal
-window. The wizard can use an existing ComfyUI or install an official portable NVIDIA, AMD,
-or Intel build, install or safely update Prompt Studio, add the bundled `[PS] - Krea2 Turbo`
-workflow, and acquire every missing model with resumable SHA-256-verified downloads. Existing
-workflows and Prompt Studio installs receive rollback backups before replacement.
+**ComfyUI is required.** Install Prompt Studio as a ComfyUI extension and restart
+ComfyUI. Setup opens automatically the first time you open image Prompt Studio.
+You can also open **Settings → Setup wizard → Run setup** at any time.
 
-For fresh Windows environments, the review also includes the Microsoft Visual C++ v14 x64
-runtime when its required DLLs are absent. Setup downloads the current Microsoft permalink,
-requires a valid Microsoft Authenticode signature, requests Windows elevation, and installs the
-runtime before ComfyUI starts. The official portable archive already bundles Python, PyTorch,
-ComfyUI's Python packages, and its frontend; a compatible GPU driver remains the only
-hardware-specific system prerequisite.
+Select Create, Edit and/or Upscale. Setup lists which workflows need each model
+and node pack, checks ComfyUI's registered model folders (including extra paths),
+and reuses compatible installed files. A compatible Krea2 variant satisfies the
+diffusion-model requirement without downloading Turbo. Either the BF16 or FP8
+Qwen3-VL 4B encoder works across all three workflows: reuse an installed encoder,
+or choose which format to download. Alternate diffusion models keep the supplied
+sampler settings and may need different steps or CFG for best results.
 
-The same flow detects KoboldCpp and Ollama, or installs the official standalone Ollama runtime
-and a hardware-appropriate Qwen3-VL model. On a single GPU, Ollama unloads the LLM immediately
-after prompt work so ComfyUI can reclaim VRAM; on multi-GPU systems, the wizard recommends the
-second GPU for the LLM. A source-readable `Start Prompt Studio.vbs` launcher keeps background
-services hidden, starts ComfyUI in a normal visible terminal, waits for it to become ready, and
-opens the finished Studio with the chosen provider and model already selected.
+The bundled workflows are `[PS] - Krea2 Turbo`, `[PS] - Krea2 Turbo_Edit`, and
+`[PS] - Krea2 Upscale UltimateSD`. They contain only the generic landscape prompt;
+hidden saved prompts are empty. Existing workflows are preserved; when content
+differs, setup installs a separate numbered Setup copy and reuses that copy on
+subsequent runs. ComfyUI Manager installs missing third-party node packs using
+its existing security policy; these installs require a ComfyUI restart.
+
+Downloads show byte progress, transfer speed and remaining time, followed by
+separate checksum verification. Pause/resume retains partial downloads. Closing
+the wizard does not stop setup; use the header activity button to reconnect.
+Interrupted jobs can be resumed after ComfyUI restarts. Onboarding and job state
+live under the current ComfyUI user's `.promptstudio-setup` directory. Completion
+means the installed workflows passed Studio conversion, not that a generation
+test was run. The wizard does not install ComfyUI, Python, drivers or LLM runtimes.
 
 ## Create and revise images through conversation
 
@@ -83,7 +89,7 @@ and the model/media runtime dependencies. Prompt Studio adds no runtime pip
 requirements and does not install packages on every startup. Workflow conversion
 requires the host's `graphToPrompt`, native node metadata, and serialized-subgraph
 support; a version number alone does not establish these capabilities. The
-installer's bundled Krea2 pack currently requires ComfyUI **0.28.0 or newer**.
+setup wizard checks the bundled workflows' required node capabilities directly.
 
 1. Install this repository in `ComfyUI/custom_nodes/ComfyUI_PromptStudio` and restart ComfyUI.
 2. Add a **KoboldCpp Prompt Slot** or **KoboldCpp Prompt Amplify** node to an image-generation workflow.

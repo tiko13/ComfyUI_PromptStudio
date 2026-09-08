@@ -1,4 +1,5 @@
 import { discoverWorkflowFiles } from "./prompt-studio/generation/workflow-adapter.js";
+import { createSetupWizard } from "./prompt-studio/settings/setup-wizard.js";
 import {normalizeIntentProvenance, promptIntentVersion, recordManualFinal, createIntentSession, effectiveSecondaryInstructions} from "./prompt-studio/chat/intent-provenance.js";
 import { app } from "/scripts/app.js";
 import {normalizePromptAgentMetrics, rankPromptAgentIterations, repeatedPromptAgentDefects, explainPromptAgentWinner} from "./prompt-studio/consult/model.js";
@@ -157,6 +158,28 @@ import {
 } from "./prompt-studio/ui/background-activity.js";
 
 const { buildWorkflowTemplate } = createWorkflowTemplateBuilder({ app, nodeClassName });
+let setupWizard;
+function imageSetupWizard() {
+  setupWizard ||= createSetupWizard({panel: state.panel, api, buildWorkflow: buildWorkflowTemplate,
+    refreshWorkflows: () => refreshWorkflowTemplates({announce: false}),
+    applyDefaults: async workflows => {
+      for (const workflow of workflows) {
+        const select = state.panel.querySelector(`#promptstudio-${workflow.role}-workflow`);
+        if (select && !select.value && [...select.options].some(option => option.value === workflow.path)) {
+          select.value = workflow.path;
+        }
+      }
+      syncActiveChatSettings();
+    },
+    restart: async () => {
+      const queue = await api.getQueue();
+      if (queue.queue_running?.length || queue.queue_pending?.length) throw new Error("Wait for ComfyUI's generation queue to empty before restarting.");
+      return restartComfyUIFromStatus();
+    },
+    providerStatus: () => `LLM: ${selectedLlmProvider()} · ${state.panel.querySelector("#promptstudio-kobold-status-detail")?.textContent || "Checking…"} · optional for direct prompting`,
+  });
+  return setupWizard;
+}
 
 const { setupVideoStudioBridge } = createVideoStudioBridge({ refreshVideoHandoffActions });
 const {
@@ -215,41 +238,6 @@ function loadCss() {
   link.dataset.promptstudioPromptStudio = "true";
   document.head.appendChild(link);
 }
-
-function consumeInstallerSettings() {
-  const params = new URLSearchParams(window.location.search);
-  if (params.get("promptstudio_setup") !== "1") return;
-  let stored = {};
-  try {
-    stored = JSON.parse(localStorage.getItem(STORAGE_KEY) || "{}");
-  } catch (_) {
-    stored = {};
-  }
-  const provider = params.get("provider");
-  const next = { ...stored };
-  if (provider === "ollama") {
-    next.llm_provider = "ollama";
-    next.ollama_url = "http://127.0.0.1:11434";
-    next.ollama_model = params.get("model") || next.ollama_model || "";
-    next.use_llm_amplification = true;
-  } else if (provider === "koboldcpp") {
-    next.llm_provider = "koboldcpp";
-    next.kobold_url = params.get("kobold_url") || "http://127.0.0.1:5001";
-    next.use_llm_amplification = true;
-  } else if (provider === "none") {
-    next.use_llm_amplification = false;
-  }
-  try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
-  } catch (_) {
-    // Prompt Studio still opens with normal defaults when browser storage is disabled.
-  }
-  for (const key of ["promptstudio_setup", "provider", "model", "kobold_url"]) params.delete(key);
-  const query = params.toString();
-  window.history.replaceState({}, "", `${window.location.pathname}${query ? `?${query}` : ""}${window.location.hash}`);
-}
-
-consumeInstallerSettings();
 
 function availableLlmProfiles() {
   return state.llmProfiles.length
@@ -1354,7 +1342,7 @@ function setModalOpen(dialog, open) {
 }
 
 function openPromptStudioDialog() {
-  return state.panel?.querySelector('[role="dialog"][aria-modal="true"]:not([hidden])');
+  return state.panel?.querySelector('dialog[open], [role="dialog"][aria-modal="true"]:not(dialog):not([hidden])');
 }
 
 function closeSystemStatus({ restoreFocus = false } = {}) {
@@ -13126,6 +13114,7 @@ function buildPanel() {
           </button>
           <button id="promptstudio-popout" type="button" title="Open Prompt Studio in its own tab" aria-label="Open Prompt Studio in its own tab">↗</button>
           <button id="promptstudio-toggle-studio-settings" type="button" title="Prompt Studio settings" aria-label="Prompt Studio settings" aria-expanded="false">⚙</button>
+          <button id="promptstudio-setup-activity" type="button" hidden>Setup</button>
           <button id="promptstudio-close-inspector" class="promptstudio-mobile-drawer-close" type="button">Done</button>
           <button id="promptstudio-close" type="button" title="Close Prompt Studio" aria-label="Close Prompt Studio">×</button>
         </div>
@@ -13221,6 +13210,12 @@ function buildPanel() {
         <div class="promptstudio-studio-settings-header-actions"><span class="promptstudio-studio-settings-context">Prompt Studio</span><button id="promptstudio-close-studio-settings" type="button">Done</button></div>
       </header>
       <div class="promptstudio-studio-settings-layout">
+        <section class="promptstudio-studio-settings-card">
+          <div class="promptstudio-studio-setting">
+            <span class="promptstudio-studio-setting-copy"><strong>Setup wizard</strong><small id="promptstudio-setup-summary">Check workflows, models and prerequisites</small></span>
+            <button id="promptstudio-run-setup" type="button">Run setup</button>
+          </div>
+        </section>
         <section class="promptstudio-studio-settings-card" aria-labelledby="promptstudio-general-settings-title">
           <header class="promptstudio-studio-settings-card-header">
             <div><strong id="promptstudio-general-settings-title">General</strong><span>Backend selection, chat display, and editing behavior</span></div>
@@ -13746,6 +13741,8 @@ function buildPanel() {
   panel.querySelector("#promptstudio-close-inspector").addEventListener("click", closePanelDrawers);
   panel.querySelector(".promptstudio-mobile-scrim").addEventListener("click", closePanelDrawers);
   panel.querySelector("#promptstudio-toggle-studio-settings").addEventListener("click", () => toggleStudioSettings());
+  panel.querySelector("#promptstudio-run-setup").addEventListener("click", () => imageSetupWizard().open().catch(error => setStatus(error.message, "error")));
+  panel.querySelector("#promptstudio-setup-activity").addEventListener("click", () => imageSetupWizard().open().catch(error => setStatus(error.message, "error")));
   panel.querySelector("#promptstudio-close-studio-settings").addEventListener("click", () => {
     toggleStudioSettings(false);
     panel.querySelector("#promptstudio-toggle-studio-settings")?.focus({ preventScroll: true });
@@ -14259,6 +14256,7 @@ function setupStandaloneBridge() {
         closePanelDrawers();
       }
       state.panel.hidden = !visible;
+      if (visible) void imageSetupWizard().maybeOpen();
     },
   };
   if (typeof BroadcastChannel !== "function") return;
@@ -14342,6 +14340,7 @@ async function togglePanel(force) {
   state.panel.hidden = !show;
   state.launcher.dataset.open = show ? "true" : "false";
   if (!show) return saveSettings();
+  void imageSetupWizard().maybeOpen();
   try {
     if (!state.config) await loadConfig();
     await refreshWorkflowTemplates({ announce: false });

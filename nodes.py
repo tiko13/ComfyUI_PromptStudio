@@ -6,6 +6,7 @@ import io
 import ipaddress
 import json
 import math
+import ntpath
 import os
 import re
 import secrets
@@ -3619,12 +3620,12 @@ def _parse_chat_image_reference(image_ref):
         raise ValueError("Image reference type must be input, output, temp, or promptstudio")
 
     filename = str(reference.get("filename") or "").strip()
-    subfolder = str(reference.get("subfolder") or "").strip()
+    subfolder = str(reference.get("subfolder") or "").strip().replace("\\", "/")
     if not filename:
         raise ValueError("Image reference filename is required")
-    if os.path.basename(filename) != filename or os.path.isabs(filename):
+    if ntpath.basename(filename) != filename or ntpath.splitdrive(filename)[0]:
         raise ValueError("Image reference filename must not contain a path")
-    if os.path.isabs(subfolder):
+    if subfolder.startswith("/") or ntpath.splitdrive(subfolder)[0]:
         raise ValueError("Image reference subfolder must be relative")
 
     root = os.path.realpath(roots[storage_type]())
@@ -3778,6 +3779,7 @@ class Save_as_webp_cond:
 
         filename_prefix = filename_prefix.replace("%width%", str(images[0].shape[1]))
         filename_prefix = filename_prefix.replace("%height%", str(images[0].shape[0]))
+        filename_prefix = filename_prefix.replace("\\", "/")
         should_save = save == "yes"
 
         subfolder = os.path.dirname(os.path.normpath(filename_prefix))
@@ -3825,7 +3827,7 @@ class Save_as_webp_cond:
             results.append(
                 {
                     "filename": output_filename,
-                    "subfolder": preview_subfolder,
+                    "subfolder": preview_subfolder.replace(os.sep, "/"),
                     "type": output_type,
                 }
             )

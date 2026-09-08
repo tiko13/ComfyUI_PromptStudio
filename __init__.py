@@ -10,6 +10,8 @@ publish_services(**{name: getattr(routes, name) for name in (
 )}, shared_job_ledger=shared_job_ledger, shared_job_status=shared_job_status)
 register_job_routes(routes.PromptServer.instance)
 from . import provenance_routes  # noqa: F401
+from .setup_routes import register_setup_routes
+register_setup_routes(routes.PromptServer.instance)
 
 WEB_DIRECTORY = "./web"
 
