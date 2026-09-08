@@ -26,7 +26,7 @@ function createInitialState() {
     mutationEditorDirty: false,
     mutationDeleteIndex: null,
     mutationManagerTrigger: null,
-    llmProfiles: [],
+    llmProfiles: /** @type {import('./wire-contracts.js').LlmProfile[]} */ ([]),
     llamacppConfigLlmProfiles: new Map(),
     llmProfileEditorTrigger: null,
     llmProfileEditorId: null,

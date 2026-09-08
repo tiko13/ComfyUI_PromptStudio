@@ -1,4 +1,5 @@
 import importlib.util
+import ast
 import hashlib
 import json
 import tempfile
@@ -45,6 +46,28 @@ class InstallerTests(unittest.TestCase):
         self.assertFalse(INSTALLER.version_at_least("0.27.9", "0.28.0"))
         self.assertIsNone(INSTALLER.version_at_least("unknown", "0.28.0"))
 
+    def test_version_helpers_have_one_definition_and_preserve_numeric_comparison(self):
+        tree = ast.parse((ROOT / "installer/wizard.py").read_text(encoding="utf-8"))
+        for name in ("_version_key", "version_at_least"):
+            self.assertEqual(sum(isinstance(node, ast.FunctionDef) and node.name == name for node in tree.body), 1)
+        for current, required, expected in (
+            ("v0.28", "0.28.0", True), ("0.28.0", "0.28.1", False),
+            ("release-1.2.3.4", "1.2.3.99", True), ("0.28.0rc1", "0.28.0", True),
+            ("2", "1.99.99", True), (None, "1", None), ("1", "unknown", None),
+        ):
+            with self.subTest(current=current, required=required):
+                self.assertIs(INSTALLER.version_at_least(current, required), expected)
+
+    def test_launcher_example_is_portable_and_does_not_select_a_second_physical_gpu(self):
+        example = json.loads((ROOT / "llamacpp_server.example.json").read_text(encoding="utf-8"))
+        self.assertEqual(example["main_gpu"], 0)
+        self.assertEqual(example["tensor_split"], "")
+        self.assertEqual(example["cuda_devices"], "")
+        self.assertEqual(example["cuda_visible_devices"], "")
+        self.assertFalse(Path(example["model_gguf"]).is_absolute())
+        self.assertNotIn(":\\", example["model_gguf"])
+        self.assertEqual(example["mmproj_gguf"], "")
+
     def test_extra_model_path_parser(self):
         with tempfile.TemporaryDirectory() as directory:
             base = Path(directory)
@@ -75,6 +98,7 @@ class InstallerTests(unittest.TestCase):
                 "relative_path": "nested/model.safetensors",
                 "aliases": ["model.safetensors"],
                 "size": 4,
+                "sha256": hashlib.sha256(b"1234").hexdigest(),
             }
             status = INSTALLER.asset_status(asset, {"loras": [model_root]})
             self.assertEqual(status["state"], "present")
@@ -96,6 +120,18 @@ class InstallerTests(unittest.TestCase):
             request.assert_not_called()
             self.assertEqual(target.read_bytes(), b"tiny")
             self.assertFalse(partial.exists())
+
+    def test_scan_rejects_same_size_corruption_and_catalog_models_are_pinned(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "model.bin").write_bytes(b"WRONG")
+            asset = {"category": "vae", "relative_path": "model.bin", "size": 5,
+                     "sha256": hashlib.sha256(b"RIGHT").hexdigest()}
+            self.assertEqual(INSTALLER.asset_status(asset, {"vae": [root]})["state"], "invalid")
+        for pack in INSTALLER.load_catalog()["packs"]:
+            for asset in pack["assets"]:
+                self.assertRegex(asset["url"], r"/resolve/[0-9a-f]{40}/")
+                self.assertRegex(asset["sha256"], r"^[0-9a-f]{64}$")
 
     def test_https_requests_use_verified_installer_context(self):
         request = INSTALLER.urllib.request.Request("https://example.invalid/model.bin")
@@ -178,6 +214,7 @@ class InstallerTests(unittest.TestCase):
                         "relative_path": "tiny.bin",
                         "aliases": [],
                         "size": 4,
+                        "sha256": hashlib.sha256(b"tiny").hexdigest(),
                     }
                 ],
             }

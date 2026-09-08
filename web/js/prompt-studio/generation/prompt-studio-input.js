@@ -1,6 +1,6 @@
 export const PROMPT_STUDIO_INPUT_TYPE = "PromptStudioInput";
 export const PROMPT_STUDIO_INPUT_TITLE = "Prompt Studio Input";
-export const PROMPT_STUDIO_INPUT_PROFILE_VERSION = 2;
+export const PROMPT_STUDIO_INPUT_PROFILE_VERSION = 3;
 
 const SUPPORTED_TYPES = new Set(["INT", "FLOAT", "BOOLEAN", "STRING", "COMBO"]);
 const DEFAULT_NODE_TITLES = new Set([PROMPT_STUDIO_INPUT_TYPE, PROMPT_STUDIO_INPUT_TITLE]);
@@ -106,7 +106,34 @@ function serializedLink(value) {
   };
 }
 
+export function serializedWorkflowNodes(workflowData) {
+  const definitions = workflowData?.definitions?.subgraphs || [];
+  const byId = new Map(definitions.map(definition => [String(definition?.id), definition]));
+  if (byId.size !== definitions.length || definitions.some(definition => !String(definition?.id ?? ""))) {
+    throw new Error("Workflow has duplicate or missing subgraph definition IDs.");
+  }
+  const result = [];
+  const ids = new Set();
+  const visit = (scope, prefix, stack) => {
+    for (const node of scope?.nodes || []) {
+      const id = `${prefix}${String(node?.id ?? "")}`;
+      if (!String(node?.id ?? "") || ids.has(id)) throw new Error(`Workflow has duplicate or missing node ID ${id}.`);
+      ids.add(id);
+      result.push({ id, node, scope, prefix });
+      const definition = byId.get(String(node?.type || ""));
+      if (!definition) continue;
+      const definitionId = String(definition.id);
+      if (stack.has(definitionId)) throw new Error(`Workflow has a recursive subgraph ${definitionId}.`);
+      visit(definition, `${id}:`, new Set([...stack, definitionId]));
+    }
+  };
+  visit(workflowData, "", new Set());
+  return result;
+}
+
 function extractSerializedSubgraphInputs(snapshot, workflowData) {
+  // Validate paths/cycles once, rather than silently dropping recursive graphs.
+  serializedWorkflowNodes(workflowData);
   const output = snapshot?.output || {};
   const definitions = Array.isArray(workflowData?.definitions?.subgraphs)
     ? workflowData.definitions.subgraphs

@@ -1,7 +1,29 @@
 import { ACTIVITY_ICON_URL } from "../core/constants.js";
 import { state } from "../core/state.js";
+import { fetchJobActivity, isActiveJob, jobActivityText } from "./job-diagnostics.js";
+
+let observedJobs = [];
+let activityFetchedAt = 0;
+let activityRequest = null;
+let activityTimer = null;
+
+export function backgroundActivityItems() {
+  return observedJobs.map(job => ({ ...job, label: jobActivityText(job, { chats: state.chats }) }));
+}
+
+export async function refreshBackgroundActivity(fetchApi = fetch) {
+  if (activityRequest) return activityRequest;
+  activityFetchedAt = Date.now();
+  activityRequest = fetchJobActivity(fetchApi).then(result => {
+    observedJobs = result.jobs;
+    return result;
+  }).finally(() => { activityRequest = null; });
+  return activityRequest;
+}
 
 function backgroundActivityLabel() {
+  const active = observedJobs.filter(isActiveJob);
+  if (active.length) return `${active.length > 1 ? `${active.length} jobs · ` : ""}${jobActivityText(active[0], { chats: state.chats })}`;
   const selector = state.consultBusy ? "#promptstudio-consult-status" : "#promptstudio-status";
   return state.panel?.querySelector(selector)?.textContent?.trim() || "Prompt Studio is working";
 }
@@ -52,7 +74,12 @@ function detachBackgroundActivityDocument() {
 
 export function syncBackgroundActivityIndicator() {
   const doc = state.panel?.ownerDocument || null;
-  const active = state.busy || state.consultBusy || hasPendingStudioGenerations();
+  const active = state.busy || state.consultBusy || hasPendingStudioGenerations() || observedJobs.some(isActiveJob);
+  if (doc && Date.now() - activityFetchedAt >= 5000) {
+    refreshBackgroundActivity().then(syncBackgroundActivityIndicator).catch(() => {});
+  }
+  clearTimeout(activityTimer);
+  activityTimer = doc && active ? setTimeout(syncBackgroundActivityIndicator, 5000) : null;
   if (state.activityIndicatorDocument !== doc) {
     detachBackgroundActivityDocument();
     state.activityIndicatorDocument = doc;

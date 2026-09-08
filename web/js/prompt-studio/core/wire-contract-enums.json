@@ -1,0 +1,13 @@
+{
+  "wire_version": 1,
+  "providers": ["koboldcpp", "ollama", "llamacpp"],
+  "job_statuses": ["queued", "running", "complete", "failed", "cancelled"],
+  "job_transitions": {
+    "queued": ["running", "failed", "cancelled"],
+    "running": ["complete", "failed", "cancelled"],
+    "complete": [],
+    "failed": [],
+    "cancelled": []
+  },
+  "thinking_modes": ["Disabled", "Minimal", "Low", "Medium", "High", "XHigh"]
+}

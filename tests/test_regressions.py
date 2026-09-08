@@ -104,11 +104,17 @@ def load_modules(storage_root):
     nodes = importlib.util.module_from_spec(nodes_spec)
     sys.modules[nodes_spec.name] = nodes
     nodes_spec.loader.exec_module(nodes)
+    nodes._llm_scheduling.SHARED_COORDINATOR = nodes._llm_scheduling.LlmCoordinator()
 
     routes_spec = importlib.util.spec_from_file_location("ComfyUI_PromptStudio.routes", REPO_ROOT / "routes.py")
     routes = importlib.util.module_from_spec(routes_spec)
     sys.modules[routes_spec.name] = routes
     routes_spec.loader.exec_module(routes)
+    test_job_ledger = routes.JobLedger(":memory:")
+    routes.shared_job_ledger = lambda: test_job_ledger
+    original_job_status = routes.shared_job_status
+    routes.shared_job_status = lambda job_id: original_job_status(job_id, ledger=test_job_ledger)
+    routes._LLM_COORDINATOR.native_prepare = None  # Provider unit tests do not touch ComfyUI/GPU state.
     return nodes, routes
 
 
@@ -139,7 +145,7 @@ class RegressionTests(unittest.TestCase):
         self.temp.cleanup()
 
     def test_kobold_status_reports_loaded_model_and_vision(self):
-        def get_json(url, _timeout):
+        def get_json(url, _timeout, _service_name=""):
             if url.endswith("/api/extra/perf"):
                 return {"idle": 1, "queue": 0}
             if url.endswith("/api/v1/model"):
@@ -157,7 +163,7 @@ class RegressionTests(unittest.TestCase):
         self.assertIs(status["vision"], True)
 
     def test_kobold_status_reports_live_tokens_and_thinking_phase(self):
-        def get_json(url, _timeout):
+        def get_json(url, _timeout, _service_name=""):
             if url.endswith("/api/extra/perf"):
                 return {"idle": 0, "queue": 0}
             if url.endswith("/api/v1/model"):
@@ -206,7 +212,7 @@ class RegressionTests(unittest.TestCase):
         self.assertIs(status["vision"], True)
 
     def test_llm_status_reports_llamacpp_slots_model_and_vision(self):
-        def get_json(url, _timeout):
+        def get_json(url, _timeout, _service_name=""):
             if url.endswith("/health"):
                 return {"status": "ok"}
             if url.endswith("/slots"):
@@ -246,7 +252,7 @@ class RegressionTests(unittest.TestCase):
         self.assertIs(status["vision"], True)
 
     def test_llamacpp_status_prefers_the_exact_managed_stream_phase(self):
-        def get_json(url, _timeout):
+        def get_json(url, _timeout, _service_name=""):
             if url.endswith("/health"):
                 return {"status": "ok"}
             if url.endswith("/slots"):
@@ -284,6 +290,9 @@ class RegressionTests(unittest.TestCase):
                     b'data: [DONE]\n',
                 ])
 
+            def read(self, _size):
+                return next(self, b"")
+
             def __iter__(self):
                 return self
 
@@ -295,7 +304,7 @@ class RegressionTests(unittest.TestCase):
 
         response = StreamResponse()
         seen = []
-        with mock.patch.object(self.nodes.urllib.request, "urlopen", return_value=response):
+        with mock.patch.object(self.nodes._provider_transport, "_open", return_value=response):
             result = self.nodes._post_llamacpp_chat(
                 "http://127.0.0.1:8080",
                 {"model": "test", "messages": []},
@@ -306,7 +315,8 @@ class RegressionTests(unittest.TestCase):
         self.assertEqual(result["choices"][0]["message"]["content"], "hello world")
         self.assertEqual(result["choices"][0]["message"]["reasoning_content"], "think")
         self.assertEqual(result["choices"][0]["finish_reason"], "stop")
-        self.assertEqual(seen, [response, None])
+        self.assertIs(seen[0].response, response)
+        self.assertIsNone(seen[1])
         self.assertTrue(response.closed)
 
     def test_llamacpp_stream_status_transitions_from_reasoning_to_final_content(self):
@@ -321,6 +331,9 @@ class RegressionTests(unittest.TestCase):
                     b'data: [DONE]\n',
                 ])
 
+            def read(self, _size):
+                return next(self, b"")
+
             def __iter__(self):
                 return self
 
@@ -333,8 +346,8 @@ class RegressionTests(unittest.TestCase):
                 pass
 
         with mock.patch.object(
-            self.nodes.urllib.request,
-            "urlopen",
+            self.nodes._provider_transport,
+            "_open",
             return_value=StreamResponse(),
         ):
             self.nodes._post_llamacpp_chat(
@@ -2455,6 +2468,26 @@ class RegressionTests(unittest.TestCase):
             )
         )
 
+    def test_selected_short_render_target_does_not_make_a_second_provider_call(self):
+        text = " ".join(["detail"] * 20)
+        payload = {"mode":"render", "revision":"a cat", "model_profile":"General Natural Language",
+                   "style_preset":"None", "framing_preset":"None", "thinking_mode":"Disabled",
+                   "embellishment_level":"Ultra Maximum", "target_output_length":20}
+        with mock.patch.object(self.routes, "_generate_kcpp", return_value="Final prompt: " + text) as generate:
+            self.assertEqual(self.routes._revise(payload), text)
+        self.assertEqual(generate.call_count, 1)
+        self.assertEqual(payload["_promptstudio_warnings"], [])
+
+    def test_soft_target_warning_does_not_cut_a_long_render(self):
+        text = " ".join(["detail"] * 80)
+        payload = {"mode":"render", "revision":text, "model_profile":"General Natural Language",
+                   "style_preset":"None", "framing_preset":"None", "thinking_mode":"Disabled",
+                   "embellishment_level":"Ultra Maximum", "target_output_length":20}
+        with mock.patch.object(self.routes, "_generate_kcpp", return_value="Final prompt: " + text) as generate:
+            self.assertEqual(self.routes._revise(payload), text)
+        self.assertEqual(generate.call_count, 1)
+        self.assertIn("not cut or padded", payload["_promptstudio_warnings"][0])
+
     def test_kobold_chat_budget_uses_fixed_reasoning_allowances(self):
         budget = self.nodes._chat_generation_budget
         self.assertEqual(budget(300, "Disabled", fixed_reasoning_budgets=True), (300, None))
@@ -2632,13 +2665,16 @@ class RegressionTests(unittest.TestCase):
                 "finish_reason": "length",
             }],
         }
-        checks = iter([False, False, False, True])
+        cancelled = threading.Event()
+        def complete_then_cancel(*_args, **_kwargs):
+            cancelled.set()
+            return response
         with (
             mock.patch.object(self.nodes, "_server_capabilities", return_value={"jinja": True}),
             mock.patch.object(self.nodes, "_server_context_length", return_value=8192),
             mock.patch.object(self.nodes, "_kobold_token_count", return_value=250),
-            mock.patch.object(self.nodes, "_post_json", return_value=response) as post,
-            self.assertRaisesRegex(RuntimeError, "cancelled"),
+            mock.patch.object(self.nodes, "_post_json", side_effect=complete_then_cancel) as post,
+            self.assertRaises(asyncio.CancelledError),
         ):
             self.nodes._generate_kcpp(
                 "Rewrite this prompt",
@@ -2655,7 +2691,7 @@ class RegressionTests(unittest.TestCase):
                 "Disabled",
                 "",
                 120,
-                cancellation_check=lambda: next(checks),
+                cancellation_check=cancelled.is_set,
             )
 
         self.assertEqual(post.call_count, 1)
@@ -2906,9 +2942,10 @@ class RegressionTests(unittest.TestCase):
             {"role": "user", "content": "Compose the project."},
         ]
         images = [{"data_uri": "data:image/png;base64,AAAA", "base64": "AAAA"}]
-        with mock.patch.object(
-            self.routes, "_generate_provider_messages", return_value="Complete response"
-        ) as generate:
+        with (
+            mock.patch.object(self.routes, "_generate_provider_messages", return_value="Complete response") as generate,
+            mock.patch.object(self.routes, "_prepare_shared_gpu_for_llm") as prepare,
+        ):
             result = self.routes.shared_llm_generate(
                 {"llm_provider": "llamacpp", "thinking_mode": "Medium"},
                 messages,
@@ -2916,6 +2953,7 @@ class RegressionTests(unittest.TestCase):
             )
 
         self.assertEqual(result, "Complete response")
+        prepare.assert_called_once_with({"llm_provider": "llamacpp", "thinking_mode": "Medium"})
         provider_messages = generate.call_args.args[1]
         self.assertEqual(provider_messages[0], messages[0])
         self.assertEqual(provider_messages[1]["content"][0]["text"], "Compose the project.")
@@ -2928,17 +2966,8 @@ class RegressionTests(unittest.TestCase):
         self.assertEqual(generate.call_args.kwargs["maximum_request_timeout"], 3600)
 
     def test_post_json_executes_request_before_llamacpp_url_helper(self):
-        class Response:
-            def __enter__(self):
-                return self
-
-            def __exit__(self, *_args):
-                return False
-
-            def read(self):
-                return b'{"ok": true}'
-
-        with mock.patch.object(self.nodes.urllib.request, "urlopen", return_value=Response()) as open_url:
+        response = io.BytesIO(b'{"ok": true}')
+        with mock.patch.object(self.nodes._provider_transport, "_open", return_value=response) as open_url:
             result = self.nodes._post_json("http://localhost:8080/test", {"value": 1}, 10)
 
         self.assertEqual(result, {"ok": True})
@@ -2960,10 +2989,14 @@ class RegressionTests(unittest.TestCase):
         self.assertEqual(request_data["max_response_tokens"], 320)
 
     def test_ollama_generation_does_not_start_after_setup_is_cancelled(self):
-        checks = iter([False, True])
+        cancelled = threading.Event()
+        def setup_then_cancel(_url):
+            cancelled.set()
+            return "http://localhost:11434"
         with (
             mock.patch.object(self.nodes, "_post_json") as post,
-            self.assertRaisesRegex(RuntimeError, "cancelled"),
+            mock.patch.object(self.nodes, "_clean_ollama_base_url", side_effect=setup_then_cancel),
+            self.assertRaises(asyncio.CancelledError),
         ):
             self.nodes._generate_ollama(
                 "Rewrite this prompt",
@@ -2981,7 +3014,7 @@ class RegressionTests(unittest.TestCase):
                 "Disabled",
                 "",
                 120,
-                cancellation_check=lambda: next(checks),
+                cancellation_check=cancelled.is_set,
             )
         post.assert_not_called()
 
@@ -3306,6 +3339,21 @@ class RegressionTests(unittest.TestCase):
         retry_system = generate.call_args_list[1].kwargs["messages_override"][0]["content"]
         self.assertIn("compact JSON only", retry_system)
 
+    def test_prompt_agent_cancellation_prevents_token_exhaustion_retry(self):
+        cancelled = threading.Event()
+
+        def exhausted(*_args, **_kwargs):
+            cancelled.set()
+            raise RuntimeError("KoboldCpp exhausted the 1400-token completion budget before finishing.")
+
+        with mock.patch.object(self.routes, "_generate_kcpp", side_effect=exhausted) as generate:
+            with self.assertRaisesRegex(RuntimeError, "cancelled"):
+                self.routes._prompt_agent({
+                    "phase": "compile", "goal": "A quiet still life.",
+                    "llm_provider": "koboldcpp",
+                }, cancellation_check=cancelled.is_set)
+        self.assertEqual(generate.call_count, 1)
+
     def test_prompt_agent_cancel_tombstone_prevents_late_request_execution(self):
         request_id = "cancel-before-register"
         cancellation = self.routes._cancel_prompt_agent_request({"request_id": request_id})
@@ -3354,7 +3402,7 @@ class RegressionTests(unittest.TestCase):
         self.assertIn("timed out and was cancelled", data["error"])
         cancel.assert_called_once_with({"request_id": "timed-agent-request"})
 
-    def test_prompt_agent_cancel_aborts_only_registered_running_kobold_request(self):
+    def test_prompt_agent_cancel_does_not_abort_the_shared_kobold_endpoint(self):
         request_id = "running-agent-request"
         payload = {
             "llm_provider": "koboldcpp",
@@ -3370,8 +3418,9 @@ class RegressionTests(unittest.TestCase):
             result = self.routes._cancel_prompt_agent_request({"request_id": request_id})
 
         self.assertTrue(result["cancelled"])
-        self.assertTrue(result["provider_aborted"])
-        abort.assert_called_once_with({"kobold_url": "http://agent-kobold.test:5001"})
+        self.assertFalse(result["provider_aborted"])
+        self.assertEqual(record["status"], "cancelled")
+        abort.assert_not_called()
 
     def test_prompt_agent_cancel_closes_registered_running_ollama_connection(self):
         request_id = "running-ollama-agent-request"
@@ -3422,7 +3471,7 @@ class RegressionTests(unittest.TestCase):
         self.assertTrue(running["cancelled"])
         self.assertTrue(queued["cancelled"])
         self.assertFalse(unrelated["cancelled"])
-        abort.assert_called_once_with({"kobold_url": "http://agent-kobold.test:5001"})
+        abort.assert_not_called()
 
     def test_prompt_agent_architect_retries_reference_placeholder_before_generation(self):
         path = Path(self.temp.name) / "agent-reference.png"
@@ -4442,7 +4491,7 @@ class RegressionTests(unittest.TestCase):
             self.assertEqual(stale["revision"], 1)
             self.assertEqual(self.routes._read_chat_store()["chats"], [chat])
 
-    def test_chat_store_uses_one_json_file_per_chat_and_archives_deleted_chat(self):
+    def test_chat_store_uses_immutable_records_and_retains_deleted_chat_for_recovery(self):
         chat_path = str(Path(self.temp.name) / "chats.json")
         chat_dir = Path(self.temp.name) / "chats"
         chats = [
@@ -4466,9 +4515,10 @@ class RegressionTests(unittest.TestCase):
                 {"activeChatId": "chat-one", "chats": [chats[0]]},
                 current_revision=1,
             )
-            removed_backup = Path(self.routes._chat_backup_path("chat-two"))
-            self.assertEqual(len(list(chat_dir.glob("chat_*.json"))), 1)
-            self.assertTrue(removed_backup.is_file())
+            self.assertEqual(len(list(chat_dir.glob("chat_*.json"))), 2)
+            previous = self.routes.transactional_store.read_records(str(chat_dir), index, "chatFiles", "chat")
+            self.assertEqual(previous, chats)
+            self.assertEqual([chat["id"] for chat in self.routes._read_chat_store()["chats"]], ["chat-one"])
 
     def test_chat_store_migrates_legacy_monolith_into_subfolder(self):
         chat_path = Path(self.temp.name) / "prompt_studio_chats.json"
@@ -4487,7 +4537,7 @@ class RegressionTests(unittest.TestCase):
             stored = self.routes._read_chat_store()
         self.assertEqual(stored["version"], 2)
         self.assertEqual(stored["revision"], 9)
-        self.assertFalse(chat_path.exists())
+        self.assertTrue(chat_path.exists())
         self.assertTrue((chat_dir / "index.json").is_file())
         self.assertEqual(len(list(chat_dir.glob("chat_*.json"))), 1)
         self.assertTrue((chat_dir / "_backups" / "legacy_store.bak").is_file())

@@ -26,6 +26,7 @@ import {
 } from "../consult/model.js";
 import { getSettings } from "../settings/storage.js";
 import { normalizePromptStudioInputSelections } from "../generation/prompt-studio-input.js";
+import { normalizeIntentProvenance } from "./intent-provenance.js";
 
 export function createChatModel({
   getDefaultLoraSelections,
@@ -407,6 +408,7 @@ function normalizeChat(chat) {
         label: String(message?.label || ""),
         images: Array.isArray(message?.images) ? message.images.map(normalizeImageReference).filter(Boolean) : [],
         mainPrompt: String(message?.mainPrompt || message?.canonicalPrompt || ""),
+        intentProvenance: normalizeIntentProvenance(message?.intentProvenance),
         canonicalPrompt: String(message?.canonicalPrompt || ""),
         controlsFingerprint: String(message?.controlsFingerprint || ""),
         llmAmplified: Boolean(message?.llmAmplified),
@@ -458,8 +460,8 @@ function normalizeChat(chat) {
   const storedFinalPrompt = String(chat?.finalPrompt ?? chat?.currentPrompt ?? "");
   const storedMainPrompt = String(chat?.mainPrompt ?? storedFinalPrompt);
   const storedVersions = Array.isArray(chat?.versions) && chat.versions.length
-    ? chat.versions.map((value) => normalizePromptVersion(value, storedMainPrompt, storedFinalPrompt))
-    : [promptVersion(storedMainPrompt, storedFinalPrompt)];
+    ? chat.versions.map((value) => ({ ...normalizePromptVersion(value, storedMainPrompt, storedFinalPrompt), intentProvenance: normalizeIntentProvenance(value?.intentProvenance) }))
+    : [{ ...promptVersion(storedMainPrompt, storedFinalPrompt), intentProvenance: normalizeIntentProvenance(chat?.intentProvenance) }];
   const latestGeneration = [...messages]
     .reverse()
     .find((message) => message.canonicalPrompt.trim());
@@ -469,7 +471,7 @@ function normalizeChat(chat) {
   const mainPrompt = recoverGeneratedPrompt ? latestGeneration.mainPrompt : storedMainPrompt;
   const finalPrompt = recoverGeneratedPrompt ? latestGeneration.canonicalPrompt : storedFinalPrompt;
   const versions = recoverGeneratedPrompt
-    ? [promptVersion(mainPrompt, finalPrompt)]
+    ? [{ ...promptVersion(mainPrompt, finalPrompt), intentProvenance: normalizeIntentProvenance(latestGeneration?.intentProvenance) }]
     : storedVersions;
   const requestedIndex = Number(recoverGeneratedPrompt ? versions.length - 1 : chat?.versionIndex ?? versions.length - 1);
   const versionIndex = Number.isFinite(requestedIndex)
@@ -486,6 +488,8 @@ function normalizeChat(chat) {
     chat?.renderedFinalPrompt
     ?? (chat?.finalPromptManuallyEdited ? latestGeneration?.canonicalPrompt ?? "" : finalPrompt),
   );
+  const pendingGeneration = normalizePendingGeneration(chat?.pendingGeneration);
+  const lastGeneration = normalizeLastGeneration(chat?.lastGeneration);
   return {
     id: String(chat?.id || makeId()),
     createdAt,
@@ -500,6 +504,7 @@ function normalizeChat(chat) {
       ? structuredClone(chat.plotDraft)
       : null,
     mainPrompt,
+    intentProvenance: normalizeIntentProvenance(recoverGeneratedPrompt ? latestGeneration?.intentProvenance : chat?.intentProvenance),
     renderedMainPrompt,
     mainPromptDirty: mainPrompt !== renderedMainPrompt,
     finalPrompt,
@@ -514,8 +519,12 @@ function normalizeChat(chat) {
     upscaleWorkflowId: String(chat?.upscaleWorkflowId || ""),
     editPromptMode: ["edit_instruction", "full_prompt"].includes(chat?.editPromptMode) ? chat.editPromptMode : "",
     selectedSource: normalizeImageReference(chat?.selectedSource),
-    lastGeneration: normalizeLastGeneration(chat?.lastGeneration),
-    pendingGeneration: normalizePendingGeneration(chat?.pendingGeneration),
+    lastGeneration: lastGeneration
+      ? { ...lastGeneration, intentProvenance: normalizeIntentProvenance(chat.lastGeneration.intentProvenance) }
+      : null,
+    pendingGeneration: pendingGeneration
+      ? { ...pendingGeneration, intentProvenance: normalizeIntentProvenance(chat.pendingGeneration.intentProvenance) }
+      : null,
     studioSettings,
     messages,
     consultClearedAt,

@@ -1,0 +1,19 @@
+{
+  "compilerOptions": {
+    "allowJs": true,
+    "checkJs": true,
+    "noEmit": true,
+    "strict": true,
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "skipLibCheck": true,
+    "types": []
+  },
+  "files": [
+    "web/js/prompt-studio/core/wire-contracts.js",
+    "web/js/prompt-studio/core/state.js",
+    "web/js/prompt-studio/settings/llm-profile-store.js",
+    "web/js/prompt-studio/core/wire-contract-typechecks.js"
+  ]
+}

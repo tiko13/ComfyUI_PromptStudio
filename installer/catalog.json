@@ -73,7 +73,7 @@
           "aliases": ["krea2_turbo_fp8_scaled.safetensors"],
           "size": 13141730784,
           "sha256": "eb4dd8c612cfd10f64f25b057e6e6bbcb5737c94a7372177e456dbf7579502f1",
-          "url": "https://huggingface.co/Comfy-Org/Krea-2/resolve/main/diffusion_models/krea2_turbo_fp8_scaled.safetensors?download=true"
+          "url": "https://huggingface.co/Comfy-Org/Krea-2/resolve/e5ea8b4dd7f38f348b138eb0fe29f92c0e367e96/diffusion_models/krea2_turbo_fp8_scaled.safetensors?download=true"
         },
         {
           "id": "qwen3vl_4b_bf16",
@@ -83,7 +83,7 @@
           "aliases": [],
           "size": 8875719384,
           "sha256": "36f3ff447ef59201722e8f9ce6020c9819fdcfba6aa2608c4e09b1c0ce114e34",
-          "url": "https://huggingface.co/Comfy-Org/Krea-2/resolve/main/text_encoders/qwen3vl_4b_bf16.safetensors?download=true"
+          "url": "https://huggingface.co/Comfy-Org/Krea-2/resolve/e5ea8b4dd7f38f348b138eb0fe29f92c0e367e96/text_encoders/qwen3vl_4b_bf16.safetensors?download=true"
         },
         {
           "id": "qwen_image_vae",
@@ -93,7 +93,7 @@
           "aliases": [],
           "size": 253806246,
           "sha256": "a70580f0213e67967ee9c95f05bb400e8fb08307e017a924bf3441223e023d1f",
-          "url": "https://huggingface.co/Comfy-Org/Krea-2/resolve/main/vae/qwen_image_vae.safetensors?download=true"
+          "url": "https://huggingface.co/Comfy-Org/Krea-2/resolve/e5ea8b4dd7f38f348b138eb0fe29f92c0e367e96/vae/qwen_image_vae.safetensors?download=true"
         },
         {
           "id": "krea2_textfusion_refusal_reduction",
@@ -103,7 +103,7 @@
           "aliases": ["Krea2/Krea2_TextFusion_Refusal_Reduction.safetensors", "Krea2_TextFusion_Refusal_Reduction.safetensors"],
           "size": 27665664,
           "sha256": "84ec722ddab93f6489c5315bca25de5dd1a7b7ec5045a3c4ce2f97f62e54e8e6",
-          "url": "https://huggingface.co/Quiho/Krea2_TextFusion_Refusal-Reduction_LoRA_v1.0_lora/resolve/main/Krea2_TextFusion_Refusal_Reduction.safetensors?download=true",
+          "url": "https://huggingface.co/Quiho/Krea2_TextFusion_Refusal-Reduction_LoRA_v1.0_lora/resolve/b63e565916a622f060123b2dd22a06aee875c267/Krea2_TextFusion_Refusal_Reduction.safetensors?download=true",
           "source_url": "https://huggingface.co/Quiho/Krea2_TextFusion_Refusal-Reduction_LoRA_v1.0_lora"
         }
       ]

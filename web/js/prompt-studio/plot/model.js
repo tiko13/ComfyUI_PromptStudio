@@ -1,3 +1,4 @@
+import {effectiveSecondaryInstructions} from "../chat/intent-provenance.js";
 import {
   LORA_LOADER_TYPE,
   MODEL_LOADER_TYPE,
@@ -124,10 +125,14 @@ export function normalizePlotDraft(value, profile) {
     workflowProfileId: String(profile?.id || source.workflowProfileId || ""),
     prompt: String(source.prompt || ""),
     llmEnabled: source.llmEnabled === true,
+    // A handoff keeps the generation's executable inputs across saves/reloads.
+    sourceSnapshot: source.workflowProfileId === (profile?.id || source.workflowProfileId)
+      && source.sourceSnapshot?.output ? structuredClone(source.sourceSnapshot) : null,
+    sourceMainPrompt: String(source.sourceMainPrompt || ""),
     zEnabled: source.zEnabled === true,
     axes: [
-      normalizePlotAxis(source.axes?.[0] || { type: "seed" }, "x", profile),
-      normalizePlotAxis(source.axes?.[1] || { type: "sampler" }, "y", profile),
+      normalizePlotAxis(source.axes?.[0] || { type: "model" }, "x", profile),
+      normalizePlotAxis(source.axes?.[1] || { type: "seed" }, "y", profile),
       normalizePlotAxis(source.axes?.[2] || { type: "scheduler" }, "z", profile),
     ],
   };
@@ -250,6 +255,7 @@ export function snapshotForPlotCell(plot, cell) {
   if (promptNode && String(cell?.finalPrompt || "").trim()) {
     promptNode.inputs ||= {};
     promptNode.inputs.prompt = String(cell.finalPrompt);
+    promptNode.inputs.secondary_instructions = effectiveSecondaryInstructions(cell.intentProvenance ?? plot.base.intentProvenance, promptNode.inputs.secondary_instructions);
   }
   const loraStacks = new Map();
   const axisIndexes = plot.axes

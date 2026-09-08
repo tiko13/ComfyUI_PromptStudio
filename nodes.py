@@ -1,5 +1,7 @@
 import base64
 import hashlib
+import functools
+import inspect
 import io
 import ipaddress
 import json
@@ -19,6 +21,16 @@ import torch
 from PIL import Image, ImageOps, ImageSequence, UnidentifiedImageError
 
 import folder_paths
+
+from . import provider_transport as _provider_transport
+from . import llm_coordinator as _llm_scheduling
+from .prompt_intent import build_intent_prompt_context as _intent_prompt_context
+
+
+def _apply_image_intent_context(prompt, intent_provenance, *, stage, rebuild=False):
+    """Attach validated sidecar constraints without changing native node IO."""
+    context = _intent_prompt_context(intent_provenance, stage=stage, include_edit_scope=not rebuild)
+    return f"{prompt}\n\n{context}" if context else prompt
 
 
 BASE_DIR = os.path.dirname(os.path.realpath(__file__))
@@ -783,6 +795,56 @@ def _ollama_api_url(base_url, endpoint):
     return f"{base}/api/{endpoint}"
 
 
+def _coordinated_native_llm(provider):
+    """Wrap whole native operations and provider helpers without route imports."""
+    def decorate(operation):
+        signature = inspect.signature(operation)
+        @functools.wraps(operation)
+        def scheduled(*args, **kwargs):
+            bound = signature.bind(*args, **kwargs)
+            bound.apply_defaults()
+            settings = {"llm_provider": provider,
+                        provider.replace("koboldcpp", "kobold") + "_url": bound.arguments.get(
+                            provider.replace("koboldcpp", "kobold") + "_url")}
+            coordinator = _llm_scheduling.SHARED_COORDINATOR
+            nested = coordinator.current_token() is not None
+            resources = [_llm_scheduling.endpoint_identity(settings)]
+            if not nested:
+                resources.append(("shared-gpu",))
+            token = coordinator.current_token() or _llm_scheduling.CancellationToken(
+                bound.arguments.get("cancellation_check"),
+            )
+            def run():
+                if not nested and coordinator.native_prepare is not None:
+                    coordinator.native_prepare(settings)
+                token.check()
+                return operation(*args, **kwargs)
+            return coordinator.run(resources, run, token=token)
+        return scheduled
+    return decorate
+
+
+def _provider_url_validator(url, service_name=""):
+    name = service_name.casefold()
+    if "ollama" in name:
+        allowed, env = _allowed_ollama_hosts(), "PROMPT_STUDIO_OLLAMA_ALLOWED_HOSTS"
+    elif "llama" in name:
+        allowed, env = _allowed_llamacpp_hosts(), "PROMPT_STUDIO_LLAMACPP_ALLOWED_HOSTS"
+    else:
+        allowed, env = _allowed_kobold_hosts(), "PROMPT_STUDIO_KOBOLD_ALLOWED_HOSTS"
+    parsed = urllib.parse.urlsplit(url)
+    # Query strings are valid on provider endpoints; origin/credentials are
+    # validated with the same policy used for the original configured URL.
+    origin = urllib.parse.urlunsplit((parsed.scheme, parsed.netloc, "", "", ""))
+    return _clean_service_base_url(origin, origin, service_name or "Provider", allowed, env)
+
+
+def _open_provider_response(request, timeout, service_name=""):
+    return _provider_transport.open_response(
+        request, timeout, lambda url: _provider_url_validator(url, service_name),
+    )
+
+
 def _post_json(
     url,
     payload,
@@ -802,7 +864,7 @@ def _post_json(
         method="POST",
     )
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
+        with _open_provider_response(request, timeout, service_name) as response:
             if response_hook is not None:
                 response_hook(response)
             try:
@@ -811,7 +873,7 @@ def _post_json(
                 if response_hook is not None:
                     response_hook(None)
     except urllib.error.HTTPError as exc:
-        detail = exc.read().decode("utf-8", errors="replace")
+        detail = str(exc)
         raise RuntimeError(f"{service_name} request failed with HTTP {exc.code}: {detail}") from exc
     except urllib.error.URLError as exc:
         raise RuntimeError(f"Could not reach {service_name} at {url}: {exc.reason}") from exc
@@ -837,10 +899,10 @@ def _list_ollama_models(ollama_url, request_timeout=10):
     url = _ollama_api_url(base_url, "tags")
     request = urllib.request.Request(url, headers={"Accept": "application/json"}, method="GET")
     try:
-        with urllib.request.urlopen(request, timeout=int(request_timeout)) as response:
+        with _open_provider_response(request, request_timeout, "Ollama") as response:
             body = response.read().decode("utf-8")
     except urllib.error.HTTPError as exc:
-        detail = exc.read().decode("utf-8", errors="replace")
+        detail = str(exc)
         raise RuntimeError(f"Ollama request failed with HTTP {exc.code}: {detail}") from exc
     except urllib.error.URLError as exc:
         raise RuntimeError(f"Could not reach Ollama at {url}: {exc.reason}") from exc
@@ -868,10 +930,10 @@ def _list_llamacpp_models(llamacpp_url, request_timeout=10):
     url = urllib.parse.urljoin(base_url + "/", "models")
     request = urllib.request.Request(url, headers={"Accept": "application/json"}, method="GET")
     try:
-        with urllib.request.urlopen(request, timeout=int(request_timeout)) as response:
+        with _open_provider_response(request, request_timeout, "Llama.cpp") as response:
             body = response.read().decode("utf-8")
     except urllib.error.HTTPError as exc:
-        detail = exc.read().decode("utf-8", errors="replace")
+        detail = str(exc)
         raise RuntimeError(f"Llama.cpp request failed with HTTP {exc.code}: {detail}") from exc
     except urllib.error.URLError as exc:
         raise RuntimeError(f"Could not reach Llama.cpp at {url}: {exc.reason}") from exc
@@ -947,6 +1009,7 @@ def _post_llamacpp_chat(base_url, payload, timeout, response_hook=None, cancella
     content_parts = []
     reasoning_parts = []
     finish_reason = None
+    stream_complete = False
     chunks = []
     chat_template_kwargs = payload.get("chat_template_kwargs")
     thinking_enabled = bool(
@@ -954,7 +1017,7 @@ def _post_llamacpp_chat(base_url, payload, timeout, response_hook=None, cancella
         if isinstance(chat_template_kwargs, dict) else False
     )
     try:
-        response = urllib.request.urlopen(request, timeout=int(timeout))
+        response = _open_provider_response(request, timeout, "Llama.cpp")
         response_id = id(response)
         with _LLAMACPP_RESPONSE_LOCK:
             _LLAMACPP_ACTIVE_RESPONSES.setdefault(base_url, set()).add(response)
@@ -976,6 +1039,7 @@ def _post_llamacpp_chat(base_url, payload, timeout, response_hook=None, cancella
                 continue
             event = line[5:].strip()
             if event == "[DONE]":
+                stream_complete = True
                 break
             try:
                 chunk = json.loads(event)
@@ -983,7 +1047,9 @@ def _post_llamacpp_chat(base_url, payload, timeout, response_hook=None, cancella
                 raise RuntimeError(f"Llama.cpp returned invalid stream JSON: {event[:500]}") from exc
             if isinstance(chunk, dict) and chunk.get("error"):
                 raise RuntimeError(f"Llama.cpp reported an error: {chunk['error']}")
-            chunks.append(chunk)
+            # Retain bounded diagnostic metadata, not every streamed token.
+            if len(chunks) < 32:
+                chunks.append(chunk)
             choices = chunk.get("choices") if isinstance(chunk, dict) else None
             choice = choices[0] if isinstance(choices, list) and choices else None
             if not isinstance(choice, dict):
@@ -1017,8 +1083,10 @@ def _post_llamacpp_chat(base_url, payload, timeout, response_hook=None, cancella
             aborted = response_id in _LLAMACPP_ABORTED_RESPONSES
         if aborted:
             raise RuntimeError("Llama.cpp request was cancelled")
+        if not stream_complete and finish_reason is None:
+            raise RuntimeError("Llama.cpp stream ended before completion")
     except urllib.error.HTTPError as exc:
-        detail = exc.read().decode("utf-8", errors="replace")
+        detail = str(exc)
         raise RuntimeError(f"Llama.cpp request failed with HTTP {exc.code}: {detail}") from exc
     except urllib.error.URLError as exc:
         raise RuntimeError(f"Could not reach Llama.cpp at {request.full_url}: {exc.reason}") from exc
@@ -1061,12 +1129,12 @@ def _post_llamacpp_chat(base_url, payload, timeout, response_hook=None, cancella
     }
 
 
-def _get_json(url, timeout):
+def _get_json(url, timeout, service_name="KoboldCpp"):
     request = urllib.request.Request(url, headers={"Accept": "application/json"}, method="GET")
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
+        with _open_provider_response(request, timeout, service_name) as response:
             body = response.read().decode("utf-8")
-    except urllib.error.URLError:
+    except (urllib.error.URLError, RuntimeError, OSError):
         return None
 
     try:
@@ -1101,7 +1169,7 @@ def _llamacpp_props(base_url, timeout, model=""):
     url = urllib.parse.urljoin(base_url + "/", "props")
     if query:
         url = f"{url}?{query}"
-    data = _get_json(url, timeout)
+    data = _get_json(url, timeout, "Llama.cpp")
     return data if isinstance(data, dict) else {}
 
 
@@ -1512,6 +1580,7 @@ def _with_default_continuation_stops(stop_sequences):
     return out
 
 
+@_coordinated_native_llm("koboldcpp")
 def _generate_kcpp(
     prompt,
     kobold_url,
@@ -1681,6 +1750,7 @@ def _generate_kcpp(
     return content
 
 
+@_coordinated_native_llm("llamacpp")
 def _generate_llamacpp(
     prompt,
     llamacpp_url,
@@ -1964,6 +2034,7 @@ def _unload_ollama_model(ollama_url, ollama_model, request_timeout=15):
     return result
 
 
+@_coordinated_native_llm("ollama")
 def _generate_ollama(
     prompt,
     ollama_url,
@@ -2125,6 +2196,7 @@ def _generate_ollama(
     return str(content)
 
 
+@_coordinated_native_llm("koboldcpp")
 def _generate_kcpp_raw(
     prompt,
     kobold_url,
@@ -2398,19 +2470,52 @@ def _target_output_length(value, profile, embellishment_level="Clean"):
 
 
 def _target_length_response_tokens(target_output_length, profile, embellishment_level="Clean"):
+    return _output_policy(target_output_length, profile, embellishment_level)["response_tokens"]
+
+
+def _output_policy(target_output_length, profile, embellishment_level="Clean"):
+    """One soft length contract; fidelity always outranks an approximate count."""
     target = _target_output_length(target_output_length, profile, embellishment_level)
-    spec = _output_length_spec(profile, embellishment_level)
-    if spec["unit"] == "tags":
-        return target * 6 + 32
-    return target * 2 + 64
+    unit = _output_length_spec(profile, embellishment_level)["unit"]
+    return {
+        "target": target,
+        "explicit": bool(target_output_length),
+        "unit": unit,
+        "minimum": max(1, int(target * 0.7)),
+        "maximum": max(target, int(target * 1.3)),
+        "response_tokens": target * (6 if unit == "tags" else 2) + (32 if unit == "tags" else 64),
+        "fidelity_priority": True,
+    }
+
+
+def _select_expansion_candidate(current, candidate, profile, target_output_length=0, embellishment_level="Clean"):
+    if not str(candidate or "").strip():
+        return current
+    if not str(current or "").strip():
+        return candidate
+    if not target_output_length:
+        return candidate if _density_count(candidate, profile) > _density_count(current, profile) else current
+    policy = _output_policy(target_output_length, profile, embellishment_level)
+    def distance(value):
+        count = _density_count(value, profile)
+        return max(policy["minimum"] - count, 0, count - policy["maximum"])
+    return candidate if distance(candidate) < distance(current) else current
+
+
+def _output_policy_warning(text, profile, target_output_length, embellishment_level="Clean"):
+    policy = _output_policy(target_output_length, profile, embellishment_level)
+    count = _density_count(text, profile)
+    if policy["minimum"] <= count <= policy["maximum"]:
+        return ""
+    return (f"Output has {count} {policy['unit']} for an approximate target of {policy['target']}. "
+            "Review required details; content was not cut or padded to force the target.")
 
 
 def _target_length_rule_lines(target_output_length, profile, embellishment_level="Clean", target="rewritten prompt"):
     if not target_output_length:
         return []
-    spec = _output_length_spec(profile, embellishment_level)
-    amount = _target_output_length(target_output_length, profile, embellishment_level)
-    unit = spec["unit"]
+    policy = _output_policy(target_output_length, profile, embellishment_level)
+    amount, unit = policy["target"], policy["unit"]
     return [
         f"- For this fresh rewrite, aim for about {amount} {unit} in the {target}.",
         "- This target replaces any earlier numeric length or density guidance.",
@@ -2548,7 +2653,7 @@ def _density_count(text, profile):
     return _word_count(text)
 
 
-def _needs_expansion_retry(original, rewritten, embellishment_level, profile):
+def _needs_expansion_retry(original, rewritten, embellishment_level, profile, target_output_length=0):
     level = str(embellishment_level or "Clean").strip().lower()
     if level not in {"detailed", "maximum", "ultra maximum"}:
         return False
@@ -2557,6 +2662,13 @@ def _needs_expansion_retry(original, rewritten, embellishment_level, profile):
     if not str(rewritten or "").strip():
         return True
 
+    if target_output_length:
+        policy = _output_policy(target_output_length, profile, embellishment_level)
+        # A rich setting is no reason to pad already long input or enforce a
+        # sentence count on decimals, abbreviations or quoted punctuation.
+        return (_density_count(original, profile) < policy["minimum"]
+                and _density_count(rewritten, profile) < policy["minimum"])
+
     style = str(profile.get("style") or "").lower()
     if "tag" in style:
         if level == "detailed":
@@ -2564,7 +2676,7 @@ def _needs_expansion_retry(original, rewritten, embellishment_level, profile):
         original_tags = max(_tag_count(original), max(1, _word_count(original) // 2))
         rewritten_tags = _tag_count(rewritten)
         floor = 16 if level == "ultra maximum" else 10
-        return rewritten_tags <= original_tags or rewritten_tags < floor
+        return original_tags < floor and rewritten_tags < floor
 
     if level == "detailed":
         return _sentence_count(rewritten) != 2
@@ -2574,7 +2686,7 @@ def _needs_expansion_retry(original, rewritten, embellishment_level, profile):
     floor = 120 if level == "ultra maximum" else 50
     if original_words < floor:
         return rewritten_words < floor
-    return rewritten_words <= original_words
+    return False
 
 
 def _retry_seed(sampler_seed):
@@ -3324,6 +3436,7 @@ class KCPP_PromptAmplify:
     def IS_CHANGED(cls, sampler_seed=-1, **kwargs):
         return _llm_node_change_token(sampler_seed)
 
+    @_coordinated_native_llm("koboldcpp")
     def amplify(
         self,
         text,
@@ -3895,6 +4008,7 @@ class KCPP_Apply:
     def IS_CHANGED(cls, sampler_seed=-1, **kwargs):
         return _llm_node_change_token(sampler_seed)
 
+    @_coordinated_native_llm("koboldcpp")
     def apply(
         self,
         text,
@@ -4230,6 +4344,7 @@ class KCPP_Ideogram4:
                 return value
             raise RuntimeError(f"Failed to rewrite {field_label}: {exc}") from exc
 
+    @_coordinated_native_llm("koboldcpp")
     def process(
         self,
         json_input,

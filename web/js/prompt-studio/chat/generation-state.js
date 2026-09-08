@@ -1,5 +1,6 @@
 import { normalizeImageReference } from "./image-reference.js";
 import { cleanModelName } from "../generation/model-name.js";
+import { normalizeProvenance } from "../generation/provenance.js";
 
 export function normalizeLoraStack(value) {
   if (!Array.isArray(value)) return [];
@@ -49,7 +50,10 @@ export function normalizeGenerationModelState(value) {
 export function normalizeGenerationSnapshot(value) {
   const output = value?.output;
   if (!output || typeof output !== "object" || Array.isArray(output)) return null;
-  return { output };
+  // Legacy records may contain executable output only. Preserve that explicit
+  // format; never invent a UI workflow. Full snapshots retain all metadata.
+  if (value.workflow !== undefined && (!value.workflow || typeof value.workflow !== "object" || Array.isArray(value.workflow))) return null;
+  return structuredClone(value);
 }
 
 export function normalizeLastGeneration(value) {
@@ -76,6 +80,7 @@ export function normalizePendingGeneration(value) {
     loraState: normalizeGenerationLoraState(value.loraState),
     modelState: normalizeGenerationModelState(value.modelState),
     generationSnapshot: normalizeGenerationSnapshot(value.generationSnapshot),
+    provenance: normalizeProvenance(value.provenance),
     replayFingerprint: String(value.replayFingerprint || ""),
     sourceImage: normalizeImageReference(value.sourceImage),
     upscaleFactor: value.upscaleFactor != null && Number.isFinite(Number(value.upscaleFactor))

@@ -10,7 +10,7 @@ from __future__ import annotations
 import argparse
 import ctypes
 import datetime as dt
-import hashlib
+import importlib.util
 import json
 import os
 import platform
@@ -36,6 +36,11 @@ from pathlib import Path
 
 INSTALLER_DIR = Path(__file__).resolve().parent
 SOURCE_ROOT = INSTALLER_DIR.parent
+_ACQUISITION_SPEC = importlib.util.spec_from_file_location(
+    "prompt_studio_asset_acquisition", SOURCE_ROOT / "asset_acquisition.py",
+)
+ACQUISITION = importlib.util.module_from_spec(_ACQUISITION_SPEC)
+_ACQUISITION_SPEC.loader.exec_module(ACQUISITION)
 CATALOG_PATH = INSTALLER_DIR / "catalog.json"
 LOG_PATH = INSTALLER_DIR / "prompt-studio-setup.log"
 LOOPBACK = "127.0.0.1"
@@ -405,20 +410,6 @@ def version_at_least(current, required):
     return current_key + (0,) * (width - len(current_key)) >= required_key + (0,) * (width - len(required_key))
 
 
-def _version_key(value):
-    numbers = re.findall(r"\d+", str(value or ""))
-    return tuple(int(number) for number in numbers[:3]) if numbers else ()
-
-
-def version_at_least(current, required):
-    current_key = _version_key(current)
-    required_key = _version_key(required)
-    if not current_key or not required_key:
-        return None
-    width = max(len(current_key), len(required_key))
-    return current_key + (0,) * (width - len(current_key)) >= required_key + (0,) * (width - len(required_key))
-
-
 def parse_extra_model_paths(config_path):
     """Parse the deliberately small YAML subset used by ComfyUI path configs."""
     config_path = Path(config_path)
@@ -508,7 +499,7 @@ def asset_status(asset, roots):
             size = candidate.stat().st_size
         except OSError:
             continue
-        if size == int(asset["size"]):
+        if ACQUISITION.verified_file(candidate, asset["size"], asset.get("sha256")):
             return {"state": "present", "path": str(candidate), "size": size}
         wrong_size.append({"path": str(candidate), "size": size})
     return {"state": "invalid" if wrong_size else "missing", "wrong_size": wrong_size}
@@ -1041,19 +1032,7 @@ def _install_workflow(root, pack, target=None):
 
 
 def _sha256(path, progress=None):
-    digest = hashlib.sha256()
-    total = path.stat().st_size
-    done = 0
-    with path.open("rb") as handle:
-        while True:
-            block = handle.read(8 * 1024 * 1024)
-            if not block:
-                break
-            digest.update(block)
-            done += len(block)
-            if progress:
-                progress(done, total, "Verifying")
-    return digest.hexdigest()
+    return ACQUISITION.sha256_file(path, progress)
 
 
 def _is_certificate_error(exc):
@@ -1095,6 +1074,10 @@ def _download_with_windows_curl(url, partial, expected_size, progress=None):
         curl,
         "--fail",
         "--location",
+        "--proto",
+        "=https",
+        "--proto-redir",
+        "=https",
         "--silent",
         "--show-error",
         "--retry",
@@ -1231,59 +1214,22 @@ def _install_vc_runtime(action, progress=None):
 
 
 def _download_asset(asset, target, progress=None):
-    target.parent.mkdir(parents=True, exist_ok=True)
-    partial = target.with_suffix(target.suffix + ".part")
-    expected_size = int(asset["size"])
-    if target.is_file() and target.stat().st_size == expected_size:
-        if _sha256(target, progress) == asset["sha256"]:
-            return "Verified existing {}".format(target)
-        raise RuntimeError("Existing model checksum does not match: {}".format(target))
+    target = Path(target)
+    existed = target.is_file()
 
-    offset = partial.stat().st_size if partial.is_file() else 0
-    if offset > expected_size:
-        partial.unlink()
-        offset = 0
-    elif offset == expected_size:
-        if _sha256(partial, progress) == asset["sha256"]:
-            os.replace(partial, target)
-            return "Installed {} to {}".format(asset["name"], target)
-        partial.unlink()
-        offset = 0
-    headers = {"User-Agent": "PromptStudioSetup/0.1"}
-    if offset:
-        headers["Range"] = "bytes={}-".format(offset)
-    request = urllib.request.Request(asset["url"], headers=headers)
-    try:
-        with _urlopen(request, timeout=60) as response:
-            status = getattr(response, "status", 200)
-            if offset and status != 206:
-                offset = 0
-            mode = "ab" if offset else "wb"
-            done = offset
-            with partial.open(mode) as handle:
-                while True:
-                    block = response.read(1024 * 1024)
-                    if not block:
-                        break
-                    handle.write(block)
-                    done += len(block)
-                    if progress:
-                        progress(done, expected_size, "Downloading")
-    except (urllib.error.URLError, ssl.SSLError) as exc:
+    def secure_windows_fallback(exc, partial, callback):
         if not _is_certificate_error(exc) or os.name != "nt":
-            raise
+            return False
         _log("Python HTTPS verification failed; retrying securely with Windows curl.exe: {}".format(exc))
-        _download_with_windows_curl(asset["url"], partial, expected_size, progress)
-    actual_size = partial.stat().st_size
-    if actual_size != expected_size:
-        raise RuntimeError(
-            "Download ended at {} but {} requires {}.".format(_human_bytes(actual_size), asset["name"], _human_bytes(expected_size))
-        )
-    if _sha256(partial, progress) != asset["sha256"]:
+        # Start from zero so an opaque transport fallback cannot mix objects.
         partial.unlink(missing_ok=True)
-        raise RuntimeError("Downloaded checksum did not match for {}".format(asset["name"]))
-    os.replace(partial, target)
-    return "Installed {} to {}".format(asset["name"], target)
+        partial.with_name(partial.name + ".json").unlink(missing_ok=True)
+        _download_with_windows_curl(asset["url"], partial, int(asset["size"]), callback)
+        return True
+
+    ACQUISITION.acquire_asset(asset, target, progress, opener=_urlopen, fallback=secure_windows_fallback)
+    return ("Verified existing {}".format(target) if existed
+            else "Installed {} to {}".format(asset["name"], target))
 
 
 def _portable_download_path(install_dir, asset):

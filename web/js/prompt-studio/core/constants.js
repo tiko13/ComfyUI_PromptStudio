@@ -50,7 +50,8 @@ export const KOBOLD_STATUS_POLL_MS = 3000;
 export const MUTATION_CONFIG_POLL_MS = 2500;
 export const CHAT_SCROLL_STICK_THRESHOLD = 450;
 export const MAX_DROPPED_IMAGE_BYTES = 20 * 1024 * 1024;
-export const CONSULT_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
+// History is retained until an explicit clear/delete. Request context remains bounded separately.
+export const CONSULT_RETENTION_MS = Number.POSITIVE_INFINITY;
 export const CONSULT_EXPERIMENT_MARKER = "PROMPT_STUDIO_EXPERIMENT";
 export const MAX_CONSULT_EXPERIMENT_PROMPT_CHARS = 64 * 1024;
 export const MAX_CONSULT_EXPERIMENT_GUIDANCE_CHARS = 16 * 1024;

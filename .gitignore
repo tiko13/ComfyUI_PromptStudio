@@ -1,6 +1,9 @@
 # Local agent guidance
 AGENTS.md
 
+# Internal development artifacts (audits, reports, and task briefs)
+/development-internal/
+
 # Python caches, environments, and build outputs
 __pycache__/
 *.py[cod]
@@ -20,6 +23,8 @@ dist/
 
 # Node dependencies and build outputs
 node_modules/
+test-results/
+test-results/
 coverage/
 .cache/
 .parcel-cache/

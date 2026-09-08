@@ -1,3 +1,4 @@
+from .request_security import install_boundary as _install_api_boundary
 import asyncio
 import base64
 import hashlib
@@ -21,6 +22,7 @@ import uuid
 
 from aiohttp import web
 from server import PromptServer
+from .prompt_agent_quality import enforce_visual_evidence, combine_reference_assessment
 
 from .nodes import (
     ADDITIONAL_FRAMING_TEMPLATES_PATH,
@@ -33,6 +35,7 @@ from .nodes import (
     PROTECTED_WORDS_PATH,
     STYLE_TEMPLATES_PATH,
     _apply_profile_wrappers,
+    _apply_image_intent_context,
     _build_expansion_retry_prompt,
     _build_instruction_prompt,
     _build_main_creation_prompt,
@@ -44,9 +47,9 @@ from .nodes import (
     _clean_base_url,
     _density_count,
     _diffusion_model_names_for_type,
-    _generate_kcpp,
-    _generate_llamacpp,
-    _generate_ollama,
+    _generate_kcpp as _raw_generate_kcpp,
+    _generate_llamacpp as _raw_generate_llamacpp,
+    _generate_ollama as _raw_generate_ollama,
     _get_json,
     _get_framing_template,
     _get_profile,
@@ -64,6 +67,8 @@ from .nodes import (
     _lora_names_for_type,
     _llm_vision_capability,
     _needs_expansion_retry,
+    _select_expansion_candidate,
+    _output_policy_warning,
     _output_length_spec,
     _parse_chat_image_reference,
     _post_json,
@@ -84,6 +89,10 @@ from .plot_store import (
     read_plot,
     write_plot,
 )
+from .job_observability import shared_job_ledger, shared_job_status, JobLedger
+from .llm_coordinator import CancellationToken, LlmCoordinator, endpoint_identity, LlmOverloadedError, MAX_LLM_OPERATIONS, SHARED_COORDINATOR
+from . import transactional_store
+from . import prompt_intent as _image_intent
 
 
 CHAT_STORE_PATH = os.path.join(BASE_DIR, "prompt_studio_chats.json")
@@ -132,6 +141,11 @@ LLM_PRIORITY_CONSULT = 10
 _LLM_QUEUE_SEQUENCE = itertools.count()
 _LLM_QUEUES = {}
 _LLM_QUEUE_WORKERS = {}
+_LLM_QUEUE_EXTRA_WORKERS = {}
+_LLM_SHUTTING_DOWN = False
+_LLM_COORDINATOR = SHARED_COORDINATOR
+_LLM_OPERATION_TOKENS = set()
+_LLM_OPERATION_TOKENS_LOCK = threading.Lock()
 CONSULT_JOBS = {}
 CONSULT_TASKS = set()
 MAX_CONSULT_JOBS = 32
@@ -1322,7 +1336,7 @@ def _start_llamacpp_server(data, *, allow_external=True):
         # Config Builder replaces profiles atomically. Reading inside the launch lock,
         # immediately before Popen, keeps the command and revision on one saved version.
         launcher = _load_llamacpp_launcher_config(data)
-        if isinstance(_get_json(urllib.parse.urljoin(launcher["url"] + "/", "health"), 2), dict):
+        if isinstance(_get_json(urllib.parse.urljoin(launcher["url"] + "/", "health"), 2, "Llama.cpp"), dict):
             if not allow_external:
                 raise RuntimeError(
                     "The previous Llama.cpp server stopped, but its endpoint is still responding. "
@@ -1718,11 +1732,12 @@ def _unload_llm_provider(data):
     return _unload_kobold_model(settings)
 
 
-def _prepare_shared_gpu_for_llm(data):
+def _prepare_shared_gpu_for_llm(data, *, native_node=False):
     global _ACTIVE_SHARED_LLM, _SHARED_GPU_OWNER
     if _keep_models_loaded(data):
         return
-    _wait_for_pending_comfy_handoffs()
+    if not native_node:
+        _wait_for_pending_comfy_handoffs()
     requested = _llm_provider_settings(data)
     requested_key = _llm_provider_key(requested)
     with _GPU_HANDOFF_LOCK:
@@ -1760,61 +1775,265 @@ def _release_shared_llm_for_comfy(data):
         return result
 
 
-def _llm_queue_key(data):
+def _llm_resources(data):
+    resources = [endpoint_identity(data)]
     if not _keep_models_loaded(data):
-        return ("shared-gpu",)
-    provider = _text(data.get("llm_provider"), "koboldcpp").strip().casefold()
-    if provider == "ollama":
-        return (
-            provider,
-            _text(data.get("ollama_url"), "http://localhost:11434").strip(),
-            _text(data.get("ollama_model")).strip(),
-        )
-    if provider == "llamacpp":
-        return (
-            provider,
-            _text(data.get("llamacpp_url"), "http://localhost:8080").strip(),
-            _text(data.get("llamacpp_model")).strip(),
-        )
-    return ("koboldcpp", _text(data.get("kobold_url"), "http://localhost:5001").strip())
+        resources.append(("shared-gpu",))
+    return resources
 
 
-async def _llm_queue_worker(queue):
+def _llm_queue_key(data):
+    return endpoint_identity(data) if _keep_models_loaded(data) else ("shared-gpu",)
+
+
+def shared_llm_configure_capacity(data, capacity):
+    """Configure deliberate server concurrency while idle; default capacity is one.
+
+    Applies to keep-loaded/dedicated endpoints. Shared ComfyUI GPU ownership is
+    always exclusive. URL paths and model names never create additional lanes.
+    """
+    key = endpoint_identity(data)
+    queue = _LLM_QUEUES.get(key)
+    if queue is not None and not queue.empty():
+        raise RuntimeError("LLM endpoint capacity can only change while idle")
+    _LLM_COORDINATOR.configure_capacity(key, capacity)
+    return {"endpoint": key, "capacity": capacity}
+
+
+def _coordinated_provider_call(generate, *args, **kwargs):
+    token = _LLM_COORDINATOR.current_token()
+    if token is None:
+        return generate(*args, **kwargs)
+    token.check()
+    previous_check = kwargs.get("cancellation_check")
+    previous_hook = kwargs.get("response_hook")
+
+    def response_hook(response):
+        token.response_hook(response)
+        if previous_hook is not None:
+            previous_hook(response)
+
+    kwargs["response_hook"] = response_hook
+    kwargs["cancellation_check"] = lambda: token.cancelled() or bool(previous_check and previous_check())
+    try:
+        result = generate(*args, **kwargs)
+    except Exception:
+        # Closing this job's transport can surface as a provider/network error.
+        # Preserve cancellation semantics so callers do not retry another stage.
+        token.check()
+        raise
+    token.check()
+    return result
+
+
+def _generate_kcpp(*args, **kwargs):
+    return _coordinated_provider_call(_raw_generate_kcpp, *args, **kwargs)
+
+
+def _generate_llamacpp(*args, **kwargs):
+    return _coordinated_provider_call(_raw_generate_llamacpp, *args, **kwargs)
+
+
+def _generate_ollama(*args, **kwargs):
+    return _coordinated_provider_call(_raw_generate_ollama, *args, **kwargs)
+
+
+def _cancel_pending_llm_requests(queue):
     while True:
-        _, _, future, operation, data = await queue.get()
         try:
-            if future.cancelled():
-                continue
-            try:
-                result = await asyncio.to_thread(operation, data)
-            except Exception as exc:
-                if not future.done():
-                    future.set_exception(exc)
-            else:
-                if not future.done():
-                    future.set_result(result)
+            _, _, future, _, _ = queue.get_nowait()
+        except asyncio.QueueEmpty:
+            return
+        try:
+            future.cancel()
         finally:
             queue.task_done()
 
 
-async def _run_llm_request(data, priority, operation, prepare_for_llm=True):
+async def _llm_queue_worker(queue):
+    try:
+        while True:
+            try:
+                _, _, future, operation, data = await asyncio.wait_for(queue.get(), 30)
+            except asyncio.TimeoutError:
+                return
+            try:
+                if future.done():
+                    continue
+                # Keep ownership of the endpoint until the blocking operation
+                # exits. Cancelling a to_thread wrapper cannot stop its thread.
+                active = asyncio.create_task(asyncio.to_thread(operation, data))
+                try:
+                    result = await asyncio.shield(active)
+                except asyncio.CancelledError:
+                    future.cancel()
+                    if asyncio.current_task().cancelling():
+                        _cancel_pending_llm_requests(queue)
+                        while not active.done():
+                            try:
+                                await asyncio.shield(active)
+                            except asyncio.CancelledError:
+                                continue
+                            except Exception:
+                                break
+                        if not active.cancelled():
+                            active.exception()  # Retrieve a failure during shutdown.
+                        raise
+                    # An operation can cancel itself without cancelling its worker.
+                except Exception as exc:
+                    if not future.done():
+                        future.set_exception(exc)
+                else:
+                    if not future.done():
+                        future.set_result(result)
+            finally:
+                queue.task_done()
+    finally:
+        _cancel_pending_llm_requests(queue)
+
+
+async def _shutdown_llm_queues(_application):
+    global _LLM_SHUTTING_DOWN
+    _LLM_SHUTTING_DOWN = True
+    await asyncio.to_thread(_LLM_COORDINATOR.cancel_all)
+    with _LLM_OPERATION_TOKENS_LOCK:
+        tokens = tuple(_LLM_OPERATION_TOKENS)
+    for token in tokens:
+        token.signal()
+    await asyncio.gather(*(asyncio.to_thread(token.close_response) for token in tokens))
+    # Close only connections owned by registered jobs, never endpoint-wide abort.
+    with PROMPT_AGENT_REQUESTS_LOCK:
+        request_ids = [request_id for request_id, record in PROMPT_AGENT_REQUESTS.items()
+                       if record.get("status") in {"queued", "running"}]
+    for request_id in request_ids:
+        await asyncio.to_thread(_cancel_prompt_agent_request_id, request_id)
+    for job in CONSULT_JOBS.values():
+        if job.get("status") in {"queued", "running"}:
+            job["cancelled"] = True
+    workers = list(_LLM_QUEUE_WORKERS.values()) + [
+        worker for extra in _LLM_QUEUE_EXTRA_WORKERS.values() for worker in extra
+    ]
+    for worker in workers:
+        worker.cancel()
+    await asyncio.gather(*workers, return_exceptions=True)
+    await asyncio.gather(*tuple(PROMPT_AGENT_TASKS), *tuple(CONSULT_TASKS), return_exceptions=True)
+    await asyncio.to_thread(_LLM_COORDINATOR.wait_idle)
+    for queue in _LLM_QUEUES.values():
+        _cancel_pending_llm_requests(queue)
+    _LLM_QUEUE_WORKERS.clear()
+    _LLM_QUEUE_EXTRA_WORKERS.clear()
+    _LLM_QUEUES.clear()
+
+
+async def _run_llm_request(data, priority, operation, prepare_for_llm=True, cancellation_check=None, job_context=None):
     """Serialize requests per LLM endpoint, preferring Studio work over consultation."""
+    if _LLM_SHUTTING_DOWN:
+        raise asyncio.CancelledError("LLM queues are shutting down")
+    shared_llm_check_admission()
+    for old_key, old_worker in tuple(_LLM_QUEUE_WORKERS.items()):
+        if old_worker.done() and _LLM_QUEUES[old_key].empty():
+            _LLM_QUEUE_WORKERS.pop(old_key, None)
+            _LLM_QUEUE_EXTRA_WORKERS.pop(old_key, None)
+            _LLM_QUEUES.pop(old_key, None)
     key = _llm_queue_key(data)
     queue = _LLM_QUEUES.get(key)
     if queue is None:
-        queue = asyncio.PriorityQueue()
+        if len(_LLM_QUEUES) >= MAX_LLM_OPERATIONS:
+            raise LlmOverloadedError("LLM endpoint queue capacity is full; retry shortly")
+        queue = asyncio.PriorityQueue(maxsize=MAX_LLM_OPERATIONS)
         _LLM_QUEUES[key] = queue
     worker = _LLM_QUEUE_WORKERS.get(key)
     if worker is None or worker.done():
         _LLM_QUEUE_WORKERS[key] = asyncio.create_task(_llm_queue_worker(queue))
+    extra_workers = [worker for worker in _LLM_QUEUE_EXTRA_WORKERS.get(key, []) if not worker.done()]
+    for _ in range(max(0, _LLM_COORDINATOR.capacity(key) - 1 - len(extra_workers))):
+        extra_workers.append(asyncio.create_task(_llm_queue_worker(queue)))
+    _LLM_QUEUE_EXTRA_WORKERS[key] = extra_workers
     future = asyncio.get_running_loop().create_future()
-    def coordinated_operation(value):
-        if prepare_for_llm:
-            _prepare_shared_gpu_for_llm(value)
-        return operation(value)
+    token = CancellationToken(cancellation_check)
+    ledger = shared_job_ledger()
+    studio = "video" if job_context and job_context.get("studio") == "video" else "image"
+    observed_id = job_context.get("job_id") if job_context else str(uuid.uuid4())
+    if not job_context:
+        ledger.start(observed_id, studio=studio, kind="prompt_agent", data=data)
+    with _LLM_OPERATION_TOKENS_LOCK:
+        if len(_LLM_OPERATION_TOKENS) >= MAX_LLM_OPERATIONS:
+            error = LlmOverloadedError()
+            ledger.update(observed_id, studio=studio, state="failed", error=error)
+            raise error
+        _LLM_OPERATION_TOKENS.add(token)
 
-    await queue.put((priority, next(_LLM_QUEUE_SEQUENCE), future, coordinated_operation, data))
-    return await future
+    def coordinated_operation(value):
+        def run():
+            token.check()
+            ledger.update(observed_id, studio=studio, phase="prompt_processing")
+            if prepare_for_llm:
+                _prepare_shared_gpu_for_llm(value)
+            token.check()
+            name = getattr(operation, "__name__", "")
+            phase = "routing" if "route" in name else "grounding" if "caption" in name or "vision" in name else "generation"
+            ledger.update(observed_id, studio=studio, phase=phase)
+            return operation(value)
+
+        try:
+            return _LLM_COORDINATOR.run(_llm_resources(value), run, priority=priority, token=token)
+        finally:
+            with _LLM_OPERATION_TOKENS_LOCK:
+                _LLM_OPERATION_TOKENS.discard(token)
+
+    try:
+        queue.put_nowait((priority, next(_LLM_QUEUE_SEQUENCE), future, coordinated_operation, data))
+    except asyncio.QueueFull:
+        with _LLM_OPERATION_TOKENS_LOCK:
+            _LLM_OPERATION_TOKENS.discard(token)
+        error = LlmOverloadedError()
+        ledger.update(observed_id, studio=studio, state="failed", error=error)
+        raise error from None
+    try:
+        result = await future
+        ledger.update(observed_id, studio=studio, state="complete")
+        return result
+    except asyncio.CancelledError:
+        token.signal()
+        await asyncio.to_thread(token.close_response)
+        ledger.update(observed_id, studio=studio, state="interrupted" if _LLM_SHUTTING_DOWN else "cancelled",
+                      code="server_restarted" if _LLM_SHUTTING_DOWN else "cancelled", cancellation_requested=True)
+        raise
+    except Exception as exc:
+        ledger.update(observed_id, studio=studio, state="failed", error=exc)
+        raise
+    finally:
+        # A cancelled queued operation may never execute its cleanup wrapper.
+        # Running operations retain their token through the coordinator context.
+        if future.cancelled():
+            with _LLM_OPERATION_TOKENS_LOCK:
+                _LLM_OPERATION_TOKENS.discard(token)
+
+
+def shared_llm_check_admission():
+    """Public companion preflight; actual submission also checks atomically."""
+    with _LLM_OPERATION_TOKENS_LOCK:
+        if _LLM_SHUTTING_DOWN:
+            raise LlmOverloadedError("LLM service is shutting down; retry after restart")
+        if len(_LLM_OPERATION_TOKENS) >= MAX_LLM_OPERATIONS:
+            raise LlmOverloadedError()
+
+
+async def shared_llm_shutdown(application=None):
+    """Stop admission, cancel owned transports and settle workers before return."""
+    await _shutdown_llm_queues(application)
+
+
+def _llm_error_response(exc):
+    payload = {"error": str(exc)}
+    if getattr(exc, "code", None):
+        payload.update(code=exc.code, retryable=bool(getattr(exc, "retryable", False)))
+    return web.json_response(payload, status=getattr(exc, "status", 502))
+
+
+async def shared_llm_run(data, operation, *, priority=LLM_PRIORITY_STUDIO, cancellation_check=None, job_context=None):
+    """Schedule one entire companion operation; nested stages reuse its ownership."""
+    return await _run_llm_request(data, priority, operation, cancellation_check=cancellation_check, job_context=job_context)
 
 
 def _kobold_generation_status(data):
@@ -1916,7 +2135,7 @@ def _llamacpp_generation_status(data):
     """Return llama-server health, slot activity, model, and vision information."""
     base_url = _clean_llamacpp_base_url(data.get("llamacpp_url"))
     selected_model = _text(data.get("llamacpp_model")).strip()
-    health = _get_json(urllib.parse.urljoin(base_url + "/", "health"), 3)
+    health = _get_json(urllib.parse.urljoin(base_url + "/", "health"), 3, "Llama.cpp")
     if not isinstance(health, dict):
         process = _llamacpp_managed_process_status(data)
         status = {
@@ -1934,7 +2153,7 @@ def _llamacpp_generation_status(data):
         return status
     models = _list_llamacpp_models(base_url, request_timeout=3)
     model = selected_model or (models[0] if len(models) == 1 else "")
-    slots = _get_json(urllib.parse.urljoin(base_url + "/", "slots"), 3)
+    slots = _get_json(urllib.parse.urljoin(base_url + "/", "slots"), 3, "Llama.cpp")
     managed_stream = _llamacpp_active_stream_status(base_url)
     busy = None
     active_slots = 0
@@ -2094,6 +2313,8 @@ def _register_prompt_agent_request(request_id, data):
         _prune_prompt_agent_requests()
         record = PROMPT_AGENT_REQUESTS.get(request_id)
         if record is None:
+            if len(PROMPT_AGENT_REQUESTS) >= MAX_PROMPT_AGENT_REQUESTS:
+                raise LlmOverloadedError("Prompt Agent capacity is full; retry after a job finishes")
             record = {
                 "status": "queued",
                 "cancelled": False,
@@ -2162,7 +2383,14 @@ async def _run_prompt_agent_job(request_id, data):
             data,
             LLM_PRIORITY_STUDIO,
             lambda value: _execute_prompt_agent_request(request_id, value),
+            cancellation_check=lambda: bool(PROMPT_AGENT_REQUESTS.get(request_id, {}).get("cancelled")),
+            job_context={"studio": "image", "job_id": request_id},
         )
+    except asyncio.CancelledError:
+        with PROMPT_AGENT_REQUESTS_LOCK:
+            record = PROMPT_AGENT_REQUESTS.get(request_id)
+            if record is not None:
+                record.update(status="cancelled", cancelled=True, finished_at=time.time())
     except Exception as exc:
         with PROMPT_AGENT_REQUESTS_LOCK:
             record = PROMPT_AGENT_REQUESTS.get(request_id)
@@ -2171,13 +2399,25 @@ async def _run_prompt_agent_job(request_id, data):
                 record["error"] = str(exc) or exc.__class__.__name__
                 record["finished_at"] = time.time()
 
+    finally:
+        record = PROMPT_AGENT_REQUESTS.get(request_id, {})
+        status = record.get("status", "failed")
+        shared_job_ledger().update(request_id, state="interrupted" if _LLM_SHUTTING_DOWN else status,
+                                  code="server_restarted" if _LLM_SHUTTING_DOWN else None)
+
 
 def _start_prompt_agent_job(request_id, data):
     with PROMPT_AGENT_REQUESTS_LOCK:
         record = PROMPT_AGENT_REQUESTS.get(request_id)
         if record and record.get("status") in {"queued", "running", "complete", "failed", "cancelled"}:
             return request_id
-    _register_prompt_agent_request(request_id, data)
+    shared_llm_check_admission()
+    shared_job_ledger().start(request_id, kind="prompt_agent", data=data)
+    try:
+        _register_prompt_agent_request(request_id, data)
+    except Exception as exc:
+        shared_job_ledger().update(request_id, state="failed", error=exc)
+        raise
     task = asyncio.create_task(_run_prompt_agent_job(request_id, data))
     PROMPT_AGENT_TASKS.add(task)
     task.add_done_callback(PROMPT_AGENT_TASKS.discard)
@@ -2188,6 +2428,9 @@ def _cancel_prompt_agent_request_id(request_id):
     with PROMPT_AGENT_REQUESTS_LOCK:
         record = PROMPT_AGENT_REQUESTS.get(request_id)
         if record is None:
+            _prune_prompt_agent_requests()
+            if len(PROMPT_AGENT_REQUESTS) >= MAX_PROMPT_AGENT_REQUESTS:
+                raise LlmOverloadedError("Prompt Agent capacity is full")
             record = {
                 "status": "cancelled",
                 "cancelled": True,
@@ -2198,18 +2441,13 @@ def _cancel_prompt_agent_request_id(request_id):
             PROMPT_AGENT_REQUESTS[request_id] = record
         previous_status = record.get("status")
         record["cancelled"] = True
-        if previous_status != "running":
-            record["status"] = "cancelled"
-            record["finished_at"] = time.time()
-        provider = record.get("provider")
-        kobold_url = record.get("kobold_url")
-        llamacpp_url = record.get("llamacpp_url")
+        record["status"] = "cancelled"
+        record["finished_at"] = time.time()
         response = record.get("response")
+    shared_job_ledger().update(request_id, state="cancelled", cancellation_requested=True)
     provider_aborted = False
-    if previous_status == "running" and provider == "koboldcpp":
-        provider_aborted = _abort_kobold_generation({"kobold_url": kobold_url}).get("success") is True
-    elif previous_status == "running" and provider == "llamacpp":
-        provider_aborted = _abort_llamacpp_generation(llamacpp_url).get("success") is True
+    # Job cancellation is logical unless its own response can be closed.
+    # Endpoint-wide force-stop remains available through the explicit abort route.
     connection_closed = False
     if previous_status == "running" and response is not None:
         try:
@@ -2220,7 +2458,7 @@ def _cancel_prompt_agent_request_id(request_id):
     return {
         "request_id": request_id,
         "cancelled": True,
-        "status": previous_status or "cancelled",
+        "status": "cancelled",
         "provider_aborted": provider_aborted,
         "connection_closed": connection_closed,
     }
@@ -2281,7 +2519,9 @@ async def _run_consult_job(job_id, data):
         return _consult(value)
 
     try:
-        result = await _run_llm_request(data, LLM_PRIORITY_CONSULT, run_consult)
+        result = await _run_llm_request(data, LLM_PRIORITY_CONSULT, run_consult,
+                                        cancellation_check=lambda: bool(job.get("cancelled")),
+                                        job_context={"studio": "image", "job_id": job_id})
         if not job.get("cancelled"):
             job["result"] = result
             job["status"] = "complete"
@@ -2293,6 +2533,8 @@ async def _run_consult_job(job_id, data):
             job["error"] = str(exc) or exc.__class__.__name__
     finally:
         job["finished_at"] = time.time()
+        shared_job_ledger().update(job_id, state="interrupted" if _LLM_SHUTTING_DOWN else job["status"],
+                                  code="server_restarted" if _LLM_SHUTTING_DOWN else None)
 
 
 def _start_consult_job(data):
@@ -2306,7 +2548,11 @@ def _start_consult_job(data):
         if requested_job_id in CONSULT_JOBS:
             return requested_job_id
     _prune_consult_jobs()
+    shared_llm_check_admission()
+    if len(CONSULT_JOBS) >= MAX_CONSULT_JOBS:
+        raise LlmOverloadedError("Consultation capacity is full; retry after a job finishes")
     job_id = requested_job_id or str(uuid.uuid4())
+    shared_job_ledger().start(job_id, kind="consult", data=data)
     CONSULT_JOBS[job_id] = {
         "status": "queued",
         "created_at": time.time(),
@@ -2331,20 +2577,14 @@ async def _cancel_consult_job(job_id):
     job = CONSULT_JOBS.get(job_id)
     if job is None:
         raise ValueError("Consultation job was not found")
-    previous_status = job.get("status", "queued")
     job["cancelled"] = True
     job["status"] = "cancelled"
     job["finished_at"] = time.time()
+    shared_job_ledger().update(job_id, state="cancelled", cancellation_requested=True)
     task = job.get("task")
-    if previous_status == "queued" and task and not task.done():
+    if task and not task.done():
         task.cancel()
-    provider = str(job.get("provider_settings", {}).get("llm_provider") or "koboldcpp").casefold()
-    if previous_status == "running" and provider in {"koboldcpp", "llamacpp"}:
-        try:
-            await asyncio.to_thread(_abort_llm_generation, job["provider_settings"])
-        except Exception:
-            pass
-    return {"job_id": job_id, "status": "cancelled"}
+    return {"job_id": job_id, "status": "cancelled", "provider_aborted": False}
 
 LAN_PASSWORD_ENV = "PROMPT_STUDIO_LAN_PASSWORD"
 LAN_PASSWORD_BASE64_ENV = "PROMPT_STUDIO_LAN_PASSWORD_B64"
@@ -3141,6 +3381,24 @@ def _chat_sort_key(chat):
     )
 
 
+def _chat_summary(chat):
+    messages = chat.get("messages") if isinstance(chat.get("messages"), list) else []
+    consultation = chat.get("consultMessages") if isinstance(chat.get("consultMessages"), list) else []
+    pending = sum(
+        message.get("generationState") in {"queued", "generating"}
+        or bool(message.get("operationId") and message.get("operationPhase") not in {"complete", "error", "cancelled"})
+        for message in messages if isinstance(message, dict)
+    ) + int(bool(chat.get("pendingGeneration"))) + int(bool(chat.get("consultPendingJob")))
+    return {
+        "id": _text(chat.get("id")).strip(), "title": _text(chat.get("title"), "New chat")[:200],
+        "createdAt": _chat_timestamp(chat.get("createdAt")), "activity": _chat_activity_at(chat),
+        "messageCount": len(messages), "consultMessageCount": len(consultation),
+        "pendingCount": pending,
+        "sessionMode": chat.get("sessionMode", "image"), "plotId": chat.get("plotId"),
+        "isEmpty": not bool(messages or consultation or pending or chat.get("mainPrompt") or chat.get("finalPrompt") or chat.get("plotId")),
+    }
+
+
 def _chat_store_page(data, offset=0, limit=CHAT_PAGE_DEFAULT, include_active=False, before=None):
     if not isinstance(data, dict) or not isinstance(data.get("chats"), list):
         raise ValueError("Chat store must contain a chats list")
@@ -3182,93 +3440,118 @@ def _chat_store_page(data, offset=0, limit=CHAT_PAGE_DEFAULT, include_active=Fal
             "id": _text(page_chats[-1].get("id")).strip(),
         } if page_chats else None,
         "hasMore": end < len(candidates),
+        **({"recovery": data["recovery"]} if data.get("recovery") else {}),
     }
 
 
 def _read_chat_index():
-    try:
-        with open(_chat_index_path(), "r", encoding="utf-8") as file:
-            index = json.load(file)
-    except FileNotFoundError:
-        return None
-    except json.JSONDecodeError as exc:
-        raise RuntimeError(f"Invalid Prompt Studio chat index: {exc}") from exc
-    if (
-        not isinstance(index, dict)
-        or index.get("version") != 2
-        or not isinstance(index.get("chatFiles"), list)
-    ):
-        raise RuntimeError("Prompt Studio chat index must contain a chatFiles list")
-    return index
+    return transactional_store.read_manifest(CHAT_STORE_DIR, "chatFiles", "chat")
 
 
 def _read_split_chat_store(index):
-    chats = []
-    seen_ids = set()
-    for position, entry in enumerate(index["chatFiles"]):
-        if not isinstance(entry, dict):
-            raise RuntimeError(f"Prompt Studio chat index entry {position + 1} must be an object")
-        chat_id = _text(entry.get("id")).strip()
-        expected_file = _chat_file_name(chat_id) if chat_id else ""
-        if not chat_id or entry.get("file") != expected_file or chat_id in seen_ids:
-            raise RuntimeError(f"Invalid Prompt Studio chat index entry {position + 1}")
-        seen_ids.add(chat_id)
-        path = os.path.join(CHAT_STORE_DIR, expected_file)
-        try:
-            with open(path, "r", encoding="utf-8") as file:
-                chat = json.load(file)
-        except FileNotFoundError as exc:
-            raise RuntimeError(f"Prompt Studio chat file is missing: {expected_file}") from exc
-        except json.JSONDecodeError as exc:
-            raise RuntimeError(f"Invalid Prompt Studio chat file {expected_file}: {exc}") from exc
-        if not isinstance(chat, dict) or _text(chat.get("id")).strip() != chat_id:
-            raise RuntimeError(f"Prompt Studio chat file does not match index id {chat_id!r}")
-        chats.append(chat)
-    return {
-        "version": 2,
-        "revision": _revision(index.get("revision")),
-        "activeChatId": index.get("activeChatId"),
-        "chats": chats,
-    }
+    index, chats = transactional_store.read_snapshot(CHAT_STORE_DIR, "chatFiles", "chat", index)
+    result = {key: value for key, value in index.items()
+              if key not in {"chatFiles", "storage_format", "_recovery"}}
+    result.update({"version": 2, "revision": _revision(index.get("revision")),
+                   "activeChatId": index.get("activeChatId"), "chats": chats})
+    if index.get("_recovery"):
+        result["recovery"] = index["_recovery"]
+    return result
 
 
 def _write_split_chat_store(data):
-    entries = _normalized_chat_entries(data["chats"])
-    previous_index = _read_chat_index()
-    previous_entries = previous_index.get("chatFiles", []) if previous_index else []
-    os.makedirs(CHAT_STORE_DIR, exist_ok=True)
-    for chat_id, chat, _filename in entries:
-        _atomic_write_store(
-            _chat_file_path(chat_id),
-            chat,
-            backup_path=_chat_backup_path(chat_id),
-            skip_unchanged=True,
-        )
-    index = {
-        "version": 2,
-        "revision": _revision(data.get("revision")),
-        "activeChatId": data.get("activeChatId"),
-        "chatFiles": [
-            {"id": chat_id, "file": filename}
-            for chat_id, _chat, filename in entries
-        ],
-    }
-    _atomic_write_store(
-        _chat_index_path(),
-        index,
-        backup_path=os.path.join(_chat_backups_dir(), "index.bak"),
-    )
-    retained_files = {filename for _chat_id, _chat, filename in entries}
-    for entry in previous_entries:
-        chat_id = _text(entry.get("id")).strip() if isinstance(entry, dict) else ""
-        filename = entry.get("file") if isinstance(entry, dict) else None
-        if not chat_id or filename != _chat_file_name(chat_id) or filename in retained_files:
-            continue
-        path = os.path.join(CHAT_STORE_DIR, filename)
-        if os.path.isfile(path):
-            os.makedirs(_chat_backups_dir(), exist_ok=True)
-            os.replace(path, _chat_backup_path(chat_id))
+    _normalized_chat_entries(data["chats"])
+    metadata = {key: value for key, value in data.items() if key not in {"chats", "recovery"}}
+    transactional_store.commit_records(CHAT_STORE_DIR, metadata, data["chats"], "chatFiles", "chat", summary_builder=_chat_summary)
     return data
+
+
+def _read_chat_query(query, _index=None):
+    """Revision, summary and detail reads never run history maintenance."""
+    index = _read_chat_index() if _index is None else _index
+    if index is None:
+        if (query.get("summaries") == "1" or query.get("limit") is not None) and os.path.isfile(CHAT_STORE_PATH):
+            return {"maintenance_required": True, "chats": [], "summaries": []}, 202
+        legacy = _read_legacy_chat_store() or _empty_chat_store()
+        if query.get("revision") is not None and _revision(query.get("revision")) == legacy["revision"]:
+            return {"revision": legacy["revision"]}, 204
+        if query.get("limit") is not None:
+            legacy = _chat_store_page(legacy, int(query.get("offset", 0)), int(query["limit"]))
+        return legacy, 200
+    revision = _revision(index.get("revision"))
+    if not index.get("_recovery") and query.get("revision") is not None and _revision(query.get("revision")) == revision:
+        return {"revision": revision}, 204
+    entries = index["chatFiles"]
+    base = {"version": 2, "revision": revision, "activeChatId": index.get("activeChatId"), "total": len(entries)}
+    if index.get("_recovery"):
+        base["recovery"] = index["_recovery"]
+    chat_id = query.get("chat_id")
+    if chat_id is not None:
+        selected_index, chats = transactional_store.read_selected_snapshot(CHAT_STORE_DIR, index, "chatFiles", "chat", [chat_id])
+        if selected_index is not index:
+            return _read_chat_query(query, selected_index)
+        return ({**base, "chats": chats, "partial": True}, 200) if chats else ({"error": "Chat was not found"}, 404)
+    if query.get("limit") is None and query.get("summaries") != "1":
+        return _read_split_chat_store(index), 200
+    limit, offset = int(query.get("limit", CHAT_PAGE_DEFAULT)), int(query.get("offset", 0))
+    if not 1 <= limit <= CHAT_PAGE_MAX or offset < 0:
+        raise ValueError("Chat page offset or limit is invalid")
+    missing = sum(not isinstance(entry.get("summary"), dict) for entry in entries)
+    if missing:
+        return {**base, "chats": [], "summaries": [], "maintenance_required": True, "summary_records_remaining": missing}, 202
+    ordered = sorted((entry["summary"] for entry in entries),
+                     key=lambda item: (-item["activity"], -item["createdAt"], item["id"]))
+    cursor = [query.get(key) for key in ("before_activity", "before_created", "before_id")]
+    if any(value is not None for value in cursor):
+        if any(value is None for value in cursor):
+            raise ValueError("Chat page cursor is incomplete")
+        boundary = (-_chat_timestamp(cursor[0]), -_chat_timestamp(cursor[1]), cursor[2])
+        ordered = [item for item in ordered if (-item["activity"], -item["createdAt"], item["id"]) > boundary]
+        offset = 0
+    page = ordered[offset:offset + limit]
+    selected = list(page)
+    active = index.get("activeChatId")
+    if query.get("include_active") == "1" and offset == 0 and active and all(item["id"] != active for item in selected):
+        selected.extend(entry["summary"] for entry in entries if entry["id"] == active)
+    if query.get("include_pending") == "1" and offset == 0:
+        selected_ids = {item["id"] for item in selected}
+        selected.extend(entry["summary"] for entry in entries if entry["id"] not in selected_ids and entry["summary"].get("pendingCount", 0) > 0)
+    result = {**base, "offset": offset, "nextOffset": offset + len(page), "hasMore": offset + len(page) < len(ordered),
+              "nextCursor": ({"activity": page[-1]["activity"], "createdAt": page[-1]["createdAt"], "id": page[-1]["id"]} if page else None)}
+    if query.get("summaries") == "1":
+        result.update({"summaries": selected, "chats": []})
+    else:
+        selected_index, loaded = transactional_store.read_selected_snapshot(CHAT_STORE_DIR, index, "chatFiles", "chat", [item["id"] for item in selected])
+        if selected_index is not index:
+            return _read_chat_query(query, selected_index)
+        by_id = {chat["id"]: chat for chat in loaded}
+        result["chats"] = [by_id[item["id"]] for item in selected]
+    return result, 200
+
+
+def _maintain_chat_store(offset=0, limit=100):
+    if not isinstance(offset, int) or isinstance(offset, bool) or offset < 0 or not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= 100:
+        raise ValueError("Maintenance requires a nonnegative offset and a limit between 1 and 100")
+    with transactional_store.store_lock(CHAT_STORE_DIR):
+        index = _read_chat_index()
+        if index is None:
+            # A legacy monolith requires one explicit import before bounded work.
+            _read_chat_store()
+            index = _read_chat_index()
+        if index is None:
+            return {"revision": 0, "processed": 0, "hasMore": False, "nextOffset": 0}
+        if index.get("_recovery"):
+            raise transactional_store.RecoveryRequiredError(index["_recovery"]["message"])
+        entries = index["chatFiles"][offset:offset + limit]
+        chats = transactional_store.read_records(CHAT_STORE_DIR, index, "chatFiles", "chat", [entry["id"] for entry in entries])
+        batch, _, _ = _prune_consult_history({"chats": chats})
+        batch, _ = _relink_plot_chats(batch)
+        saved = transactional_store.commit_record_updates(
+            CHAT_STORE_DIR, {"revision": index["revision"] + 1}, batch["chats"], "chatFiles", "chat",
+            expected_revision=index["revision"], summary_builder=_chat_summary,
+        )
+        return {"revision": saved["revision"], "processed": len(chats), "nextOffset": offset + len(chats),
+                "hasMore": offset + len(chats) < len(index["chatFiles"])}
 
 
 def _read_legacy_chat_store():
@@ -3288,10 +3571,10 @@ def _read_legacy_chat_store():
 def _archive_legacy_chat_store():
     os.makedirs(_chat_backups_dir(), exist_ok=True)
     if os.path.isfile(CHAT_STORE_PATH):
-        os.replace(CHAT_STORE_PATH, os.path.join(_chat_backups_dir(), "legacy_store.bak"))
+        shutil.copy2(CHAT_STORE_PATH, os.path.join(_chat_backups_dir(), "legacy_store.bak"))
     legacy_backup = CHAT_STORE_PATH + ".bak"
     if os.path.isfile(legacy_backup):
-        os.replace(legacy_backup, os.path.join(_chat_backups_dir(), "legacy_previous_store.bak"))
+        shutil.copy2(legacy_backup, os.path.join(_chat_backups_dir(), "legacy_previous_store.bak"))
 
 
 def _relink_plot_chats(data):
@@ -3323,12 +3606,18 @@ def _relink_plot_chats(data):
 
 
 def _read_chat_store():
+    with transactional_store.store_lock(CHAT_STORE_DIR):
+        return _read_chat_store_unlocked()
+
+
+def _read_chat_store_unlocked():
     index = _read_chat_index()
     if index is None:
         data = _read_legacy_chat_store()
         if data is None:
             return _empty_chat_store()
         data = {
+            **data,
             "version": 2,
             "revision": data["revision"],
             "activeChatId": data.get("activeChatId"),
@@ -3338,10 +3627,13 @@ def _read_chat_store():
         _archive_legacy_chat_store()
     else:
         data = _read_split_chat_store(index)
+    if data.get("recovery"):
+        return data
     data, pruned, removed_images = _prune_consult_history(data)
     data, plots_relinked = _relink_plot_chats(data)
     if pruned or plots_relinked:
         data = {
+            **data,
             "version": 2,
             "revision": data["revision"] + 1,
             "activeChatId": data.get("activeChatId"),
@@ -3353,6 +3645,11 @@ def _read_chat_store():
 
 
 def _write_chat_store(data, current_revision=None):
+    with transactional_store.store_lock(CHAT_STORE_DIR):
+        return _write_chat_store_unlocked(data, current_revision)
+
+
+def _write_chat_store_unlocked(data, current_revision=None):
     if not isinstance(data, dict) or not isinstance(data.get("chats"), list):
         raise ValueError("Chat store must contain a chats list")
     if current_revision is None:
@@ -3360,6 +3657,7 @@ def _write_chat_store(data, current_revision=None):
     data, _pruned, removed_images = _prune_consult_history(data)
     data, _plots_relinked = _relink_plot_chats(data)
     normalized = {
+        **{key: value for key, value in data.items() if key not in {"partial", "recovery"}},
         "version": 2,
         "revision": current_revision + 1,
         "activeChatId": data.get("activeChatId"),
@@ -3444,11 +3742,23 @@ def _delete_chat_image_files(images):
 
 
 def _update_chat_store(data):
+    with transactional_store.store_lock(CHAT_STORE_DIR):
+        return _update_chat_store_unlocked(data)
+
+
+def _update_chat_store_unlocked(data):
     if not isinstance(data, dict) or not isinstance(data.get("chats"), list):
         raise ValueError("Chat store must contain a chats list")
+    if data.get("partial") is True:
+        index = _read_chat_index()
+        if index is not None:
+            return _update_partial_chat_store(data, index)
     current = _read_chat_store()
+    if current.get("recovery"):
+        raise transactional_store.RecoveryRequiredError(current["recovery"]["message"])
     expected = _revision(data.get("revision"))
     data = _merge_partial_chat_store(current, data)
+    data = {**current, **data}
     data, _pruned, removed_images = _prune_consult_history(data)
     data, _plots_relinked = _relink_plot_chats(data)
     actual = _revision(current.get("revision"))
@@ -3464,6 +3774,41 @@ def _update_chat_store(data):
     saved = _write_chat_store(data, actual)
     _remove_unreferenced_consult_images(previous_consult_images, saved)
     return saved
+
+
+def _update_partial_chat_store(data, index):
+    if index.get("_recovery"):
+        raise transactional_store.RecoveryRequiredError(index["_recovery"]["message"])
+    incoming_ids = [item[0] for item in _normalized_chat_entries(data["chats"])]
+    deleted_messages = data.get("deletedMessageIds", {})
+    if not isinstance(deleted_messages, dict):
+        raise ValueError("deletedMessageIds must be an object keyed by chat id")
+    affected = set(incoming_ids) | set(deleted_messages)
+    selected_index, current_chats = transactional_store.read_selected_snapshot(CHAT_STORE_DIR, index, "chatFiles", "chat", affected)
+    if selected_index.get("_recovery"):
+        raise transactional_store.RecoveryRequiredError(selected_index["_recovery"]["message"])
+    current = {"version": 2, "revision": index["revision"], "activeChatId": index.get("activeChatId"), "chats": current_chats}
+    merged = _merge_partial_chat_store(current, {**data, "activeChatId": data.get("activeChatId", index.get("activeChatId"))})
+    deleted = {value.strip() for value in data.get("deletedChatIds", []) if value.strip()}
+    merged["chats"] = [chat for chat in merged["chats"] if chat["id"] not in deleted]
+    previous = {chat["id"]: chat for chat in current_chats}
+    changed = [chat for chat in merged["chats"] if chat != previous.get(chat["id"])]
+    existing_ids = {entry["id"] for entry in index["chatFiles"]}
+    active = merged["activeChatId"]
+    retained_ids = (existing_ids | set(incoming_ids)) - deleted
+    if active not in retained_ids:
+        active = next((entry["id"] for entry in index["chatFiles"] if entry["id"] in retained_ids), next(iter(sorted(retained_ids)), None))
+    if not changed and not deleted.intersection(existing_ids) and active == index.get("activeChatId"):
+        return {**current, "partial": True}
+    if _revision(data.get("revision")) != index["revision"]:
+        raise StoreConflictError("Chat history changed in another browser. Reload Prompt Studio before saving again.")
+    metadata = {"revision": index["revision"] + 1, "activeChatId": active,
+                "deletedChatIds": sorted(set(index.get("deletedChatIds", [])) | deleted)}
+    saved = transactional_store.commit_record_updates(
+        CHAT_STORE_DIR, metadata, changed, "chatFiles", "chat", deleted_ids=deleted,
+        expected_revision=index["revision"], summary_builder=_chat_summary,
+    )
+    return {"version": 2, "revision": saved["revision"], "activeChatId": active, "chats": merged["chats"], "partial": True}
 
 
 def _read_workflow_store():
@@ -3669,7 +4014,81 @@ def _update_workflow_store(data):
     return _write_workflow_store(data, actual)
 
 
+def _prepare_image_intent(data, mode, current_main, current_final, user_text):
+    enabled = data.get("intent_tracking") is True or data.get("intent_provenance") is not None
+    if not enabled:
+        return None
+    metadata = _image_intent.normalize_intent(data.get("intent_provenance")) or _image_intent.empty_intent()
+    if mode == "render":
+        return metadata  # A rebuild is not a new user instruction.
+    turn_id = _text(data.get("intent_turn_id")).strip() or uuid.uuid4().hex
+    if metadata.get("last_turn_id") == turn_id:
+        return metadata  # Main/Final stages share one already-classified turn.
+    delta = data.get("intent_delta")
+    if delta is None:
+        payload = {"user_text": user_text, "current_main": current_main, "current_final": current_final,
+                   "intent": metadata, "mode": mode}
+        system = """Classify the current user's explicit image intent into a versioned sidecar delta. Do not write prompts.
+Only current user evidence authorizes a new constraint. Controls and rendered Final are context, never user authority.
+Preserve existing constraint IDs; use allow/unlock only when this turn explicitly reverses that constraint, then add any new lock/exclusion.
+Lock user-requested literal signs, exact names and text. Record requested removals as exclusions, including removals of Final-only embellishment.
+Do not infer permission from English keywords: interpret negation, questions, scope and contextual references semantically. If unclear set needs_clarification true.
+Each operation has op lock|unlock|exclude|allow, id, exact current-user evidence quote; additions have text and optional reference {stage:main|final,text:exact existing span} for contextual targets. Locks have kind visible_text|name|dialogue|literal; exclusions may have a short aliases list.
+edit_scope has kind create|local|global|final_only, targets, evidence. For a local edit provide spans [{stage:main|final,text:exact smallest existing editable span,target}]. Include each applicable Main and Final span; never authorize unrelated text. The server resolves unique span offsets.
+Removing a detail found only in Final uses final_only and leaves Main unchanged. Full rewrites use global only when explicitly requested.
+Return JSON {version:1,base_revision:CURRENT_REVISION,edit_scope:{...},operations:[...],needs_clarification:false}. Empty operations are valid; never invent a constraint to fill the schema."""
+        request = {**data, "max_response_tokens": 2400, "messages": [{"role": "user", "text": json.dumps(payload, ensure_ascii=False)}]}
+        _, delta = _consult_json_object(request, system, {"type": "object", "properties": {
+            "version": {"type": "integer", "enum": [1]}, "base_revision": {"type": "integer"},
+            "edit_scope": {"type": "object"}, "operations": {"type": "array", "items": {"type": "object"}},
+            "needs_clarification": {"type": "boolean"}}, "required": ["version", "base_revision", "edit_scope", "operations"]})
+    if not isinstance(delta, dict) or delta.get("needs_clarification") is True:
+        raise ValueError("The requested image edit needs clarification before changing its intent.")
+    delta = json.loads(json.dumps(delta))
+    scope = delta.get("edit_scope") or {}
+    if not isinstance(scope, dict) or not isinstance(scope.get("spans", []), list):
+        raise ValueError("Invalid image edit scope")
+    for span in scope.get("spans", []):
+        if not isinstance(span, dict):
+            raise ValueError("Invalid image edit scope")
+        source = current_main if span.get("stage") == "main" else current_final
+        text = span.get("text")
+        if "start" not in span or "end" not in span:
+            if not isinstance(text, str) or not text or source.count(text) != 1:
+                raise ValueError("The image edit target is ambiguous; select a unique prompt span.")
+            span.update(start=source.index(text), end=source.index(text) + len(text))
+    return _image_intent.apply_user_intent_delta(metadata, delta, user_text=user_text, turn_id=turn_id,
+                                                current_main=current_main, current_final=current_final)
+
+
+def _resolve_image_intent_controls(data, metadata, additions):
+    resolved = _image_intent.resolve_final_sources(metadata, additions)
+    constraints = metadata["locked_literals"] + metadata["exclusions"]
+    accepted = resolved["additions"]
+    if constraints and accepted:
+        system = """Compare optional Final-prompt control additions against explicit user constraints.
+Constraints win over known-reference expansions, style, framing, secondary instructions and embellishment.
+Return only semantic conflicts, not mere differences in wording. User literal text must remain exact, and excluded content must not be reintroduced indirectly.
+Return JSON {conflicts:[{source_id:EXACT_ADDITION_ID,constraint_ids:[EXACT_CONSTRAINT_ID]}]}. An empty list means no conflict. Never create new constraints or modify Main."""
+        request = {**data, "max_response_tokens": 1200, "messages": [{"role": "user", "text": json.dumps({"constraints": constraints, "additions": accepted}, ensure_ascii=False)}]}
+        _, parsed = _consult_json_object(request, system, {"type": "object", "properties": {"conflicts": {"type": "array", "items": {"type": "object"}}}, "required": ["conflicts"]})
+        conflicts = parsed.get("conflicts")
+        if not isinstance(conflicts, list):
+            raise ValueError("Invalid image control conflict review")
+        additions_by_id = {item["id"]: dict(item) for item in accepted}
+        for conflict in conflicts:
+            if not isinstance(conflict, dict) or conflict.get("source_id") not in additions_by_id:
+                raise ValueError("Image control review referenced an unknown addition")
+            additions_by_id[conflict["source_id"]]["conflicts_with"] = conflict.get("constraint_ids")
+        reviewed = _image_intent.resolve_final_sources(metadata, list(additions_by_id.values()))
+        reviewed["warnings"] = resolved["warnings"] + reviewed["warnings"]
+        reviewed["intent"]["suppressed_sources"] = reviewed["warnings"]
+        return reviewed
+    return resolved
+
+
 def _revise(data):
+    intent_response = data.setdefault("_promptstudio_intent_result", {})
     data = _llamacpp_configured_generation_data(data)
     current_prompt = _text(data.get("current_prompt")).strip()
     current_final_prompt = _text(data.get("current_final_prompt")).strip()
@@ -3682,6 +4101,12 @@ def _revise(data):
         raise ValueError("mode must be create, create_main, render, revise, or revise_main")
     if mode in ("revise", "revise_main") and not current_prompt:
         raise ValueError("current_prompt is required")
+    if mode == "revise":
+        current_prompt = _remove_known_profile_wrappers(current_prompt)
+    intent_stage = "main" if mode in ("create_main", "revise_main") else "final"
+    intent_main = current_prompt if mode == "revise_main" else _text(data.get("current_main_prompt"))
+    intent_final = current_prompt if mode == "revise" else current_final_prompt
+    intent_metadata = _prepare_image_intent(data, mode, intent_main, intent_final, _text(data.get("intent_user_text")) or revision)
 
     profile = _get_profile(_text(data.get("model_profile"), "General Natural Language"))
     style_template = _get_style_template(_text(data.get("style_preset"), "None"))
@@ -3723,6 +4148,31 @@ def _revise(data):
     style_modifier = _text(data.get("style_modifier"))
     framing_modifier = _text(data.get("framing_modifier"))
     additional_instructions = _text(data.get("additional_instructions"))
+    if intent_metadata is not None and intent_stage == "final":
+        control_values = {"style_preset": ("style", _text(style_template.get("instruction"))),
+                          "style_modifier": ("style", style_modifier),
+                          "framing_preset": ("framing", _text(framing_template.get("instruction"))),
+                          "framing_modifier": ("framing", framing_modifier),
+                          "additional_instructions": ("secondary", additional_instructions),
+                          "secondary_instructions": ("secondary", _text(data.get("secondary_instructions")))}
+        additions = [{"id": key, "source": source, "text": text} for key, (source, text) in control_values.items() if text.strip()]
+        resolved = _resolve_image_intent_controls(data, intent_metadata, additions)
+        intent_metadata = resolved["intent"]
+        accepted_ids = {item["id"] for item in resolved["additions"]}
+        style_template = {**style_template, "instruction": control_values["style_preset"][1] if "style_preset" in accepted_ids else ""}
+        framing_template = {**framing_template, "instruction": control_values["framing_preset"][1] if "framing_preset" in accepted_ids else ""}
+        style_modifier = style_modifier if "style_modifier" in accepted_ids else ""
+        framing_modifier = framing_modifier if "framing_modifier" in accepted_ids else ""
+        additional_instructions = additional_instructions if "additional_instructions" in accepted_ids else ""
+        intent_response["suppressed_controls"] = [warning["source_id"] for warning in resolved["warnings"]]
+        intent_response["warnings"] = resolved["warnings"]
+        warnings = data.setdefault("_promptstudio_warnings", [])
+        if isinstance(warnings, list):
+            warnings.extend(warning["message"] for warning in resolved["warnings"])
+    if intent_metadata is not None:
+        intent_response["intent_provenance"] = intent_metadata
+        if intent_stage == "main" and (intent_metadata.get("edit_scope") or {}).get("kind") == "final_only":
+            return current_prompt
     default_max_response_tokens = int(
         profile.get("default_max_response_tokens") or DEFAULT_PROFILE["default_max_response_tokens"]
     )
@@ -3777,6 +4227,7 @@ def _revise(data):
             thinking_mode,
         )
 
+    prompt = _apply_image_intent_context(prompt, intent_metadata, stage=intent_stage, rebuild=mode == "render")
     if context_image:
         image_context_note = (
             MAIN_CREATION_IMAGE_CONTEXT_NOTE
@@ -3855,7 +4306,7 @@ def _revise(data):
 
     raw = generate(prompt, sampler_seed)
     revised = _strip_response(raw)
-    if mode in ("create", "render") and _needs_expansion_retry(revision, revised, embellishment_level, profile):
+    if mode in ("create", "render") and _needs_expansion_retry(revision, revised, embellishment_level, profile, target_output_length):
         retry_prompt = _build_expansion_retry_prompt(
             profile,
             style_template,
@@ -3869,16 +4320,36 @@ def _revise(data):
             additional_instructions,
             target_output_length=target_output_length,
         )
+        retry_prompt = _apply_image_intent_context(retry_prompt, intent_metadata, stage="final", rebuild=True)
         if context_image:
             retry_prompt = f"{retry_prompt}\n\n{REVISION_IMAGE_CONTEXT_NOTE}"
         retry = _strip_response(generate(retry_prompt, _retry_seed(sampler_seed)))
-        if retry and _density_count(retry, profile) > _density_count(revised, profile):
-            revised = retry
+        revised = _select_expansion_candidate(revised, retry, profile, target_output_length, embellishment_level)
     if not revised:
         raise RuntimeError(f"{_provider_display_name(llm_provider)} returned an empty prompt")
+    if intent_metadata is not None:
+        before = current_prompt
+        scoped_proposal = None
+        if mode in ("revise", "revise_main") and (intent_metadata.get("edit_scope") or {}).get("kind") == "local":
+            scoped_proposal = _image_intent.proposal_from_candidate(before, revised, intent_metadata, stage=intent_stage)
+        validation = _image_intent.validate_prompt_preservation(before, revised, intent_metadata, stage=intent_stage,
+                                                               proposal=scoped_proposal, enforce_scope=mode in ("revise", "revise_main"))
+        if not validation["valid"]:
+            details = "; ".join(f"{issue['code']}: {issue.get('text') or issue.get('message') or issue.get('source_id') or 'requested scope'}" for issue in validation["violations"])
+            raise ValueError("The prompt response did not preserve your intent; existing prompts were kept. " + details)
     if mode in ("create_main", "revise_main"):
         return revised
-    return _apply_profile_wrappers(revised, profile)
+    if mode in ("create", "render"):
+        warning = _output_policy_warning(revised, profile, target_output_length, embellishment_level)
+        warnings = data.setdefault("_promptstudio_warnings", [])
+        if warning and isinstance(warnings, list) and warning not in warnings:
+            warnings.append(warning)
+    wrapped = _apply_profile_wrappers(revised, profile)
+    if intent_metadata is not None:
+        validation = _image_intent.validate_prompt_preservation(revised, wrapped, intent_metadata, stage="final", enforce_scope=False)
+        if not validation["valid"]:
+            raise ValueError("The model profile wrapper conflicts with your image intent; existing prompts were kept.")
+    return wrapped
 
 
 def _consult_message_text(message):
@@ -4116,6 +4587,33 @@ def _generate_provider_messages(
 
 
 def shared_llm_generate(data, messages, images=None):
+    """Coordinate direct callers; stages inside shared_llm_run reuse its lane."""
+    if not isinstance(data, dict):
+        raise ValueError("shared LLM settings must be an object")
+    nested = _LLM_COORDINATOR.current_token() is not None
+    token = _LLM_COORDINATOR.current_token() or CancellationToken()
+    with _LLM_OPERATION_TOKENS_LOCK:
+        if _LLM_SHUTTING_DOWN:
+            raise asyncio.CancelledError("LLM queues are shutting down")
+        if not nested:
+            if len(_LLM_OPERATION_TOKENS) >= MAX_LLM_OPERATIONS:
+                raise LlmOverloadedError()
+            _LLM_OPERATION_TOKENS.add(token)
+
+    def generate():
+        if not nested:
+            _prepare_shared_gpu_for_llm(data)
+        return _shared_llm_generate_uncoordinated(data, messages, images)
+
+    try:
+        return _LLM_COORDINATOR.run(_llm_resources(data), generate, token=token)
+    finally:
+        if not nested:
+            with _LLM_OPERATION_TOKENS_LOCK:
+                _LLM_OPERATION_TOKENS.discard(token)
+
+
+def _shared_llm_generate_uncoordinated(data, messages, images=None):
     """Run a companion Studio request through Prompt Studio's provider implementation."""
     if not isinstance(data, dict):
         raise ValueError("shared LLM settings must be an object")
@@ -5087,6 +5585,8 @@ def _prompt_agent_retry_token_limit(value):
 
 
 def _prompt_agent(data, response_hook=None, cancellation_check=None):
+    started = time.monotonic()
+    model_calls = 0
     data = _llamacpp_configured_generation_data(data)
     phase = _text(data.get("phase")).strip().casefold()
     if phase not in {"compile", "architect", "evaluate"}:
@@ -5107,6 +5607,8 @@ def _prompt_agent(data, response_hook=None, cancellation_check=None):
         data.get("conversation_context", [])
     )
     image_records = _prompt_agent_images(data, phase)
+    if phase == "evaluate" and data.get("reference_comparison") is True and not _prompt_agent_images(data, "compile"):
+        raise ValueError("Reference comparison requires at least one attached reference image")
     target_score = _bounded_number(data.get("target_score"), 85, 1, 100)
     min_confidence = _bounded_number(data.get("min_confidence"), 0.7, 0, 1)
     rubric = None
@@ -5178,12 +5680,16 @@ def _prompt_agent(data, response_hook=None, cancellation_check=None):
     response_schema = PROMPT_AGENT_RESPONSE_SCHEMAS[phase]
 
     def generate_with_system(active_system_message, response_tokens=max_response_tokens):
+        nonlocal model_calls
+        if cancellation_check is not None and cancellation_check():
+            raise RuntimeError("Prompt Agent request was cancelled")
         messages = _prompt_agent_provider_messages(
             active_system_message,
             payload,
             image_records,
             provider,
         )
+        model_calls += 1
         if provider == "ollama":
             return _generate_ollama(
                 "",
@@ -5332,19 +5838,39 @@ def _prompt_agent(data, response_hook=None, cancellation_check=None):
             raise RuntimeError(
                 f"Prompt Agent could not ground the request in the reference image: {grounding_error}"
             )
+    def metrics():
+        return {"version": 1, "model_calls": model_calls, "elapsed_ms": round((time.monotonic()-started)*1000),
+                "reference_comparison": phase == "evaluate" and data.get("reference_comparison") is True,
+                "calibration_measured": False}
+
     if phase == "compile":
-        return {"rubric": normalized}
+        return {"rubric": normalized, "metrics": metrics()}
     if phase == "architect":
-        return {"candidate": normalized}
-    return {
-        "evaluation": _normalize_prompt_agent_evaluation(
-            parsed,
-            rubric,
-            target_score,
-            min_confidence,
+        return {"candidate": normalized, "metrics": metrics()}
+    evaluation = enforce_visual_evidence(_normalize_prompt_agent_evaluation(
+        parsed, rubric, target_score, min_confidence, require_structured_defects=True,
+    ), rubric)
+    if data.get("reference_comparison") is True:
+        references = _prompt_agent_images(data, "compile")
+        if not references:
+            raise ValueError("Reference comparison requires at least one attached reference image")
+        image_records = references + image_records
+        if len(image_records) > MAX_PROMPT_AGENT_IMAGES:
+            raise ValueError("Reference comparison exceeds the attached image limit")
+        comparison_system = PROMPT_AGENT_JUDGE_SYSTEM_MESSAGE.replace(
+            "Only generated candidate images are attached to this request. Reference pixels were already converted into the rubric's concrete reference notes and criteria; do not imagine, reconstruct, or compare against an unseen image.",
+            "Labeled Reference images and Generated result images are attached in the declared order. Compare the generated pixels directly against the attached reference pixels only for the reference purposes and rubric criteria. Report concrete evidence from both labeled images. Never award a result for a detail seen only in a reference. Uncertain identity, style or composition fidelity must remain uncertain, not an invented match.",
+        )
+        comparison = _normalize_prompt_agent_evaluation(
+            generate_json(comparison_system), rubric, target_score, min_confidence,
             require_structured_defects=True,
         )
-    }
+        evaluation = combine_reference_assessment(evaluation, comparison, rubric)
+        evaluation["reference_comparison"].update(reference_count=len(references), generated_count=len(image_records)-len(references))
+    if cancellation_check is not None and cancellation_check():
+        raise RuntimeError("Prompt Agent request was cancelled")
+    evaluation["metrics"] = metrics()
+    return {"evaluation": evaluation, "metrics": evaluation["metrics"]}
 
 
 def _vision_capability(data):
@@ -5450,23 +5976,36 @@ async def _read_uploaded_image(request):
         raise ValueError("The dropped image exceeds the 20 MB upload limit")
     reader = await request.multipart()
     image_data = None
+    total_bytes = 0
+    part_count = 0
     while True:
         field = await reader.next()
         if field is None:
             break
-        if field.name != "image":
-            continue
-        if image_data is not None:
+        part_count += 1
+        if part_count > 32:
+            raise ValueError("Image upload contains too many multipart fields")
+        total_bytes += sum(len(str(key).encode("utf-8"))+len(str(value).encode("utf-8"))+4 for key,value in getattr(field, "headers", {}).items())
+        if total_bytes > MAX_IMAGE_UPLOAD_REQUEST_BYTES:
+            raise ValueError("Image upload exceeds the aggregate request limit")
+        is_image = field.name == "image"
+        if is_image and image_data is not None:
             raise ValueError("Upload exactly one image")
         buffer = bytearray()
         while True:
             chunk = await field.read_chunk(size=64 * 1024)
             if not chunk:
                 break
+            total_bytes += len(chunk)
+            if total_bytes > MAX_IMAGE_UPLOAD_REQUEST_BYTES:
+                raise ValueError("Image upload exceeds the aggregate request limit")
+            if not is_image:
+                continue
             buffer.extend(chunk)
             if len(buffer) > MAX_IMAGE_UPLOAD_BYTES:
                 raise ValueError("The dropped image exceeds the 20 MB upload limit")
-        image_data = bytes(buffer)
+        if is_image:
+            image_data = bytes(buffer)
     if image_data is None:
         raise ValueError("The upload did not contain an image")
     return image_data
@@ -5641,7 +6180,7 @@ async def prompt_studio_ollama_models(request):
     except (ValueError, json.JSONDecodeError) as exc:
         return web.json_response({"error": str(exc)}, status=400)
     except Exception as exc:
-        return web.json_response({"error": str(exc)}, status=502)
+        return _llm_error_response(exc)
 
 
 @PromptServer.instance.routes.post("/promptstudio/prompt-studio/import-image")
@@ -5718,7 +6257,7 @@ async def prompt_studio_caption_image(request):
     except (ValueError, json.JSONDecodeError, OSError) as exc:
         return web.json_response({"error": str(exc)}, status=400)
     except Exception as exc:
-        return web.json_response({"error": str(exc)}, status=502)
+        return _llm_error_response(exc)
 
 
 @PromptServer.instance.routes.post("/promptstudio/prompt-studio/image-size")
@@ -5741,35 +6280,25 @@ async def prompt_studio_image_size(request):
 async def prompt_studio_get_chats(request):
     try:
         async with CHAT_STORE_LOCK:
-            data = await asyncio.to_thread(_read_chat_store)
-        requested_revision = request.query.get("revision")
-        if requested_revision is not None and _revision(requested_revision) == data["revision"]:
+            data, status = await asyncio.to_thread(_read_chat_query, request.query)
+        if status == 204:
             return web.Response(status=204, headers={"X-PromptStudio-Revision": str(data["revision"])})
-        requested_limit = request.query.get("limit")
-        if requested_limit is not None:
-            try:
-                limit = int(requested_limit)
-                offset = int(request.query.get("offset", "0"))
-            except (TypeError, ValueError) as exc:
-                raise ValueError("Chat page offset and limit must be integers") from exc
-            before = None
-            cursor_values = [
-                request.query.get("before_activity"),
-                request.query.get("before_created"),
-                request.query.get("before_id"),
-            ]
-            if any(value is not None for value in cursor_values):
-                if any(value is None for value in cursor_values):
-                    raise ValueError("Chat page cursor is incomplete")
-                before = cursor_values
-            data = _chat_store_page(
-                data,
-                offset=offset,
-                limit=limit,
-                include_active=request.query.get("include_active") == "1",
-                before=before,
-            )
-        return web.json_response(data)
+        return web.json_response(data, status=status)
+    except ValueError as exc:
+        return web.json_response({"error": str(exc)}, status=400)
+    except Exception as exc:
+        return web.json_response({"error": str(exc)}, status=500)
+
+
+@PromptServer.instance.routes.post("/promptstudio/prompt-studio/chats/maintenance")
+async def prompt_studio_maintain_chats(request):
+    try:
+        data = await request.json()
+        if not isinstance(data, dict):
+            raise ValueError("Maintenance request must be an object")
+        async with CHAT_STORE_LOCK:
+            result = await asyncio.to_thread(_maintain_chat_store, data.get("offset", 0), data.get("limit", 100))
+        return web.json_response(result)
     except ValueError as exc:
         return web.json_response({"error": str(exc)}, status=400)
     except Exception as exc:
@@ -5892,15 +6421,16 @@ async def prompt_studio_revise(request):
             raise ValueError("JSON body must be an object")
         warnings = []
         data["_promptstudio_warnings"] = warnings
+        data["_promptstudio_intent_result"] = {}
         revised = await _run_llm_request(data, LLM_PRIORITY_STUDIO, _revise)
-        response = {"prompt": revised}
+        response = {"prompt": revised, **data["_promptstudio_intent_result"]}
         if warnings:
             response["warning"] = " ".join(warnings)
         return web.json_response(response)
     except ValueError as exc:
         return web.json_response({"error": str(exc)}, status=400)
     except Exception as exc:
-        return web.json_response({"error": str(exc)}, status=502)
+        return _llm_error_response(exc)
 
 
 @PromptServer.instance.routes.post("/promptstudio/prompt-studio/route-turn")
@@ -5916,7 +6446,7 @@ async def prompt_studio_route_turn(request):
     except (ValueError, json.JSONDecodeError, OSError) as exc:
         return web.json_response({"error": str(exc)}, status=400)
     except Exception as exc:
-        return web.json_response({"error": str(exc)}, status=502)
+        return _llm_error_response(exc)
 
 
 @PromptServer.instance.routes.post("/promptstudio/prompt-studio/llamacpp-models")
@@ -5933,7 +6463,7 @@ async def prompt_studio_llamacpp_models(request):
     except (ValueError, json.JSONDecodeError) as exc:
         return web.json_response({"error": str(exc)}, status=400)
     except Exception as exc:
-        return web.json_response({"error": str(exc)}, status=502)
+        return _llm_error_response(exc)
 
 
 @PromptServer.instance.routes.post("/promptstudio/prompt-studio/discuss")
@@ -5949,7 +6479,7 @@ async def prompt_studio_discuss(request):
     except (ValueError, json.JSONDecodeError, OSError) as exc:
         return web.json_response({"error": str(exc)}, status=400)
     except Exception as exc:
-        return web.json_response({"error": str(exc)}, status=502)
+        return _llm_error_response(exc)
 
 
 @PromptServer.instance.routes.post("/promptstudio/prompt-studio/chat")
@@ -5972,15 +6502,19 @@ async def prompt_studio_chat(request):
     except (ValueError, json.JSONDecodeError, OSError) as exc:
         return web.json_response({"error": str(exc)}, status=400)
     except Exception as exc:
-        return web.json_response({"error": str(exc)}, status=502)
+        return _llm_error_response(exc)
 
 
 @PromptServer.instance.routes.get("/promptstudio/prompt-studio/chat/{job_id}")
 async def prompt_studio_chat_status(request):
-    job = CONSULT_JOBS.get(request.match_info.get("job_id", ""))
+    job_id = request.match_info.get("job_id", "")
+    job = CONSULT_JOBS.get(job_id)
     if job is None:
+        recovered = shared_job_status(job_id)
+        if recovered:
+            return web.json_response(recovered)
         return web.json_response({"error": "Consultation job was not found"}, status=404)
-    response = {"status": job["status"]}
+    response = {"status": job["status"], "job": shared_job_ledger().get(job_id)}
     if job["status"] == "running":
         provider = _text(job["provider_settings"].get("llm_provider"), "koboldcpp").strip().casefold()
         try:
@@ -6039,7 +6573,7 @@ async def prompt_studio_ollama_unload(request):
     except (ValueError, json.JSONDecodeError, OSError) as exc:
         return web.json_response({"error": str(exc)}, status=400)
     except Exception as exc:
-        return web.json_response({"error": str(exc)}, status=502)
+        return _llm_error_response(exc)
 
 
 @PromptServer.instance.routes.post("/promptstudio/prompt-studio/llm/release")
@@ -6060,7 +6594,7 @@ async def prompt_studio_llm_release(request):
     except (ValueError, json.JSONDecodeError, OSError) as exc:
         return web.json_response({"error": str(exc)}, status=400)
     except Exception as exc:
-        return web.json_response({"error": str(exc)}, status=502)
+        return _llm_error_response(exc)
 
 
 @PromptServer.instance.routes.post("/promptstudio/prompt-studio/llm/handoff-complete")
@@ -6091,7 +6625,7 @@ async def prompt_studio_kobold_status(request):
     except (ValueError, json.JSONDecodeError) as exc:
         return web.json_response({"error": str(exc)}, status=400)
     except Exception as exc:
-        return web.json_response({"error": str(exc)}, status=502)
+        return _llm_error_response(exc)
 
 
 @PromptServer.instance.routes.post("/promptstudio/prompt-studio/llm/status")
@@ -6106,7 +6640,7 @@ async def prompt_studio_llm_status(request):
     except (ValueError, json.JSONDecodeError) as exc:
         return web.json_response({"error": str(exc)}, status=400)
     except Exception as exc:
-        return web.json_response({"error": str(exc)}, status=502)
+        return _llm_error_response(exc)
 
 
 @PromptServer.instance.routes.post("/promptstudio/prompt-studio/kobold/abort")
@@ -6121,7 +6655,7 @@ async def prompt_studio_kobold_abort(request):
     except (ValueError, json.JSONDecodeError) as exc:
         return web.json_response({"error": str(exc)}, status=400)
     except Exception as exc:
-        return web.json_response({"error": str(exc)}, status=502)
+        return _llm_error_response(exc)
 
 
 @PromptServer.instance.routes.post("/promptstudio/prompt-studio/agent")
@@ -6138,13 +6672,19 @@ async def prompt_studio_agent(request):
             with PROMPT_AGENT_REQUESTS_LOCK:
                 status = PROMPT_AGENT_REQUESTS.get(request_id, {}).get("status", "queued")
             return web.json_response({"request_id": request_id, "status": status}, status=202)
-        _register_prompt_agent_request(request_id, data)
+        shared_job_ledger().start(request_id, kind="prompt_agent", data=data)
+        try:
+            _register_prompt_agent_request(request_id, data)
+        except Exception as exc:
+            shared_job_ledger().update(request_id, state="failed", error=exc)
+            raise
         try:
             response = await asyncio.wait_for(
                 _run_llm_request(
                     data,
                     LLM_PRIORITY_STUDIO,
                     lambda value: _execute_prompt_agent_request(request_id, value),
+                    job_context={"studio": "image", "job_id": request_id},
                 ),
                 timeout=PROMPT_AGENT_PHASE_DEADLINE_SECONDS,
             )
@@ -6167,7 +6707,7 @@ async def prompt_studio_agent(request):
     except (ValueError, json.JSONDecodeError, OSError) as exc:
         return web.json_response({"error": str(exc)}, status=400)
     except Exception as exc:
-        return web.json_response({"error": str(exc)}, status=502)
+        return _llm_error_response(exc)
 
 
 @PromptServer.instance.routes.post("/promptstudio/prompt-studio/agent/cancel")
@@ -6182,7 +6722,7 @@ async def prompt_studio_agent_cancel(request):
     except (ValueError, json.JSONDecodeError) as exc:
         return web.json_response({"error": str(exc)}, status=400)
     except Exception as exc:
-        return web.json_response({"error": str(exc)}, status=502)
+        return _llm_error_response(exc)
 
 
 @PromptServer.instance.routes.post("/promptstudio/prompt-studio/llm/abort")
@@ -6197,7 +6737,7 @@ async def prompt_studio_llm_abort(request):
     except (ValueError, json.JSONDecodeError) as exc:
         return web.json_response({"error": str(exc)}, status=400)
     except Exception as exc:
-        return web.json_response({"error": str(exc)}, status=502)
+        return _llm_error_response(exc)
 
 
 async def _prompt_studio_llamacpp_process_action(request, action):
@@ -6219,7 +6759,7 @@ async def _prompt_studio_llamacpp_process_action(request, action):
     except (ValueError, json.JSONDecodeError) as exc:
         return web.json_response({"error": str(exc)}, status=400)
     except Exception as exc:
-        return web.json_response({"error": str(exc)}, status=502)
+        return _llm_error_response(exc)
 
 
 @PromptServer.instance.routes.post("/promptstudio/prompt-studio/llamacpp/server/start")
@@ -6253,7 +6793,7 @@ async def prompt_studio_llamacpp_config_builder(request):
     except (ValueError, json.JSONDecodeError) as exc:
         return web.json_response({"error": str(exc)}, status=400)
     except Exception as exc:
-        return web.json_response({"error": str(exc)}, status=502)
+        return _llm_error_response(exc)
 
 
 @PromptServer.instance.routes.post("/promptstudio/prompt-studio/llamacpp/config-profiles")
@@ -6284,7 +6824,7 @@ async def prompt_studio_llamacpp_config_profiles(request):
     except (ValueError, json.JSONDecodeError) as exc:
         return web.json_response({"error": str(exc)}, status=400)
     except Exception as exc:
-        return web.json_response({"error": str(exc)}, status=502)
+        return _llm_error_response(exc)
 
 
 @PromptServer.instance.routes.get("/promptstudio/prompt-studio/llamacpp/autostart")
@@ -6295,7 +6835,7 @@ async def prompt_studio_llamacpp_autostart_status(request):
     except PermissionError as exc:
         return web.json_response({"error": str(exc)}, status=403)
     except Exception as exc:
-        return web.json_response({"error": str(exc)}, status=502)
+        return _llm_error_response(exc)
 
 
 @PromptServer.instance.routes.post("/promptstudio/prompt-studio/llamacpp/autostart")
@@ -6313,7 +6853,7 @@ async def prompt_studio_llamacpp_autostart_save(request):
     except (ValueError, json.JSONDecodeError) as exc:
         return web.json_response({"error": str(exc)}, status=400)
     except Exception as exc:
-        return web.json_response({"error": str(exc)}, status=502)
+        return _llm_error_response(exc)
 
 
 @PromptServer.instance.routes.post("/promptstudio/prompt-studio/llamacpp/pick-file")
@@ -6336,7 +6876,7 @@ async def prompt_studio_llamacpp_pick_file(request):
     except (ValueError, json.JSONDecodeError) as exc:
         return web.json_response({"error": str(exc)}, status=400)
     except Exception as exc:
-        return web.json_response({"error": str(exc)}, status=502)
+        return _llm_error_response(exc)
 
 
 @PromptServer.instance.routes.get("/promptstudio/prompt-studio/agent/{request_id}")
@@ -6345,8 +6885,11 @@ async def prompt_studio_agent_status(request):
     with PROMPT_AGENT_REQUESTS_LOCK:
         record = PROMPT_AGENT_REQUESTS.get(request_id)
         if record is None:
+            recovered = shared_job_status(request_id)
+            if recovered:
+                return web.json_response(recovered)
             return web.json_response({"error": "Prompt Agent request was not found"}, status=404)
-        response = {"status": record.get("status", "queued")}
+        response = {"status": record.get("status", "queued"), "job": shared_job_ledger().get(request_id)}
         if response["status"] == "complete":
             response["result"] = record.get("result")
         elif response["status"] in {"failed", "cancelled"}:
@@ -6379,5 +6922,56 @@ def _install_llamacpp_recovery_hook():
         on_startup.append(_recover_llamacpp_process_on_startup)
 
 
+def _install_llm_shutdown_hook():
+    on_shutdown = getattr(PromptServer.instance.app, "on_shutdown", None)
+    if on_shutdown is not None:
+        on_shutdown.append(_shutdown_llm_queues)
+
+
+_LLM_COORDINATOR.native_prepare = lambda data: _prepare_shared_gpu_for_llm(data, native_node=True)
+
 _install_lan_access_middleware()
 _install_llamacpp_recovery_hook()
+_install_llm_shutdown_hook()
+
+# Shared extension boundary; applies to both products before route error handlers.
+_install_api_boundary(PromptServer.instance.app, {
+    "/promptstudio/prompt-studio/mutation-config": MAX_MUTATION_CONFIG_BYTES,
+    "/promptstudio/prompt-studio/ollama-models": MAX_LLM_CONFIG_REQUEST_BYTES,
+    "/promptstudio/prompt-studio/delete-image-files": MAX_IMAGE_REFERENCE_BYTES,
+    "/promptstudio/prompt-studio/vision-capability": MAX_LLM_CONFIG_REQUEST_BYTES,
+    "/promptstudio/prompt-studio/caption-image": MAX_VISION_REQUEST_BYTES,
+    "/promptstudio/prompt-studio/image-size": MAX_IMAGE_REFERENCE_BYTES,
+    "/promptstudio/prompt-studio/workflows": MAX_WORKFLOW_STORE_BYTES,
+    "/promptstudio/prompt-studio/plots/{plot_id}": MAX_PLOT_BYTES,
+    "/promptstudio/prompt-studio/revise": MAX_REVISE_REQUEST_BYTES,
+    "/promptstudio/prompt-studio/route-turn": MAX_CONSULT_REQUEST_BYTES,
+    "/promptstudio/prompt-studio/llamacpp-models": MAX_LLM_CONFIG_REQUEST_BYTES,
+    "/promptstudio/prompt-studio/discuss": MAX_CONSULT_REQUEST_BYTES,
+    "/promptstudio/prompt-studio/chat": MAX_CONSULT_REQUEST_BYTES,
+    "/promptstudio/prompt-studio/ollama/unload": MAX_LLM_CONFIG_REQUEST_BYTES,
+    "/promptstudio/prompt-studio/llm/release": MAX_LLM_CONFIG_REQUEST_BYTES,
+    "/promptstudio/prompt-studio/llm/handoff-complete": MAX_LLM_CONFIG_REQUEST_BYTES,
+    "/promptstudio/prompt-studio/kobold/status": MAX_LLM_CONFIG_REQUEST_BYTES,
+    "/promptstudio/prompt-studio/llm/status": MAX_LLM_CONFIG_REQUEST_BYTES,
+    "/promptstudio/prompt-studio/kobold/abort": MAX_LLM_CONFIG_REQUEST_BYTES,
+    "/promptstudio/prompt-studio/agent": MAX_PROMPT_AGENT_REQUEST_BYTES,
+    "/promptstudio/prompt-studio/agent/cancel": MAX_LLM_CONFIG_REQUEST_BYTES,
+    "/promptstudio/prompt-studio/llm/abort": MAX_LLM_CONFIG_REQUEST_BYTES,
+    "/promptstudio/prompt-studio/llamacpp/config-builder": MAX_LLM_CONFIG_REQUEST_BYTES,
+    "/promptstudio/prompt-studio/llamacpp/config-profiles": MAX_LLM_CONFIG_REQUEST_BYTES,
+    "/promptstudio/prompt-studio/llamacpp/autostart": MAX_LLM_CONFIG_REQUEST_BYTES,
+    "/promptstudio/prompt-studio/llamacpp/pick-file": MAX_LLM_CONFIG_REQUEST_BYTES,
+    "/promptstudio/lan/login": LAN_LOGIN_MAX_BYTES,
+    "/promptstudio/prompt-studio/chats": 100 * 1024 * 1024,
+    "/promptstudio-video/projects": 100 * 1024 * 1024,
+    "/promptstudio-video/workflows": 100 * 1024 * 1024,
+    "/promptstudio-video/document/validate": 2 * 1024 * 1024,
+    "/promptstudio-video/document/compile": 2 * 1024 * 1024,
+    "/promptstudio-video/director/chat": 2 * 1024 * 1024,
+    "/promptstudio-video/director/preview": 2 * 1024 * 1024,
+    "/promptstudio-video/continuations/plan": 2 * 1024 * 1024,
+    "/promptstudio-video/continuations/prepare": 256 * 1024,
+    "/promptstudio-video/continuations/assemble": 256 * 1024,
+    "/promptstudio-video/audio-mix": 2 * 1024 * 1024,
+})

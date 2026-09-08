@@ -4,23 +4,29 @@ import {
   LLM_PROFILE_PRESETS,
   LLM_PROFILE_STORAGE_KEY,
   LLM_PROFILE_STORAGE_VERSION,
-  LLM_THINKING_MODE_OPTIONS,
   QWEN38_27B_PROFILE_DEFAULTS,
 } from "../core/constants.js";
+import { THINKING_MODES as LLM_THINKING_MODE_OPTIONS } from "../core/wire-contracts.js";
 
+/** @param {unknown} value
+ * @param {(Partial<Omit<import('../core/wire-contracts.js').LlmProfile, 'thinking_mode'|'thinking_modes'>> & {thinking_mode?:string, thinking_modes?:readonly string[]}) | null} fallback
+ * @returns {import('../core/wire-contracts.js').LlmProfile}
+ */
 export function normalizeLlmProfile(value, fallback = null) {
-  const source = value && typeof value === "object" && !Array.isArray(value) ? value : {};
+  const source = /** @type {Partial<import('../core/wire-contracts.js').LlmProfile>} */ (value && typeof value === "object" && !Array.isArray(value) ? value : {});
   const presetFallback = LLM_PROFILE_PRESETS.find((profile) => profile.id === source.id) || null;
   const thinkingPresetFallback = source.id === QWEN38_27B_PROFILE_DEFAULTS.id
     ? QWEN38_27B_PROFILE_DEFAULTS
     : null;
   const defaults = fallback || presetFallback || LLM_PROFILE_DEFAULTS;
+  /** @param {import('../core/wire-contracts.js').ProfileNumberKey} key @param {number} minimum @param {number} maximum @param {boolean} integer */
   const number = (key, minimum, maximum, integer = false) => {
     const requested = Number(source[key]);
     const fallbackValue = Number(defaults[key]);
     const bounded = Math.max(minimum, Math.min(maximum, Number.isFinite(requested) ? requested : fallbackValue));
     return integer ? Math.round(bounded) : bounded;
   };
+  /** @param {import('../core/wire-contracts.js').ProfileNumberKey} key @param {import('../core/wire-contracts.js').ProfileNumberKey} standardKey @param {number} minimum @param {number} maximum @param {boolean} integer */
   const thinkingNumber = (key, standardKey, minimum, maximum, integer = false) => {
     const requested = Number(source[key]);
     const presetValue = Number(thinkingPresetFallback?.[key]);
@@ -40,8 +46,9 @@ export function normalizeLlmProfile(value, fallback = null) {
     : fallbackThinkingModes;
   const thinkingModes = [...new Set(requestedThinkingModes.map((requestedMode) => (
     LLM_THINKING_MODE_OPTIONS.find((option) => option.toLowerCase() === String(requestedMode).trim().toLowerCase())
-  )).filter(Boolean))];
-  if (!thinkingModes.length) thinkingModes.push(...fallbackThinkingModes);
+  )).filter(mode => mode !== undefined))];
+  if (!thinkingModes.length) thinkingModes.push(...LLM_THINKING_MODE_OPTIONS.filter(mode => fallbackThinkingModes.includes(mode)));
+  if (!thinkingModes.length) thinkingModes.push("Disabled");
   const requestedThinkingMode = LLM_THINKING_MODE_OPTIONS.find((option) => (
     option.toLowerCase() === String(source.thinking_mode ?? defaults.thinking_mode).trim().toLowerCase()
   ));
@@ -49,7 +56,7 @@ export function normalizeLlmProfile(value, fallback = null) {
     id: String(source.id || defaults.id || LLM_PROFILE_DEFAULTS.id),
     name: String(source.name || defaults.name || LLM_PROFILE_DEFAULTS.name).trim().slice(0, 80)
       || LLM_PROFILE_DEFAULTS.name,
-    thinking_mode: thinkingModes.includes(requestedThinkingMode) ? requestedThinkingMode : thinkingModes[0],
+    thinking_mode: requestedThinkingMode && thinkingModes.includes(requestedThinkingMode) ? requestedThinkingMode : thinkingModes[0],
     thinking_modes: thinkingModes,
     max_response_tokens: number("max_response_tokens", 0, 8192, true),
     llamacpp_reasoning_budget_tokens: number("llamacpp_reasoning_budget_tokens", 0, 262144, true),

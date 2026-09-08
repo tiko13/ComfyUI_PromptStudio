@@ -5,6 +5,7 @@ import {
 } from "../core/constants.js";
 import { cleanModelName } from "./model-name.js";
 import { normalizePromptStudioInputDescriptors } from "./prompt-studio-input.js";
+import { normalizeWorkflowCacheIdentity } from "./workflow-adapter.js";
 
 export function workflowNameFromPath(path) {
   const filename = String(path || "").replaceAll("\\", "/").split("/").pop() || "";
@@ -20,7 +21,7 @@ export function isPromptStudioWorkflowPath(path) {
 }
 
 export function normalizeWorkflowProfile(profile) {
-  const snapshot = profile?.snapshot && typeof profile.snapshot === "object" ? profile.snapshot : null;
+  const snapshot = profile?.snapshot && typeof profile.snapshot === "object" ? structuredClone(profile.snapshot) : null;
   const path = String(profile?.path || profile?.id || "").replaceAll("\\", "/");
   const snapshotLoraNodes = Object.entries(snapshot?.output || {})
     .filter(([, node]) => node?.class_type === LORA_LOADER_TYPE)
@@ -93,6 +94,7 @@ export function normalizeWorkflowProfile(profile) {
     resultNodeIds: Array.isArray(profile?.resultNodeIds) ? profile.resultNodeIds.map(String) : [],
     resultFields: ["images", "gifs"],
     snapshot,
+    cacheIdentity: normalizeWorkflowCacheIdentity(profile?.cacheIdentity),
     updatedAt: Number(profile?.updatedAt || Date.now()),
     sourceModified: Number(profile?.sourceModified || 0),
     stale: Boolean(profile?.stale),

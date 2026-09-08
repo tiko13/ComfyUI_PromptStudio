@@ -150,6 +150,7 @@ export function normalizePromptAgentEvaluation(value) {
           status: ["pass", "partial", "fail"].includes(item?.status) ? item.status : "fail",
           score: Math.max(0, Math.min(100, Number(item?.score) || 0)),
           evidence: String(item?.evidence || "").slice(0, 2000),
+          referenceEvidence: String(item?.reference_evidence ?? item?.referenceEvidence ?? "").slice(0, 2000),
         })).filter((item) => item.id)
       : [],
     forbidden: Array.isArray(value.forbidden)
@@ -160,6 +161,7 @@ export function normalizePromptAgentEvaluation(value) {
             ? item.status
             : "uncertain",
           evidence: String(item?.evidence || "").slice(0, 2000),
+          referenceEvidence: String(item?.reference_evidence ?? item?.referenceEvidence ?? "").slice(0, 2000),
         })).filter((item) => item.outcome)
       : [],
     defects: Array.isArray(value.defects)
@@ -167,6 +169,8 @@ export function normalizePromptAgentEvaluation(value) {
       : [],
     nextRevision: String(value.next_revision ?? value.nextRevision ?? "").slice(0, 4000),
     summary: String(value.summary || "").slice(0, 4000),
+    referenceComparison: value.reference_comparison || value.referenceComparison || null,
+    metrics: normalizePromptAgentMetrics(value.metrics),
   };
 }
 
@@ -247,13 +251,13 @@ export function normalizeConsultAgent(value) {
       instruction: String(value.initialFraming?.instruction || "").slice(0, MAX_CONSULT_EXPERIMENT_GUIDANCE_CHARS),
     },
     feedback: Array.isArray(value.feedback)
-      ? value.feedback.slice(-20).map((item) => ({
+      ? value.feedback.map((item) => ({
           text: String(item?.text || "").trim().slice(0, 4000),
           createdAt: Number.isFinite(Number(item?.createdAt)) ? Number(item.createdAt) : updatedAt,
         })).filter((item) => item.text)
       : [],
     iterations: Array.isArray(value.iterations)
-      ? value.iterations.map(normalizePromptAgentIteration).filter(Boolean).slice(-PROMPT_AGENT_MAX_SAVED_ITERATIONS)
+      ? value.iterations.map(normalizePromptAgentIteration).filter(Boolean)
       : [],
     currentIterationId: String(value.currentIterationId || ""),
     bestIterationId: String(value.bestIterationId || ""),
@@ -265,6 +269,8 @@ export function normalizeConsultAgent(value) {
     targetScore: Math.max(1, Math.min(100, Number(value.targetScore) || PROMPT_AGENT_TARGET_SCORE)),
     minConfidence: Math.max(0, Math.min(1, Number(value.minConfidence) || PROMPT_AGENT_MIN_CONFIDENCE)),
     validationRequired: value.validationRequired !== false,
+    referenceComparison: value.referenceComparison === true,
+    phaseMetrics: Array.isArray(value.phaseMetrics) ? value.phaseMetrics.map(item=>({...normalizePromptAgentMetrics(item),requestId:String(item?.requestId||''),phase:String(item?.phase||'')})).filter(item=>item.version===1&&item.requestId) : [],
     error: String(value.error || "").slice(0, 4000),
     startedAt,
     updatedAt,
@@ -339,8 +345,7 @@ export function retainedConsultMessages(messages, now = Date.now()) {
     const timestampMs = consultTimestampMs(message.createdAt);
     return Number.isFinite(timestampMs) && timestampMs >= cutoff;
   });
-  while (retained[0]?.role === "assistant") retained.shift();
-  return retained.slice(-100);
+  return retained;
 }
 
 export function consultTimestampMs(value) {
@@ -353,4 +358,37 @@ export function consultMessagesAfterClear(messages, clearedAt) {
   const cutoff = consultTimestampMs(clearedAt);
   if (!Number.isFinite(cutoff) || cutoff <= 0) return messages;
   return messages.filter((message) => consultTimestampMs(message.createdAt) >= cutoff);
+}
+
+export function normalizePromptAgentMetrics(value) {
+  if(!value||value.version!==1)return null;
+  const calls=Number(value.model_calls),elapsed=Number(value.elapsed_ms);
+  if(!Number.isInteger(calls)||calls<0||!Number.isFinite(elapsed)||elapsed<0)return null;
+  return {version:1,model_calls:calls,elapsed_ms:elapsed,reference_comparison:value.reference_comparison===true,calibration_measured:value.calibration_measured===true};
+}
+
+/** Stable candidate IDs resolve exact ties independently of array/display order. */
+export function rankPromptAgentIterations(iterations) {
+  return [...iterations].filter(item=>item.evaluation).sort((left,right)=>
+    Number(right.evaluation.pass===true)-Number(left.evaluation.pass===true)
+    || Number(right.evaluation.score||0)-Number(left.evaluation.score||0)
+    || Number(right.evaluation.confidence||0)-Number(left.evaluation.confidence||0)
+    || String(left.id).localeCompare(String(right.id)));
+}
+
+export function repeatedPromptAgentDefects(iterations,count=3) {
+  const recent=iterations.filter(item=>item.evaluation&&!item.validation).slice(-count);
+  if(recent.length<count)return [];
+  const key=value=>String(value).trim().toLocaleLowerCase().replace(/\s+/g,' ');
+  const remaining=recent.slice(1).map(item=>new Set((item.evaluation.defects||[]).map(key)));
+  return (recent[0].evaluation.defects||[]).filter(value=>remaining.every(set=>set.has(key(value))));
+}
+
+export function explainPromptAgentWinner(iterations) {
+  const [best,next]=rankPromptAgentIterations(iterations);
+  if(!best)return 'No candidate has a visual evaluation yet.';
+  const evaluation=best.evaluation;
+  const basis=evaluation.pass?'passed the required visual checks':'is the highest-ranked available result; required checks have not all passed';
+  const tie=next&&evaluation.pass===next.evaluation.pass&&evaluation.score===next.evaluation.score&&evaluation.confidence===next.evaluation.confidence?' Exact ties use the stable candidate ID.':'';
+  return `Candidate ${best.index??best.id} ${basis}, with score ${Math.round(evaluation.score)} and confidence ${Math.round(evaluation.confidence*100)}%.${tie}`;
 }

@@ -1,22 +1,11 @@
+@import url("./studio-tokens.css");
+
 #promptstudio-prompt-studio,
 body.promptstudio-popout-body {
   color-scheme: dark;
 }
 
 #promptstudio-prompt-studio {
-  --ps-bg: #0c0d12;
-  --ps-panel: #13151d;
-  --ps-panel-strong: #191c27;
-  --ps-panel-soft: #10121a;
-  --ps-border: rgba(255, 255, 255, 0.09);
-  --ps-border-strong: rgba(151, 126, 255, 0.5);
-  --ps-text: #f3f4f8;
-  --ps-muted: #9096a8;
-  --ps-accent: #8d73ff;
-  --ps-accent-strong: #aa96ff;
-  --ps-success: #78d99a;
-  --ps-warning: #f0bc6d;
-  --ps-error: #ff858e;
   --ps-image-scale: 100%;
   position: fixed;
   inset: 12px 12px 12px auto;
@@ -256,11 +245,11 @@ body.promptstudio-popout-body {
 
 #promptstudio-prompt-studio .promptstudio-studio-switch button[aria-pressed="true"] {
   color: #fff;
-  background: var(--ps-accent);
+  background: var(--studio-accent-fill);
 }
 
 #promptstudio-prompt-studio .promptstudio-studio-switch button[data-promptstudio-studio-mode="video"][data-available="false"] {
-  color: rgba(144, 150, 168, 0.5);
+  color: var(--ps-muted);
   background: rgba(255, 255, 255, 0.02);
   cursor: help;
 }
@@ -365,6 +354,7 @@ body.promptstudio-popout-body {
 .promptstudio-system-status-section {
   display: grid;
   gap: 7px;
+  min-width: 0;
 }
 
 .promptstudio-system-status-section + .promptstudio-system-status-section {
@@ -400,6 +390,7 @@ body.promptstudio-popout-body {
   color: var(--ps-muted);
   font-size: 9px;
   line-height: 1.4;
+  overflow-wrap: anywhere;
 }
 
 .promptstudio-kobold-metadata {
@@ -464,6 +455,12 @@ body.promptstudio-popout-body {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 7px;
+  min-width: 0;
+  width: 100%;
+}
+
+.promptstudio-system-status-actions > button {
+  min-width: 0;
 }
 
 .promptstudio-system-status-actions[hidden] {
@@ -497,16 +494,16 @@ body.promptstudio-popout-body {
 }
 
 #promptstudio-prompt-studio button {
-  min-height: 34px;
-  padding: 0 12px;
+  min-height: var(--studio-control-height);
+  padding: 0 var(--studio-space-3);
   color: var(--ps-text);
   background: rgba(255, 255, 255, 0.055);
   border: 1px solid var(--ps-border);
-  border-radius: 10px;
+  border-radius: var(--studio-radius-control);
   font: inherit;
   font-weight: 600;
   cursor: pointer;
-  transition: background 120ms ease, border-color 120ms ease, transform 120ms ease, opacity 120ms ease;
+  transition: background var(--studio-motion-control) ease, border-color var(--studio-motion-control) ease, transform var(--studio-motion-control) ease, opacity var(--studio-motion-control) ease;
 }
 
 #promptstudio-prompt-studio button:hover:not(:disabled) {
@@ -2263,10 +2260,6 @@ body.promptstudio-popout-body .promptstudio-header-actions {
   cursor: pointer;
 }
 
-#promptstudio-prompt-studio .promptstudio-message.promptstudio-has-prompt .promptstudio-message-delete {
-  right: 42px;
-}
-
 #promptstudio-prompt-studio .promptstudio-message-delete:hover {
   color: #ff9aaa;
   background: rgba(207, 53, 76, 0.24);
@@ -2281,7 +2274,7 @@ body.promptstudio-popout-body .promptstudio-header-actions {
 #promptstudio-prompt-studio .promptstudio-prompt-info > summary {
   position: absolute;
   top: 8px;
-  right: 8px;
+  left: 8px;
   display: grid;
   place-items: center;
   width: 28px;
@@ -2342,10 +2335,11 @@ body.promptstudio-popout-body .promptstudio-header-actions {
   justify-self: end;
 }
 
+#promptstudio-prompt-studio .promptstudio-plot-handoff,
 #promptstudio-prompt-studio .promptstudio-video-handoff {
   position: absolute;
   top: 8px;
-  right: 42px;
+  left: 8px;
   display: grid;
   place-items: center;
   width: 28px;
@@ -2372,6 +2366,7 @@ body.promptstudio-popout-body .promptstudio-header-actions {
   opacity: 0.7;
 }
 
+#promptstudio-prompt-studio .promptstudio-plot-handoff:not(:disabled):hover,
 #promptstudio-prompt-studio .promptstudio-video-handoff[data-available="true"]:hover {
   background: rgba(137, 111, 232, 0.24);
   border-color: rgba(169, 145, 255, 0.48);
@@ -2566,7 +2561,14 @@ body.promptstudio-popout-body .promptstudio-header-actions {
 }
 
 #promptstudio-prompt-studio .promptstudio-message.promptstudio-has-prompt .promptstudio-video-handoff {
-  right: 76px;
+  left: 42px;
+}
+
+#promptstudio-prompt-studio .promptstudio-plot-handoff {
+  left: 76px;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: -0.3px;
 }
 
 .promptstudio-message-delete-card {
@@ -2588,6 +2590,21 @@ body.promptstudio-popout-body .promptstudio-header-actions {
   flex-wrap: wrap;
   justify-content: flex-end;
   gap: 7px;
+  margin-top: 3px;
+}
+
+#promptstudio-plot-handoff-dialog .promptstudio-video-handoff-dialog-actions {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+}
+
+#promptstudio-plot-handoff-dialog [data-plot-prompt] {
+  min-width: 0;
+  white-space: normal;
+}
+
+#promptstudio-plot-handoff-dialog [data-plot-prompt="cancel"] {
+  justify-self: end;
   margin-top: 3px;
 }
 
@@ -3868,7 +3885,7 @@ body.promptstudio-popout-body #promptstudio-prompt-studio.promptstudio-chats-ope
 
 .promptstudio-generation-action input:checked + span {
   color: var(--ps-text);
-  background: var(--ps-accent);
+  background: var(--studio-accent-fill);
 }
 
 .promptstudio-generation-action input:disabled + span {
@@ -4857,12 +4874,8 @@ body.promptstudio-popout-body #promptstudio-prompt-studio.promptstudio-chats-ope
     padding-right: 56px;
   }
 
-  #promptstudio-prompt-studio .promptstudio-message.promptstudio-has-prompt .promptstudio-message-delete {
-    right: 56px;
-  }
-
+  #promptstudio-prompt-studio .promptstudio-plot-handoff,
   #promptstudio-prompt-studio .promptstudio-video-handoff {
-    right: 56px;
     width: 40px;
     height: 40px;
     min-width: 40px;
@@ -4873,7 +4886,11 @@ body.promptstudio-popout-body #promptstudio-prompt-studio.promptstudio-chats-ope
 
 
   #promptstudio-prompt-studio .promptstudio-message.promptstudio-has-prompt .promptstudio-video-handoff {
-    right: 104px;
+    left: 56px;
+  }
+
+  #promptstudio-prompt-studio .promptstudio-plot-handoff {
+    left: 104px;
   }
 
   .promptstudio-message.promptstudio-has-prompt,
@@ -5420,18 +5437,23 @@ body.promptstudio-popout-body #promptstudio-prompt-studio.promptstudio-chats-ope
 .promptstudio-plot-text-row { flex: 1 1 100%; }
 #promptstudio-prompt-studio .promptstudio-plot-text-row textarea { flex: 1 1 220px; min-width: 0; resize: vertical; }
 
-.promptstudio-plot-chips { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 12px; min-height: 30px; }
+.promptstudio-plot-chips { display: flex; flex-direction: column; gap: 7px; margin-top: 12px; min-height: 30px; }
 .promptstudio-plot-chip {
-  display: inline-flex;
+  display: flex;
   align-items: center;
-  max-width: 100%;
+  flex: 0 0 auto;
+  width: 100%;
+  min-width: 0;
+  height: 34px;
+  box-sizing: border-box;
   border: 1px solid var(--ps-border);
-  border-radius: 999px;
+  border-radius: 6px;
   background: rgba(255, 255, 255, 0.045);
   overflow: hidden;
 }
-.promptstudio-plot-chip > span { max-width: 220px; padding: 5px 2px 5px 10px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-#promptstudio-prompt-studio .promptstudio-plot-chip button { width: 28px; min-width: 28px; padding: 3px; border: 0; background: transparent; }
+.promptstudio-plot-chip > span { flex: 1 1 auto; min-width: 0; padding: 5px 2px 5px 10px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#promptstudio-prompt-studio .promptstudio-plot-chip button { flex: 0 0 32px; width: 32px; min-width: 32px; height: 32px; min-height: 32px; padding: 3px; border: 0; background: transparent; transform: none; }
+#promptstudio-prompt-studio .promptstudio-plot-remove-all { flex: 0 0 auto; min-height: 28px; padding: 0 8px; font-size: 11px; }
 .promptstudio-plot-axis-empty { color: var(--ps-muted); }
 .promptstudio-plot-z-toggle {
   display: flex;

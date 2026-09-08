@@ -71,6 +71,20 @@ The sections below cover setup, everyday use, workflow contracts, nodes, presets
 
 ## Quick start: generate images through chat
 
+The package installation range remains Python `>=3.9`; it is not a tested-version
+matrix. The current local regression run uses ComfyUI's Python **3.14** VENV.
+Python 3.9–3.13 have not been verified in this audit. The automated quality workflow
+also targets 3.14; a configured CI job is not evidence that a remote run passed.
+See the [release checklist](docs/release-checklist.md) for the required paired
+Image/Video checks and the minimum-version verification still needed.
+
+ComfyUI supplies `server`, `folder_paths`, `aiohttp`, its frontend app/API modules,
+and the model/media runtime dependencies. Prompt Studio adds no runtime pip
+requirements and does not install packages on every startup. Workflow conversion
+requires the host's `graphToPrompt`, native node metadata, and serialized-subgraph
+support; a version number alone does not establish these capabilities. The
+installer's bundled Krea2 pack currently requires ComfyUI **0.28.0 or newer**.
+
 1. Install this repository in `ComfyUI/custom_nodes/ComfyUI_PromptStudio` and restart ComfyUI.
 2. Add a **KoboldCpp Prompt Slot** or **KoboldCpp Prompt Amplify** node to an image-generation workflow.
 3. Connect its `prompt` output to the positive prompt input or text encoder used by the workflow.
@@ -133,6 +147,21 @@ Prompt Studio can also start, stop, and restart Llama.cpp itself. In **Settings 
 
 Shared-GPU Llama.cpp handoff requires llama-server router mode (`--models-dir`) because only router mode exposes `/models/unload`; normal chat requests autoload the selected model again. For a single-model llama-server process, use separate GPUs and enable **Keep models loaded**, or let the external launcher own the GPU transition.
 
+The launcher example is a template: replace `models/REPLACE_WITH_YOUR_MODEL.gguf`
+with your actual model path using the config builder. Relative model paths resolve
+from the ComfyUI process working directory, not from the profile's directory.
+Leave `mmproj_gguf` empty for text-only use, or select the projector matching your
+vision model. The example leaves device filters and tensor split empty and uses
+`main_gpu: 0`; it does not assume a second physical GPU exists.
+
+GPU ordinals are zero-based. `cuda_visible_devices` sets `CUDA_VISIBLE_DEVICES`,
+which can renumber the GPUs visible to llama.cpp. For example, exposing only
+physical GPU 2 makes that one device visible as ordinal 0. `cuda_devices` is the
+separate comma-separated llama.cpp `--device` list (such as `CUDA0`), while
+`main_gpu` selects the main device; the launcher maps an explicitly selected
+`CUDA<N>` to its position in that filtered list. Check the server's device listing
+after applying visibility filters before setting `main_gpu` or `tensor_split`.
+
 > Want to use the chat UI without an LLM? Turn off **Use LLM amplification**. The composer becomes a direct-prompt editor, the main and final prompts stay identical, and **Generate** sends that text straight to ComfyUI.
 
 ## The interactive workflow
@@ -167,6 +196,10 @@ Prompt changes keep the current ComfyUI seed, making before-and-after comparison
 ### XY(Z) image plots
 
 A new empty session offers **Start XY(Z) plot** alongside ordinary prompt and image-import actions. The plot builder uses the selected `[PS]` creation workflow and supports X and Y axes plus an optional Z axis. Each axis independently targets a workflow-owned model, LoRA, LoRA strength, seed, sampler, scheduler, step count, CFG, or denoise strength. Model and LoRA axes can add one item or every available item; numerical axes accept individual values, ranges, and random seed batches. Duplicate workflow targets and plots larger than 512 cells are rejected before submission.
+
+Generated images also offer a small **XYZ** button immediately to the right of the Video Studio handoff button. Choose **Main prompt (LLM mode)** or **Final prompt (normal mode)** to open a new plot session with the selected prompt, session controls, and saved generation inputs, including model, LoRAs, resolution, and sampling parameters. The source session stays intact and no generation starts until you configure and start the plot. This action requires an available creation workflow; edit and upscale workflows are not supported by the plot builder.
+
+Generated images also offer a small **XYZ** button immediately to the right of the Video Studio handoff button. Choose **Main prompt (LLM mode)** or **Final prompt (normal mode)** to open a new plot session with the selected prompt, session controls, and saved generation inputs, including model, LoRAs, resolution, and sampling parameters. The source session stays intact and no generation starts until you configure and start the plot. This action requires an available creation workflow; edit and upscale workflows are not supported by the plot builder.
 
 Starting a plot immediately creates the complete labelled grid, then fills each cell as its ComfyUI result arrives. Z values are navigated as separate grid slices, the cell-size control supports both overview and detail inspection, and completed images open in the normal full-size viewer. The run can cancel remaining cells or retry one failed cell or all failures without rebuilding the plot inputs.
 

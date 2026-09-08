@@ -1,0 +1,141 @@
+/* Shared semantic tokens scoped to Studio surfaces, never the ComfyUI host. */
+:where(#promptstudio-prompt-studio, .psvstudio-app, body.promptstudio-popout-body, body.psvstudio-popout-body, dialog[class*="psvstudio-"]) {
+  --studio-bg: #0c0d12;
+  --studio-panel: #13151d;
+  --studio-panel-strong: #191c27;
+  --studio-panel-soft: #10121a;
+  --studio-border: rgba(255, 255, 255, 0.09);
+  --studio-border-strong: rgba(151, 126, 255, 0.5);
+  --studio-text: #f3f4f8;
+  --studio-muted: #9096a8;
+  --studio-accent: #8d73ff;
+  --studio-accent-fill: #6750c7;
+  --studio-accent-fill-hover: #725bd2;
+  --studio-accent-strong: #aa96ff;
+  --studio-success: #78d99a;
+  --studio-warning: #f0bc6d;
+  --studio-error: #ff858e;
+  --studio-space-1: 4px;
+  --studio-space-2: 8px;
+  --studio-space-3: 12px;
+  --studio-space-4: 16px;
+  --studio-radius-control: 10px;
+  --studio-radius-panel: 20px;
+  --studio-control-height: 34px;
+  --studio-shadow-panel: 0 28px 90px rgba(0, 0, 0, 0.62);
+  --studio-font: 13px/1.45 Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --studio-motion-control: 120ms;
+  --studio-motion-dialog: 180ms;
+  --studio-motion-panel: 220ms;
+  --ps-bg: var(--studio-bg);
+  --ps-panel: var(--studio-panel);
+  --ps-panel-strong: var(--studio-panel-strong);
+  --ps-panel-soft: var(--studio-panel-soft);
+  --ps-border: var(--studio-border);
+  --ps-border-strong: var(--studio-border-strong);
+  --ps-text: var(--studio-text);
+  --ps-muted: var(--studio-muted);
+  --ps-accent: var(--studio-accent);
+  --ps-accent-strong: var(--studio-accent-strong);
+  --ps-success: var(--studio-success);
+  --ps-warning: var(--studio-warning);
+  --ps-error: var(--studio-error);
+  --psv-bg: var(--studio-bg);
+  --psv-panel: var(--studio-panel);
+  --psv-panel-soft: var(--studio-panel-soft);
+  --psv-border: var(--studio-border);
+  --psv-border-strong: var(--studio-border-strong);
+  --psv-text: var(--studio-text);
+  --psv-muted: var(--studio-muted);
+  --psv-accent: var(--studio-accent);
+  --psv-accent-strong: var(--studio-accent-strong);
+  --psv-ok: var(--studio-success);
+  --psv-warn: var(--studio-warning);
+  --psv-error: var(--studio-error);
+}
+:where(#promptstudio-prompt-studio, .psvstudio-app, dialog[class*="psvstudio-"]) :is(input, select, textarea, button) {
+  min-width: 0;
+  max-width: 100%;
+}
+:where(#promptstudio-prompt-studio, .psvstudio-app, dialog[class*="psvstudio-"]) :is(input, select, textarea, button, a, summary):focus-visible {
+  outline: 2px solid var(--studio-accent-strong);
+  outline-offset: 2px;
+}
+:where(#promptstudio-prompt-studio, .psvstudio-app) .studio-run-summary {
+  color: var(--studio-muted);
+  font-size: 11px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+  min-width: 0;
+}
+.psvstudio-app .psvstudio-action-copy { min-width: 0; display: grid; gap: 4px; }
+:is(.promptstudio-replay-review,.psvstudio-replay-review) {
+  max-width: min(640px,90vw);
+  max-height: 85vh;
+  overflow: auto;
+  padding: 24px;
+  background: var(--studio-panel);
+  color: var(--studio-text);
+  border: 1px solid var(--studio-border-strong);
+  border-radius: var(--studio-radius-panel);
+}
+:is(.promptstudio-replay-review,.psvstudio-replay-review) button { margin: 8px 8px 0 0; }
+#promptstudio-prompt-studio .promptstudio-kobold-popover button {
+  width: 100%;
+  min-height: 30px;
+  padding: 6px 8px;
+  font-size: 11px;
+  line-height: 1.3;
+}
+#promptstudio-prompt-studio .promptstudio-kobold-popover,
+.psvstudio-app .psvstudio-kobold-popover {
+  /* The positioned header is the containing block, not the status dot.
+     Keep the panel inside the inspector/main column's clipping boundary. */
+  left: auto;
+  right: 16px;
+  max-width: calc(100% - 32px);
+  max-height: min(700px, 78vh);
+  overflow: auto;
+}
+#promptstudio-prompt-studio .promptstudio-kobold-control,
+.psvstudio-app .psvstudio-kobold-control { position: static; }
+:is(#promptstudio-job-activity,#psvstudio-job-activity) { font-size: 11px; overflow-wrap: anywhere; }
+@keyframes studio-dialog-enter { from { opacity: 0.7; transform: translateY(3px); } to { opacity: 1; transform: translateY(0); } }
+:where(#promptstudio-prompt-studio, .psvstudio-app) dialog[open],
+dialog[class*="psvstudio-"][open] {
+  animation: studio-dialog-enter var(--studio-motion-dialog) ease-out;
+}
+/* Persistent update/model status needs a stable color, not competing pulses. */
+#promptstudio-prompt-studio .promptstudio-kobold-control[data-update-active="true"] .promptstudio-kobold-dot,
+#promptstudio-prompt-studio .promptstudio-consult-message-pending::before { animation: none; }
+@media (prefers-reduced-motion: reduce) {
+  :where(#promptstudio-prompt-studio, .psvstudio-app, body.promptstudio-popout-body, body.psvstudio-popout-body, dialog[class*="psvstudio-"]) {
+    --studio-motion-control: 0ms;
+    --studio-motion-dialog: 0ms;
+    --studio-motion-panel: 0ms;
+  }
+  :where(#promptstudio-prompt-studio, .psvstudio-app, dialog[class*="psvstudio-"]),
+  :where(#promptstudio-prompt-studio, .psvstudio-app, dialog[class*="psvstudio-"]) *,
+  :where(#promptstudio-prompt-studio, .psvstudio-app, dialog[class*="psvstudio-"]) *::before,
+  :where(#promptstudio-prompt-studio, .psvstudio-app, dialog[class*="psvstudio-"]) *::after {
+    animation: none !important;
+    transition: none !important;
+    scroll-behavior: auto !important;
+  }
+}
+@media (forced-colors: active) {
+  :where(#promptstudio-prompt-studio, .psvstudio-app, body.promptstudio-popout-body, body.psvstudio-popout-body, dialog[class*="psvstudio-"]) {
+    --studio-bg: Canvas;
+    --studio-panel: Canvas;
+    --studio-panel-strong: Canvas;
+    --studio-panel-soft: Canvas;
+    --studio-text: CanvasText;
+    --studio-muted: CanvasText;
+    --studio-border: ButtonText;
+    --studio-border-strong: Highlight;
+    --studio-accent: LinkText;
+    --studio-accent-strong: Highlight;
+    --studio-accent-fill: Highlight;
+    --studio-accent-fill-hover: Highlight;
+  }
+}

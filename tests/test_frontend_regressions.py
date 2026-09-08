@@ -9,6 +9,8 @@ class FrontendRegressionTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.source = (REPO_ROOT / "web" / "js" / "prompt_studio.js").read_text(encoding="utf-8")
+        cls.focus_controller = (REPO_ROOT / "web/js/prompt-studio/ui/focus-controller.js").read_text(encoding="utf-8")
+        cls.progress_controller = (REPO_ROOT / "web/js/prompt-studio/ui/generation-progress-controller.js").read_text(encoding="utf-8")
         cls.shell = (
             REPO_ROOT / "web" / "js" / "prompt_studio_shell.js"
         ).read_text(encoding="utf-8")
@@ -257,7 +259,7 @@ class FrontendRegressionTests(unittest.TestCase):
         self.assertIn("const viewport = capturePlotViewport(history, chat.plotId)", workspace)
         self.assertIn("renderPlotRun(next, plot, { gridScroller })", workspace)
         self.assertIn("restorePlotViewport(history, plot.id, viewport)", workspace)
-        self.assertLess(history.index("if (isPlotChat())"), history.index("history.replaceChildren()"))
+        self.assertLess(history.index("if (isPlotChat())"), history.index("reconcileKeyedHistory("))
 
     def test_xyz_plot_history_uses_durable_summary_before_plot_is_opened(self):
         self.assertIn("plotSummary:", self.chat_model)
@@ -303,8 +305,9 @@ class FrontendRegressionTests(unittest.TestCase):
 
     def test_workflow_template_validation_stays_in_the_generation_domain(self):
         self.assertIn("export function createWorkflowTemplateBuilder", self.workflow_template)
-        self.assertIn("bridgeWorkflowSubgraphs", self.workflow_template)
-        self.assertIn('dispatch("subgraph-created"', self.workflow_template)
+        self.assertIn("createWorkflowAdapter", self.workflow_template)
+        shared = (REPO_ROOT / "web/js/prompt-studio/generation/workflow-adapter.js").read_text(encoding="utf-8")
+        self.assertIn('dispatch("subgraph-created"', shared)
         self.assertIn("Workflow must have exactly one image output", self.workflow_template)
         self.assertNotIn("function buildWorkflowTemplate", self.source)
 
@@ -886,9 +889,9 @@ class FrontendRegressionTests(unittest.TestCase):
         llm_status = self.source[llm_status_start:llm_status_end]
         self.assertIn("Boolean(llm?.handoff_error)", summary)
         self.assertIn("status.handoff_error || status.message", llm_status)
-        execution_success = self.source[
-            self.source.index('api.addEventListener("execution_success"'):
-            self.source.index('for (const eventName of ["execution_error"', self.source.index('api.addEventListener("execution_success"'))
+        execution_success = self.progress_controller[
+            self.progress_controller.index('scope.listen(api, "execution_success"'):
+            self.progress_controller.index('for (const eventName of ["execution_error"', self.progress_controller.index('scope.listen(api, "execution_success"'))
         ]
         self.assertNotIn("releaseLlmBeforeGeneration", execution_success)
 
@@ -1057,8 +1060,20 @@ class FrontendRegressionTests(unittest.TestCase):
         self.assertIn("z-index: 10", header)
         self.assertIn("background: var(--ps-panel)", popover)
 
+    def test_system_status_content_stays_within_the_popover(self):
+        section = self.styles.split(".promptstudio-system-status-section {", 1)[1].split("}", 1)[0]
+        copy = self.styles.split(".promptstudio-kobold-popover span,", 1)[1].split("}", 1)[0]
+        actions = self.styles.split(".promptstudio-system-status-actions {", 1)[1].split("}", 1)[0]
+        buttons = self.styles.split(".promptstudio-system-status-actions > button {", 1)[1].split("}", 1)[0]
+
+        self.assertIn("min-width: 0", section)
+        self.assertIn("overflow-wrap: anywhere", copy)
+        self.assertIn("min-width: 0", actions)
+        self.assertIn("width: 100%", actions)
+        self.assertIn("min-width: 0", buttons)
+
     def test_transient_status_and_settings_have_complete_dismissal_paths(self):
-        install = self.function_source("installTypeAnywhereFocus", "setPanelDrawer")
+        install = self.focus_controller
         close_status = self.function_source("closeSystemStatus", "trapDialogFocus")
 
         self.assertIn('statusControl?.open && !statusControl.contains(event.target)', install)

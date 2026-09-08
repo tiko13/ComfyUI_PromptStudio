@@ -1,0 +1,14 @@
+{
+  "provider_legacy": [
+    {"input": {}, "expected": {"wire_version": 1, "llm_provider": "koboldcpp", "max_response_tokens": 800}},
+    {"input": {"llm_provider": " Ollama ", "top_k": "42"}, "expected": {"wire_version": 1, "llm_provider": "ollama", "top_k": 42}},
+    {"input": {"llm_provider": "unsupported"}, "expected": {"llm_provider": "koboldcpp"}}
+  ],
+  "job_legacy": [
+    {"input": {"job_id": "job-old", "status": "error", "error": "offline"}, "expected": {"wire_version": 1, "kind": "llm_job", "job_id": "job-old", "status": "failed", "error": "offline"}},
+    {"input": {"job_id": "job-result", "status": "complete", "result": {"prompt": "verbatim"}}, "expected": {"wire_version": 1, "kind": "llm_job", "job_id": "job-result", "status": "complete", "result": {"prompt": "verbatim"}}}
+  ],
+  "snapshot_legacy": [
+    {"input": {"workflow": {"nodes": []}, "output": {"1": {"class_type": "Example"}}, "custom": {"keep": true}}, "expected": {"wire_version": 1, "kind": "workflow_snapshot", "snapshot": {"workflow": {"nodes": []}, "output": {"1": {"class_type": "Example"}}, "custom": {"keep": true}}}}
+  ]
+}

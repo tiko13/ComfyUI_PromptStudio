@@ -1,8 +1,14 @@
 [project]
 name = "ComfyUI_PromptStudio"
-version = "1.0.4"
+version = "1.1.0"
 description = "A local, ChatGPT-like extension for iterative image creation and editing in ComfyUI with help from a local LLM"
+readme = "README.md"
+readme = "README.md"
 license = { text = "MIT License" }
+# Installation range retained; only Python 3.14 is verified in the current local
+# suite. See docs/release-checklist.md before claiming minimum-version support.
+# Installation range retained; only Python 3.14 is verified in the current local
+# suite. See docs/release-checklist.md before claiming minimum-version support.
 requires-python = ">=3.9"
 classifiers = [
     "Operating System :: OS Independent",

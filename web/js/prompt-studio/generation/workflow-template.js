@@ -14,141 +14,90 @@ import {
 } from "./workflow-profile.js";
 import {
   PROMPT_STUDIO_INPUT_PROFILE_VERSION,
-  extractPromptStudioInputs,
+  serializedWorkflowNodes,
 } from "./prompt-studio-input.js";
+
+import { createWorkflowAdapter } from "./workflow-adapter.js";
 
 export function createWorkflowTemplateBuilder({ app, nodeClassName }) {
   function imageOutputNode(node) {
     const data = node?.constructor?.nodeData;
     if (!data?.output_node) return false;
+    if (Object.values({ ...data.input?.required, ...data.input?.optional }).some(schema => Array.isArray(schema) && schema[0] === "IMAGE")) return true;
     const sockets = [...(node?.inputs || []), ...(node?.outputs || [])];
     if (sockets.some((socket) => String(socket?.type || "").split(",").includes("IMAGE"))) return true;
     const identity = `${nodeClassName(node)} ${node?.type || ""} ${node?.title || ""}`;
     return /(?:image.*(?:save|preview|output)|(?:save|preview|output).*image|save.*(?:png|jpe?g|webp))/i.test(identity);
   }
 
-  function firstExecutableNode(graph, snapshot, classTypes) {
-    const output = snapshot?.output || {};
-    return (graph?._nodes || []).find((node) => (
-      Object.hasOwn(output, String(node.id)) && classTypes.includes(output[String(node.id)]?.class_type)
-    ));
-  }
-
-  function bridgeWorkflowSubgraphs(graph, workflowData) {
-    const definitions = workflowData?.definitions?.subgraphs;
-    if (!Array.isArray(definitions) || definitions.length === 0) return () => {};
-
-    // Off-canvas graphs do not inherit ComfyUI's root subgraph listener. Forward
-    // their creation events so each node type binds to this graph's definitions.
-    const originals = new Map();
-    for (const definition of definitions) {
-      const id = String(definition?.id || "");
-      const original = id && app.rootGraph?.subgraphs?.get(id);
-      if (original) originals.set(id, original);
-    }
-
-    const listener = (event) => {
-      app.rootGraph.events.dispatch("subgraph-created", event.detail);
-    };
-    graph.events.addEventListener("subgraph-created", listener);
-
-    return () => {
-      graph.events.removeEventListener("subgraph-created", listener);
-      for (const [id, subgraph] of originals) {
-        app.rootGraph.events.dispatch("subgraph-created", {
-          subgraph,
-          data: subgraph.asSerialisable?.() || { id },
-        });
+  const buildWorkflowTemplate = createWorkflowAdapter({
+    app, adapterId: "image", capabilities: { resultFields: ["images", "gifs"], outputRuleVersion: 1 },
+    build: async ({ file, workflowData, snapshot, nodes, additionalInputs }) => {
+      const firstExecutableNode = (types) => nodes.find(record => types.includes(record.type));
+      const serialized = serializedWorkflowNodes(workflowData);
+      const graphUpscaleNodes = serialized.filter(record => record.node.type === UPSCALE_TYPE);
+      const upscaleWorkflow = graphUpscaleNodes.length > 0;
+      const upscaleNode = firstExecutableNode([UPSCALE_TYPE]);
+      if (upscaleWorkflow && !upscaleNode) throw new Error("Upscaling workflows need an executable Prompt Studio Upscale node.");
+      const graphImageSources = serialized.filter(record => record.node.type === IMAGE_SOURCE_TYPE);
+      const editingWorkflow = !upscaleWorkflow && graphImageSources.length > 0;
+      const imageNode = firstExecutableNode([IMAGE_SOURCE_TYPE]);
+      if (editingWorkflow && !imageNode) throw new Error("Image workflows need an executable Prompt Studio Image Source node.");
+      const promptNode = firstExecutableNode([SLOT_TYPE, AMPLIFY_TYPE]);
+      if (!upscaleWorkflow && !promptNode) {
+        throw new Error(`${editingWorkflow ? "Editing" : "Creation"} workflows need an executable KoboldCpp Prompt Slot or Prompt Amplify node.`);
       }
-    };
-  }
 
-  async function buildWorkflowTemplate(file, workflowData, cached) {
-    const Graph = app.rootGraph?.constructor || app.graph?.constructor;
-    if (typeof Graph !== "function") throw new Error("ComfyUI's workflow graph is not ready.");
-    const graph = new Graph();
-    const restoreSubgraphTypes = bridgeWorkflowSubgraphs(graph, workflowData);
-    let snapshot;
-    try {
-      const configureError = graph.configure(structuredClone(workflowData));
-      if (configureError) throw new Error("ComfyUI could not load one or more workflow nodes.");
-      const subgraphIds = new Set((workflowData?.definitions?.subgraphs || []).map((definition) => String(definition.id)));
-      const unresolvedSubgraphs = (graph._nodes || []).filter((node) => (
-        subgraphIds.has(String(node.type)) && !node.isSubgraphNode?.()
-      ));
-      if (unresolvedSubgraphs.length) {
-        throw new Error(`ComfyUI could not resolve ${unresolvedSubgraphs.length} subgraph node${unresolvedSubgraphs.length === 1 ? "" : "s"}.`);
+      const output = snapshot?.output || {};
+      const loraNodes = Object.entries(output)
+        .filter(([, node]) => node?.class_type === LORA_LOADER_TYPE)
+        .map(([id, node]) => ({ id: String(id), loraType: String(node.inputs?.lora_type || "").trim() }));
+      const modelNodes = Object.entries(output)
+        .filter(([, node]) => node?.class_type === MODEL_LOADER_TYPE)
+        .map(([id, node]) => ({
+          id: String(id),
+          modelType: String(node.inputs?.model_type || "").trim(),
+          modelName: cleanModelName(node.inputs?.unet_name),
+        }));
+      const samplingNodes = Object.entries(output)
+        .filter(([, node]) => node?.class_type === SAMPLER_CONTROL_TYPE)
+        .map(([id, node]) => ({
+          id: String(id),
+          label: String(nodes.find(record => record.id === id)?.node?.title || `Sampler ${id}`).trim(),
+          controls: {
+            seed: Number(node.inputs?.seed ?? 0),
+            steps: Number(node.inputs?.steps ?? 20),
+            cfg: Number(node.inputs?.cfg ?? 8),
+            sampler: String(node.inputs?.sampler_name || ""),
+            scheduler: String(node.inputs?.scheduler || ""),
+            denoise: Number(node.inputs?.denoise ?? 1),
+          },
+        }));
+      const imageOutputs = nodes.filter(record => imageOutputNode(record.node));
+      if (imageOutputs.length !== 1) {
+        throw new Error(`Workflow must have exactly one image output; found ${imageOutputs.length}.`);
       }
-      snapshot = structuredClone(await app.graphToPrompt(graph));
-    } finally {
-      restoreSubgraphTypes();
-    }
 
-    const graphUpscaleNodes = (graph._nodes || []).filter((node) => nodeClassName(node) === UPSCALE_TYPE);
-    const upscaleWorkflow = graphUpscaleNodes.length > 0 || cached?.kind === "upscale";
-    const upscaleNode = firstExecutableNode(graph, snapshot, [UPSCALE_TYPE]);
-    if (upscaleWorkflow && !upscaleNode) throw new Error("Upscaling workflows need an executable Prompt Studio Upscale node.");
-    const graphImageSources = (graph._nodes || []).filter((node) => nodeClassName(node) === IMAGE_SOURCE_TYPE);
-    const editingWorkflow = !upscaleWorkflow && (graphImageSources.length > 0 || cached?.kind === "edit");
-    const imageNode = firstExecutableNode(graph, snapshot, [IMAGE_SOURCE_TYPE]);
-    if (editingWorkflow && !imageNode) throw new Error("Image workflows need an executable Prompt Studio Image Source node.");
-    const promptNode = firstExecutableNode(graph, snapshot, [SLOT_TYPE, AMPLIFY_TYPE]);
-    if (!upscaleWorkflow && !promptNode) {
-      throw new Error(`${editingWorkflow ? "Editing" : "Creation"} workflows need an executable KoboldCpp Prompt Slot or Prompt Amplify node.`);
-    }
-
-    const output = snapshot?.output || {};
-    const loraNodes = Object.entries(output)
-      .filter(([, node]) => node?.class_type === LORA_LOADER_TYPE)
-      .map(([id, node]) => ({ id: String(id), loraType: String(node.inputs?.lora_type || "").trim() }));
-    const modelNodes = Object.entries(output)
-      .filter(([, node]) => node?.class_type === MODEL_LOADER_TYPE)
-      .map(([id, node]) => ({
-        id: String(id),
-        modelType: String(node.inputs?.model_type || "").trim(),
-        modelName: cleanModelName(node.inputs?.unet_name),
-      }));
-    const samplingNodes = Object.entries(output)
-      .filter(([, node]) => node?.class_type === SAMPLER_CONTROL_TYPE)
-      .map(([id, node]) => ({
-        id: String(id),
-        label: String((graph.getNodeById?.(Number(id)) || graph.getNodeById?.(id))?.title || `Sampler ${id}`).trim(),
-        controls: {
-          seed: Number(node.inputs?.seed ?? 0),
-          steps: Number(node.inputs?.steps ?? 20),
-          cfg: Number(node.inputs?.cfg ?? 8),
-          sampler: String(node.inputs?.sampler_name || ""),
-          scheduler: String(node.inputs?.scheduler || ""),
-          denoise: Number(node.inputs?.denoise ?? 1),
-        },
-      }));
-    const additionalInputs = extractPromptStudioInputs(graph, snapshot, workflowData);
-    const imageOutputs = (graph._nodes || []).filter((node) => (
-      Object.hasOwn(output, String(node.id)) && imageOutputNode(node)
-    ));
-    if (imageOutputs.length !== 1) {
-      throw new Error(`Workflow must have exactly one image output; found ${imageOutputs.length}.`);
-    }
-
-    return normalizeWorkflowProfile({
-      id: file.path,
-      path: file.path,
-      name: workflowNameFromPath(file.path),
-      kind: upscaleWorkflow ? "upscale" : editingWorkflow ? "edit" : "create",
-      promptNodeId: upscaleWorkflow ? "" : String(promptNode.id),
-      imageNodeId: editingWorkflow ? String(imageNode.id) : "",
-      upscaleNodeId: upscaleWorkflow ? String(upscaleNode.id) : "",
-      loraNodes,
-      modelNodes,
-      samplingNodes,
-      additionalInputs,
-      promptStudioInputVersion: PROMPT_STUDIO_INPUT_PROFILE_VERSION,
-      resultNodeIds: [String(imageOutputs[0].id)],
-      snapshot,
-      updatedAt: Date.now(),
-      sourceModified: Number(file.modified || 0),
-    });
-  }
+      return normalizeWorkflowProfile({
+        id: file.path,
+        path: file.path,
+        name: workflowNameFromPath(file.path),
+        kind: upscaleWorkflow ? "upscale" : editingWorkflow ? "edit" : "create",
+        promptNodeId: upscaleWorkflow ? "" : String(promptNode.id),
+        imageNodeId: editingWorkflow ? String(imageNode.id) : "",
+        upscaleNodeId: upscaleWorkflow ? String(upscaleNode.id) : "",
+        loraNodes,
+        modelNodes,
+        samplingNodes,
+        additionalInputs,
+        promptStudioInputVersion: PROMPT_STUDIO_INPUT_PROFILE_VERSION,
+        resultNodeIds: [String(imageOutputs[0].id)],
+        snapshot,
+        updatedAt: Date.now(),
+        sourceModified: Number(file.modified || 0),
+      });
+    },
+  });
 
   return { buildWorkflowTemplate };
 }
