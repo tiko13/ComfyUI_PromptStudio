@@ -75,6 +75,7 @@ test('Video progress and observer ownership do not dispose jobs belonging to ano
   feature.mount(api).mount(api);feature.update({projectId:'other'});
   api.emit('progress',{prompt_id:'a',value:7,max:10});api.emit('progress',{prompt_id:'unknown',value:1,max:10});
   assert.equal(renders,1);assert.equal(state.generationProgress.get('a').value,7);
+  assert.equal(state.pendingGenerationProgress.get('unknown').value,1);
   feature.dispose();assert.equal(disconnected,1);assert.equal(job.signal.aborted,false);
   api.emit('progress',{prompt_id:'a',value:8,max:10});assert.equal(renders,1);
 });

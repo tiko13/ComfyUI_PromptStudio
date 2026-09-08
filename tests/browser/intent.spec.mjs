@@ -26,7 +26,7 @@ try {
  assert.equal(result.request.intent_provenance.exclusions[0].text,'lamp');
  assert.deepEqual(result.replay,result.historical);
  await fixture.context.route('**/extensions/ComfyUI_PromptStudio/js/prompt_studio.js',async route=>{
-  const response=await route.fetch();await route.fulfill({response,body:(await response.text())+'\nwindow.intentActions={reviseAndMaybeGenerate,queueGeneration,undoPrompt,syncCanonicalEditor,commitPromptEditorVersion,restoreChatState,controlsFingerprint};'});
+  const response=await route.fetch();await route.fulfill({response,body:(await response.text())+'\nwindow.intentActions={handleStudioTurn,reviseAndMaybeGenerate,queueGeneration,undoPrompt,syncCanonicalEditor,commitPromptEditorVersion,restoreChatState,controlsFingerprint};'});
  });
  await fixture.context.route('**/scripts/api.js',async route=>{
   const response=await route.fetch();await route.fulfill({response,body:(await response.text())+'\napi.queuePrompt=async(_,snapshot)=>{window.intentQueued=structuredClone(snapshot);return {prompt_id:"intent-replay"};};'});
@@ -51,8 +51,13 @@ try {
   document.querySelector('#promptstudio-use-llm-amplification').checked=true;
   chat.controlsFingerprint=window.intentActions.controlsFingerprint();
  });
- assert.equal(await appPage.evaluate(()=>window.intentActions.reviseAndMaybeGenerate({revisionOverride:'Remove the lamp',recordRevision:false})),true);
+ await appPage.route('**/promptstudio/prompt-studio/route-turn',route=>route.fulfill({json:{route:'mutate_now',confidence:1,resolved_instruction:'Remove the brass lamp from the rendered scene.',reason:'Explicit edit'}}));
+ await appPage.locator('#promptstudio-revision').fill('Remove the lamp');
+ await appPage.evaluate(()=>window.intentActions.handleStudioTurn());
  assert.equal(calls.length,2);
+ assert.equal(calls[0].revision,'Remove the brass lamp from the rendered scene.');
+ assert.equal(calls[0].intent_user_text,'Remove the lamp','Evidence must quote the user, not the router paraphrase');
+ assert.equal(calls[1].intent_user_text,'Remove the lamp');
  assert.equal(calls[0].intent_tracking,true);
  assert.equal(calls[1].intent_provenance.exclusions[0].text,'lamp');
  assert.equal(calls[0].intent_turn_id,calls[1].intent_turn_id);

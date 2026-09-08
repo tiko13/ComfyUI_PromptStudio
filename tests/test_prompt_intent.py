@@ -2,6 +2,7 @@ import copy
 import asyncio
 import hashlib
 import importlib.util
+import json
 from pathlib import Path
 import unittest
 import tempfile
@@ -128,13 +129,17 @@ class PromptIntentProductionTests(unittest.TestCase):
         self.assertIn("secondary", response["warning"])
 
     def test_final_only_removal_returns_unchanged_main_without_calling_generation(self):
-        delta = {"version": 1, "base_revision": 0, "edit_scope": {"kind": "final_only", "targets": ["lamp"], "evidence": "Remove the lamp"},
+        delta = {"version": 1, "base_revision": 0, "needs_clarification": False, "edit_scope": {"kind": "final_only", "targets": ["lamp"], "evidence": "Remove the lamp", "spans": [{"stage": "final", "text": " beside a brass lamp", "target": "lamp"}]},
                  "operations": [{"op": "exclude", "id": "lamp", "text": "lamp", "evidence": "Remove the lamp", "reference": {"stage": "final", "text": "brass lamp"}}]}
         data = {"mode": "revise_main", "current_prompt": "A cat.", "current_final_prompt": "A cat beside a brass lamp.", "revision": "Remove the lamp", "intent_tracking": True, "intent_turn_id": "u2"}
         with mock.patch.object(self.routes, "_consult_json_object", return_value=("{}", delta)), mock.patch.object(self.routes, "_generate_kcpp") as generate:
             self.assertEqual(self.routes._revise(data), "A cat.")
         generate.assert_not_called()
         self.assertEqual(data["_promptstudio_intent_result"]["intent_provenance"]["exclusions"][0]["text"], "lamp")
+        final = {**data, "mode": "revise", "current_prompt": data["current_final_prompt"],
+                 "intent_provenance": data["_promptstudio_intent_result"]["intent_provenance"]}
+        with mock.patch.object(self.routes, "_consult", return_value=json.dumps({"replacements": [{"span": 0, "text": ""}]})):
+            self.assertEqual(self.routes._revise(final), "A cat.")
 
     def test_rebuild_consumes_persisted_exclusion_and_reports_suppressed_passthrough(self):
         _, metadata = PromptIntentTests().removal()
@@ -161,15 +166,174 @@ class PromptIntentProductionTests(unittest.TestCase):
         self.assertNotIn("Make signage say CLOSED", generate.call_args.args[0])
         self.assertEqual(data["_promptstudio_intent_result"]["suppressed_controls"], ["style_modifier"])
 
-    def test_local_full_text_response_is_restricted_to_router_authorized_span(self):
+    def test_local_response_edits_only_the_authorized_span(self):
         before = "A blue mug on a wooden table."
         delta = {"version": 1, "base_revision": 0, "edit_scope": {"kind": "local", "targets": ["mug-color"], "evidence": "Make the mug red", "spans": [{"stage": "main", "text": "blue", "target": "mug-color"}]}, "operations": []}
         data = {"mode": "revise_main", "current_prompt": before, "revision": "Make the mug red", "intent_tracking": True, "intent_delta": delta}
-        with mock.patch.object(self.routes, "_generate_kcpp", return_value="A red mug on a wooden table."):
+        with mock.patch.object(self.routes, "_consult", return_value=json.dumps({"replacements": [{"span": 0, "text": "red"}]})):
             self.assertEqual(self.routes._revise(data), "A red mug on a wooden table.")
-        with mock.patch.object(self.routes, "_generate_kcpp", return_value="A red mug on a steel table."):
-            with self.assertRaisesRegex(ValueError, "outside the authorized"):
+        with mock.patch.object(self.routes, "_consult", return_value=json.dumps({"replacements": [{"span": 1, "text": "steel"}]})):
+            with self.assertRaisesRegex(ValueError, "span index"):
                 self.routes._revise(data)
+
+    def blonde_delta(self):
+        return {"version": 1, "base_revision": 0, "needs_clarification": False,
+                "edit_scope": {"kind": "local", "targets": ["hair"], "evidence": "make her blonde", "spans": [
+                    {"stage": "main", "text": "young woman", "target": "hair"},
+                    {"stage": "final", "text": "young woman", "target": "hair"}]}, "operations": []}
+
+    def test_first_change_retries_bad_evidence_and_keeps_both_prompts_outside_span_exact(self):
+        main = "A young woman standing in an office."
+        final = "A young woman in a blouse in an office, holding papers. Flat light."
+        valid = self.blonde_delta()
+        for invalid in (None, "", {"quote": "make her blonde"}, "x" * 8193, "Make the woman blonde."):
+            with self.subTest(evidence=repr(invalid)[:60]):
+                malformed = copy.deepcopy(valid)
+                malformed["edit_scope"]["evidence"] = invalid
+                responses = [malformed, valid, {"replacements": [{"span": 0, "text": "blonde young woman"}]},
+                             {"replacements": [{"span": 0, "text": "blonde young woman"}]}]
+                data = {"intent_tracking": True, "intent_turn_id": "u2", "intent_user_text": "make her blonde",
+                        "revision": "Make the woman blonde.", "mode": "revise_main", "current_prompt": main,
+                        "current_main_prompt": main, "current_final_prompt": final}
+                with mock.patch.object(self.routes, "_consult", side_effect=[json.dumps(item) for item in responses]) as consult:
+                    self.assertEqual(self.routes._revise(data), main.replace("young woman", "blonde young woman"))
+                    metadata = data["_promptstudio_intent_result"]["intent_provenance"]
+                    self.assertEqual(metadata["revision"], 1)
+                    self.assertEqual(metadata["edit_scope"]["evidence"]["quote"], "make her blonde")
+                    self.assertEqual(metadata["locked_literals"], [])
+                    second = {**data, "mode": "revise", "current_prompt": final, "intent_provenance": metadata}
+                    self.assertEqual(self.routes._revise(second), final.replace("young woman", "blonde young woman"))
+                self.assertEqual(consult.call_count, 4, "Final must reuse the classified turn")
+                self.assertIn("Validation error:", consult.call_args_list[1].args[1])
+                main_args = consult.call_args_list[2].args
+                main_context = (main_args[0]["messages"], main_args[1])
+                self.assertNotIn("holding papers", str(main_context), "Final content must not enter the Main writer")
+                self.assertEqual(json.loads(main_args[0]["messages"][0]["text"])["instruction"], "make her blonde")
+
+    def test_classifier_exhaustion_preserves_input_and_never_calls_prompt_writer(self):
+        data = {"intent_tracking": True, "intent_provenance": intent.empty_intent(), "revision": "make her blonde"}
+        before = copy.deepcopy(data)
+        bad = self.blonde_delta()
+        bad["edit_scope"]["evidence"] = None
+        with mock.patch.object(self.routes, "_consult", return_value=json.dumps(bad)) as consult:
+            with self.assertRaisesRegex(ValueError, "after retrying; your existing prompts were kept"):
+                self.routes._prepare_image_intent(data, "revise_main", "A young woman.", "A young woman.", "make her blonde")
+        self.assertEqual(consult.call_count, 2)
+        self.assertEqual(data, before)
+
+    def test_classifier_retries_ambiguous_spans_and_stale_revision(self):
+        valid = self.blonde_delta()
+        for change in (lambda d: d.update(base_revision=99),
+                       lambda d: d["edit_scope"]["spans"][0].update(text="her hair"),
+                       lambda d: d["edit_scope"]["spans"].pop(),
+                       lambda d: d["edit_scope"].update(kind=[]),
+                       lambda d: d.update(needs_clarification="false")):
+            invalid = copy.deepcopy(valid)
+            change(invalid)
+            with mock.patch.object(self.routes, "_consult", side_effect=[json.dumps(invalid), json.dumps(valid)]) as consult:
+                result = self.routes._prepare_image_intent({"intent_tracking": True}, "revise_main", "A young woman.", "A young woman.", "make her blonde")
+            self.assertEqual(result["revision"], 1)
+            self.assertEqual(consult.call_count, 2)
+
+    def test_clarification_is_not_retried_or_applied(self):
+        response = {"needs_clarification": True}
+        with mock.patch.object(self.routes, "_consult", return_value=json.dumps(response)) as consult:
+            with self.assertRaisesRegex(ValueError, "needs clarification"):
+                self.routes._prepare_image_intent({"intent_tracking": True}, "revise_main", "A woman.", "A woman.", "change it")
+        self.assertEqual(consult.call_count, 1)
+
+    def test_scoped_replacement_retries_literal_violation_without_reclassifying(self):
+        delta = self.blonde_delta()
+        metadata = intent.apply_classified_delta(None, delta, mode="revise_main", user_text="make her blonde", turn_id="u2",
+                                                  current_main="A young woman.", current_final="A young woman.")
+        metadata["locked_literals"] = [{"id": "legacy-subject", "kind": "name", "text": "young woman",
+                                        "evidence": {"source": "user", "turn_id": "u1", "quote": "young woman"}}]
+        responses = [{"replacements": [{"span": 0, "text": "young blonde woman"}]},
+                     {"replacements": [{"span": 0, "text": "blonde young woman"}]}]
+        data = {"mode": "revise_main", "current_prompt": "A young woman.", "revision": "make her blonde",
+                "intent_turn_id": "u2", "intent_provenance": metadata}
+        with mock.patch.object(self.routes, "_consult", side_effect=[json.dumps(item) for item in responses]) as consult:
+            self.assertEqual(self.routes._revise(data), "A blonde young woman.")
+        self.assertEqual(consult.call_count, 2)
+        self.assertIn("locked_literal_changed", consult.call_args.args[1])
+
+    def test_removal_cannot_silently_omit_the_persistent_exclusion(self):
+        valid = {"version": 1, "base_revision": 0, "needs_clarification": False,
+                 "edit_scope": {"kind": "final_only", "action": "remove", "targets": ["lamp"], "evidence": "Remove the lamp",
+                                "spans": [{"stage": "final", "text": " beside a lamp", "target": "lamp"}]},
+                 "operations": [{"op": "exclude", "id": "lamp", "text": "lamp", "evidence": "Remove the lamp"}]}
+        invalid = {**valid, "operations": []}
+        with mock.patch.object(self.routes, "_consult", side_effect=[json.dumps(invalid), json.dumps(valid)]) as consult:
+            result = self.routes._prepare_image_intent({"intent_tracking": True}, "revise_main", "A cat.", "A cat beside a lamp.", "Remove the lamp")
+        self.assertEqual(result["exclusions"][0]["text"], "lamp")
+        self.assertIn("future rebuilds", consult.call_args.args[1])
+
+    def test_existing_literal_cannot_be_split_by_an_attribute_edit_span(self):
+        metadata = intent.empty_intent()
+        metadata["locked_literals"] = [{"id": "legacy", "kind": "name", "text": "young woman",
+                                        "evidence": {"source": "user", "turn_id": "u1", "quote": "young woman"}}]
+        valid = self.blonde_delta()
+        invalid = copy.deepcopy(valid)
+        invalid["edit_scope"]["spans"][0]["text"] = "woman"
+        with mock.patch.object(self.routes, "_consult", side_effect=[json.dumps(invalid), json.dumps(valid)]) as consult:
+            result = self.routes._prepare_image_intent({"intent_provenance": metadata}, "revise_main", "A young woman.", "A young woman.", "make her blonde")
+        self.assertEqual(result["edit_scope"]["spans"][0]["text"], "young woman")
+        self.assertIn("select the entire literal", consult.call_args.args[1])
+
+    def test_control_review_retries_unknown_constraints(self):
+        _, metadata = PromptIntentTests().removal()
+        bad = {"conflicts": [{"source_id": "decor", "constraint_ids": ["invented"]}]}
+        valid = {"conflicts": [{"source_id": "decor", "constraint_ids": ["prop-lamp"]}]}
+        with mock.patch.object(self.routes, "_consult", side_effect=[json.dumps(bad), json.dumps(valid)]) as consult:
+            result = self.routes._resolve_image_intent_controls({}, metadata, [{"id": "decor", "source": "style", "text": "Decorative lighting fixture"}])
+        self.assertEqual(result["additions"], [])
+        self.assertEqual(consult.call_count, 2)
+
+    def test_repeated_subject_edit_resolves_occurrence_without_model_character_offsets(self):
+        main = "A woman in a blue coat stands left. A woman in a blue coat stands right."
+        final = main + " Soft light."
+        delta = {"version": 1, "base_revision": 0, "needs_clarification": False,
+                 "edit_scope": {"kind": "local", "action": "modify", "targets": ["right coat"],
+                                "evidence": "Make only the right coat red", "spans": [
+                                    {"stage": stage, "text": "blue", "occurrence": 1, "target": "right-coat-color"}
+                                    for stage in ("main", "final")]}, "operations": []}
+        data = {"mode": "revise_main", "current_prompt": main, "current_main_prompt": main, "current_final_prompt": final,
+                "revision": "Make only the right coat red", "intent_tracking": True, "intent_turn_id": "right", "intent_delta": delta}
+        replacement = {"replacements": [{"span": 0, "text": "red"}]}
+        with mock.patch.object(self.routes, "_consult", return_value=json.dumps(replacement)):
+            self.assertEqual(self.routes._revise(data), "A woman in a blue coat stands left. A woman in a red coat stands right.")
+            metadata = data["_promptstudio_intent_result"]["intent_provenance"]
+            final_result = self.routes._revise({**data, "mode": "revise", "current_prompt": final, "intent_provenance": metadata})
+        self.assertEqual(final_result, "A woman in a blue coat stands left. A woman in a red coat stands right. Soft light.")
+        self.assertEqual(metadata["edit_scope"]["targets"], ["right-coat-color"])
+
+    def test_compound_edits_can_rewrite_clauses_and_remove_final_only_details_together(self):
+        main = 'Alice hands a red folder to Bob. A sign reads "OPEN".'
+        final = main + " A lamp glows. Soft daylight."
+        user = "Have Bob give Alice a blue folder and remove the lamp. Keep the sign unchanged."
+        delta = {"version": 1, "base_revision": 0, "needs_clarification": False,
+                 "edit_scope": {"kind": "local", "action": "remove", "targets": ["handoff", "lamp"], "evidence": user,
+                                "spans": [{"stage": stage, "text": "Alice hands a red folder to Bob.", "target": "handoff"} for stage in ("main", "final")]
+                                         + [{"stage": "final", "text": " A lamp glows.", "target": "lamp"}]},
+                 "operations": [{"op": "exclude", "id": "lamp", "text": "lamp", "evidence": "remove the lamp"},
+                                {"op": "lock", "id": "sign", "kind": "visible_text", "text": "OPEN", "evidence": "Keep the sign unchanged",
+                                 "reference": {"stage": "main", "text": 'A sign reads "OPEN".'}}]}
+        data = {"mode": "revise_main", "current_prompt": main, "current_main_prompt": main, "current_final_prompt": final,
+                "revision": user, "intent_tracking": True, "intent_turn_id": "compound", "intent_delta": delta}
+        responses = [{"replacements": [{"span": 0, "text": "Bob gives Alice a blue folder."}]},
+                     {"replacements": [{"span": 1, "text": ""}, {"span": 0, "text": "Bob gives Alice a blue folder."}]}]
+        with mock.patch.object(self.routes, "_consult", side_effect=[json.dumps(value) for value in responses]):
+            self.assertEqual(self.routes._revise(data), 'Bob gives Alice a blue folder. A sign reads "OPEN".')
+            metadata = data["_promptstudio_intent_result"]["intent_provenance"]
+            self.assertEqual(self.routes._revise({**data, "mode": "revise", "current_prompt": final, "intent_provenance": metadata}),
+                             'Bob gives Alice a blue folder. A sign reads "OPEN". Soft daylight.')
+        self.assertEqual(metadata["exclusions"][0]["text"], "lamp")
+
+    def test_conversation_router_retries_invalid_confidence(self):
+        valid = {"route": "mutate_now", "confidence": 1, "resolved_instruction": "Make the woman blonde.", "reason": "Explicit change"}
+        with mock.patch.object(self.routes, "_consult", side_effect=[json.dumps({**valid, "confidence": True}), json.dumps(valid)]) as consult:
+            self.assertEqual(self.routes._studio_turn_route({"user_text": "make her blonde"})["route"], "mutate_now")
+        self.assertEqual(consult.call_count, 2)
 
     def test_legacy_caller_keeps_existing_response_and_does_not_run_intent_classifier(self):
         with mock.patch.object(self.routes, "_consult_json_object") as classify, mock.patch.object(self.routes, "_generate_kcpp", return_value="A cat."):

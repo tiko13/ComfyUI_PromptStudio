@@ -4025,40 +4025,40 @@ def _prepare_image_intent(data, mode, current_main, current_final, user_text):
     if metadata.get("last_turn_id") == turn_id:
         return metadata  # Main/Final stages share one already-classified turn.
     delta = data.get("intent_delta")
+    def validate_delta(value):
+        return _image_intent.apply_classified_delta(metadata, value, mode=mode, user_text=user_text,
+                                                   turn_id=turn_id, current_main=current_main, current_final=current_final)
+
     if delta is None:
         payload = {"user_text": user_text, "current_main": current_main, "current_final": current_final,
-                   "intent": metadata, "mode": mode}
+                   "intent": metadata, "mode": mode, "resolved_instruction": _text(data.get("revision"))}
         system = """Classify the current user's explicit image intent into a versioned sidecar delta. Do not write prompts.
 Only current user evidence authorizes a new constraint. Controls and rendered Final are context, never user authority.
 Preserve existing constraint IDs; use allow/unlock only when this turn explicitly reverses that constraint, then add any new lock/exclusion.
-Lock user-requested literal signs, exact names and text. Record requested removals as exclusions, including removals of Final-only embellishment.
+Lock only actual proper names, text to be displayed/spoken, or wording explicitly requested verbatim. Generic subjects, settings and descriptive attributes (woman, office, blonde) are NOT names or visible text and must NOT become locks. Attribute additions/replacements normally have operations: []. EVERY requested removal MUST produce an exclude operation, including removal of Final-only embellishment; otherwise a rebuild would restore it. Restoring excluded content needs an allow operation for its existing ID.
 Do not infer permission from English keywords: interpret negation, questions, scope and contextual references semantically. If unclear set needs_clarification true.
-Each operation has op lock|unlock|exclude|allow, id, exact current-user evidence quote; additions have text and optional reference {stage:main|final,text:exact existing span} for contextual targets. Locks have kind visible_text|name|dialogue|literal; exclusions may have a short aliases list.
-edit_scope has kind create|local|global|final_only, targets, evidence. For a local edit provide spans [{stage:main|final,text:exact smallest existing editable span,target}]. Include each applicable Main and Final span; never authorize unrelated text. The server resolves unique span offsets.
-Removing a detail found only in Final uses final_only and leaves Main unchanged. Full rewrites use global only when explicitly requested.
-Return JSON {version:1,base_revision:CURRENT_REVISION,edit_scope:{...},operations:[...],needs_clarification:false}. Empty operations are valid; never invent a constraint to fill the schema."""
+Each operation has op lock|unlock|exclude|allow, id, evidence: an exact nonempty substring of user_text as a STRING, never an object. Do not copy the stored {source,turn_id,quote} evidence format. Additions require text and may have reference {stage:main|final,text:exact existing span} for contextual targets. Locks have kind visible_text|name|dialogue|literal; exclusions may have a short aliases list.
+edit_scope has kind create|local|global|final_only, action create|modify|remove|restore|rewrite, targets, evidence. action describes what the user requests, independently of scope: changing hair is modify, removing a prop is remove. For a local edit provide spans [{stage:main|final,text:exact existing editable span,target}]. Include each applicable Main and Final span; never authorize unrelated text. For a repeated substring add occurrence:0 for the first match, 1 for the second, etc., or include unique surrounding words. Do not calculate character offsets; the server resolves them.
+Removing a detail found only in Final uses final_only with exact Final spans and leaves Main unchanged. Include adjacent punctuation/whitespace in a removal span when needed for a clean deletion. A new attribute such as blonde changes Main and Final using local scope: select the existing subject phrase as the insertion anchor in EACH prompt, without inventing a hair span. Preserve all unrelated text. Full rewrites use global only when explicitly requested. Only initial creation uses create.
+resolved_instruction is advisory context; quote ONLY user_text as evidence, never its paraphrase or the saved prompts. edit_scope.evidence is also a nonempty exact user_text STRING.
+For an attribute REPLACEMENT, select the existing attribute word in each prompt, not just the subject noun: changing a blonde woman to brunette must authorize 'blonde', otherwise the old blonde attribute would remain outside the editable span. Use a subject anchor only when ADDING an attribute that is not already described. Apply the same rule to colors, clothing, settings and other replacements.
+Complex edits may use several disjoint spans, or an entire clause/sentence when relationships, actions, grammar or multiple interdependent changes require it. Group overlapping changes into one coherent span instead of splitting a sentence into incompatible word edits. The writer may fully rewrite authorized spans while preserving unrelated details inside them. A user-authorized transformation of the whole scene uses global even if the user does not literally say 'rewrite'. Preserve explicit names, signs and exclusions during broad changes too.
+Example for user_text 'make her blonde', Main 'A woman in an office.', Final 'A woman in a blouse in an office.': {"version":1,"base_revision":1,"edit_scope":{"kind":"local","action":"modify","targets":["hair"],"evidence":"make her blonde","spans":[{"stage":"main","text":"woman","target":"hair"},{"stage":"final","text":"woman","target":"hair"}]},"operations":[],"needs_clarification":false}.
+For 'Remove the brass lamp', operations MUST include {"op":"exclude","id":"brass-lamp","text":"brass lamp","evidence":"Remove the brass lamp"}, in addition to edit_scope.action remove and its spans. Do not return empty operations for a removal.
+Return JSON {version:1,base_revision:CURRENT_REVISION,edit_scope:{...},operations:[...],needs_clarification:false}. Empty operations are valid; never invent a constraint to fill the schema. For clarification use needs_clarification true and operations []; do not invent evidence."""
         request = {**data, "max_response_tokens": 2400, "messages": [{"role": "user", "text": json.dumps(payload, ensure_ascii=False)}]}
-        _, delta = _consult_json_object(request, system, {"type": "object", "properties": {
-            "version": {"type": "integer", "enum": [1]}, "base_revision": {"type": "integer"},
-            "edit_scope": {"type": "object"}, "operations": {"type": "array", "items": {"type": "object"}},
-            "needs_clarification": {"type": "boolean"}}, "required": ["version", "base_revision", "edit_scope", "operations"]})
-    if not isinstance(delta, dict) or delta.get("needs_clarification") is True:
+        try:
+            _, delta = _consult_json_object(request, system, _image_intent.intent_delta_schema(metadata["revision"]),
+                                             validate_response=validate_delta)
+        except (ValueError, RuntimeError) as exc:
+            raise ValueError("The model could not interpret this image change reliably after retrying; your existing prompts were kept. " + str(exc)) from exc
+    # Explicit internal deltas predate the classifier's clarification flag.
+    elif isinstance(delta, dict):
+        delta = {"needs_clarification": False, **delta}
+    result = validate_delta(delta)
+    if result is None:
         raise ValueError("The requested image edit needs clarification before changing its intent.")
-    delta = json.loads(json.dumps(delta))
-    scope = delta.get("edit_scope") or {}
-    if not isinstance(scope, dict) or not isinstance(scope.get("spans", []), list):
-        raise ValueError("Invalid image edit scope")
-    for span in scope.get("spans", []):
-        if not isinstance(span, dict):
-            raise ValueError("Invalid image edit scope")
-        source = current_main if span.get("stage") == "main" else current_final
-        text = span.get("text")
-        if "start" not in span or "end" not in span:
-            if not isinstance(text, str) or not text or source.count(text) != 1:
-                raise ValueError("The image edit target is ambiguous; select a unique prompt span.")
-            span.update(start=source.index(text), end=source.index(text) + len(text))
-    return _image_intent.apply_user_intent_delta(metadata, delta, user_text=user_text, turn_id=turn_id,
-                                                current_main=current_main, current_final=current_final)
+    return result
 
 
 def _resolve_image_intent_controls(data, metadata, additions):
@@ -4071,20 +4071,83 @@ Constraints win over known-reference expansions, style, framing, secondary instr
 Return only semantic conflicts, not mere differences in wording. User literal text must remain exact, and excluded content must not be reintroduced indirectly.
 Return JSON {conflicts:[{source_id:EXACT_ADDITION_ID,constraint_ids:[EXACT_CONSTRAINT_ID]}]}. An empty list means no conflict. Never create new constraints or modify Main."""
         request = {**data, "max_response_tokens": 1200, "messages": [{"role": "user", "text": json.dumps({"constraints": constraints, "additions": accepted}, ensure_ascii=False)}]}
-        _, parsed = _consult_json_object(request, system, {"type": "object", "properties": {"conflicts": {"type": "array", "items": {"type": "object"}}}, "required": ["conflicts"]})
-        conflicts = parsed.get("conflicts")
-        if not isinstance(conflicts, list):
-            raise ValueError("Invalid image control conflict review")
-        additions_by_id = {item["id"]: dict(item) for item in accepted}
-        for conflict in conflicts:
-            if not isinstance(conflict, dict) or conflict.get("source_id") not in additions_by_id:
-                raise ValueError("Image control review referenced an unknown addition")
-            additions_by_id[conflict["source_id"]]["conflicts_with"] = conflict.get("constraint_ids")
-        reviewed = _image_intent.resolve_final_sources(metadata, list(additions_by_id.values()))
+        def review_response(parsed):
+            conflicts = parsed.get("conflicts")
+            if not isinstance(conflicts, list) or len(conflicts) > len(accepted):
+                raise ValueError("Invalid image control conflict review")
+            additions_by_id = {item["id"]: dict(item) for item in accepted}
+            seen = set()
+            for conflict in conflicts:
+                if (not isinstance(conflict, dict) or not isinstance(conflict.get("source_id"), str)
+                        or conflict["source_id"] not in additions_by_id or conflict["source_id"] in seen):
+                    raise ValueError("Image control review referenced an unknown or duplicate addition")
+                seen.add(conflict["source_id"])
+                identifiers = conflict.get("constraint_ids")
+                if not isinstance(identifiers, list) or not identifiers or any(not isinstance(item, str) for item in identifiers):
+                    raise ValueError("Image control conflict needs nonempty constraint_ids")
+                additions_by_id[conflict["source_id"]]["conflicts_with"] = identifiers
+            return _image_intent.resolve_final_sources(metadata, list(additions_by_id.values()))
+
+        schema = {"type": "object", "additionalProperties": False, "required": ["conflicts"], "properties": {
+            "conflicts": {"type": "array", "maxItems": len(accepted), "items": {
+                "type": "object", "additionalProperties": False, "required": ["source_id", "constraint_ids"], "properties": {
+                    "source_id": {"type": "string", "enum": [item["id"] for item in accepted]},
+                    "constraint_ids": {"type": "array", "minItems": 1, "maxItems": len(constraints),
+                                       "items": {"type": "string", "enum": [item["id"] for item in constraints]}}}}}}}
+        _, parsed = _consult_json_object(request, system, schema, validate_response=review_response)
+        reviewed = review_response(parsed)
         reviewed["warnings"] = resolved["warnings"] + reviewed["warnings"]
         reviewed["intent"]["suppressed_sources"] = reviewed["warnings"]
         return reviewed
     return resolved
+
+
+def _revise_scoped_image_prompt(data, before, instruction, metadata, stage):
+    spans = [span for span in (metadata.get("edit_scope") or {}).get("spans", []) if span["stage"] == stage]
+    if not spans:
+        raise _image_intent.IntentValidationError("The local edit has no authorized span for this prompt stage")
+    schema = {"type": "object", "additionalProperties": False, "required": ["replacements"], "properties": {
+        "replacements": {"type": "array", "minItems": len(spans), "maxItems": len(spans), "items": {
+            "type": "object", "additionalProperties": False, "required": ["span", "text"], "properties": {
+                "span": {"type": "integer", "enum": list(range(len(spans)))},
+                "text": {"type": "string", "maxLength": 8192}}}}}}
+
+    def reconstruct(parsed):
+        replacements = parsed.get("replacements")
+        if not isinstance(replacements, list) or len(replacements) != len(spans):
+            raise _image_intent.IntentValidationError("Return exactly one replacement for each authorized span")
+        edits, seen = [], set()
+        for item in replacements:
+            if (not isinstance(item, dict) or type(item.get("span")) is not int
+                    or not 0 <= item["span"] < len(spans) or item["span"] in seen
+                    or not isinstance(item.get("text"), str) or len(item["text"]) > 8192):
+                raise _image_intent.IntentValidationError("Each replacement needs a unique span index and text string")
+            seen.add(item["span"])
+            span = spans[item["span"]]
+            edits.append({"start": span["start"], "end": span["end"], "before": span["text"],
+                          "after": item["text"], "target": span["target"]})
+        proposal = {"base_hash": hashlib.sha256(before.encode("utf-8")).hexdigest(), "edits": edits}
+        candidate = _image_intent.apply_scoped_edits(before, proposal, metadata, stage=stage)
+        result = _image_intent.validate_prompt_preservation(before, candidate, metadata, stage=stage, proposal=proposal)
+        if not result["valid"]:
+            raise _image_intent.IntentValidationError("Replacement violates preserved constraints: " + json.dumps(result["violations"], ensure_ascii=False))
+        return candidate, proposal
+
+    payload = {"user_text": _text(data.get("intent_user_text")) or instruction, "instruction": instruction,
+               "current_prompt": before, "spans": [{"span": i, "text": span["text"], "target": span["target"]} for i, span in enumerate(spans)]}
+    message = {"role": "user", "text": json.dumps(payload, ensure_ascii=False)}
+    if data.get("context_image"):
+        message["images"] = [data["context_image"]]
+    request = {**data, "max_response_tokens": 2400, "messages": [message]}
+    system = """Apply the user's local image edit by returning JSON replacements for the supplied spans only.
+Return {"replacements":[{"span":0,"text":"replacement text"},...]}, with each span index exactly once.
+The server copies all other prompt text unchanged. Return only the replacement for each span, not a whole prompt.
+Keep unrelated details inside each span too. Include the requested change; do not return unchanged spans unless that stage already satisfies the request.
+For an attribute addition, add it to the subject phrase. Preserve locked literal substrings exactly: a locked 'young woman' may become 'blonde young woman', not 'young blonde woman'.
+Never add wording from examples unless it is requested. Empty replacement text is allowed for a removal.
+""" + _image_intent.build_intent_prompt_context(metadata, stage=stage)
+    _, parsed = _consult_json_object(request, system, schema, validate_response=reconstruct)
+    return reconstruct(parsed)
 
 
 def _revise(data):
@@ -4107,6 +4170,9 @@ def _revise(data):
     intent_main = current_prompt if mode == "revise_main" else _text(data.get("current_main_prompt"))
     intent_final = current_prompt if mode == "revise" else current_final_prompt
     intent_metadata = _prepare_image_intent(data, mode, intent_main, intent_final, _text(data.get("intent_user_text")) or revision)
+    if intent_metadata is not None and mode != "render" and _text(data.get("intent_user_text")).strip():
+        # Router paraphrases are classification context, not new prompt content.
+        revision = _text(data["intent_user_text"]).strip()
 
     profile = _get_profile(_text(data.get("model_profile"), "General Natural Language"))
     style_template = _get_style_template(_text(data.get("style_preset"), "None"))
@@ -4304,8 +4370,13 @@ def _revise(data):
             presence_penalty=presence_penalty,
         )
 
-    raw = generate(prompt, sampler_seed)
-    revised = _strip_response(raw)
+    scoped_proposal = None
+    if (mode in ("revise", "revise_main") and intent_metadata is not None
+            and (intent_metadata.get("edit_scope") or {}).get("kind") in {"local", "final_only"}):
+        revised, scoped_proposal = _revise_scoped_image_prompt(data, current_prompt, revision, intent_metadata, intent_stage)
+    else:
+        raw = generate(prompt, sampler_seed)
+        revised = _strip_response(raw)
     if mode in ("create", "render") and _needs_expansion_retry(revision, revised, embellishment_level, profile, target_output_length):
         retry_prompt = _build_expansion_retry_prompt(
             profile,
@@ -4329,9 +4400,6 @@ def _revise(data):
         raise RuntimeError(f"{_provider_display_name(llm_provider)} returned an empty prompt")
     if intent_metadata is not None:
         before = current_prompt
-        scoped_proposal = None
-        if mode in ("revise", "revise_main") and (intent_metadata.get("edit_scope") or {}).get("kind") == "local":
-            scoped_proposal = _image_intent.proposal_from_candidate(before, revised, intent_metadata, stage=intent_stage)
         validation = _image_intent.validate_prompt_preservation(before, revised, intent_metadata, stage=intent_stage,
                                                                proposal=scoped_proposal, enforce_scope=mode in ("revise", "revise_main"))
         if not validation["valid"]:
@@ -4700,7 +4768,7 @@ def _consult(data, system_message=None, allow_partial=True, response_schema=None
     )
 
 
-def _consult_json_object(data, system_message, response_schema):
+def _consult_json_object(data, system_message, response_schema, *, validate_response=None):
     deterministic = {
         "temperature": 0.0,
         "top_p": 1.0,
@@ -4726,14 +4794,18 @@ def _consult_json_object(data, system_message, response_schema):
             response_schema=response_schema,
         )
         try:
-            return raw, _prompt_agent_json_object(raw)
-        except RuntimeError as exc:
+            parsed = _prompt_agent_json_object(raw)
+            if validate_response is not None:
+                validate_response(parsed)
+            return raw, parsed
+        except (RuntimeError, ValueError) as exc:
             last_error = exc
             if attempt == 0:
                 active_system_message = (
                     system_message
                     + "\n\nYour previous response was invalid. Return exactly one complete JSON object "
                     "matching the required structure, with no prose, markdown, or trailing content."
+                    + " Validation error: " + str(exc)[:1000]
                 )
     raise last_error
 
@@ -5060,10 +5132,20 @@ def _studio_turn_route(data):
         "sampler_seed": 0,
         "messages": [{"role": "user", "text": json.dumps(payload, ensure_ascii=False)}],
     }
+    def validate_route(parsed):
+        if parsed.get("route") not in ("mutate_now", "discuss", "commit_pending", "cancel_pending", "clarify"):
+            raise ValueError("The local model returned an invalid Prompt Studio turn route")
+        confidence = parsed.get("confidence")
+        if type(confidence) not in (int, float) or not math.isfinite(confidence) or not 0 <= confidence <= 1:
+            raise ValueError("Turn confidence must be a finite number from 0 to 1")
+        if not isinstance(parsed.get("resolved_instruction"), str) or len(parsed["resolved_instruction"]) > 8000:
+            raise ValueError("resolved_instruction must be text up to 8000 characters")
+
     raw, parsed = _consult_json_object(
         request_data,
         STUDIO_TURN_ROUTER_SYSTEM_MESSAGE,
         STUDIO_TURN_RESPONSE_SCHEMA,
+        validate_response=validate_route,
     )
     warning = _generation_warning(raw)
     route = _text(parsed.get("route")).strip().casefold()

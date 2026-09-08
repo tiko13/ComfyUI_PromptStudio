@@ -12325,6 +12325,7 @@ async function handleStudioTurn() {
       });
       const applied = await reviseAndMaybeGenerate({
         revisionOverride: instruction,
+        userTextOverride: text,
         recordRevision: false,
       });
       if (!applied && !input.value) input.value = text;
@@ -12375,6 +12376,7 @@ async function reviseAndMaybeGenerate({
   regenerateFinal = false,
   generationAction = selectedAction(),
   revisionOverride = null,
+  userTextOverride = null,
   recordRevision = true,
   contextImageOverride = undefined,
 } = {}) {
@@ -12438,7 +12440,7 @@ async function reviseAndMaybeGenerate({
   const autoGenerate = forceGenerate || state.panel.querySelector("#promptstudio-auto-generate")?.checked === true;
   const editPromptMode = selectedEditPromptMode();
   const basePayload = collectRevisionPayload("", "render", "", previousFinalPrompt, contextImage);
-  const intentSession = createIntentSession(chat.intentProvenance, {turnId: makeId(), userText: revision, mainPrompt: previousMainPrompt, finalPrompt: previousFinalPrompt});
+  const intentSession = createIntentSession(chat.intentProvenance, {turnId: makeId(), userText: userTextOverride ?? revision, mainPrompt: previousMainPrompt, finalPrompt: previousFinalPrompt});
   const requestTrackedRevision = (...args) => requestPromptRevision(...args, intentSession);
   const payloadFor = (nextRevision, mode, currentPrompt, currentFinalPrompt) => ({
     ...basePayload,
