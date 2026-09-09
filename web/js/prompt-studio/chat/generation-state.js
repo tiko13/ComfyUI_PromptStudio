@@ -1,3 +1,4 @@
+import { normalizeReferenceGrounding } from "../generation/reference-grounding.js";
 import { normalizeImageReference } from "./image-reference.js";
 import { cleanModelName } from "../generation/model-name.js";
 import { normalizeProvenance } from "../generation/provenance.js";
@@ -65,6 +66,8 @@ export function normalizeLastGeneration(value) {
     executionPrompt: String(value.executionPrompt || ""),
     workflowProfileId: String(value.workflowProfileId || ""),
     sourceImage: normalizeImageReference(value.sourceImage),
+    referenceImage: normalizeImageReference(value.referenceImage),
+    referenceGrounding: normalizeReferenceGrounding(value.referenceGrounding),
   };
 }
 
@@ -83,6 +86,8 @@ export function normalizePendingGeneration(value) {
     provenance: normalizeProvenance(value.provenance),
     replayFingerprint: String(value.replayFingerprint || ""),
     sourceImage: normalizeImageReference(value.sourceImage),
+    referenceImage: normalizeImageReference(value.referenceImage),
+    referenceGrounding: normalizeReferenceGrounding(value.referenceGrounding),
     upscaleFactor: value.upscaleFactor != null && Number.isFinite(Number(value.upscaleFactor))
       ? Number(value.upscaleFactor)
       : null,

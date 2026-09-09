@@ -130,7 +130,7 @@ def intent_delta_schema(revision):
     operation = obj({"op": {"type": "string", "enum": ["lock", "unlock", "exclude", "allow"]},
                      "id": identifier, "evidence": text, "text": text,
                      "kind": {"type": "string", "enum": sorted(LITERAL_KINDS)},
-                     "reference": obj({"stage": stage, "text": text}, ["stage", "text"]),
+                     "reference": obj({"stage": {"type": "string", "enum": ["main", "final", "reference"]}, "text": text}, ["stage", "text"]),
                      "aliases": {"type": "array", "maxItems": 16,
                                  "items": {"type": "string", "minLength": 1, "maxLength": 512}}},
                     ["op", "id", "evidence"])
@@ -151,7 +151,7 @@ def intent_delta_schema(revision):
                ["version", "base_revision", "edit_scope", "operations", "needs_clarification"])
 
 
-def apply_classified_delta(current, delta, *, mode, user_text, turn_id, current_main="", current_final=""):
+def apply_classified_delta(current, delta, *, mode, user_text, turn_id, current_main="", current_final="", reference_observations=""):
     """Validate model output before committing it; resolve spans against the saved pair."""
     if not isinstance(delta, dict) or type(delta.get("needs_clarification")) is not bool:
         raise IntentValidationError("needs_clarification must be a boolean")
@@ -203,7 +203,7 @@ def apply_classified_delta(current, delta, *, mode, user_text, turn_id, current_
     if scope["kind"] == "final_only" and (not spans or any(span["stage"] != "final" for span in spans)):
         raise IntentValidationError("final_only edits need exact Final spans and must not authorize Main spans")
     result = apply_user_intent_delta(current, delta, user_text=user_text, turn_id=turn_id,
-                                    current_main=current_main, current_final=current_final)
+                                    current_main=current_main, current_final=current_final, reference_observations=reference_observations)
     for span in spans:
         source = current_main if span["stage"] == "main" else current_final
         for literal in result["locked_literals"]:
@@ -231,7 +231,7 @@ def apply_classified_delta(current, delta, *, mode, user_text, turn_id, current_
     return result
 
 
-def apply_user_intent_delta(current, delta, *, user_text, turn_id, current_main="", current_final=""):
+def apply_user_intent_delta(current, delta, *, user_text, turn_id, current_main="", current_final="", reference_observations=""):
     """Apply only semantic-router/user-confirmed operations with current evidence."""
     result = normalize_intent(current) or empty_intent()
     _text(user_text, "Current user turn", 65536)
@@ -280,15 +280,17 @@ def apply_user_intent_delta(current, delta, *, user_text, turn_id, current_main=
         reference = operation.get("reference")
         if reference is not None:
             if (not isinstance(reference, dict) or not isinstance(reference.get("stage"), str)
-                    or reference["stage"] not in {"main", "final"}):
+                    or reference["stage"] not in {"main", "final", "reference"}):
                 raise IntentValidationError("Invalid contextual reference")
             reference_text = _text(reference.get("text"), "Referenced prompt span")
-            source = current_main if reference["stage"] == "main" else current_final
+            source = reference_observations if reference["stage"] == "reference" else current_main if reference["stage"] == "main" else current_final
             if reference_text not in source or text.casefold() not in reference_text.casefold():
-                raise IntentValidationError("Contextual target does not match the saved prompt")
+                raise IntentValidationError("Contextual target does not match the saved prompt or grounded observation")
         elif text.casefold() not in evidence["quote"].casefold():
             raise IntentValidationError(f"operations[{index}] target {text!r} is not in its evidence quote {evidence['quote']!r}; supply reference {{stage:main|final,text:exact saved substring containing the target}} for a contextual target")
         item = {"id": identifier, "text": text, "evidence": evidence}
+        if reference and reference["stage"] == "reference":
+            item["reference"] = {"stage": "reference", "text": reference_text}
         if collection == "locked_literals":
             item["kind"] = operation.get("kind", "literal")
             if not isinstance(item["kind"], str) or item["kind"] not in LITERAL_KINDS:

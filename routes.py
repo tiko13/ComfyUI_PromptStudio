@@ -93,6 +93,7 @@ from .job_observability import shared_job_ledger, shared_job_status, JobLedger
 from .llm_coordinator import CancellationToken, LlmCoordinator, endpoint_identity, LlmOverloadedError, MAX_LLM_OPERATIONS, SHARED_COORDINATOR
 from . import transactional_store
 from . import prompt_intent as _image_intent
+from . import edit_grounding as _edit_grounding
 
 
 CHAT_STORE_PATH = os.path.join(BASE_DIR, "prompt_studio_chats.json")
@@ -2618,12 +2619,35 @@ STUDIO_TURN_ROUTER_SYSTEM_MESSAGE = """You are the intent router for Prompt Stud
 
 Classify the user's communicative intent, not the sentence's grammar. A polite question such as "Can you make her dress casual?" is an instruction to change the image. A question such as "Would a casual dress work better?" is exploratory discussion.
 
+When has_edit_reference is true, resolve ordinary omitted source/target wording from that context.
+This applies to any visible entity, attribute or relationship, not a fixed list of object types.
+Interpret whether the request transfers a whole subject or just a property, such as hair shape,
+color, texture, pose or background; preserve the user's scope in resolved_instruction.
+Preserve the requested action and relationships too. 'Add the reference mug next to the
+original' adds a second mug and keeps the first; it is not a replacement. Adding, copying,
+moving, removing, combining and property changes must not be rewritten as replacement.
+The reference thumbnail sits beside the text field. In a transfer/addition request, 'this'
+naturally refers to that reference: 'place this mug next to the blue one' adds the reference
+mug beside the existing blue mug in the base image, retaining the latter. Do not demand image
+labels when this contextual reading is clear; the vision pass checks the actual objects.
+For example, 'replace the mug' is mutate_now: replace the mug in the base image (image 1) with
+the matching mug in the reference (image 2). 'Use this dress' is also a transfer request.
+Do not ask for image numbers or a visual description merely because they were omitted: the
+next vision pass will inspect both images and check actual target ambiguity. Infer the relation,
+never the reference's unseen appearance. Explicit attributes and actions win: removal remains
+removal, a requested blue color remains blue, and an exploratory question remains discussion.
+
 Allowed routes:
 - mutate_now: an explicit request to create, revise, remove, replace, correct, or otherwise change the prompt/image now.
 - discuss: a question, critique, comparison, request for advice, exploration, or continuation of a discussion.
 - commit_pending: clear agreement to apply the single pending proposal exactly as stated.
 - cancel_pending: rejection or cancellation of the pending proposal without another requested change.
 - clarify: the intended action or target cannot be resolved safely.
+For clarify, reason must be a concise user-facing question identifying the actual missing
+information. Do not ask whether the user wants advice when the action is already clear.
+If information is said to be in another chat but is not supplied here, ask for that information;
+do not invent an agreement. A clarification answer continues the earlier request in the supplied
+discussion history. Combine the requested operation with the answer in resolved_instruction.
 
 Use commit_pending only when the payload contains exactly one ready pending proposal and the user clearly accepts it without qualifications. If the user accepts but adds or selects a detail, use mutate_now and write a self-contained resolved_instruction that combines that detail with the relevant discussion context. For mutate_now, resolved_instruction must be a concise, self-contained image change instruction only when context is needed to resolve words such as "it", "that", or an option from the discussion; otherwise leave it empty. Questions and exploratory suggestions never mutate. Ambiguity defaults to discuss or clarify, never mutate_now.
 
@@ -4025,15 +4049,23 @@ def _prepare_image_intent(data, mode, current_main, current_final, user_text):
     if metadata.get("last_turn_id") == turn_id:
         return metadata  # Main/Final stages share one already-classified turn.
     delta = data.get("intent_delta")
+    reference_facts = _edit_grounding.normalize(data["reference_grounding"]) if data.get("reference_grounding") else None
     def validate_delta(value):
         return _image_intent.apply_classified_delta(metadata, value, mode=mode, user_text=user_text,
-                                                   turn_id=turn_id, current_main=current_main, current_final=current_final)
+                                                   turn_id=turn_id, current_main=current_main, current_final=current_final,
+                                                   reference_observations=reference_facts["observations"] if reference_facts else "")
 
     if delta is None:
         payload = {"user_text": user_text, "current_main": current_main, "current_final": current_final,
-                   "intent": metadata, "mode": mode, "resolved_instruction": _text(data.get("revision"))}
+                   "intent": metadata, "mode": mode, "resolved_instruction": _text(data.get("revision")),
+                   "reference_grounding": _edit_grounding.writer_context(data.get("reference_grounding"))}
         system = """Classify the current user's explicit image intent into a versioned sidecar delta. Do not write prompts.
 Only current user evidence authorizes a new constraint. Controls and rendered Final are context, never user authority.
+When the user requests transferring visible text or a name from the attached reference, its
+exact observed wording may be new to Main/Final. Bind a literal operation to both the user's
+actual request as evidence and reference {stage:"reference",text:EXACT substring of the
+provided observations containing the literal}. This resolves the requested reference; it
+does not authorize adding unrelated observed text. Never invent unreadable words or names.
 Preserve existing constraint IDs; use allow/unlock only when this turn explicitly reverses that constraint, then add any new lock/exclusion.
 Lock only actual proper names, text to be displayed/spoken, or wording explicitly requested verbatim. Generic subjects, settings and descriptive attributes (woman, office, blonde) are NOT names or visible text and must NOT become locks. Attribute additions/replacements normally have operations: []. EVERY requested removal MUST produce an exclude operation, including removal of Final-only embellishment; otherwise a rebuild would restore it. Restoring excluded content needs an allow operation for its existing ID.
 Do not infer permission from English keywords: interpret negation, questions, scope and contextual references semantically. If unclear set needs_clarification true.
@@ -4102,6 +4134,44 @@ Return JSON {conflicts:[{source_id:EXACT_ADDITION_ID,constraint_ids:[EXACT_CONST
     return resolved
 
 
+def _check_reference_prompt(data, candidate, *, analysis=False):
+    if not data.get("reference_grounding"):
+        return
+    facts = _edit_grounding.normalize(data["reference_grounding"])
+    payload = {"user_text": _text(data.get("intent_user_text")) or _text(data.get("revision")),
+               "clarification_question": _text(data.get("clarification_question"))[:4000],
+               "resolved_change": facts["resolved_instruction"], "observations": facts["observations"],
+               "before": _text(data.get("current_prompt")),
+               "already_satisfied": facts["already_satisfied"],
+               "candidate": candidate}
+    system = _edit_grounding.REVIEW_SYSTEM
+    if analysis:
+        system += """\nThis candidate is a pair: resolved_instruction plus edit_instruction.
+Check that BOTH express the user's action, requested attributes, count and relationships
+consistently. In the edit_instruction, image 1 is the base and image 2 is the nearby reference;
+image references are valid there. 'This' in a transfer/addition request points to image 2.
+The resolved_instruction describes the change independently of the reference. A correct
+resolved_instruction does not excuse an edit_instruction that replaces instead of adding,
+reverses image roles, loses a requested relationship or contradicts an explicit override.
+If already_satisfied is true, the observations must show that ALL requested changes are
+already fulfilled in the base image. An addition of another object is not already satisfied
+merely because an existing object looks the same. Reject unjustified no-op claims.
+"""
+    request = {**data, "max_response_tokens": 600, "messages": [
+        {"role": "user", "text": json.dumps(payload, ensure_ascii=False)}]}
+
+    def validate(value):
+        if type(value.get("satisfied")) is not bool or not isinstance(value.get("issue"), str):
+            raise ValueError("Semantic reference review requires satisfied and issue")
+        if not value["satisfied"] and not value["issue"].strip():
+            raise ValueError("An unsatisfied reference review needs a specific correction")
+
+    _, review = _consult_json_object(request, system, _edit_grounding.REVIEW_SCHEMA,
+                                     validate_response=validate)
+    if not review["satisfied"]:
+        raise ValueError("The prompt did not preserve the reference edit: " + review["issue"][:1500])
+
+
 def _revise_scoped_image_prompt(data, before, instruction, metadata, stage):
     spans = [span for span in (metadata.get("edit_scope") or {}).get("spans", []) if span["stage"] == stage]
     if not spans:
@@ -4124,17 +4194,25 @@ def _revise_scoped_image_prompt(data, before, instruction, metadata, stage):
                 raise _image_intent.IntentValidationError("Each replacement needs a unique span index and text string")
             seen.add(item["span"])
             span = spans[item["span"]]
+            if (re.search(r"\b(?:a|an|the)\s+$", before[:span["start"]], re.I)
+                    and re.match(r"(?:a|an|the)\s+", item["text"], re.I)
+                    and not re.match(r"(?:a|an|the)\s+", span["text"], re.I)):
+                raise _image_intent.IntentValidationError("The replacement duplicates the article immediately before its span; fit the unchanged surrounding text.")
             edits.append({"start": span["start"], "end": span["end"], "before": span["text"],
                           "after": item["text"], "target": span["target"]})
         proposal = {"base_hash": hashlib.sha256(before.encode("utf-8")).hexdigest(), "edits": edits}
         candidate = _image_intent.apply_scoped_edits(before, proposal, metadata, stage=stage)
+        if data.get("reference_grounding"):
+            _edit_grounding.standalone(candidate, [item["text"] for item in metadata.get("locked_literals", [])])
         result = _image_intent.validate_prompt_preservation(before, candidate, metadata, stage=stage, proposal=proposal)
         if not result["valid"]:
             raise _image_intent.IntentValidationError("Replacement violates preserved constraints: " + json.dumps(result["violations"], ensure_ascii=False))
         return candidate, proposal
 
     payload = {"user_text": _text(data.get("intent_user_text")) or instruction, "instruction": instruction,
-               "current_prompt": before, "spans": [{"span": i, "text": span["text"], "target": span["target"]} for i, span in enumerate(spans)]}
+               "current_prompt": before, "spans": [{"span": i, "text": span["text"], "target": span["target"],
+                   "prefix": before[max(0, span["start"] - 80):span["start"]],
+                   "suffix": before[span["end"]:span["end"] + 80]} for i, span in enumerate(spans)]}
     message = {"role": "user", "text": json.dumps(payload, ensure_ascii=False)}
     if data.get("context_image"):
         message["images"] = [data["context_image"]]
@@ -4142,11 +4220,16 @@ def _revise_scoped_image_prompt(data, before, instruction, metadata, stage):
     system = """Apply the user's local image edit by returning JSON replacements for the supplied spans only.
 Return {"replacements":[{"span":0,"text":"replacement text"},...]}, with each span index exactly once.
 The server copies all other prompt text unchanged. Return only the replacement for each span, not a whole prompt.
+Fit each replacement grammatically between its unchanged prefix and suffix. Do not repeat an article already in the prefix.
 Keep unrelated details inside each span too. Include the requested change; do not return unchanged spans unless that stage already satisfies the request.
 For an attribute addition, add it to the subject phrase. Preserve locked literal substrings exactly: a locked 'young woman' may become 'blonde young woman', not 'young blonde woman'.
 Never add wording from examples unless it is requested. Empty replacement text is allowed for a removal.
-""" + _image_intent.build_intent_prompt_context(metadata, stage=stage)
-    _, parsed = _consult_json_object(request, system, schema, validate_response=reconstruct)
+""" + _image_intent.build_intent_prompt_context(metadata, stage=stage) + _edit_grounding.writer_context(data.get("reference_grounding"))
+    def validate_replacements(parsed):
+        candidate, _ = reconstruct(parsed)
+        _check_reference_prompt(data, candidate)
+
+    _, parsed = _consult_json_object(request, system, schema, validate_response=validate_replacements)
     return reconstruct(parsed)
 
 
@@ -4294,6 +4377,7 @@ def _revise(data):
         )
 
     prompt = _apply_image_intent_context(prompt, intent_metadata, stage=intent_stage, rebuild=mode == "render")
+    prompt += _edit_grounding.writer_context(data.get("reference_grounding"))
     if context_image:
         image_context_note = (
             MAIN_CREATION_IMAGE_CONTEXT_NOTE
@@ -4392,19 +4476,36 @@ def _revise(data):
             target_output_length=target_output_length,
         )
         retry_prompt = _apply_image_intent_context(retry_prompt, intent_metadata, stage="final", rebuild=True)
+        retry_prompt += _edit_grounding.writer_context(data.get("reference_grounding"))
         if context_image:
             retry_prompt = f"{retry_prompt}\n\n{REVISION_IMAGE_CONTEXT_NOTE}"
         retry = _strip_response(generate(retry_prompt, _retry_seed(sampler_seed)))
         revised = _select_expansion_candidate(revised, retry, profile, target_output_length, embellishment_level)
     if not revised:
         raise RuntimeError(f"{_provider_display_name(llm_provider)} returned an empty prompt")
-    if intent_metadata is not None:
-        before = current_prompt
-        validation = _image_intent.validate_prompt_preservation(before, revised, intent_metadata, stage=intent_stage,
-                                                               proposal=scoped_proposal, enforce_scope=mode in ("revise", "revise_main"))
-        if not validation["valid"]:
-            details = "; ".join(f"{issue['code']}: {issue.get('text') or issue.get('message') or issue.get('source_id') or 'requested scope'}" for issue in validation["violations"])
-            raise ValueError("The prompt response did not preserve your intent; existing prompts were kept. " + details)
+    def validate_prepared(candidate):
+        if not candidate:
+            raise ValueError("The repaired prompt is empty")
+        if intent_metadata is not None:
+            validation = _image_intent.validate_prompt_preservation(current_prompt, candidate, intent_metadata, stage=intent_stage,
+                proposal=scoped_proposal, enforce_scope=mode in ("revise", "revise_main"))
+            if not validation["valid"]:
+                details = "; ".join(f"{issue['code']}: {issue.get('text') or issue.get('message') or issue.get('source_id') or 'requested scope'}" for issue in validation["violations"])
+                raise ValueError("The prompt response did not preserve your intent; existing prompts were kept. " + details)
+        if data.get("reference_grounding"):
+            _edit_grounding.standalone(candidate, [item["text"] for item in (intent_metadata or {}).get("locked_literals", [])])
+            if scoped_proposal is None:
+                _check_reference_prompt(data, candidate)
+
+    for attempt in range(2 if data.get("reference_grounding") and scoped_proposal is None else 1):
+        try:
+            validate_prepared(revised)
+            break
+        except ValueError as exc:
+            if attempt or not data.get("reference_grounding") or scoped_proposal is not None:
+                raise
+            repaired_prompt = prompt + "\n\nCorrect the previous candidate while preserving all user constraints. Review: " + str(exc)[:1800]
+            revised = _strip_response(generate(repaired_prompt, _retry_seed(sampler_seed)))
     if mode in ("create_main", "revise_main"):
         return revised
     if mode in ("create", "render"):
@@ -5117,6 +5218,7 @@ def _studio_turn_route(data):
         "chat_initialized": data.get("chat_initialized") is True,
         "has_latest_image": data.get("has_latest_image") is True,
         "has_reference_image": data.get("has_reference_image") is True,
+        "has_edit_reference": data.get("has_edit_reference") is True,
         "discussion_active": data.get("discussion_active") is True,
         "pending_proposal": normalized_pending,
         "recent_discussion": history,
@@ -6493,6 +6595,48 @@ async def prompt_studio_plot_composite(request):
         return web.json_response({"error": str(exc)}, status=500)
 
 
+def _ground_edit_reference(data):
+    user_text = _text(data.get("user_text")).strip()
+    base, reference = data.get("source_image"), data.get("reference_image")
+    if not user_text or len(user_text) > 16000:
+        raise ValueError("A reference edit requires a bounded user instruction")
+    if not isinstance(base, dict) or not isinstance(reference, dict):
+        raise ValueError("Reference analysis requires the base and reference images")
+    request = {**data, "max_response_tokens": 2400, "messages": [{
+        "role": "user", "text": json.dumps({
+            "user_text": user_text,
+            "clarification_question": _text(data.get("clarification_question"))[:4000],
+            "current_main": _text(data.get("current_prompt"))[:24000],
+            "image_order": ["Image 1: base image to edit", "Image 2: reference for the requested change"],
+        }, ensure_ascii=False), "images": [base, reference],
+    }]}
+    def validate_analysis(value):
+        facts = _edit_grounding.normalize(value)
+        if not facts["needs_clarification"]:
+            _check_reference_prompt({**data, "reference_grounding": facts, "intent_user_text": user_text},
+                json.dumps({key: facts[key] for key in ("resolved_instruction", "edit_instruction")}, ensure_ascii=False), analysis=True)
+
+    _, result = _consult_json_object(request, _edit_grounding.SYSTEM, _edit_grounding.SCHEMA,
+                                     validate_response=validate_analysis)
+    return _edit_grounding.normalize(result)
+
+
+@PromptServer.instance.routes.post("/promptstudio/prompt-studio/ground-edit-reference")
+async def prompt_studio_ground_edit_reference(request):
+    try:
+        if request.content_length is not None and request.content_length > MAX_REVISE_REQUEST_BYTES:
+            raise ValueError("Reference analysis request exceeds the 1 MB limit")
+        data = await request.json()
+        if not isinstance(data, dict):
+            raise ValueError("JSON body must be an object")
+        result = await _run_llm_request(data, LLM_PRIORITY_STUDIO, _ground_edit_reference)
+        return web.json_response({"grounding": result})
+    except ValueError as exc:
+        return web.json_response({"error": str(exc)}, status=400)
+    except Exception as exc:
+        return _llm_error_response(exc)
+
+
 @PromptServer.instance.routes.post("/promptstudio/prompt-studio/revise")
 async def prompt_studio_revise(request):
     try:
@@ -7027,6 +7171,7 @@ _install_api_boundary(PromptServer.instance.app, {
     "/promptstudio/prompt-studio/workflows": MAX_WORKFLOW_STORE_BYTES,
     "/promptstudio/prompt-studio/plots/{plot_id}": MAX_PLOT_BYTES,
     "/promptstudio/prompt-studio/revise": MAX_REVISE_REQUEST_BYTES,
+    "/promptstudio/prompt-studio/ground-edit-reference": MAX_REVISE_REQUEST_BYTES,
     "/promptstudio/prompt-studio/route-turn": MAX_CONSULT_REQUEST_BYTES,
     "/promptstudio/prompt-studio/llamacpp-models": MAX_LLM_CONFIG_REQUEST_BYTES,
     "/promptstudio/prompt-studio/discuss": MAX_CONSULT_REQUEST_BYTES,

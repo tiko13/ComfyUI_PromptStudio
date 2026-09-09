@@ -1,8 +1,8 @@
 {
   "id": "6361f484-6432-4e6f-b2c3-2f763292f3de",
-  "revision": 1,
-  "last_node_id": 119,
-  "last_link_id": 31,
+  "revision": 2,
+  "last_node_id": 120,
+  "last_link_id": 34,
   "nodes": [
     {
       "id": 82,
@@ -395,7 +395,7 @@
           "name": "image_b",
           "shape": 7,
           "type": "IMAGE",
-          "link": null
+          "link": 33
         },
         {
           "localized_name": "prompt",
@@ -494,7 +494,7 @@
           "name": "image_b",
           "shape": 7,
           "type": "IMAGE",
-          "link": null
+          "link": 34
         },
         {
           "localized_name": "prompt",
@@ -755,7 +755,7 @@
           "name": "source_image_b",
           "shape": 7,
           "type": "IMAGE",
-          "link": null
+          "link": 32
         },
         {
           "name": "target_latent",
@@ -1650,6 +1650,78 @@
       "widgets_values": [
         "simple"
       ]
+    },
+    {
+      "id": 120,
+      "type": "KCPP_ChatImageReference",
+      "pos": [
+        -103.84572221324646,
+        -110.2637553987404
+      ],
+      "size": [
+        289.187109375,
+        102
+      ],
+      "flags": {},
+      "order": 1,
+      "mode": 0,
+      "inputs": [
+        {
+          "localized_name": "image_ref",
+          "name": "image_ref",
+          "type": "STRING",
+          "widget": {
+            "name": "image_ref"
+          },
+          "link": null
+        },
+        {
+          "localized_name": "source_name",
+          "name": "source_name",
+          "type": "STRING",
+          "widget": {
+            "name": "source_name"
+          },
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "localized_name": "image",
+          "name": "image",
+          "type": "IMAGE",
+          "links": [
+            32,
+            33,
+            34
+          ]
+        },
+        {
+          "localized_name": "mask",
+          "name": "mask",
+          "type": "MASK",
+          "links": []
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "KCPP_ChatImageReference",
+        "cnr_id": "ComfyUI_PromptStudio",
+        "ver": "8a6f4776cebf9d9f22d074138d3308b64d475b15",
+        "ue_properties": {
+          "widget_ue_connectable": {},
+          "input_ue_unconnectable": {},
+          "version": "7.8"
+        }
+      },
+      "widgets_values": [
+        "",
+        "Reference image"
+      ],
+      "widgets_values_named": {
+        "image_ref": "",
+        "source_name": "Reference image"
+      },
+      "title": "Optional reference image"
     }
   ],
   "links": [
@@ -1900,6 +1972,30 @@
       53,
       8,
       "COMBO"
+    ],
+    [
+      32,
+      120,
+      0,
+      79,
+      6,
+      "IMAGE"
+    ],
+    [
+      33,
+      120,
+      0,
+      84,
+      2,
+      "IMAGE"
+    ],
+    [
+      34,
+      120,
+      0,
+      85,
+      2,
+      "IMAGE"
     ]
   ],
   "groups": [

@@ -49,6 +49,29 @@ export function restorePromptIntentVersion(value) {
   return promptIntentVersion(value?.mainPrompt,value?.finalPrompt,value?.intentProvenance);
 }
 
+/** A committed Main edit is user authority, not a model preservation candidate. */
+export function recordManualMain(intentProvenance,mainPrompt,previousMainPrompt) {
+  const intent=normalizeIntentProvenance(intentProvenance);
+  const current=String(mainPrompt??''),previous=String(previousMainPrompt??'');
+  if(!intent||current===previous)return intent;
+  const original=JSON.stringify(intent);
+  intent.locked_literals=intent.locked_literals.filter(literal=>current.includes(literal.text));
+  const mentions=(value,phrase)=>{
+    const escaped=phrase.replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
+    return new RegExp(`(?<![\\p{L}\\p{N}])${escaped}(?![\\p{L}\\p{N}])`,'iu').test(value);
+  };
+  // Explicitly restored content overrides its exclusion; untouched exclusions survive.
+  intent.exclusions=intent.exclusions.filter(item=>![item.text,...(item.aliases??[])]
+    .some(alias=>mentions(current,alias)&&!mentions(previous,alias)));
+  const constraints=new Set([...intent.locked_literals,...intent.exclusions].map(item=>item.id));
+  intent.suppressed_sources=intent.suppressed_sources.filter(item=>constraints.has(item.constraint_id));
+  intent.edit_scope=null;
+  intent.manual_final=null;
+  intent.last_turn_id='';
+  if(JSON.stringify(intent)!==original)intent.revision++;
+  return intent;
+}
+
 /** Manual text is preserved as entered; it does not retroactively become Main. */
 export function recordManualFinal(intentProvenance,finalPrompt) {
   const intent=normalizeIntentProvenance(intentProvenance)||{version:1,revision:0,last_turn_id:'',locked_literals:[],exclusions:[],source_tags:[],suppressed_sources:[],edit_scope:null,manual_final:null};

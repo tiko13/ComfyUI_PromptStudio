@@ -1,6 +1,10 @@
+import { supportsEditReference, applyEditReference } from "./prompt-studio/generation/edit-reference.js";
+import { createEditReferenceController } from "./prompt-studio/ui/edit-reference.js";
+let editReferenceController = null;
+import { normalizeReferenceGrounding, requestReferenceGrounding, referenceContextMatches, normalizeReferenceClarification } from "./prompt-studio/generation/reference-grounding.js";
 import { discoverWorkflowFiles } from "./prompt-studio/generation/workflow-adapter.js";
 import { createSetupWizard } from "./prompt-studio/settings/setup-wizard.js";
-import {normalizeIntentProvenance, promptIntentVersion, recordManualFinal, createIntentSession, effectiveSecondaryInstructions} from "./prompt-studio/chat/intent-provenance.js";
+import {normalizeIntentProvenance, promptIntentVersion, recordManualMain, recordManualFinal, createIntentSession, effectiveSecondaryInstructions} from "./prompt-studio/chat/intent-provenance.js";
 import { app } from "/scripts/app.js";
 import {normalizePromptAgentMetrics, rankPromptAgentIterations, repeatedPromptAgentDefects, explainPromptAgentWinner} from "./prompt-studio/consult/model.js";
 import { reconcileKeyedHistory } from "./prompt-studio/ui/keyed-history.js";
@@ -3770,17 +3774,22 @@ function updateComposeMode() {
   const send = state.panel.querySelector("#promptstudio-send");
   const editor = state.panel.querySelector("#promptstudio-current-prompt");
   const action = selectedAction();
+  editReferenceController?.render();
+  const referenceUploading = action === "edit" && supportsEditReference(selectedWorkflowProfile(action)) && editReferenceController?.uploading(state.activeChatId);
   const autoGenerate = state.panel.querySelector("#promptstudio-auto-generate")?.checked !== false;
   const queueingGeneration = hasPendingStudioGenerations();
   const turnBusy = state.studioTurnBusyChatIds.has(state.activeChatId);
   const reroll = state.panel.querySelector("#promptstudio-reroll");
   if (reroll) reroll.textContent = queueingGeneration ? "Queue reroll" : "Reroll";
+  if (reroll) reroll.disabled = state.busy || turnBusy || referenceUploading;
   const hasRevision = Boolean(input?.value.trim());
   const editPromptAction = state.panel.querySelector("#promptstudio-edit-prompt-action");
-  if (editPromptAction) editPromptAction.hidden = action !== "edit";
+  const assistedReference = amplificationEnabled && action === "edit" && supportsEditReference(selectedWorkflowProfile(action)) && Boolean(activeChat()?.editReferenceImage);
+  if (editPromptAction) editPromptAction.hidden = action !== "edit" || assistedReference;
   if (!amplificationEnabled) {
     if (heading) heading.textContent = "Direct prompt";
-    if (hint) hint.textContent = "Edit directly; no LLM call";
+    if (hint) hint.textContent = action === "edit" && supportsEditReference(selectedWorkflowProfile(action)) && activeChat()?.editReferenceImage
+      ? "Direct reference edit; Main and Final stay unchanged" : "Edit directly; no LLM call";
     if (input) {
       input.placeholder = "Describe the image to generate…";
       if (!input.value) input.value = state.currentPrompt;
@@ -3788,7 +3797,7 @@ function updateComposeMode() {
     if (send) send.textContent = queueingGeneration
       ? (action === "edit" ? "Queue edit" : "Queue create new")
       : (action === "edit" ? "Edit selected image" : "Create new image");
-    if (send) send.disabled = state.busy || turnBusy;
+    if (send) send.disabled = state.busy || turnBusy || referenceUploading;
     if (editor) editor.readOnly = false;
     return;
   }
@@ -3798,6 +3807,7 @@ function updateComposeMode() {
     ? "Continue discussing, accept the suggestion, or request a direct change"
     : creating
       ? `${llmProviderName()} will decide whether to answer or create`
+      : assistedReference ? "Reference details update Main and Final; Edit receives a separate instruction"
       : "Leave empty to create from the current prompt";
   if (input) input.placeholder = creating
     ? "A portrait of an astronaut… or ask for prompt advice"
@@ -3811,7 +3821,7 @@ function updateComposeMode() {
         : (hasRevision ? "Revise & create new" : "Create new");
       send.textContent = queueingGeneration ? `Queue ${label.toLowerCase()}` : label;
     }
-    send.disabled = state.busy || turnBusy;
+    send.disabled = state.busy || turnBusy || referenceUploading;
   }
   if (editor) editor.readOnly = creating;
   renderStudioDiscussionContext();
@@ -3828,6 +3838,7 @@ function renderRunSummary() {
   const auto = state.panel.querySelector("#promptstudio-auto-generate")?.checked !== false;
   const restored = activeChat()?.pendingGeneration;
   if ((!amplification || !text) && restored?.generationSnapshot && restored.action === action
+      && (amplification || !text || text === restored.executionPrompt)
       && restored.replayFingerprint === generationUiFingerprint()) {
     summary.textContent = `Next generation uses saved inputs: ${restored.workflowName || restored.workflowProfileId || "Saved workflow"}, Main/Final prompts and seeds. Generate reviews replay dependencies first. Editing prompts or controls returns to current settings.`;
     return;
@@ -3861,6 +3872,11 @@ function updateAmplificationMode({ announce = true, persist = true } = {}) {
 function syncManualPrompt(value) {
   if (useLlmAmplification()) return;
   const chat = activeChat();
+  if (chat?.initialized && activeEditReferenceContext(chat)) {
+    state.panel.querySelector("#promptstudio-revision").dataset.referenceInstruction = chat.id;
+    return;
+  }
+  delete state.panel.querySelector("#promptstudio-revision").dataset.referenceInstruction;
   if (chat) {
     chat.initialized = Boolean(value.trim());
     chat.renderedMainPrompt = value;
@@ -4219,6 +4235,7 @@ function generationUiFingerprint() {
     mainPrompt: state.mainPrompt,
     finalPrompt: state.currentPrompt,
     sourceImage: action === "create" ? null : storedImageReference(editingSource()),
+    referenceImage: action === "edit" && supportsEditReference(profile) ? storedImageReference(activeChat()?.editReferenceImage) : null,
     loraState: generationLoraState(profile),
     modelState: generationModelState(profile),
     additionalInputSelections: state.additionalInputSelections,
@@ -4851,6 +4868,8 @@ function generationRetryOptionsFromMessage(message) {
     generationSnapshot: message.generationSnapshot,
     workflowName: message.workflowName || "",
     sourceImage: message.sourceImage || null,
+    referenceImage: message.referenceImage || null,
+    referenceGrounding: normalizeReferenceGrounding(message.referenceGrounding),
     upscaleFactor: message.upscaleFactor ?? null,
     resultNodeIds: message.resultNodeIds,
     resultFields: message.resultFields,
@@ -5094,6 +5113,8 @@ function armStoredGenerationReplay(data, { allowMissingProfile = false } = {}) {
     generationSnapshot,
     replayFingerprint: "",
     sourceImage: normalizeImageReference(data?.sourceImage),
+    referenceImage: normalizeImageReference(data?.referenceImage),
+    referenceGrounding: normalizeReferenceGrounding(data?.referenceGrounding),
     upscaleFactor: data?.upscaleFactor ?? null,
     resultNodeIds: Array.isArray(data?.resultNodeIds) ? data.resultNodeIds.map(String) : [],
     resultFields: Array.isArray(data?.resultFields) && data.resultFields.length
@@ -5102,6 +5123,7 @@ function armStoredGenerationReplay(data, { allowMissingProfile = false } = {}) {
   };
   if (action === "edit" && chat.pendingGeneration.sourceImage) {
     chat.selectedSource = chat.pendingGeneration.sourceImage;
+    chat.editReferenceImage = chat.pendingGeneration.referenceImage;
     refreshRenderedImageSources();
   }
   chat.pendingGeneration.replayFingerprint = generationUiFingerprint();
@@ -5117,6 +5139,7 @@ function selectImageSource(reference, generationData = null) {
   const chat = activeChat();
   if (!chat) return;
   chat.selectedSource = value;
+  chat.autoAdvanceGenerationId = "";
   chat.updatedAt = Date.now();
   const editAction = state.panel?.querySelector('input[name="promptstudio-generation-action"][value="edit"]');
   if (editAction) editAction.checked = true;
@@ -5558,6 +5581,9 @@ function appendStoredGenerationInfo(panel, data) {
     `Workflow: ${data.workflowName || data.workflowProfileId || "Unknown"}`,
     data.promptId ? `ComfyUI prompt ID: ${data.promptId}` : "",
     data.sourceImage?.filename ? `Source image: ${data.sourceImage.filename}` : "",
+    data.referenceImage?.filename ? `Edit reference: ${data.referenceImage.filename}` : "",
+    data.referenceGrounding?.observations ? `Reference observations: ${data.referenceGrounding.observations}` : "",
+    data.referenceGrounding?.resolved_instruction ? `Resolved change: ${data.referenceGrounding.resolved_instruction}` : "",
     data.upscaleFactor != null ? `Upscale factor: ${data.upscaleFactor}` : "",
     ...(Array.isArray(data.images) ? data.images : []).map((image) => (
       `Output: ${image.filename}${image.width && image.height ? ` (${image.width} × ${image.height})` : ""}`
@@ -5801,7 +5827,8 @@ function rememberDeletedMessage(chatId, messageId) {
 function clearDeletedMessageReferences(chat, data) {
   const deletedImages = new Set(messageImageReferences(data).map(imageReferenceKey));
   if (deletedImages.has(imageReferenceKey(chat.selectedSource))) chat.selectedSource = null;
-  if (deletedImages.has(imageReferenceKey(chat.pendingGeneration?.sourceImage))) chat.pendingGeneration = null;
+  if (deletedImages.has(imageReferenceKey(chat.editReferenceImage))) chat.editReferenceImage = null;
+  if (deletedImages.has(imageReferenceKey(chat.pendingGeneration?.sourceImage)) || deletedImages.has(imageReferenceKey(chat.pendingGeneration?.referenceImage))) chat.pendingGeneration = null;
   if (chat.studioDiscussion?.targetMessageId === data.id) chat.studioDiscussion = null;
   if (data.promptId) {
     const promptId = String(data.promptId);
@@ -6064,6 +6091,8 @@ function appendMessage(role, text, options = {}) {
     generationSnapshot: normalizeGenerationSnapshot(options.generationSnapshot),
     intentProvenance: normalizeIntentProvenance(options.intentProvenance),
     sourceImage: normalizeImageReference(options.sourceImage),
+    referenceImage: normalizeImageReference(options.referenceImage),
+    referenceGrounding: normalizeReferenceGrounding(options.referenceGrounding),
     upscaleFactor: options.upscaleFactor != null && Number.isFinite(Number(options.upscaleFactor))
       ? Number(options.upscaleFactor)
       : null,
@@ -6199,6 +6228,7 @@ async function appendGenerationImages(promptId, images) {
     ?? state.panel?.querySelector("#promptstudio-auto-advance-source")?.checked;
   if (enrichedImages[0] && autoAdvanceSource) {
     chat.selectedSource = normalizeImageReference(enrichedImages[0]);
+    chat.autoAdvanceGenerationId = String(promptId);
   } else if (!chat.selectedSource && enrichedImages[0]) {
     chat.selectedSource = normalizeImageReference(enrichedImages[0]);
   }
@@ -6383,6 +6413,15 @@ function commitPromptEditorVersion() {
   const editor = state.panel?.querySelector("#promptstudio-current-prompt");
   if (mainEditor && !mainEditor.readOnly) {
     const mainPrompt = mainEditor.value;
+    // Input events already update state.mainPrompt. Compare the committed version
+    // so temporary keystrokes do not discard constraints, including after reload.
+    const previousMainPrompt = state.versions[state.versionIndex]?.mainPrompt ?? state.mainPrompt;
+    const chat = activeChat();
+    if (chat && (mainPrompt !== previousMainPrompt || chat.mainPromptDirty)) {
+      // Also repair already-saved manual drafts created before intent reconciliation.
+      const baseline = mainPrompt !== previousMainPrompt ? previousMainPrompt : chat.renderedMainPrompt;
+      chat.intentProvenance = recordManualMain(chat.intentProvenance, mainPrompt, baseline);
+    }
     syncMainPromptEditor(mainPrompt, { userEdit: mainPrompt !== state.mainPrompt });
   }
   if (editor && !editor.readOnly) {
@@ -6799,6 +6838,7 @@ function captureGenerationQueueSettings(action, chat = activeChat()) {
     loraState: structuredClone(generationLoraState(profile)),
     modelState: structuredClone(generationModelState(profile)),
     sourceImage: action === "create" ? null : editingSource(null, chat),
+    referenceImage: action === "edit" && supportsEditReference(profile) ? normalizeImageReference(chat?.editReferenceImage) : null,
     randomizeSeed: state.panel?.querySelector("#promptstudio-randomize-seed")?.checked === true,
     secondaryInstructionsOverride: state.panel?.querySelector("#promptstudio-secondary-instructions")?.value || "",
     resolutionOverride: structuredClone(resolutionSettings()),
@@ -6807,6 +6847,19 @@ function captureGenerationQueueSettings(action, chat = activeChat()) {
     autoAdvanceSource: state.panel?.querySelector("#promptstudio-auto-advance-source")?.checked !== false,
     preserveUiSelections: true,
   };
+}
+
+function captureRepeatQueueSettings(action, chat = activeChat()) {
+  const settings = captureGenerationQueueSettings(action, chat);
+  const completed = chat?.autoAdvanceGenerationId
+    ? chat.messages.find(message => message.promptId === chat.autoAdvanceGenerationId) : null;
+  if (action === "edit" && completed?.generationAction === "edit"
+      && completed.mainPrompt === chat.mainPrompt && completed.canonicalPrompt === chat.finalPrompt
+      && completed.images?.some(image => imageReferenceKey(image) === imageReferenceKey(settings.sourceImage))
+      && imageReferenceKey(completed.referenceImage) === imageReferenceKey(settings.referenceImage)) {
+    settings.sourceImage = normalizeImageReference(completed.sourceImage);
+  }
+  return settings;
 }
 
 function randomizeSnapshotSeeds(snapshot) {
@@ -7698,6 +7751,8 @@ async function queueGeneration({
   intentProvenance = undefined,
   workflowName = "",
   sourceImage = null,
+  referenceImage = undefined,
+  referenceGrounding = null,
   upscaleFactor = null,
   resultNodeIds = null,
   resultFields = null,
@@ -7747,6 +7802,14 @@ async function queueGeneration({
     throw new Error("The stored generation snapshot is invalid.");
   }
   const replayExactGeneration = Boolean(storedGenerationSnapshot);
+  if (!replayExactGeneration && action === "edit" && editReferenceController?.uploading(chat?.id)) {
+    throw new Error("Wait for the reference image to finish uploading.");
+  }
+  // Capture before workflow refresh or model handoff can yield to another turn.
+  let reference = action === "edit" ? normalizeImageReference(referenceImage === undefined && !replayExactGeneration ? chat?.editReferenceImage : referenceImage) : null;
+  if (!replayExactGeneration && referenceGrounding && !referenceContextMatches(referenceGrounding, {sourceImage: sourceImage || editingSource(null, chat), referenceImage: reference})) {
+    throw new Error("The analyzed base or reference image changed. Submit the edit instruction again.");
+  }
   const generationIntent = normalizeIntentProvenance(intentProvenance === undefined ? chat?.intentProvenance : intentProvenance);
   let source = replayExactGeneration ? normalizeImageReference(sourceImage) : action === "create" ? null : editingSource(sourceImage, chat);
   if (!replayExactGeneration && action !== "create" && !source) throw new Error(`There is no image in this conversation to ${action}.`);
@@ -7816,6 +7879,9 @@ async function queueGeneration({
       throw new Error("The configured Prompt Studio Image Source node was not included in the editing workflow.");
     }
     imageNode.inputs.image_ref = JSON.stringify(storedImageReference(source));
+    // A hidden reference is retained per chat but cannot leak into an unsupported workflow.
+    if (referenceImage === undefined && !supportsEditReference(context.profile)) reference = null;
+    reference = applyEditReference(context.snapshot, reference);
   } else if (!replayExactGeneration && action === "upscale") {
     const factor = Number(upscaleFactor);
     if (!Number.isFinite(factor) || factor < 1 || factor > 16) {
@@ -7922,6 +7988,8 @@ async function queueGeneration({
     generationSnapshot: queuedGenerationSnapshot,
     workflowName: queuedWorkflowName,
     sourceImage: source,
+    referenceImage: reference,
+    referenceGrounding: normalizeReferenceGrounding(referenceGrounding),
     upscaleFactor,
     resultNodeIds: queuedResultNodeIds,
     resultFields: queuedResultFields,
@@ -7975,6 +8043,8 @@ async function queueGeneration({
       modelState: queuedModelState,
       generationSnapshot: queuedGenerationSnapshot,
       sourceImage: source,
+      referenceImage: reference,
+      referenceGrounding: normalizeReferenceGrounding(referenceGrounding),
       resultNodeIds: queuedResultNodeIds,
       resultFields: queuedResultFields,
       createdAt: Date.now(),
@@ -8017,6 +8087,8 @@ async function queueGeneration({
       modelState: queuedModelState,
       generationSnapshot: queuedGenerationSnapshot,
       sourceImage: source,
+      referenceImage: reference,
+      referenceGrounding: normalizeReferenceGrounding(referenceGrounding),
       resultNodeIds: queuedResultNodeIds,
       resultFields: queuedResultFields,
       createdAt: Date.now(),
@@ -8064,6 +8136,8 @@ async function queueGeneration({
       executionPrompt,
       workflowProfileId: context.profile?.id || "",
       sourceImage: source,
+      referenceImage: reference,
+      referenceGrounding: normalizeReferenceGrounding(referenceGrounding),
     };
     chat.pendingGeneration = null;
     chat.updatedAt = Date.now();
@@ -8083,6 +8157,8 @@ async function queueGeneration({
     modelState: queuedModelState,
     generationSnapshot: queuedGenerationSnapshot,
     sourceImage: source,
+    referenceImage: reference,
+    referenceGrounding: normalizeReferenceGrounding(referenceGrounding),
     upscaleFactor,
     resultNodeIds: queuedResultNodeIds,
     resultFields: queuedResultFields,
@@ -8153,9 +8229,10 @@ async function queueUpscale(source, generationData = null, factor = null, workfl
   }
 }
 
-async function generateDirectPrompt(action = selectedAction()) {
+async function generateDirectPrompt(action = selectedAction(), {repeat = false} = {}) {
   if (!state.apiConnected) return setStatus("ComfyUI is disconnected. Prompt Studio is frozen.", "error");
   if (state.busy) return;
+  const input = state.panel.querySelector("#promptstudio-revision");
   const pendingGeneration = activeChat()?.pendingGeneration;
   if (
     pendingGeneration?.action === action
@@ -8165,6 +8242,7 @@ async function generateDirectPrompt(action = selectedAction()) {
       || !workflowProfileById(pendingGeneration.workflowProfileId))
     && pendingGeneration.generationSnapshot
     && pendingGeneration.replayFingerprint === generationUiFingerprint()
+    && (!input.value.trim() || input.value.trim() === pendingGeneration.executionPrompt)
   ) {
     return createNewFromCurrentPrompt({ applyControls: false, generationAction: action });
   }
@@ -8174,34 +8252,39 @@ async function generateDirectPrompt(action = selectedAction()) {
   if (action === "edit" && !editingSource()) {
     return setStatus("There is no image in this conversation to edit.", "warning");
   }
-  const input = state.panel.querySelector("#promptstudio-revision");
   const prompt = input.value.trim();
   if (!prompt) return setStatus("Enter a prompt before generating.", "warning");
-  const previousVersion = state.versions[state.versionIndex];
-  const directVersion = promptVersion(prompt, prompt);
-  const promptChanged = !promptVersionsEqual(previousVersion, directVersion);
   const chat = activeChat();
-  if (chat) {
-    chat.initialized = true;
-    chat.renderedMainPrompt = prompt;
-    chat.renderedFinalPrompt = prompt;
-    chat.mainPromptDirty = false;
-    chat.finalPromptManuallyEdited = false;
+  const directReferenceEdit = action === "edit" && chat?.initialized
+    && supportsEditReference(selectedWorkflowProfile(action)) && Boolean(chat.editReferenceImage);
+  const mainPrompt = directReferenceEdit ? state.mainPrompt : prompt;
+  const finalPrompt = directReferenceEdit ? state.currentPrompt : prompt;
+  const previousVersion = state.versions[state.versionIndex];
+  const directVersion = promptVersion(mainPrompt, finalPrompt);
+  const promptChanged = !promptVersionsEqual(previousVersion, directVersion);
+  if (!directReferenceEdit) {
+    if (chat) {
+      chat.initialized = true;
+      chat.renderedMainPrompt = prompt;
+      chat.renderedFinalPrompt = prompt;
+      chat.mainPromptDirty = false;
+      chat.finalPromptManuallyEdited = false;
+    }
+    updatePromptEditors(mainPrompt, finalPrompt);
+    if (promptChanged) pushVersion();
+    else syncActiveChat();
   }
   input.value = prompt;
-  updatePromptEditors(prompt, prompt);
-  if (promptChanged) pushVersion();
-  else syncActiveChat();
   saveSettings();
-  const queueSettings = captureGenerationQueueSettings(action, chat);
+  const queueSettings = repeat ? captureRepeatQueueSettings(action, chat) : captureGenerationQueueSettings(action, chat);
   const operation = createStudioOperation(chat, action, "Preparing workflow…");
   try {
     await queueGeneration({
       ...queueSettings,
       action,
       executionPrompt: prompt,
-      mainPrompt: prompt,
-      finalPrompt: prompt,
+      mainPrompt,
+      finalPrompt,
       preserveSeed: promptChanged,
       independent: true,
       releaseBusy: false,
@@ -10602,6 +10685,8 @@ function promoteConsultExperiment(messageId) {
       modelState: generation.modelState,
       generationSnapshot: generation.generationSnapshot,
       sourceImage: generation.sourceImage,
+      referenceImage: generation.referenceImage,
+      referenceGrounding: normalizeReferenceGrounding(generation.referenceGrounding),
       resultNodeIds: generation.resultNodeIds,
       resultFields: generation.resultFields,
       generationState: "complete",
@@ -11855,7 +11940,17 @@ function applicableStudioControlOptions() {
   };
 }
 
+function activeEditReferenceContext(chat) {
+  return selectedAction() === "edit" && supportsEditReference(selectedWorkflowProfile("edit")) && chat?.editReferenceImage
+    ? {sourceImage: editingSource(null, chat), referenceImage: normalizeImageReference(chat.editReferenceImage)} : null;
+}
+
 function studioDiscussionTarget(chat, discussion = activeStudioDiscussion(chat)) {
+  if (discussion?.editContext?.sourceImage) {
+    const image = discussion.editContext.sourceImage;
+    const message = chat?.messages.findLast(item => item.images?.some(candidate => imageReferenceKey(candidate) === imageReferenceKey(image)));
+    return {image, message: message || null};
+  }
   if (discussion?.targetMessageId) {
     const message = chat?.messages.find((item) => item.id === discussion.targetMessageId);
     const image = normalizeImageReference(discussion.targetImage);
@@ -11867,7 +11962,8 @@ function studioDiscussionTarget(chat, discussion = activeStudioDiscussion(chat))
 function discussionIsStale(chat, discussion) {
   if (!discussion) return false;
   const latest = latestGeneratedContext(chat);
-  const targetChanged = Boolean(
+  const editContextChanged = Boolean(discussion.editContext) && !referenceContextMatches(discussion.editContext, activeEditReferenceContext(chat));
+  const targetChanged = !discussion.editContext && Boolean(
     latest
     && (
       latest.message.id !== discussion.targetMessageId
@@ -11877,7 +11973,7 @@ function discussionIsStale(chat, discussion) {
   const anchoredControls = discussion.anchorApplicableControls || {};
   const applicableControlsChanged = Object.keys(anchoredControls).length > 0
     && JSON.stringify(applicableStudioControlValues(chat)) !== JSON.stringify(anchoredControls);
-  return targetChanged
+  return targetChanged || editContextChanged
     || chat.mainPrompt !== discussion.anchorMainPrompt
     || chat.finalPrompt !== discussion.anchorFinalPrompt
     || chat.controlsFingerprint !== discussion.anchorControlsFingerprint
@@ -11902,6 +11998,7 @@ function beginOrContinueStudioDiscussion(chat, reference = null) {
       anchorFinalPrompt: chat.finalPrompt,
       anchorControlsFingerprint: chat.controlsFingerprint,
       anchorApplicableControls: applicableStudioControlValues(chat),
+      editContext: activeEditReferenceContext(chat),
       references: [],
       pendingProposal: null,
       createdAt: now,
@@ -11914,13 +12011,17 @@ function beginOrContinueStudioDiscussion(chat, reference = null) {
     references.set(imageReferenceKey(attached), attached);
     discussion.references = [...references.values()].slice(-3);
   }
+  if (discussion.editContext?.referenceImage) {
+    const reference = discussion.editContext.referenceImage;
+    discussion.references = [reference, ...discussion.references.filter(item => imageReferenceKey(item) !== imageReferenceKey(reference))].slice(0, 3);
+  }
   discussion.updatedAt = Date.now();
   chat.studioDiscussion = discussion;
   chat.updatedAt = discussion.updatedAt;
   return discussion;
 }
 
-async function requestStudioTurnRoute(chat, text, reference) {
+async function requestStudioTurnRoute(chat, text, reference, editReference = null, clarification = null) {
   const discussion = activeStudioDiscussion(chat);
   const response = await api.fetchApi(STUDIO_ROUTE_ENDPOINT, {
     method: "POST",
@@ -11931,9 +12032,10 @@ async function requestStudioTurnRoute(chat, text, reference) {
       chat_initialized: chat.initialized === true,
       has_latest_image: Boolean(latestGeneratedImage(chat)),
       has_reference_image: Boolean(reference),
-      discussion_active: Boolean(discussion),
+      has_edit_reference: Boolean(editReference),
+      discussion_active: Boolean(discussion || clarification),
       pending_proposal: discussion?.pendingProposal || null,
-      discussion_history: discussion ? studioDiscussionHistory(chat, discussion.id) : [],
+      discussion_history: clarification ? [{role: "user", text: clarification.userText}, {role: "assistant", text: clarification.question}] : discussion ? studioDiscussionHistory(chat, discussion.id) : [],
     }),
   });
   const data = await response.json().catch(() => ({}));
@@ -11942,6 +12044,7 @@ async function requestStudioTurnRoute(chat, text, reference) {
     route: String(data.route || "clarify"),
     confidence: Number(data.confidence || 0),
     resolvedInstruction: String(data.resolved_instruction || "").trim(),
+    reason: String(data.reason || "").trim(),
     warning: String(data.warning || "").trim(),
   };
 }
@@ -11955,11 +12058,11 @@ function studioDiscussionRequestMessages(chat, discussion) {
     .slice(0, 4);
   const attachedImages = [];
   if (target?.image) {
-    attachedImages.push({ label: "Image A", purpose: "current generated target", filename: target.image.filename });
+    attachedImages.push({ label: discussion.editContext ? "Image 1" : "Image A", purpose: discussion.editContext ? "selected base image to edit" : "current generated target", filename: target.image.filename });
   }
   discussion.references.slice(0, Math.max(0, 4 - attachedImages.length)).forEach((image) => {
     attachedImages.push({
-      label: `Image ${String.fromCharCode(65 + attachedImages.length)}`,
+      label: discussion.editContext ? `Image ${attachedImages.length + 1}` : `Image ${String.fromCharCode(65 + attachedImages.length)}`,
       purpose: "user-supplied visual reference",
       filename: image.filename,
     });
@@ -12019,12 +12122,13 @@ async function runStudioDiscussion(chat, text, reference = null, messageId = "")
     chatId: chat.id,
     label: "Image discussion",
     images: reference ? [reference] : [],
+    sourceImage: discussion.editContext?.sourceImage, referenceImage: discussion.editContext?.referenceImage,
     studioMessageKind: "discussion",
     studioDiscussionId: discussion.id,
   });
   const input = state.panel?.querySelector("#promptstudio-revision");
   if (chat.id === state.activeChatId && input?.value.trim() === text) input.value = "";
-  if (reference && chat.id === state.activeChatId) clearMainPastedImage();
+  if (reference && chat.id === state.activeChatId && imageReferenceKey(reference) === imageReferenceKey(state.mainPastedImage)) clearMainPastedImage();
   discussion.updatedAt = now;
   chat.updatedAt = now;
   saveChats();
@@ -12270,12 +12374,20 @@ async function handleStudioTurn() {
   // Acknowledge the send before waiting for the router's LLM response.
   // Routes enrich this same message instead of appending a second copy.
   const messageId = makeId();
-  appendMessage("user", text, { messageId, chatId: chat.id, images: reference ? [reference] : [] });
+  const submittedAction = selectedAction();
+  const submittedSettings = captureGenerationQueueSettings(submittedAction, chat);
+  const clarification = chat.referenceClarification && referenceContextMatches(chat.referenceClarification, submittedSettings)
+    && chat.referenceClarification.mainPrompt === chat.mainPrompt && chat.referenceClarification.finalPrompt === chat.finalPrompt
+    ? chat.referenceClarification : null;
+  if (!clarification) chat.referenceClarification = null;
+  const submittedUserText = clarification ? clarification.userText + "\nLatest user clarification: " + text : text;
+  appendMessage("user", text, { messageId, chatId: chat.id, images: reference ? [reference] : [],
+    sourceImage: submittedSettings.sourceImage, referenceImage: submittedSettings.referenceImage });
   input.value = "";
   updateComposeMode();
   setStatus(`Understanding your request with ${llmProviderName()}…`, "working");
   try {
-    const routed = await requestStudioTurnRoute(chat, text, reference);
+    const routed = await requestStudioTurnRoute(chat, text, reference || submittedSettings.referenceImage, submittedSettings.referenceImage, clarification);
     if (chat.id !== state.activeChatId) {
       throw new Error("Return to the originating session and send the message again.");
     }
@@ -12289,12 +12401,13 @@ async function handleStudioTurn() {
     const route = unsafeLowConfidence ? "clarify" : routed.route;
     const discussion = activeStudioDiscussion(chat);
     if (route === "discuss") {
-      await runStudioDiscussion(chat, text, reference, messageId);
+      await runStudioDiscussion(chat, text, reference || submittedSettings.referenceImage, messageId);
     } else if (route === "commit_pending") {
       const applied = await applyStudioDiscussionProposal(chat, discussion, discussion?.pendingProposal, { userText: text, messageId });
       if (!applied && !input.value) input.value = text;
       saveChats();
     } else if (route === "cancel_pending") {
+      chat.referenceClarification = null;
       if (discussion) {
         appendMessage("user", text, {
           messageId,
@@ -12320,15 +12433,19 @@ async function handleStudioTurn() {
         messageId,
         chatId: chat.id,
         images: reference ? [reference] : [],
+        sourceImage: submittedSettings.sourceImage, referenceImage: submittedSettings.referenceImage,
         studioMessageKind: discussion ? "discussion" : "revision",
         studioDiscussionId: discussion?.id || "",
       });
       const applied = await reviseAndMaybeGenerate({
         revisionOverride: instruction,
-        userTextOverride: text,
+        userTextOverride: submittedUserText,
+        generationAction: submittedAction,
+        queueSettingsOverride: submittedSettings,
+        clarificationQuestion: clarification?.question || "",
         recordRevision: false,
       });
-      if (!applied && !input.value) input.value = text;
+      if (!applied && !chat.referenceClarification && !input.value) input.value = text;
       saveChats();
       if (applied && discussion) {
         discussion.status = "applied";
@@ -12348,7 +12465,9 @@ async function handleStudioTurn() {
         studioMessageKind: "discussion",
         studioDiscussionId: active.id,
       });
-      appendMessage("assistant", "I’m not sure whether you want advice or want me to change the prompt now. Please say “What would work?” to discuss it, or “Change it to…” to apply an edit.", {
+      const question = !unsafeLowConfidence && routed.reason ? routed.reason : "Please clarify the change you want to make.";
+      if (submittedSettings.referenceImage) chat.referenceClarification = normalizeReferenceClarification({...submittedSettings, userText: submittedUserText, question, mainPrompt: chat.mainPrompt, finalPrompt: chat.finalPrompt});
+      appendMessage("assistant", question, {
         chatId: chat.id,
         label: "Prompt Studio assistant",
         studioMessageKind: "discussion",
@@ -12379,6 +12498,8 @@ async function reviseAndMaybeGenerate({
   userTextOverride = null,
   recordRevision = true,
   contextImageOverride = undefined,
+  queueSettingsOverride = null,
+  clarificationQuestion = "",
 } = {}) {
   if (!state.apiConnected) return setStatus("ComfyUI is disconnected. Prompt Studio is frozen.", "error");
   if (!useLlmAmplification()) return generateDirectPrompt(generationAction);
@@ -12436,14 +12557,17 @@ async function reviseAndMaybeGenerate({
   const previousMainPrompt = chat.mainPrompt;
   const previousFinalPrompt = chat.finalPrompt;
   const requestedControlsFingerprint = controlsFingerprint();
-  const queueSettings = captureGenerationQueueSettings(generationAction, chat);
+  const queueSettings = queueSettingsOverride || (controlsOnly ? captureRepeatQueueSettings(generationAction, chat) : captureGenerationQueueSettings(generationAction, chat));
   const autoGenerate = forceGenerate || state.panel.querySelector("#promptstudio-auto-generate")?.checked === true;
   const editPromptMode = selectedEditPromptMode();
   const basePayload = collectRevisionPayload("", "render", "", previousFinalPrompt, contextImage);
   const intentSession = createIntentSession(chat.intentProvenance, {turnId: makeId(), userText: userTextOverride ?? revision, mainPrompt: previousMainPrompt, finalPrompt: previousFinalPrompt});
+  let referenceGrounding = null;
   const requestTrackedRevision = (...args) => requestPromptRevision(...args, intentSession);
   const payloadFor = (nextRevision, mode, currentPrompt, currentFinalPrompt) => ({
     ...basePayload,
+    clarification_question: clarificationQuestion,
+    ...(referenceGrounding ? {reference_grounding: referenceGrounding, context_image: null} : {}),
     revision: nextRevision,
     mode,
     current_prompt: currentPrompt,
@@ -12485,12 +12609,33 @@ async function reviseAndMaybeGenerate({
   });
 
   try {
-    if (contextImage) {
+    const analyzeReference = generationAction === "edit" && queueSettings.referenceImage && revision && !controlsOnly;
+    if (contextImage || analyzeReference) {
       await requireVisionCapability(visionPayload, operationSignal);
       updateStudioOperation(operationMessage.id, {
         operationPhase: "llm_processing",
         operationStatus: revisionStatus,
       });
+    }
+    if (generationAction === "edit" && queueSettings.referenceImage && controlsOnly) {
+      const saved = [chat.pendingGeneration, chat.lastGeneration].find(item => item?.referenceGrounding
+        && item.mainPrompt === previousMainPrompt && item.canonicalPrompt === previousFinalPrompt
+        && referenceContextMatches(item, queueSettings));
+      referenceGrounding = normalizeReferenceGrounding(saved?.referenceGrounding);
+      if (!referenceGrounding) throw new Error("Describe how to use this reference with the selected source image before generating.");
+      queueSettings.referenceGrounding = referenceGrounding;
+    }
+    if (analyzeReference) {
+      updateStudioOperation(operationMessage.id, {operationPhase: "llm_processing", operationStatus: "Inspecting the requested reference detail…"});
+      referenceGrounding = await requestReferenceGrounding(api.fetchApi.bind(api), {
+        ...basePayload, user_text: userTextOverride ?? revision,
+        clarification_question: clarificationQuestion,
+        current_prompt: previousMainPrompt, current_final_prompt: previousFinalPrompt,
+        source_image: queueSettings.sourceImage, reference_image: queueSettings.referenceImage,
+      }, operationSignal);
+      queueSettings.referenceGrounding = referenceGrounding;
+      if (referenceGrounding.uncertainty) llmWarnings.push(referenceGrounding.uncertainty);
+      updateStudioOperation(operationMessage.id, {operationPhase: "llm_processing", operationStatus: "Updating Main, Final, and the edit instruction…"});
     }
     let mainPrompt;
     let finalPrompt;
@@ -12544,11 +12689,11 @@ async function reviseAndMaybeGenerate({
     }
     const targetChat = state.chats.find((item) => item.id === chat.id);
     if (!targetChat) throw new Error("The originating chat no longer exists.");
-    const executionPrompt = generationAction === "edit"
+    const executionPrompt = referenceGrounding?.edit_instruction || (generationAction === "edit"
       && editPromptMode === "edit_instruction"
       && revision
       ? revision
-      : finalPrompt;
+      : finalPrompt);
     applyPreparedPromptToChat(
       targetChat,
       preparationId,
@@ -12571,7 +12716,7 @@ async function reviseAndMaybeGenerate({
       saveChats();
       renderChatHistory();
     }
-    if (autoGenerate) {
+    if (autoGenerate && !(analyzeReference && referenceGrounding?.already_satisfied)) {
       await queueGeneration({
         action: generationAction,
         executionPrompt,
@@ -12590,7 +12735,7 @@ async function reviseAndMaybeGenerate({
       updateStudioOperation(operationMessage.id, {
         operationPhase: "complete",
         operationStatus: "Prompt updated",
-        text: "Prompt updated.",
+        text: referenceGrounding?.already_satisfied ? "The requested appearance already matches. Main and Final were synchronized; no new image was needed." : "Prompt updated.",
       });
       state.operationControllers.delete(operationMessage.operationId);
     }
@@ -12603,6 +12748,15 @@ async function reviseAndMaybeGenerate({
         generationState: "cancelled",
         text: "Cancelled.",
       });
+      return false;
+    }
+    if (error.name === "ReferenceClarificationNeeded") {
+      chat.referenceClarification = normalizeReferenceClarification({...queueSettings,
+        userText: userTextOverride ?? revision, question: error.message,
+        mainPrompt: previousMainPrompt, finalPrompt: previousFinalPrompt});
+      appendMessage("assistant", error.message, {chatId: chat.id, label: "Reference clarification"});
+      updateStudioOperation(operationMessage.id, {operationPhase: "complete", operationStatus: "Needs clarification", generationState: "complete", text: "Waiting for your clarification; prompts were kept."});
+      saveChats();
       return false;
     }
     const message = error.message || String(error);
@@ -12633,10 +12787,14 @@ async function createNewFromCurrentPrompt({ applyControls = true, generationActi
   const lastGeneration = chat?.lastGeneration;
   const pendingGeneration = chat?.pendingGeneration;
   const selectedProfileId = selectedWorkflowProfileId(generationAction);
-  const pendingGenerationMatches = pendingGeneration?.action === generationAction
+  const currentReferenceContext = captureRepeatQueueSettings(generationAction, chat);
+  const currentReference = currentReferenceContext.referenceImage;
+  const referenceMatches = saved => generationAction !== "edit" || referenceContextMatches(saved, currentReferenceContext);
+  const pendingGenerationMatches = referenceMatches(pendingGeneration) && pendingGeneration?.action === generationAction
     && pendingGeneration.mainPrompt === state.mainPrompt
     && pendingGeneration.canonicalPrompt === state.currentPrompt
     && (pendingGeneration.workflowProfileId === selectedProfileId
+      || (pendingGeneration.referenceGrounding && supportsEditReference(selectedWorkflowProfile(generationAction)))
       || (pendingGeneration.generationSnapshot && !workflowProfileById(pendingGeneration.workflowProfileId)));
   const replayStoredGeneration = Boolean(
     pendingGenerationMatches
@@ -12646,13 +12804,17 @@ async function createNewFromCurrentPrompt({ applyControls = true, generationActi
   );
   const usePendingGeneration = pendingGenerationMatches
     && (!pendingGeneration?.generationSnapshot || replayStoredGeneration);
-  const repeatLastConfiguration = !usePendingGeneration
+  const repeatLastConfiguration = !usePendingGeneration && referenceMatches(lastGeneration)
     && lastGeneration?.action === generationAction
     && lastGeneration.mainPrompt === state.mainPrompt
     && lastGeneration.canonicalPrompt === state.currentPrompt
-    && String(lastGeneration?.workflowProfileId || "") === selectedProfileId;
+    && (String(lastGeneration?.workflowProfileId || "") === selectedProfileId
+      || (lastGeneration.referenceGrounding && supportsEditReference(selectedWorkflowProfile(generationAction))));
   if (!useLlmAmplification() && !replayStoredGeneration) return generateDirectPrompt(generationAction);
   if (!chat?.initialized) return setStatus("Create the first prompt before creating another image.", "warning");
+  if (currentReference && !usePendingGeneration && !repeatLastConfiguration) {
+    return setStatus("Describe how to use this reference with the selected source image before generating.", "warning");
+  }
   if (!replayStoredGeneration && applyControls && promptNeedsRender()) {
     return reviseAndMaybeGenerate({ controlsOnly: true, forceGenerate: true, generationAction });
   }
@@ -12664,7 +12826,7 @@ async function createNewFromCurrentPrompt({ applyControls = true, generationActi
     pushVersion(editedPrompt);
   }
   saveSettings();
-  const queueSettings = captureGenerationQueueSettings(generationAction, chat);
+  const queueSettings = currentReferenceContext;
   const generationOptions = {
     ...queueSettings,
     action: generationAction,
@@ -12684,6 +12846,8 @@ async function createNewFromCurrentPrompt({ applyControls = true, generationActi
     sourceImage: replayStoredGeneration
       ? pendingGeneration.sourceImage
       : repeatLastConfiguration ? lastGeneration.sourceImage : queueSettings.sourceImage,
+    referenceImage: replayStoredGeneration ? pendingGeneration.referenceImage : queueSettings.referenceImage,
+    referenceGrounding: usePendingGeneration ? pendingGeneration.referenceGrounding : repeatLastConfiguration ? lastGeneration.referenceGrounding : null,
     upscaleFactor: replayStoredGeneration ? pendingGeneration.upscaleFactor : null,
     resultNodeIds: replayStoredGeneration ? pendingGeneration.resultNodeIds : null,
     resultFields: replayStoredGeneration ? pendingGeneration.resultFields : null,
@@ -12722,6 +12886,7 @@ function applyPreparedPromptToChat(
   const latest = state.latestStudioPreparationByChat.get(chat.id) === preparationId;
   const promptUnchanged = chat.mainPrompt === previousMainPrompt && chat.finalPrompt === previousFinalPrompt;
   if (!latest || !promptUnchanged) return false;
+  chat.referenceClarification = null;
 
   chat.intentProvenance = normalizeIntentProvenance(queueSettings.intentProvenance ?? chat.intentProvenance);
   const version = promptVersion(mainPrompt, finalPrompt, chat.intentProvenance);
@@ -12745,6 +12910,9 @@ function applyPreparedPromptToChat(
     mainPrompt,
     canonicalPrompt: finalPrompt,
     executionPrompt,
+    sourceImage: queueSettings.sourceImage,
+    referenceImage: queueSettings.referenceImage,
+    referenceGrounding: normalizeReferenceGrounding(queueSettings.referenceGrounding),
     workflowProfileId: queueSettings.workflowProfileId || "",
   };
   chat.updatedAt = Date.now();
@@ -12760,12 +12928,12 @@ function applyPreparedPromptToChat(
 
 async function queueBackgroundReroll(generationAction = selectedAction()) {
   if (!state.apiConnected) return setStatus("ComfyUI is disconnected. Prompt Studio is frozen.", "error");
-  if (!useLlmAmplification()) return generateDirectPrompt(generationAction);
+  if (!useLlmAmplification()) return generateDirectPrompt(generationAction, {repeat: true});
   const chat = activeChat();
   if (!chat?.initialized) return setStatus("Create the first prompt before rerolling.", "warning");
   const profile = selectedWorkflowProfile(generationAction);
   if (!profile) return setStatus("Select a compatible [PS] workflow first.", "warning");
-  const sourceImage = generationAction === "create" ? null : editingSource(null, chat);
+  const sourceImage = generationAction === "create" ? null : captureRepeatQueueSettings(generationAction, chat).sourceImage;
   if (generationAction === "edit" && !sourceImage) {
     return setStatus("There is no image in this conversation to edit.", "warning");
   }
@@ -12796,9 +12964,23 @@ async function queueBackgroundReroll(generationAction = selectedAction()) {
     llamacpp_model: revisionPayload.llamacpp_model,
   };
   const queueSettings = {
-    ...captureGenerationQueueSettings(generationAction, chat),
+    ...captureRepeatQueueSettings(generationAction, chat),
     sourceImage,
   };
+  const savedEdit = [chat.pendingGeneration, chat.lastGeneration].find(saved =>
+    generationAction === "edit" && saved?.action === "edit" && saved.referenceGrounding
+    && saved.mainPrompt === previousMainPrompt && saved.canonicalPrompt === previousFinalPrompt
+    && imageReferenceKey(saved.referenceImage) === imageReferenceKey(queueSettings.referenceImage)
+    && imageReferenceKey(saved.sourceImage) === imageReferenceKey(sourceImage));
+  const referenceGrounding = normalizeReferenceGrounding(savedEdit?.referenceGrounding);
+  if (queueSettings.referenceImage && !referenceGrounding) {
+    return setStatus("Describe how to use this reference with the selected source image before rerolling.", "warning");
+  }
+  if (referenceGrounding) {
+    queueSettings.referenceGrounding = referenceGrounding;
+    revisionPayload.reference_grounding = referenceGrounding;
+    revisionPayload.context_image = null;
+  }
   const providerName = llmProviderDisplayName(revisionPayload.llm_provider);
   const preparationId = makeId();
   const operation = createStudioOperation(
@@ -12826,6 +13008,7 @@ async function queueBackgroundReroll(generationAction = selectedAction()) {
       operationController?.signal,
       intentSession,
     );
+    const executionPrompt = referenceGrounding?.edit_instruction || finalPrompt;
     const targetChat = state.chats.find((item) => item.id === chat.id);
     if (!targetChat) throw new Error("The originating chat no longer exists.");
     applyPreparedPromptToChat(
@@ -12836,7 +13019,7 @@ async function queueBackgroundReroll(generationAction = selectedAction()) {
       previousMainPrompt,
       finalPrompt,
       generationAction,
-      finalPrompt,
+      executionPrompt,
       {...queueSettings, intentProvenance: intentSession.snapshot()},
     );
     if (
@@ -12848,7 +13031,7 @@ async function queueBackgroundReroll(generationAction = selectedAction()) {
     }
     await queueGeneration({
       action: generationAction,
-      executionPrompt: finalPrompt,
+      executionPrompt,
       mainPrompt: previousMainPrompt,
       finalPrompt,
       preserveSeed: true,
@@ -13021,7 +13204,18 @@ function buildPanel() {
           <span id="promptstudio-status" class="promptstudio-status" role="status" aria-live="polite">Loading…</span>
           <span id="promptstudio-compose-hint">Leave empty to create from the current prompt</span>
         </div>
+        <div class="promptstudio-compose-input-row">
+          <div id="promptstudio-edit-reference" class="promptstudio-edit-reference" hidden>
+            <input type="file" accept="image/*" aria-label="Edit reference image file" hidden />
+            <button type="button" class="promptstudio-edit-reference-choose" aria-label="Upload edit reference image (optional)">
+              <img alt="" hidden />
+              <span class="promptstudio-edit-reference-empty" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 4h16v16H4zM4 16l5-5 4 4 3-3 4 4M15 8h.01" /></svg><span>Reference</span></span>
+              <small>Optional</small>
+            </button>
+            <button type="button" class="promptstudio-edit-reference-remove" aria-label="Remove edit reference image" title="Remove reference" hidden>×</button>
+          </div>
         <textarea id="promptstudio-revision" rows="3" aria-label="Prompt revision" placeholder="Make the background more varied…" title="Paste with Ctrl+V or drop an image into the chat to attach it as a visual reference."></textarea>
+        </div>
         <div id="promptstudio-discussion-context" class="promptstudio-discussion-context" hidden>
           <img alt="" />
           <span><strong>Discussing generated image</strong><small></small></span>
@@ -13045,7 +13239,7 @@ function buildPanel() {
               <label><input type="radio" name="promptstudio-generation-action" value="edit" /><span>Edit</span></label>
             </div>
             <div id="promptstudio-edit-prompt-action" class="promptstudio-generation-action promptstudio-edit-prompt-action" role="radiogroup" aria-label="Editing prompt payload" hidden>
-              <label><input type="radio" name="promptstudio-edit-prompt-mode" value="edit_instruction" /><span>Text only</span></label>
+              <label><input type="radio" name="promptstudio-edit-prompt-mode" value="edit_instruction" /><span>Edit instruction</span></label>
               <label><input type="radio" name="promptstudio-edit-prompt-mode" value="full_prompt" checked /><span>Full prompt</span></label>
             </div>
           </div>
@@ -13642,6 +13836,17 @@ function buildPanel() {
   consultHistory.addEventListener("scroll", () => {
     state.consultHistoryWasNearEnd = historyIsNearEnd(consultHistory);
   }, { passive: true });
+  editReferenceController = createEditReferenceController({
+    panel, activeChat, findChat: id => state.chats.find(chat => chat.id === id), selectedAction,
+    selectedProfile: () => selectedWorkflowProfile(selectedAction()),
+    upload: uploadPromptStudioImage, imageUrl: imageReferenceUrl,
+    changed: chat => { chat.updatedAt = Date.now(); saveChats({ immediate: true }); },
+    refresh: updateComposeMode, report: setStatus,
+    clearChatDropState: () => {
+      state.dragDepth = 0;
+      panel.querySelectorAll(".promptstudio-history, .promptstudio-compose").forEach(target => { target.dataset.dragActive = "false"; });
+    },
+  });
   const compose = panel.querySelector(".promptstudio-compose");
   const mainDropTargets = [history, compose];
   const imageImport = panel.querySelector("#promptstudio-image-import");
@@ -14020,6 +14225,14 @@ function buildPanel() {
   });
   panel.querySelectorAll('input[name="promptstudio-generation-action"]').forEach((control) => {
     control.addEventListener("change", () => {
+      const input = panel.querySelector("#promptstudio-revision");
+      const previous = activeChat()?.lastGeneration;
+      if (selectedAction() === "create" && !useLlmAmplification()
+          && (input?.dataset.referenceInstruction === activeChat()?.id || (previous?.action === "edit"
+            && previous.referenceImage && input?.value.trim() === previous.executionPrompt))) {
+        input.value = state.currentPrompt;
+        delete input.dataset.referenceInstruction;
+      }
       updateComposeMode();
       refreshSecondaryInstructionsControl();
       announceWorkflowSelection(selectedAction());

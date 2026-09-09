@@ -1,3 +1,4 @@
+import { normalizeReferenceGrounding, normalizeReferenceClarification } from "../generation/reference-grounding.js";
 import {
   AMPLIFY_TYPE,
   RENDER_CONTROL_SETTINGS,
@@ -175,6 +176,7 @@ function isEmptyChat(chat) {
     && !(chat.consultMessages || []).length
     && !Number(chat.consultClearedAt || 0)
     && !chat.selectedSource
+    && !chat.editReferenceImage
     && !chat.lastGeneration
     && !chat.pendingGeneration
     && !chat.consultPendingJob
@@ -383,6 +385,7 @@ function normalizeStudioDiscussion(value) {
     anchorFinalPrompt: String(value.anchorFinalPrompt || ""),
     anchorControlsFingerprint: String(value.anchorControlsFingerprint || ""),
     anchorApplicableControls: normalizeStudioControlChanges(value.anchorApplicableControls),
+    editContext: value.editContext ? {sourceImage: normalizeImageReference(value.editContext.sourceImage), referenceImage: normalizeImageReference(value.editContext.referenceImage)} : null,
     references: Array.isArray(value.references)
       ? value.references.map(normalizeImageReference).filter(Boolean).slice(0, 3)
       : [],
@@ -420,6 +423,8 @@ function normalizeChat(chat) {
         modelState: normalizeGenerationModelState(message?.modelState),
         generationSnapshot: normalizeGenerationSnapshot(message?.generationSnapshot),
         sourceImage: normalizeImageReference(message?.sourceImage),
+        referenceImage: normalizeImageReference(message?.referenceImage),
+        referenceGrounding: normalizeReferenceGrounding(message?.referenceGrounding),
         upscaleFactor: message?.upscaleFactor != null && Number.isFinite(Number(message.upscaleFactor))
           ? Number(message.upscaleFactor)
           : null,
@@ -519,6 +524,9 @@ function normalizeChat(chat) {
     upscaleWorkflowId: String(chat?.upscaleWorkflowId || ""),
     editPromptMode: ["edit_instruction", "full_prompt"].includes(chat?.editPromptMode) ? chat.editPromptMode : "",
     selectedSource: normalizeImageReference(chat?.selectedSource),
+    autoAdvanceGenerationId: String(chat?.autoAdvanceGenerationId || ""),
+    editReferenceImage: normalizeImageReference(chat?.editReferenceImage),
+    referenceClarification: normalizeReferenceClarification(chat?.referenceClarification),
     lastGeneration: lastGeneration
       ? { ...lastGeneration, intentProvenance: normalizeIntentProvenance(chat.lastGeneration.intentProvenance) }
       : null,

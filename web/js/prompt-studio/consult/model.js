@@ -1,3 +1,4 @@
+import { normalizeReferenceGrounding } from "../generation/reference-grounding.js";
 import {
   CONSULT_RETENTION_MS,
   MAX_CONSULT_EXPERIMENT_GUIDANCE_CHARS,
@@ -60,6 +61,8 @@ export function normalizeConsultExperimentGeneration(value) {
     modelState: normalizeGenerationModelState(value.modelState),
     generationSnapshot: normalizeGenerationSnapshot(value.generationSnapshot),
     sourceImage: normalizeImageReference(value.sourceImage),
+    referenceImage: normalizeImageReference(value.referenceImage),
+    referenceGrounding: normalizeReferenceGrounding(value.referenceGrounding),
     resultNodeIds: Array.isArray(value.resultNodeIds) ? value.resultNodeIds.map(String) : [],
     resultFields: Array.isArray(value.resultFields) && value.resultFields.length
       ? value.resultFields.map(String)

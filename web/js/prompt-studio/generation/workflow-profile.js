@@ -3,6 +3,7 @@ import {
   MODEL_LOADER_TYPE,
   SAMPLER_CONTROL_TYPE,
 } from "../core/constants.js";
+import { editReferenceNodeIds } from "./edit-reference.js";
 import { cleanModelName } from "./model-name.js";
 import { normalizePromptStudioInputDescriptors } from "./prompt-studio-input.js";
 import { normalizeWorkflowCacheIdentity } from "./workflow-adapter.js";
@@ -85,6 +86,7 @@ export function normalizeWorkflowProfile(profile) {
     promptMode: "full_prompt",
     promptNodeId: String(profile?.promptNodeId || ""),
     imageNodeId: String(profile?.imageNodeId || ""),
+    referenceNodeIds: editReferenceNodeIds(snapshot),
     upscaleNodeId: String(profile?.upscaleNodeId || ""),
     loraNodes,
     modelNodes,

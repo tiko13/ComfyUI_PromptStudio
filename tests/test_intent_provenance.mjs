@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import {test} from 'node:test';
-import {normalizeIntentProvenance,promptIntentVersion,restorePromptIntentVersion,recordManualFinal,intentReplayRecord,createIntentSession,effectiveSecondaryInstructions} from '../web/js/prompt-studio/chat/intent-provenance.js';
+import {normalizeIntentProvenance,promptIntentVersion,restorePromptIntentVersion,recordManualMain,recordManualFinal,intentReplayRecord,createIntentSession,effectiveSecondaryInstructions} from '../web/js/prompt-studio/chat/intent-provenance.js';
 import {createChatModel} from '../web/js/prompt-studio/chat/model.js';
 import {snapshotForPlotCell} from '../web/js/prompt-studio/plot/model.js';
 
@@ -57,6 +57,33 @@ test('manual Final and paired undo restore the corresponding metadata without ch
   assert.equal(metadata.manual_final,null);
   const undo=restorePromptIntentVersion(first);assert.deepEqual(undo,first);
   undo.intentProvenance.locked_literals[0].text='Changed';assert.equal(first.intentProvenance.locked_literals[0].text,'Zostaň tu!');
+});
+
+test('manual Main replaces stale locks while retaining unchanged literals and unrelated exclusions',()=>{
+  const before='A classroom with a sign "Zostaň tu!".';
+  const source=structuredClone(metadata);
+  source.locked_literals.push({id:'setting',text:'classroom',kind:'literal',evidence:{source:'user',turn_id:'u1',quote:'classroom'}});
+  const saved=promptIntentVersion(before,'Old Final',source);
+  const edited=recordManualMain(source,'A garden with a sign "Zostaň tu!".',before);
+  assert.deepEqual(edited.locked_literals,metadata.locked_literals);
+  assert.deepEqual(edited.exclusions,metadata.exclusions);
+  assert.equal(edited.edit_scope,null);
+  assert.equal(edited.last_turn_id,'');
+  assert.equal(edited.revision,source.revision+1);
+  assert.deepEqual(recordManualMain(edited,'A garden with a sign "Zostaň tu!".',before),edited,'Repeated draft commits are idempotent');
+  assert.deepEqual(restorePromptIntentVersion(saved).intentProvenance,source);
+  assert.equal(source.locked_literals.length,2,'Saved history remains intact');
+  assert.deepEqual(recordManualMain(source,before,before),source,'An unchanged edit preserves constraints');
+  assert.equal(recordManualMain(null,'Manual text','Old text'),null);
+});
+
+test('manual Main can restore an excluded object without clearing other exclusions',()=>{
+  const source=structuredClone(metadata);
+  source.suppressed_sources=[{source:'secondary',source_id:'secondary_instructions',constraint_id:'lamp'}];
+  assert.equal(recordManualMain(source,'A cat by two LAMPS.','A cat.').exclusions.length,0);
+  assert.deepEqual(recordManualMain(source,'A cat by two LAMPS.','A cat.').suppressed_sources,[]);
+  assert.equal(recordManualMain(source,'A clamp beside a cat.','A cat.').exclusions.length,1);
+  assert.equal(recordManualMain(source,'A cat, no lamp, at dusk.','A cat, no lamp.').exclusions.length,1);
 });
 
 test('legacy chats remain valid and exact replay ignores current exclusions/controls',()=>{

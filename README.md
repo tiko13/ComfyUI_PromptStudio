@@ -31,6 +31,49 @@ verifies the Identity Edit download and checks that the Krea2 Edit nodes support
 `target_latent` (node pack v1.2.5 or newer); older nodes must be updated and
 ComfyUI restarted before setup can complete.
 
+When Edit is selected, compatible workflows show an optional Reference tile to
+the left of the message box. Drop an image there or click to upload; use × to
+clear it. The reference is saved per chat and included in generation history and
+exact replay. It goes directly to the edit model and works without LLM
+amplification. The selected editing source remains the base image.
+
+With LLM amplification enabled, a vision-capable LLM reads the base (image 1)
+and reference (image 2) once for each requested change. It identifies only the
+requested detail, updates Main and Final with a self-contained visual description,
+and prepares a separate instruction for the edit workflow. For example, using
+a referenced dress adopts its visible cut, colour and pattern without adopting
+the wearer or background. With a reference attached, ordinary shorthand such as
+"replace the mug" means using the matching mug from the reference; clarification
+is reserved for meaningful ambiguity after inspecting both images. Explicit
+removal, partial changes and attribute overrides keep their requested scope.
+This interpretation applies to any visible subject, object, attribute or spatial
+relationship. Adding, copying, moving, replacing and removing remain distinct:
+"add the reference mug next to the original" keeps the original and adds a second
+mug; a hairstyle, colour or background request changes only that requested part.
+The thumbnail beside the composer supplies ordinary references such as "this":
+"place this mug next to the blue one" adds the reference mug beside the existing
+blue mug. Semantic checks verify the requested action, count, attributes and
+placement before saving Main and Final; a failed revision is retried once.
+Switching to Create uses Final without needing the
+reference. Clearing the tile does not undo adopted details; Undo restores the
+previous prompt pair. Reference observations and the exact edit instruction are
+saved with the generation. If vision fails or the target needs clarification,
+the existing prompts are kept. Clarification retains the original request and
+image pair across reloads, so a short answer can complete it. A target that already
+matches is reported without automatically generating an unrelated change.
+Discussion uses the selected base and the same reference tile. Reroll retains
+the original base even after automatic source advancement, avoiding repeated
+additions. Selecting a different base or reference requires a fresh interpretation.
+Direct reference mode sends the instruction without analysis and keeps Main and
+Final unchanged; enable LLM amplification to adopt observed details into them.
+
+Workflow authors can add `Prompt Studio Reference Image (optional)` and connect
+its image output to optional reference inputs. The Krea2 Edit recipe connects it
+to `source_image_b` on the model patch and `image_b` on both grounded encoders.
+An empty reference returns no image, so those nodes keep their single-image
+behavior. Connect this node only where an absent image is supported.
+
+
 Downloads show byte progress, transfer speed and remaining time, followed by
 separate checksum verification. Pause/resume retains partial downloads. Closing
 the wizard does not stop setup; use the header activity button to reconnect.
@@ -197,7 +240,7 @@ requests, giving a vision-capable local model direct visual context for instruct
 until the current session contains a completed generated image, and never selects an imported source,
 failed generation, or in-progress result.
 
-The inspector displays the stable **Main prompt** and editable **Final prompt**. Manual final-prompt edits are used for generation and preserved by later precision revisions. **Undo** restores the main and final prompt together, and every generated-image message records both plus the complete executable workflow inputs that were queued. Its **i** panel shows the workflow, LoRAs and strengths, and every saved node input. **Use these prompts** restores the prompt, routing, LoRAs, source image when applicable, and arms the saved executable snapshot; generating without making a change reuses every stored input, including seeds, to reproduce the original queue as closely as the installed nodes and runtime allow. In an editing workflow's **Text only** mode, the workflow intentionally receives the latest edit instruction instead of the complete final prompt.
+The inspector displays the stable **Main prompt** and editable **Final prompt**. Manual final-prompt edits are used for generation and preserved by later precision revisions. **Undo** restores the main and final prompt together, and every generated-image message records both plus the complete executable workflow inputs that were queued. Its **i** panel shows the workflow, LoRAs and strengths, and every saved node input. **Use these prompts** restores the prompt, routing, LoRAs, source image when applicable, and arms the saved executable snapshot; generating without making a change reuses every stored input, including seeds, to reproduce the original queue as closely as the installed nodes and runtime allow. In an editing workflow's **Edit instruction** mode, the workflow intentionally receives the latest edit instruction instead of the complete final prompt.
 
 ### Generate and reroll
 
@@ -424,7 +467,7 @@ To prepare an upscaling workflow, add **Prompt Studio Upscale**, connect its `im
 
 Every generated image has a compact **Upscale** action beside **Edit this image**. Prompt Studio asks for an upscale factor (default `2`) and injects the selected image reference, factor, optional final prompt, and secondary instructions into the dedicated node. The node loads the image and outputs target width and height calculated from the source dimensions. **Use prompt when upscaling** controls whether the final prompt output is populated.
 
-When **Edit** is selected, a second switch controls the workflow prompt payload. **Text only** sends the current revision text as the editing instruction, while **Full prompt** sends the complete revised target prompt. The switch is remembered per chat.
+When **Edit** is selected, a second switch controls the workflow prompt payload. **Edit instruction** sends the current revision text as the editing instruction, while **Full prompt** sends the complete revised target prompt. The switch is remembered per chat. With an optional reference and LLM amplification enabled, the switch is hidden: the grounded edit instruction is used automatically, while Main and Final remain standalone scene descriptions.
 
 The interface can automatically advance the editing source to the newest result, while still allowing any earlier image to be selected at any time. **Reroll** repeats the previous execution prompt and source image while both the Create/Edit action and selected workflow are unchanged. Switching either control before rerolling routes through the newly selected workflow instead. Workflow seeds change only when seed randomization is enabled.
 

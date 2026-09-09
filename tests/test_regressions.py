@@ -1284,7 +1284,7 @@ class RegressionTests(unittest.TestCase):
         self.assertIn("independent: true", revision)
         self.assertIn("releaseBusy: false", revision)
         self.assertNotIn("setBusy(true)", reroll)
-        self.assertIn("captureGenerationQueueSettings(generationAction, chat)", reroll)
+        self.assertIn("captureRepeatQueueSettings(generationAction, chat)", reroll)
         self.assertIn("independent: true", reroll)
         self.assertIn("releaseBusy: false", reroll)
         self.assertIn("chatId: chat.id", reroll)
@@ -4245,6 +4245,29 @@ class RegressionTests(unittest.TestCase):
                 self.nodes._clean_ollama_base_url("https://ollama.example.com"),
                 "https://ollama.example.com",
             )
+
+    def test_optional_edit_reference_empty_and_invalid_inputs(self):
+        node = self.nodes.KCPP_ChatImageReference()
+        self.assertEqual(node.load_image(""), (None, None))
+        self.assertTrue(node.VALIDATE_INPUTS(""))
+        self.assertEqual(node.IS_CHANGED(""), "no-reference")
+        bad = json.dumps({"filename": "image.png", "subfolder": "..", "type": "output"})
+        self.assertIsInstance(node.VALIDATE_INPUTS(bad), str)
+        with self.assertRaises(ValueError):
+            node.load_image(bad)
+
+    def test_optional_edit_reference_uses_shared_loader_and_checksum(self):
+        path = Path(self.temp.name) / "reference.png"
+        Image.new("RGB", (8, 6), color="navy").save(path)
+        reference = json.dumps({"filename": path.name, "subfolder": "", "type": "output"})
+        node = self.nodes.KCPP_ChatImageReference()
+        self.assertTrue(node.VALIDATE_INPUTS(reference))
+        before = node.IS_CHANGED(reference)
+        with mock.patch.object(self.nodes.KCPP_ChatImageInput, "load_image", return_value=("image", "mask")) as loader:
+            self.assertEqual(node.load_image(reference), ("image", "mask"))
+            loader.assert_called_once_with(reference, "Reference image")
+        Image.new("RGB", (8, 6), color="red").save(path)
+        self.assertNotEqual(node.IS_CHANGED(reference), before)
 
     def test_image_reference_rejects_directory_escape(self):
         reference = json.dumps({"filename": "image.png", "subfolder": "..", "type": "output"})

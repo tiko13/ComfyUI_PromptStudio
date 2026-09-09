@@ -3912,6 +3912,30 @@ class KCPP_ChatImageInput:
         return True
 
 
+class KCPP_ChatImageReference(KCPP_ChatImageInput):
+    """Optional second image for edit nodes that accept an absent reference."""
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        schema = super().INPUT_TYPES()
+        schema["required"]["source_name"][1]["default"] = "Reference image"
+        schema["required"]["image_ref"][1]["tooltip"] = "Optional reference supplied by Prompt Studio. Empty returns no image; connect to optional reference inputs."
+        return schema
+
+    def load_image(self, image_ref="", source_name="Reference image"):
+        if not str(image_ref or "").strip():
+            return (None, None)
+        return super().load_image(image_ref, source_name)
+
+    @classmethod
+    def IS_CHANGED(cls, image_ref="", source_name="Reference image"):
+        return super().IS_CHANGED(image_ref, source_name) if str(image_ref or "").strip() else "no-reference"
+
+    @classmethod
+    def VALIDATE_INPUTS(cls, image_ref="", source_name="Reference image"):
+        return super().VALIDATE_INPUTS(image_ref, source_name) if str(image_ref or "").strip() else True
+
+
 class KCPP_PromptStudioUpscale:
     """Prompt Studio attachment point for image upscaling workflows."""
 
@@ -4676,6 +4700,7 @@ NODE_CLASS_MAPPINGS = {
     "KCPP_PromptAmplify": KCPP_PromptAmplify,
     "KCPP_PromptSlot": KCPP_PromptSlot,
     "KCPP_ChatImageInput": KCPP_ChatImageInput,
+    "KCPP_ChatImageReference": KCPP_ChatImageReference,
     "KCPP_PromptStudioUpscale": KCPP_PromptStudioUpscale,
     "KCPP_PromptStudioLoraLoader": KCPP_PromptStudioLoraLoader,
     "KCPP_Apply": KCPP_Apply,
@@ -4689,6 +4714,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "KCPP_PromptAmplify": "KoboldCpp Prompt Amplify",
     "KCPP_PromptSlot": "KoboldCpp Prompt Slot",
     "KCPP_ChatImageInput": "Prompt Studio Image Source",
+    "KCPP_ChatImageReference": "Prompt Studio Reference Image (optional)",
     "KCPP_PromptStudioUpscale": "Prompt Studio Upscale",
     "KCPP_PromptStudioLoraLoader": "Prompt Studio LoRA Loader",
     "KCPP_Apply": "KoboldCpp Apply",
