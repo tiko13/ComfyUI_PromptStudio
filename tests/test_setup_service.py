@@ -331,15 +331,116 @@ class SetupTests(unittest.TestCase):
         with self.assertRaises(ValueError): self.service.finish(self.user, job["id"], [])
 
     def test_supplied_workflow_prompts_are_clean_in_both_widget_formats(self):
+        fields = {
+            "KCPP_PromptAmplify": {"text": 0, "additional_instructions": 1, "style_modifier": 4, "framing_modifier": 6},
+            "KCPP_PromptSlot": {"prompt": 0, "secondary_instructions": 2},
+            "KCPP_PromptStudioUpscale": {"image_ref": 0, "prompt": 2, "secondary_instructions": 3},
+            "KCPP_ChatImageInput": {"image_ref": 0},
+            "KCPP_ChatImageReference": {"image_ref": 0},
+            "CLIPTextEncode": {"text": 0},
+            "Krea2EditGroundedEncode": {"prompt": 0, "system_prompt": 2},
+            "TextEncodeQwenImage21": {"prompt": 0, "negative_prompt": 1},
+            "StringConcatenate": {"string_a": 0, "string_b": 1},
+        }
         for pack in self.catalog["packs"]:
             for node in SETUP.workflow_nodes(self.service.workflow_source(pack["id"])):
-                if node["type"] in {"CLIPTextEncode", "Krea2EditGroundedEncode"}:
-                    self.assertEqual(node["widgets_values"][0], "")
-                    for key in ("text", "prompt", "system_prompt"):
+                for key, index in fields.get(node["type"], {}).items():
+                    with self.subTest(pack=pack["id"], node=node["id"], field=key):
+                        self.assertEqual(node["widgets_values"][index], "")
                         self.assertFalse(node.get("widgets_values_named", {}).get(key))
-                if node["type"] == "KCPP_PromptAmplify":
-                    self.assertEqual(node["widgets_values"][0], "a picture of a landscape")
-                    self.assertEqual(node["widgets_values_named"]["text"], "a picture of a landscape")
+
+    def qwen_request(self, *ids):
+        return {"packs": list(ids), "license_acceptances": {
+            p["id"]: p["license"]["id"] for p in self.catalog["packs"] if p["id"] in ids}}
+
+    def test_qwen_is_opt_in_and_acceptance_is_required_for_each_workflow(self):
+        plan = self.service.plan(self.user)
+        self.assertEqual([p["id"] for p in plan["packs"]], ["create", "edit", "upscale"])
+        self.assertEqual(len(plan["available_packs"]), 18)
+        ids = ["qwen21_create_base25", "qwen21_edit_turbo4"]
+        request = self.qwen_request(*ids)
+        request["license_acceptances"].pop(ids[1])
+        for missing in (None, {}, {ids[1]: True}, {ids[1]: "old-license"}, request["license_acceptances"]):
+            payload = {"packs": ids}
+            if missing is not None:
+                payload["license_acceptances"] = missing
+            with self.assertRaisesRegex(ValueError, "non-commercial"):
+                self.service.start(self.user, payload)
+        self.assertFalse(self.service.workers)
+        self.assertIsNone(self.service.status(self.user)["job"])
+        self.assertFalse(self.service.plan(self.user, self.qwen_request(*ids))["blockers"])
+        empty = self.service.plan(self.user, {"packs": []})
+        self.assertEqual(empty["requirements"], [])
+        with self.assertRaisesRegex(ValueError, "Select at least"):
+            self.service.start(self.user, {"packs": []})
+
+    def test_qwen_dependencies_are_shared_and_turbo_is_optional(self):
+        base = self.service.plan(self.user, self.qwen_request("qwen21_create_base25", "qwen21_edit_base40"))
+        self.assertEqual({r["id"] for r in base["requirements"]}, {"qwen21", "qwen21_encoder", "qwen21_vae"})
+        turbo = self.service.plan(self.user, self.qwen_request("qwen21_create_turbo4", "qwen21_edit_turbo4"))
+        self.assertEqual(len(turbo["requirements"]), 4)
+        self.assertEqual(turbo["download_bytes"], 28)
+        self.assertEqual(turbo["node_packs"], [])
+        self.service.nodes.pop("TextEncodeQwenImage21")
+        self.assertTrue(any("TextEncodeQwenImage21" in b for b in self.service.plan(self.user, self.qwen_request("qwen21_create_base25"))["blockers"]))
+        self.assertFalse(self.service.plan(self.user, {"packs": ["create"]})["blockers"])
+
+    def test_all_qwen_workflows_install_with_correct_roles_and_clean_inputs(self):
+        self.add_assets()
+        packs = [p for p in self.catalog["packs"] if p.get("license")]
+        self.service.start(self.user, self.qwen_request(*(p["id"] for p in packs)))
+        job = self.wait_job()
+        self.assertEqual(job["status"], "awaiting_validation", job.get("error"))
+        self.assertEqual(len(job["workflows"]), 15)
+        for pack, installed in zip(packs, job["workflows"]):
+            self.assertEqual(installed["role"], pack["role"])
+            flow = json.loads((self.user / "workflows" / installed["path"]).read_text(encoding="utf-8"))
+            self.assertNotIn("QwenImage21_Comparison", json.dumps(flow))
+            nodes = {n["type"]: n for n in flow["nodes"]}
+            for requirement in self.catalog["requirements"]:
+                if requirement["id"] not in pack["requirements"]:
+                    continue
+                binding = requirement["binding"]
+                node = nodes[binding["type"]]
+                self.assertEqual(node["widgets_values_named"][binding["field"]], node["widgets_values"][binding["index"]])
+            if pack["role"] == "edit":
+                self.assertEqual(nodes["KCPP_ChatImageInput"]["widgets_values_named"]["image_ref"], "")
+                self.assertEqual(nodes["TextEncodeQwenImage21"]["widgets_values_named"]["resolution"], 1056)
+            if "turbo4" in pack["id"]:
+                self.assertEqual(nodes["KCPP_PromptStudioSampler"]["widgets_values_named"]["steps"], 4)
+                self.assertEqual(nodes["LoraLoaderModelOnly"]["properties"]["promptstudio_asset"], "qwen21_turbo")
+        self.service.finish(self.user, job["id"], [{"path": w["path"], "role": w["role"], "error": ""} for w in job["workflows"]])
+        self.assertEqual(self.service.status(self.user)["onboarding"], "complete")
+
+    def test_qwen_choices_and_license_survive_restart_and_resume(self):
+        self.add_assets()
+        for asset_id in ("qwen21_bf16", "qwen21_encoder_bf16"):
+            asset = self.service.assets[asset_id]
+            self.paths.add(asset["category"], "shared\\" + Path(asset["relative_path"]).name)
+        request = self.qwen_request("qwen21_edit_turbo4")
+        request["choices"] = {"qwen21": "shared\\qwen_image_2.1_bf16.safetensors",
+                              "qwen21_encoder": "shared\\qwen3vl_8b_bf16.safetensors"}
+        entered, release = threading.Event(), threading.Event()
+        def verify(*args, **kwargs):
+            entered.set()
+            release.wait(3)
+            return True
+        with mock.patch.object(SETUP, "verified_file", side_effect=verify):
+            self.service.start(self.user, request)
+            self.assertTrue(entered.wait(2))
+            self.service.control(self.user, "pause")
+            release.set()
+            self.assertEqual(self.wait_job()["status"], "paused")
+        fresh = SETUP.SetupService(self.paths, self.service.nodes, catalog=self.catalog)
+        self.service = fresh
+        fresh.control(self.user, "resume")
+        job = self.wait_job()
+        self.assertEqual(job["status"], "awaiting_validation", job.get("error"))
+        self.assertEqual(job["request"]["license_acceptances"], request["license_acceptances"])
+        flow = json.loads((self.user / "workflows" / job["workflows"][0]["path"]).read_text(encoding="utf-8"))
+        loader = next(n for n in flow["nodes"] if n["type"] == "KCPP_PromptStudioModelLoader")
+        self.assertEqual(loader["widgets_values_named"]["unet_name"], request["choices"]["qwen21"])
+        self.assertEqual(loader["widgets_values_named"]["model_type"], "shared")
 
 
 if __name__ == "__main__": unittest.main()

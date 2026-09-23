@@ -1,4 +1,5 @@
 import { normalizeReferenceGrounding } from "../generation/reference-grounding.js";
+import { normalizeReferenceState } from "../generation/reference-inputs.js";
 import { normalizeImageReference } from "./image-reference.js";
 import { cleanModelName } from "../generation/model-name.js";
 import { normalizeProvenance } from "../generation/provenance.js";
@@ -60,6 +61,7 @@ export function normalizeGenerationSnapshot(value) {
 export function normalizeLastGeneration(value) {
   if (!value || typeof value !== "object") return null;
   return {
+    ...normalizeReferenceState(value),
     action: ["edit", "upscale"].includes(value.action) ? value.action : "create",
     mainPrompt: String(value.mainPrompt || value.canonicalPrompt || ""),
     canonicalPrompt: String(value.canonicalPrompt || ""),
@@ -74,6 +76,7 @@ export function normalizeLastGeneration(value) {
 export function normalizePendingGeneration(value) {
   if (!value || typeof value !== "object") return null;
   return {
+    ...normalizeReferenceState(value),
     action: ["edit", "upscale"].includes(value.action) ? value.action : "create",
     mainPrompt: String(value.mainPrompt || value.canonicalPrompt || ""),
     canonicalPrompt: String(value.canonicalPrompt || ""),

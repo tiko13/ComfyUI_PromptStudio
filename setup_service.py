@@ -208,8 +208,8 @@ class SetupService:
 
     def plan(self, user_root, request=None):
         request = request or {}
-        selected = request.get("packs", [p["id"] for p in self.catalog["packs"]])
-        if not isinstance(selected, list) or not selected or not all(isinstance(p, str) for p in selected) or len(set(selected)) != len(selected):
+        selected = request.get("packs", [p["id"] for p in self.catalog["packs"] if not p.get("license")])
+        if not isinstance(selected, list) or not all(isinstance(p, str) for p in selected) or len(set(selected)) != len(selected):
             raise ValueError("Select at least one workflow")
         known = {p["id"] for p in self.catalog["packs"]}
         if not set(selected) <= known:
@@ -217,6 +217,9 @@ class SetupService:
         choices = request.get("choices", {})
         if not isinstance(choices, dict):
             raise ValueError("Model choices must be an object")
+        acceptances = request.get("license_acceptances", {})
+        if not isinstance(acceptances, dict):
+            raise ValueError("License acceptances must be an object")
         packs = [copy.deepcopy(p) for p in self.catalog["packs"] if p["id"] in selected]
         for pack in packs:
             existing = Path(user_root) / "workflows" / pack["file"]
@@ -228,7 +231,11 @@ class SetupService:
                     pack["existing_status"] = "Saved workflow found; your copy will be preserved" if isinstance(saved, dict) and isinstance(saved.get("nodes"), list) else "Saved file has invalid workflow structure; your copy will be preserved"
                 except (ValueError, OSError):
                     pack["existing_status"] = "Saved file could not be read; your copy will be preserved"
-        rows, blockers = [], []
+        rows, blockers = [], [] if packs else ["Select at least one workflow"]
+        for pack in packs:
+            license = pack.get("license")
+            if license and acceptances.get(pack["id"]) != license["id"]:
+                blockers.append(f"Accept the strict non-commercial license for {pack['name']} before setup.")
         for req in self.catalog["requirements"]:
             used = [p["name"] for p in packs if req["id"] in p["requirements"]]
             if not used:
@@ -340,7 +347,8 @@ class SetupService:
             parent = parent.parent
         if not os.access(parent, os.W_OK):
             blockers.append("ComfyUI user storage is not writable")
-        return {"version": self.catalog["version"], "packs": packs, "requirements": rows, "node_packs": node_rows,
+        return {"version": self.catalog["version"], "packs": packs,
+                "available_packs": copy.deepcopy(self.catalog["packs"]), "requirements": rows, "node_packs": node_rows,
                 "blockers": blockers, "disks": list(disks.values()), "download_bytes": sum(r["download_bytes"] for r in rows),
                 "licenses": self.catalog.get("licenses", []), "workflow_directory": str(user_root / "workflows"),
                 "checks": [{"name": "ComfyUI and Prompt Studio nodes", "status": "missing" if missing_core else "ready"},
@@ -377,7 +385,9 @@ class SetupService:
         with self.lock:
             if root in self.workers and self.workers[root].is_alive():
                 return self.status(root)
-            request = {"packs": [p["id"] for p in plan["packs"]], "choices": {r["id"]: r["choice"] for r in plan["requirements"]}}
+            request = {"packs": [p["id"] for p in plan["packs"]],
+                       "choices": {r["id"]: r["choice"] for r in plan["requirements"]},
+                       "license_acceptances": {p["id"]: p["license"]["id"] for p in plan["packs"] if p.get("license")}}
             previous = self._state(root).get("job") if resume else None
             self._state(root)["job"] = {"id": previous["id"] if previous else uuid.uuid4().hex, "status": "running", "phase": "Checking",
                 "started_at": previous["started_at"] if previous else time.time(), "events": previous["events"] if previous else [], "request": request, "bytes": 0, "total": 0,
@@ -512,7 +522,7 @@ class SetupService:
                             continue
                         node["widgets_values"][binding["index"]] = value
                         node.setdefault("widgets_values_named", {})[binding["field"]] = value
-                        if req["id"] == "krea2":
+                        if binding["type"] == "KCPP_PromptStudioModelLoader":
                             # The loader's model_type constrains selection to a
                             # top-level folder. Root models require an empty type.
                             parts = value.replace("\\", "/").split("/")
@@ -575,7 +585,7 @@ class SetupService:
                 temporary.unlink(missing_ok=True)
         else:
             raise ValueError("No unused workflow filename is available")
-        result = {"role": pack["id"], "path": name, "hash": digest, "disposition": disposition}
+        result = {"role": pack.get("role", pack["id"]), "path": name, "hash": digest, "disposition": disposition}
         with self.lock:
             self._state(root)["installed"][pack["id"]] = result
             self._save(root)

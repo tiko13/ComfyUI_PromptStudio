@@ -1,5 +1,6 @@
 export function thinkingModeEnablesReasoning(mode) {
-  return !["disabled", "none"].includes(String(mode || "").trim().toLowerCase());
+  const normalized = String(mode || "").trim().toLowerCase();
+  return !["disabled", "none"].includes(normalized) && !normalized.startsWith("instruct ");
 }
 
 export function llmActivityLabel(status = {}, thinkingEnabled = false) {

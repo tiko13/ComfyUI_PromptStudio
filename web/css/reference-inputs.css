@@ -1,0 +1,40 @@
+.ps-reference-dialog { box-sizing: border-box; width: min(720px, calc(100vw - 24px)); max-height: calc(100dvh - 32px); padding: 18px; border: 1px solid #4b4b59; border-radius: 14px; background: #202129; color: #eee; font: 14px/1.45 system-ui, sans-serif; }
+.ps-reference-dialog::backdrop { background: #0009; }
+#promptstudio-prompt-studio .promptstudio-upscale-reference { width: 100px; height: 90px; flex: none; }
+.psvstudio-workflow-reference { position: relative; width: 90px; min-width: 70px; align-self: stretch; }
+.psvstudio-workflow-reference[hidden] { display: none; }
+.psvstudio-workflow-reference .promptstudio-edit-reference-choose { display: flex; flex-direction: column; align-items: center; justify-content: center; width: 100%; height: 100%; min-height: 64px; padding: 4px; border: 1px dashed #606073; border-radius: 8px; background: #202129; color: #eee; cursor: pointer; }
+.psvstudio-workflow-reference img { max-width: 64px; max-height: 48px; object-fit: contain; }
+.psvstudio-workflow-reference .promptstudio-edit-reference-remove { position: absolute; right: 1px; top: 1px; border-radius: 50%; background: #202129; color: #eee; }
+.ps-reference-dialog header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.ps-reference-dialog h2 { margin: 0; font-size: 20px; }
+.ps-reference-dialog h3 { margin-bottom: 4px; }
+.ps-reference-dialog p { color: #bdbdcc; margin: 4px 0 14px; }
+.ps-reference-row { display: grid; grid-template-columns: 128px minmax(0, 1fr); gap: 12px; margin: 10px 0; min-height: 128px; }
+.ps-reference-dialog .ps-reference-image { position: relative; align-self: stretch; min-height: 128px; padding: 0; overflow: hidden; border: 1px dashed #606073; background: #14151a; }
+.ps-reference-image img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; }
+.ps-reference-image img[hidden] { display: none; }
+.ps-reference-image-hint { white-space: pre-line; font-size: 12px; }
+.ps-reference-image[data-filled="true"] .ps-reference-image-hint { position: absolute; bottom: 0; inset-inline: 0; padding: 4px; background: #000b; font-size: 10px; opacity: 0; }
+.ps-reference-image:is(:hover,:focus-visible) .ps-reference-image-hint { opacity: 1; }
+.ps-reference-dialog .ps-reference-image[data-drag-active="true"] { border-color: #b3a0ff; background: #b3a0ff20; }
+.ps-reference-fields { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.ps-reference-heading { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.ps-reference-heading strong { flex: 1; overflow-wrap: anywhere; }
+.ps-reference-dialog .ps-reference-heading select { width: auto; max-width: 50%; padding: 5px; }
+.ps-reference-dialog .ps-reference-remove { flex: none; padding: 2px 9px; font-size: 20px; line-height: 1.2; border-color: transparent; background: transparent; }
+.ps-reference-filename { color: #bdbdcc; overflow-wrap: anywhere; font-size: 12px; }
+.ps-reference-dialog .ps-reference-add { width: 100%; margin-top: 4px; border-style: dashed; color: #c6baff; background: transparent; }
+.ps-reference-dialog select, .ps-reference-dialog textarea { box-sizing: border-box; width: 100%; min-width: 0; padding: 8px; border: 1px solid #5a5a69; border-radius: 6px; background: #14151a; color: #eee; font: inherit; }
+.ps-reference-dialog textarea { flex: 1; min-height: 64px; resize: vertical; }
+.ps-reference-dialog button { padding: 7px 12px; border: 1px solid #606073; border-radius: 6px; background: #30313e; color: #eee; font: inherit; cursor: pointer; }
+.ps-reference-dialog button:disabled { opacity: .5; cursor: default; }
+.ps-reference-dialog :focus-visible { outline: 2px solid #b3a0ff; outline-offset: 2px; }
+@media (max-width: 480px) {
+  .ps-reference-dialog { padding: 12px; font-size: 13px; }
+  .ps-reference-row { grid-template-columns: 92px minmax(0,1fr); gap: 10px; }
+  .ps-reference-heading { display: grid; grid-template-columns: minmax(0,1fr) auto; gap: 4px; }
+  .ps-reference-heading strong { min-width: 0; }
+  .ps-reference-dialog .ps-reference-heading select { grid-column: 1 / -1; grid-row: 2; width: 100%; max-width: none; }
+  .ps-reference-heading .ps-reference-remove { grid-column: 2; grid-row: 1; }
+}

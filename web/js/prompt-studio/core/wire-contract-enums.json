@@ -9,5 +9,5 @@
     "failed": [],
     "cancelled": []
   },
-  "thinking_modes": ["Disabled", "Minimal", "Low", "Medium", "High", "XHigh"]
+  "thinking_modes": ["Disabled", "Minimal", "Low", "Medium", "High", "XHigh", "Einstein", "Spoon", "Instruct Low", "Instruct Medium", "Instruct XHigh", "Instruct Einstein", "Instruct Spoon"]
 }

@@ -8,6 +8,19 @@ import {
 } from "../core/constants.js";
 import { THINKING_MODES as LLM_THINKING_MODE_OPTIONS } from "../core/wire-contracts.js";
 
+/** Combine separate definitions into the existing dropdown/request values.
+ * @param {{thinking_modes?:readonly string[], instruct_modes?:readonly string[]}} profile
+ * @returns {import('../core/wire-contracts.js').ThinkingMode[]}
+ */
+export function llmProfileModeOptions(profile) {
+  const requested = [
+    ...(profile.thinking_modes || []),
+    ...(profile.instruct_modes || []).map(mode => mode === "Disabled" ? mode : `Instruct ${mode}`),
+  ];
+  return [...new Set(requested.map(mode => LLM_THINKING_MODE_OPTIONS.find(option => option === mode))
+    .filter(mode => mode !== undefined))];
+}
+
 /** @param {unknown} value
  * @param {(Partial<Omit<import('../core/wire-contracts.js').LlmProfile, 'thinking_mode'|'thinking_modes'>> & {thinking_mode?:string, thinking_modes?:readonly string[]}) | null} fallback
  * @returns {import('../core/wire-contracts.js').LlmProfile}
@@ -41,14 +54,27 @@ export function normalizeLlmProfile(value, fallback = null) {
   const fallbackThinkingModes = Array.isArray(defaults.thinking_modes)
     ? defaults.thinking_modes
     : DEFAULT_LLM_THINKING_MODES;
+  const fallbackInstructModes = "instruct_modes" in defaults ? defaults.instruct_modes : undefined;
+  const splitModes = Array.isArray(source.instruct_modes) || Array.isArray(fallbackInstructModes);
   const requestedThinkingModes = Array.isArray(source.thinking_modes)
     ? source.thinking_modes
-    : fallbackThinkingModes;
+    : splitModes ? [] : fallbackThinkingModes;
   const thinkingModes = [...new Set(requestedThinkingModes.map((requestedMode) => (
     LLM_THINKING_MODE_OPTIONS.find((option) => option.toLowerCase() === String(requestedMode).trim().toLowerCase())
+  )).filter(mode => mode !== undefined).filter(mode => !splitModes || (mode !== "Disabled" && !mode.startsWith("Instruct "))))];
+  const requestedInstructModes = Array.isArray(source.instruct_modes) ? source.instruct_modes
+    : Array.isArray(fallbackInstructModes) ? fallbackInstructModes : [];
+  const instructModes = [...new Set(requestedInstructModes.map(requested => (
+    LLM_THINKING_MODE_OPTIONS.find(mode => (mode === "Disabled" || LLM_THINKING_MODE_OPTIONS.some(option => option === `Instruct ${mode}`))
+      && mode.toLowerCase() === String(requested).trim().toLowerCase())
   )).filter(mode => mode !== undefined))];
-  if (!thinkingModes.length) thinkingModes.push(...LLM_THINKING_MODE_OPTIONS.filter(mode => fallbackThinkingModes.includes(mode)));
-  if (!thinkingModes.length) thinkingModes.push("Disabled");
+  if (!splitModes) {
+    if (!thinkingModes.length) thinkingModes.push(...LLM_THINKING_MODE_OPTIONS.filter(mode => fallbackThinkingModes.includes(mode)));
+    if (!thinkingModes.length) thinkingModes.push("Disabled");
+  } else if (!thinkingModes.length && !instructModes.length) {
+    instructModes.push("Disabled");
+  }
+  const availableModes = llmProfileModeOptions({thinking_modes: thinkingModes, instruct_modes: instructModes});
   const requestedThinkingMode = LLM_THINKING_MODE_OPTIONS.find((option) => (
     option.toLowerCase() === String(source.thinking_mode ?? defaults.thinking_mode).trim().toLowerCase()
   ));
@@ -56,8 +82,9 @@ export function normalizeLlmProfile(value, fallback = null) {
     id: String(source.id || defaults.id || LLM_PROFILE_DEFAULTS.id),
     name: String(source.name || defaults.name || LLM_PROFILE_DEFAULTS.name).trim().slice(0, 80)
       || LLM_PROFILE_DEFAULTS.name,
-    thinking_mode: requestedThinkingMode && thinkingModes.includes(requestedThinkingMode) ? requestedThinkingMode : thinkingModes[0],
+    thinking_mode: requestedThinkingMode && availableModes.includes(requestedThinkingMode) ? requestedThinkingMode : availableModes[0],
     thinking_modes: thinkingModes,
+    ...(splitModes ? {instruct_modes: instructModes} : {}),
     max_response_tokens: number("max_response_tokens", 0, 8192, true),
     llamacpp_reasoning_budget_tokens: number("llamacpp_reasoning_budget_tokens", 0, 262144, true),
     temperature: number("temperature", 0, 5),

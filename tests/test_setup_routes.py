@@ -55,5 +55,15 @@ class SetupRouteTests(unittest.IsolatedAsyncioTestCase):
         result = await self.client.post("/promptstudio/setup/plan", json={"packs": ["bad"]})
         self.assertEqual(result.status, 400)
 
+    async def test_qwen_start_rejects_missing_license_acceptance(self):
+        payload = {"packs": ["qwen21_create_base25"]}
+        result = await self.client.post("/promptstudio/setup/plan", json=payload)
+        plan = await result.json()
+        self.assertTrue(any("non-commercial" in message for message in plan["blockers"]))
+        self.assertEqual(len(plan["available_packs"]), 18)
+        result = await self.client.post("/promptstudio/setup/start", json=payload)
+        self.assertEqual(result.status, 400)
+        self.assertIn("non-commercial", (await result.json())["error"])
+
 
 if __name__ == "__main__": unittest.main()

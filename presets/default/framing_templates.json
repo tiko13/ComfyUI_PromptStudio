@@ -18,7 +18,7 @@
     },
     {
       "name": "Close-Up Portrait",
-      "instruction": "Frame the subject in a close-up portrait composition focused on the face, expression, and nearby details."
+      "instruction": "Frame the subject as a close-up of the face, expression, and nearby details. Ignore things that are not visible from this angle, such as clothes on lower body etc"
     },
     {
       "name": "Medium Shot",

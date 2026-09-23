@@ -13,7 +13,12 @@ export function editReferenceNodeIds(snapshot) {
 }
 
 export function supportsEditReference(profile) {
-  return profile?.kind === "edit" && editReferenceNodeIds(profile.snapshot).length > 0;
+  // Legacy grounded Krea edits have one auxiliary image. Universal inputs do
+  // not acquire prompt semantics merely by existing in an editing workflow.
+  const ids = editReferenceNodeIds(profile?.snapshot);
+  return profile?.kind === "edit" && ids.length === 1
+    && Object.values(profile.snapshot?.output || {}).some(node => /^Krea2Edit/.test(node.class_type)
+      && ["source_image_b", "image_b"].some(key => Array.isArray(node.inputs?.[key]) && String(node.inputs[key][0]) === ids[0]));
 }
 
 export function applyEditReference(snapshot, reference) {

@@ -2,7 +2,7 @@ import {readdirSync} from 'node:fs';
 import {spawnSync} from 'node:child_process';
 import {join} from 'node:path';
 import {videoEnabled} from '../integration-mode.mjs';
-const videoSuites = new Set(['extension.spec.mjs', 'history.spec.mjs', 'workflow.spec.mjs']);
+const videoSuites = new Set(['extension.spec.mjs', 'history.spec.mjs', 'workflow.spec.mjs', 'video-reference-inputs.spec.mjs']);
 const results=[];
 for(const name of readdirSync(import.meta.dirname).filter(name=>name.endsWith('.spec.mjs')).sort()) {
  if (!videoEnabled && videoSuites.has(name)) {

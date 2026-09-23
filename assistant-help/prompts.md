@@ -1,0 +1,6 @@
+---
+{"id":"prompts","topic":"prompts","studio":"image","summary":"Main and Final editors, style, framing, embellishment and literal text controls."}
+---
+Open the right sidebar with the bottom Settings button (Controls on mobile) if needed. Its Main and Final editors are separate from the chat message box at the bottom. The header gear opens application settings. Main prompt is the user's model-neutral scene description. Final prompt is the rendered prompt sent to the selected workflow. Both editors can be edited; Final can be rebuilt when controls change. Style, Framing, their modifiers and Embellishment shape the final rendering rather than becoming new user-authored Main content.
+Additional instructions steers the LLM. Unmodified part preserves supplied text such as LoRA triggers. Asking for an explanation does not apply a change. A discussion suggestion can be reviewed before Apply; never claim a help answer edited a prompt.
+The discussion banner follows the current topic: App help for Studio features and controls, Prompting advice for prompt questions, and Discussing generated image for an image discussion. Mixed help and discussions without a target image have their own topic labels. End closes the discussion without changing the prompt.

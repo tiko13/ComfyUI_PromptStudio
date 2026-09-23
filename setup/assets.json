@@ -80,5 +80,73 @@
     "sha256": "6adf9a69cc9502d286db7b69964d37da7e9cfe4b05b4d004bc275f087d3fd3cf",
     "url": "https://huggingface.co/conradlocke/krea2-identity-edit/resolve/89e9e7a09ee2e5c9331e952063d79b1b8a703280/krea2_identity_edit_v1_2.safetensors?download=true",
     "source_url": "https://huggingface.co/conradlocke/krea2-identity-edit"
+  },
+  {
+    "id": "qwen21_int8",
+    "name": "Qwen Image 2.1 INT8",
+    "category": "diffusion_models",
+    "relative_path": "QwenImage21/qwen_image_2.1_int8_convrot.safetensors",
+    "aliases": [],
+    "size": 7256783064,
+    "sha256": "cb74113cb03faecd79611b01fd7fd642f0aa60d6f0b95086abee214d75eaa57d",
+    "url": "https://huggingface.co/Comfy-Org/Qwen-Image-2.1/resolve/9a44dbdb47cefd046be9c0a13476192f34c8db8e/diffusion_models/qwen_image_2.1_int8_convrot.safetensors?download=true",
+    "source_url": "https://huggingface.co/Comfy-Org/Qwen-Image-2.1"
+  },
+  {
+    "id": "qwen21_bf16",
+    "name": "Qwen Image 2.1 BF16",
+    "category": "diffusion_models",
+    "relative_path": "QwenImage21/qwen_image_2.1_bf16.safetensors",
+    "aliases": [],
+    "size": 14230280616,
+    "sha256": "89f4158d066cc33906a199fca85634f766892dd78f49b6698dabf187ac86c4bc",
+    "url": "https://huggingface.co/Comfy-Org/Qwen-Image-2.1/resolve/9a44dbdb47cefd046be9c0a13476192f34c8db8e/diffusion_models/qwen_image_2.1_bf16.safetensors?download=true",
+    "source_url": "https://huggingface.co/Comfy-Org/Qwen-Image-2.1"
+  },
+  {
+    "id": "qwen21_encoder_int8",
+    "name": "Qwen3-VL 8B INT8",
+    "category": "text_encoders",
+    "relative_path": "qwen3vl_8b_int8_convrot.safetensors",
+    "aliases": [],
+    "size": 9350798360,
+    "sha256": "8bfd0f6e12abf2d2d697ecc888e5e90b0d6741d6708f05799f53afa560452e8f",
+    "url": "https://huggingface.co/Comfy-Org/Qwen-Image-2.1/resolve/9a44dbdb47cefd046be9c0a13476192f34c8db8e/text_encoders/qwen3vl_8b_int8_convrot.safetensors?download=true",
+    "source_url": "https://huggingface.co/Comfy-Org/Qwen-Image-2.1"
+  },
+  {
+    "id": "qwen21_encoder_bf16",
+    "name": "Qwen3-VL 8B BF16",
+    "category": "text_encoders",
+    "relative_path": "qwen3vl_8b_bf16.safetensors",
+    "aliases": [],
+    "size": 17534334616,
+    "sha256": "68bdc82bc1b66851162ae656225e7e2068166b603db19bd5d5a3b90eb12669a9",
+    "url": "https://huggingface.co/Comfy-Org/Qwen-Image-2.1/resolve/9a44dbdb47cefd046be9c0a13476192f34c8db8e/text_encoders/qwen3vl_8b_bf16.safetensors?download=true",
+    "source_url": "https://huggingface.co/Comfy-Org/Qwen-Image-2.1"
+  },
+  {
+    "id": "qwen21_vae_bf16",
+    "name": "Qwen Image 2.1 VAE BF16",
+    "category": "vae",
+    "relative_path": "qwen_image_2.1_vae_bf16.safetensors",
+    "aliases": [],
+    "size": 675509688,
+    "sha256": "bb21f7473051e1ac368515dd3f2e15cd44d7a11748ee8823e1ddca3e4876b7c9",
+    "url": "https://huggingface.co/Comfy-Org/Qwen-Image-2.1/resolve/9a44dbdb47cefd046be9c0a13476192f34c8db8e/vae/qwen_image_2.1_vae_bf16.safetensors?download=true",
+    "source_url": "https://huggingface.co/Comfy-Org/Qwen-Image-2.1"
+  },
+  {
+    "id": "qwen21_viggle_turbo4",
+    "name": "Qwen Image 2.1 Viggle Turbo 4-step LoRA",
+    "category": "loras",
+    "relative_path": "QwenImage21/_Qwen-Image-2.1-viggle-turbo-4step-lora-r64.safetensors",
+    "aliases": [
+      "Qwen-Image-2.1-viggle-turbo-4step-lora-r64.safetensors"
+    ],
+    "size": 339832808,
+    "sha256": "5c494dce662a95898d0988831af733b203ceced9116a82aa099c997f96ea1a3a",
+    "url": "https://huggingface.co/Viggle/Qwen-Image-2.1-viggle-turbo/resolve/e57a0bbc496f25277773f725be6ddb8f6b109010/Qwen-Image-2.1-viggle-turbo-4step-lora-r64.safetensors?download=true",
+    "source_url": "https://huggingface.co/Viggle/Qwen-Image-2.1-viggle-turbo"
   }
 ]

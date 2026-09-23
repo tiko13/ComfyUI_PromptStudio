@@ -229,15 +229,19 @@ $port = New-NumericControl 1 65535 ([decimal](Get-ConfigValue @("port") 8080))
 $existingExtraArgs = @(Get-ConfigValue @("extra_args") @())
 $extraArgs = New-TextBox (($existingExtraArgs | ForEach-Object { [string] $_ }) -join "`r`n") $true
 $extraArgs.MinimumSize = New-Object System.Drawing.Size(0, 80)
-$thinkingModeOptions = @("Disabled", "Minimal", "Low", "Medium", "High", "XHigh")
+$thinkingModeOptions = @("Disabled", "Minimal", "Low", "Medium", "High", "XHigh", "Einstein", "Spoon", "Instruct Low", "Instruct Medium", "Instruct XHigh", "Instruct Einstein", "Instruct Spoon")
 $llmThinkingMode = New-ComboBox $thinkingModeOptions ([string](Get-LlmProfileValue "thinking_mode" "Disabled"))
-$llmThinkingModes = New-TextBox (@(Get-LlmProfileValue "thinking_modes" @("Disabled", "Minimal", "Low", "Medium", "High")) -join ", ")
-$standardThinkingModesText = "Disabled, Minimal, Low, Medium, High"
-$qwen38ThinkingModesText = "XHigh, Medium, Low, Disabled"
+$storedModes = @(Get-LlmProfileValue "thinking_modes" @("Disabled", "Minimal", "Low", "Medium", "High"))
+$llmThinkingModes = New-TextBox (@($storedModes | Where-Object { $_ -ne "Disabled" -and $_ -notlike "Instruct *" }) -join ", ")
+$storedInstructModes = @(@(Get-LlmProfileValue "instruct_modes" @()) + @($storedModes | Where-Object { $_ -eq "Disabled" -or $_ -like "Instruct *" } | ForEach-Object { $_ -replace '^Instruct ', '' }) | Select-Object -Unique)
+$llmInstructModes = New-TextBox ($storedInstructModes -join ", ")
+$standardThinkingModesText = "Minimal, Low, Medium, High"
+$qwen38ThinkingModesText = "XHigh, Medium, Low"
 $applyModelThinkingModes = {
     if (
         $modelText.Text -match '(?i)qwen\s*3[._-]?8' -and
-        ($llmThinkingModes.Text.Trim() -eq $standardThinkingModesText -or -not $llmThinkingModes.Text.Trim())
+        ($llmThinkingModes.Text.Trim() -eq $standardThinkingModesText -or
+            (-not $llmThinkingModes.Text.Trim() -and -not $llmProfileConfig.ContainsKey("thinking_modes")))
     ) {
         $llmThinkingModes.Text = $qwen38ThinkingModesText
         $llmThinkingMode.SelectedItem = "XHigh"
@@ -291,27 +295,41 @@ Add-Field "MTP KV cache V" $mtpCacheTypeV 21 "Value-cache data type for the MTP 
 Add-Field "Host" $hostText 22 "Address llama-server listens on."
 Add-Field "Port" $port 23 "Port llama-server listens on."
 Add-Field "Extra arguments" $extraArgs 24 "Optional raw llama.cpp arguments, one token per line."
-Add-Field "Default thinking mode" $llmThinkingMode 25 "Default reasoning effort for this model config. Qwen 3.8 defaults to XHigh."
-Add-Field "Available thinking modes" $llmThinkingModes 26 "Comma-separated list. Qwen 3.8 uses XHigh, Medium, and Low; Disabled is its separate no-thinking switch. Other models may use Disabled, Minimal, Low, Medium, and High."
-Add-Field "Response tokens" $llmMaxResponseTokens 27 "Maximum final-answer tokens. Use 0 for the request-specific automatic limit."
-Add-Field "Reasoning token cap" $llmReasoningCap 28 "Use 0 for model-controlled reasoning. A positive value forcibly ends thinking after this many tokens."
-Add-Field "Sampler seed" $llmSamplerSeed 29 "Use -1 to let llama.cpp choose a random seed."
-Add-Field "Request timeout" $llmRequestTimeout 30 "Request timeout in seconds."
-Add-Field "Temperature" $llmTemperature 31 "Non-thinking sampler temperature."
-Add-Field "Top P" $llmTopP 32 "Non-thinking nucleus-sampling probability."
-Add-Field "Top K" $llmTopK 33 "Non-thinking top-k sampler value."
-Add-Field "Min P" $llmMinP 34 "Non-thinking minimum-token probability."
-Add-Field "Presence penalty" $llmPresencePenalty 35 "Non-thinking presence penalty."
-Add-Field "Repeat penalty" $llmRepPen 36 "Non-thinking repetition penalty."
-Add-Field "Repeat range" $llmRepPenRange 37 "Non-thinking repetition lookback range."
-Add-Field "Thinking temperature" $llmThinkingTemperature 38 "Sampler temperature used whenever thinking is enabled."
-Add-Field "Thinking Top P" $llmThinkingTopP 39 "Thinking nucleus-sampling probability."
-Add-Field "Thinking Top K" $llmThinkingTopK 40 "Thinking top-k sampler value."
-Add-Field "Thinking Min P" $llmThinkingMinP 41 "Thinking minimum-token probability."
-Add-Field "Thinking presence" $llmThinkingPresencePenalty 42 "Thinking presence penalty."
-Add-Field "Thinking repeat penalty" $llmThinkingRepPen 43 "Thinking repetition penalty."
-Add-Field "Thinking repeat range" $llmThinkingRepPenRange 44 "Thinking repetition lookback range."
-Add-Field "Stop sequences" $llmStopSequence 45 "Optional stop sequences, one per line."
+Add-Field "Default mode" $llmThinkingMode 25 "Choose a mode from either list. Instruct variants disable thinking."
+$modeSupportHint = "Check the model card for supported modes. Unsupported modes may fail or produce unpredictable results."
+Add-Field "Thinking modes" $llmThinkingModes 26 "Comma-separated reasoning modes. Qwen 3.8 uses XHigh, Medium, and Low; updated Twin Turbo also supports Spoon and Einstein. $modeSupportHint"
+$modeDefinitionsPanel = New-Object System.Windows.Forms.FlowLayoutPanel
+$modeDefinitionsPanel.FlowDirection = [System.Windows.Forms.FlowDirection]::TopDown
+$modeDefinitionsPanel.AutoSize = $true
+$modeDefinitionsPanel.WrapContents = $false
+$llmInstructModes.Width = 440
+[void] $modeDefinitionsPanel.Controls.Add($llmInstructModes)
+$modeHintLabel = New-Object System.Windows.Forms.Label
+$modeHintLabel.Text = $modeSupportHint
+$modeHintLabel.AutoSize = $true
+$modeHintLabel.MaximumSize = New-Object System.Drawing.Size(440, 0)
+[void] $modeDefinitionsPanel.Controls.Add($modeHintLabel)
+$toolTip.SetToolTip($llmInstructModes, "Native names without the Instruct prefix; Disabled uses the default non-thinking behavior. $modeSupportHint")
+Add-Field "Instruct modes" $modeDefinitionsPanel 27
+Add-Field "Response tokens" $llmMaxResponseTokens 28 "Maximum final-answer tokens. Use 0 for the request-specific automatic limit."
+Add-Field "Reasoning token cap" $llmReasoningCap 29 "Use 0 for model-controlled reasoning. A positive value forcibly ends thinking after this many tokens."
+Add-Field "Sampler seed" $llmSamplerSeed 30 "Use -1 to let llama.cpp choose a random seed."
+Add-Field "Request timeout" $llmRequestTimeout 31 "Request timeout in seconds."
+Add-Field "Temperature" $llmTemperature 32 "Non-thinking sampler temperature."
+Add-Field "Top P" $llmTopP 33 "Non-thinking nucleus-sampling probability."
+Add-Field "Top K" $llmTopK 34 "Non-thinking top-k sampler value."
+Add-Field "Min P" $llmMinP 35 "Non-thinking minimum-token probability."
+Add-Field "Presence penalty" $llmPresencePenalty 36 "Non-thinking presence penalty."
+Add-Field "Repeat penalty" $llmRepPen 37 "Non-thinking repetition penalty."
+Add-Field "Repeat range" $llmRepPenRange 38 "Non-thinking repetition lookback range."
+Add-Field "Thinking temperature" $llmThinkingTemperature 39 "Sampler temperature used whenever thinking is enabled."
+Add-Field "Thinking Top P" $llmThinkingTopP 40 "Thinking nucleus-sampling probability."
+Add-Field "Thinking Top K" $llmThinkingTopK 41 "Thinking top-k sampler value."
+Add-Field "Thinking Min P" $llmThinkingMinP 42 "Thinking minimum-token probability."
+Add-Field "Thinking presence" $llmThinkingPresencePenalty 43 "Thinking presence penalty."
+Add-Field "Thinking repeat penalty" $llmThinkingRepPen 44 "Thinking repetition penalty."
+Add-Field "Thinking repeat range" $llmThinkingRepPenRange 45 "Thinking repetition lookback range."
+Add-Field "Stop sequences" $llmStopSequence 46 "Optional stop sequences, one per line."
 
 $statusLabel = New-Object System.Windows.Forms.Label
 $statusLabel.AutoSize = $true
@@ -377,22 +395,28 @@ $saveButton.Add_Click({
                 ForEach-Object { $_.Trim() } |
                 Where-Object { $_ }
         )
-        if (-not $requestedThinkingModes.Count) {
-            throw "Select at least one available thinking mode."
-        }
         $normalizedThinkingModes = New-Object System.Collections.Generic.List[string]
         foreach ($requestedMode in $requestedThinkingModes) {
             $normalizedMode = $thinkingModeOptions | Where-Object { $_ -ieq $requestedMode } | Select-Object -First 1
-            if (-not $normalizedMode) {
+            if (-not $normalizedMode -or $normalizedMode -eq "Disabled" -or $normalizedMode -like "Instruct *") {
                 throw "Thinking modes may contain only: $($thinkingModeOptions -join ', ')."
             }
             if (-not $normalizedThinkingModes.Contains($normalizedMode)) {
                 [void] $normalizedThinkingModes.Add($normalizedMode)
             }
         }
+        $instructOptions = @("Disabled", "Low", "Medium", "XHigh", "Einstein", "Spoon")
+        $normalizedInstructModes = New-Object System.Collections.Generic.List[string]
+        foreach ($requestedMode in @($llmInstructModes.Text -split '[,\r\n]+' | ForEach-Object { $_.Trim() } | Where-Object { $_ })) {
+            $normalizedMode = $instructOptions | Where-Object { $_ -ieq $requestedMode } | Select-Object -First 1
+            if (-not $normalizedMode) { throw "Instruct modes may contain only: $($instructOptions -join ', ')." }
+            if (-not $normalizedInstructModes.Contains($normalizedMode)) { [void] $normalizedInstructModes.Add($normalizedMode) }
+        }
+        $availableModes = @($normalizedThinkingModes) + @($normalizedInstructModes | ForEach-Object { if ($_ -eq "Disabled") { $_ } else { "Instruct $_" } })
+        if (-not $availableModes.Count) { throw "Select at least one thinking or instruct mode." }
         $defaultThinkingMode = [string] $llmThinkingMode.SelectedItem
-        if (-not $normalizedThinkingModes.Contains($defaultThinkingMode)) {
-            throw "Default thinking mode must also appear in Available thinking modes."
+        if ($defaultThinkingMode -notin $availableModes) {
+            throw "Default mode must appear in the thinking or instruct modes."
         }
         $stopSequenceValue = $llmStopSequence.Text
         if ($stopSequenceValue.Length -gt 4096 -or $stopSequenceValue.Contains([char]0)) {
@@ -428,6 +452,7 @@ $saveButton.Add_Click({
             llm_profile = [ordered]@{
                 thinking_mode = $defaultThinkingMode
                 thinking_modes = @($normalizedThinkingModes)
+                instruct_modes = @($normalizedInstructModes)
                 max_response_tokens = [int] $llmMaxResponseTokens.Value
                 llamacpp_reasoning_budget_tokens = [int] $llmReasoningCap.Value
                 temperature = [double] $llmTemperature.Value

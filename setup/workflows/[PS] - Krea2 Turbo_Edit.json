@@ -1322,11 +1322,11 @@
       },
       "widgets_values": [
         "Krea2\\_krea2_identity_edit_v1_2.safetensors",
-        1.0
+        1
       ],
       "widgets_values_named": {
         "lora_name": "Krea2\\_krea2_identity_edit_v1_2.safetensors",
-        "strength_model": 1.0
+        "strength_model": 1
       },
       "title": "Krea2 Identity Edit v1.2"
     },
@@ -1358,9 +1358,9 @@
             "config": [
               "FLOAT",
               {
-                "default": 1.0,
-                "min": 0.0,
-                "max": 1000.0,
+                "default": 1,
+                "min": 0,
+                "max": 1000,
                 "step": 0.01,
                 "round": 0.001,
                 "tooltip": "reference-fidelity dial: multiplies target->reference attention. Applies to the LAST ref (= the subject in two-ref workflows, the only ref in single-ref). 1.0 = off, >1 pulls harder toward the reference's appearance, <1 loosens. Optimal value is model-specific"
@@ -2014,21 +2014,7 @@
   ],
   "config": {},
   "extra": {
-    "ds": {
-      "scale": 0.6744328345477935,
-      "offset": [
-        1377.1008022313367,
-        676.6759067356318
-      ]
-    },
-    "frontendVersion": "1.45.19",
-    "VHS_latentpreview": false,
-    "VHS_latentpreviewrate": 0,
-    "VHS_MetadataImage": true,
-    "VHS_KeepIntermediate": true,
-    "anomalous_hashes": {},
-    "ue_links": [],
-    "links_added_by_ue": []
+    "frontendVersion": "1.45.19"
   },
   "version": 0.4
 }

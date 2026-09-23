@@ -1,0 +1,5 @@
+---
+{"id":"queue","topic":"queue","studio":"image","summary":"Generation progress, cancellation, reroll and diagnostics."}
+---
+Generation cards show progress and expose the actions available for that job. Use Cancel on the relevant active/queued generation when offered. Reroll in the bottom composer rebuilds Final from the current Main and controls when LLM amplification is enabled, then queues another image; it preserves Main. In direct mode it generates from the direct prompt. Reference-edit workflows use their current edit references. Reroll is not guaranteed to replay an earlier image's exact settings. Current UI actions determine what can be cancelled or rerun.
+Open the status dropdown in the sidebar header for System status. Its activity button is {activity_label}; diagnostics are available through {diagnostics_label}. Force stop processing stops LLM processing, not an individual diffusion job. Restart ComfyUI interrupts work and is not a routine cancellation step. Never claim a job was cancelled by explaining these controls.

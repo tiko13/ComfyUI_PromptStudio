@@ -1,26 +1,540 @@
 {
   "version": 1,
   "packs": [
-    {"id": "create", "name": "Create", "file": "[PS] - Krea2 Turbo.json", "requirements": ["krea2", "encoder", "vae", "textfusion"], "nodes": []},
-    {"id": "edit", "name": "Edit", "file": "[PS] - Krea2 Turbo_Edit.json", "requirements": ["krea2", "encoder", "vae", "textfusion", "identity_edit"], "nodes": ["krea2edit"]},
-    {"id": "upscale", "name": "Upscale", "file": "[PS] - Krea2 Upscale UltimateSD.json", "requirements": ["krea2", "encoder", "vae", "textfusion", "upscaler"], "nodes": ["krea2edit", "ultimate"]}
+    {
+      "id": "create",
+      "name": "Create",
+      "file": "[PS] - Krea2 Turbo.json",
+      "requirements": [
+        "krea2",
+        "encoder",
+        "vae",
+        "textfusion"
+      ],
+      "nodes": [],
+      "family": "Krea2"
+    },
+    {
+      "id": "edit",
+      "name": "Edit",
+      "file": "[PS] - Krea2 Turbo_Edit.json",
+      "requirements": [
+        "krea2",
+        "encoder",
+        "vae",
+        "textfusion",
+        "identity_edit"
+      ],
+      "nodes": [
+        "krea2edit"
+      ],
+      "family": "Krea2"
+    },
+    {
+      "id": "upscale",
+      "name": "Upscale",
+      "file": "[PS] - Krea2 Upscale UltimateSD.json",
+      "requirements": [
+        "krea2",
+        "encoder",
+        "vae",
+        "textfusion",
+        "upscaler"
+      ],
+      "nodes": [
+        "krea2edit",
+        "ultimate"
+      ],
+      "family": "Krea2"
+    },
+    {
+      "id": "qwen21_create_base25",
+      "name": "Qwen 2.1 Create · 25 steps",
+      "label": "Create · 25 steps",
+      "family": "Qwen Image 2.1",
+      "role": "create",
+      "file": "[PS] - QwenImage21 Create base25.json",
+      "requirements": [
+        "qwen21",
+        "qwen21_encoder",
+        "qwen21_vae"
+      ],
+      "nodes": [],
+      "license": {
+        "id": "qwen-research-2026-09-20",
+        "name": "Qwen Research License",
+        "url": "https://huggingface.co/Qwen/Qwen-Image-2.1/blob/main/LICENSE",
+        "notice": "Qwen Image 2.1 is restricted to strict non-commercial use: research or evaluation only. Commercial use requires a separate license from Qwen. Accept these terms to select this workflow."
+      }
+    },
+    {
+      "id": "qwen21_create_base40",
+      "name": "Qwen 2.1 Create · 40 steps",
+      "label": "Create · 40 steps",
+      "family": "Qwen Image 2.1",
+      "role": "create",
+      "file": "[PS] - QwenImage21 Create base40.json",
+      "requirements": [
+        "qwen21",
+        "qwen21_encoder",
+        "qwen21_vae"
+      ],
+      "nodes": [],
+      "license": {
+        "id": "qwen-research-2026-09-20",
+        "name": "Qwen Research License",
+        "url": "https://huggingface.co/Qwen/Qwen-Image-2.1/blob/main/LICENSE",
+        "notice": "Qwen Image 2.1 is restricted to strict non-commercial use: research or evaluation only. Commercial use requires a separate license from Qwen. Accept these terms to select this workflow."
+      }
+    },
+    {
+      "id": "qwen21_create_turbo4",
+      "name": "Qwen 2.1 Create · Turbo 4 steps",
+      "label": "Create · Turbo 4 steps",
+      "family": "Qwen Image 2.1",
+      "role": "create",
+      "file": "[PS] - QwenImage21 Create turbo4.json",
+      "requirements": [
+        "qwen21",
+        "qwen21_encoder",
+        "qwen21_vae",
+        "qwen21_turbo"
+      ],
+      "nodes": [],
+      "license": {
+        "id": "qwen-research-2026-09-20",
+        "name": "Qwen Research License",
+        "url": "https://huggingface.co/Qwen/Qwen-Image-2.1/blob/main/LICENSE",
+        "notice": "Qwen Image 2.1 is restricted to strict non-commercial use: research or evaluation only. Commercial use requires a separate license from Qwen. Accept these terms to select this workflow."
+      }
+    },
+    {
+      "id": "qwen21_edit_base25",
+      "name": "Qwen 2.1 Edit · 25 steps",
+      "label": "Edit · 25 steps",
+      "family": "Qwen Image 2.1",
+      "role": "edit",
+      "file": "[PS] - QwenImage21 Edit base25.json",
+      "requirements": [
+        "qwen21",
+        "qwen21_encoder",
+        "qwen21_vae"
+      ],
+      "nodes": [],
+      "license": {
+        "id": "qwen-research-2026-09-20",
+        "name": "Qwen Research License",
+        "url": "https://huggingface.co/Qwen/Qwen-Image-2.1/blob/main/LICENSE",
+        "notice": "Qwen Image 2.1 is restricted to strict non-commercial use: research or evaluation only. Commercial use requires a separate license from Qwen. Accept these terms to select this workflow."
+      }
+    },
+    {
+      "id": "qwen21_edit_base40",
+      "name": "Qwen 2.1 Edit · 40 steps",
+      "label": "Edit · 40 steps",
+      "family": "Qwen Image 2.1",
+      "role": "edit",
+      "file": "[PS] - QwenImage21 Edit base40.json",
+      "requirements": [
+        "qwen21",
+        "qwen21_encoder",
+        "qwen21_vae"
+      ],
+      "nodes": [],
+      "license": {
+        "id": "qwen-research-2026-09-20",
+        "name": "Qwen Research License",
+        "url": "https://huggingface.co/Qwen/Qwen-Image-2.1/blob/main/LICENSE",
+        "notice": "Qwen Image 2.1 is restricted to strict non-commercial use: research or evaluation only. Commercial use requires a separate license from Qwen. Accept these terms to select this workflow."
+      }
+    },
+    {
+      "id": "qwen21_edit_turbo4",
+      "name": "Qwen 2.1 Edit · Turbo 4 steps",
+      "label": "Edit · Turbo 4 steps",
+      "family": "Qwen Image 2.1",
+      "role": "edit",
+      "file": "[PS] - QwenImage21 Edit turbo4.json",
+      "requirements": [
+        "qwen21",
+        "qwen21_encoder",
+        "qwen21_vae",
+        "qwen21_turbo"
+      ],
+      "nodes": [],
+      "license": {
+        "id": "qwen-research-2026-09-20",
+        "name": "Qwen Research License",
+        "url": "https://huggingface.co/Qwen/Qwen-Image-2.1/blob/main/LICENSE",
+        "notice": "Qwen Image 2.1 is restricted to strict non-commercial use: research or evaluation only. Commercial use requires a separate license from Qwen. Accept these terms to select this workflow."
+      }
+    },
+    {
+      "id": "qwen21_rgba_base25",
+      "name": "Qwen 2.1 RGBA · 25 steps",
+      "label": "RGBA · 25 steps",
+      "family": "Qwen Image 2.1",
+      "role": "create",
+      "file": "[PS] - QwenImage21 RGBA base25.json",
+      "requirements": [
+        "qwen21",
+        "qwen21_encoder",
+        "qwen21_vae"
+      ],
+      "nodes": [],
+      "license": {
+        "id": "qwen-research-2026-09-20",
+        "name": "Qwen Research License",
+        "url": "https://huggingface.co/Qwen/Qwen-Image-2.1/blob/main/LICENSE",
+        "notice": "Qwen Image 2.1 is restricted to strict non-commercial use: research or evaluation only. Commercial use requires a separate license from Qwen. Accept these terms to select this workflow."
+      }
+    },
+    {
+      "id": "qwen21_rgba_base40",
+      "name": "Qwen 2.1 RGBA · 40 steps",
+      "label": "RGBA · 40 steps",
+      "family": "Qwen Image 2.1",
+      "role": "create",
+      "file": "[PS] - QwenImage21 RGBA base40.json",
+      "requirements": [
+        "qwen21",
+        "qwen21_encoder",
+        "qwen21_vae"
+      ],
+      "nodes": [],
+      "license": {
+        "id": "qwen-research-2026-09-20",
+        "name": "Qwen Research License",
+        "url": "https://huggingface.co/Qwen/Qwen-Image-2.1/blob/main/LICENSE",
+        "notice": "Qwen Image 2.1 is restricted to strict non-commercial use: research or evaluation only. Commercial use requires a separate license from Qwen. Accept these terms to select this workflow."
+      }
+    },
+    {
+      "id": "qwen21_rgba_turbo4",
+      "name": "Qwen 2.1 RGBA · Turbo 4 steps",
+      "label": "RGBA · Turbo 4 steps",
+      "family": "Qwen Image 2.1",
+      "role": "create",
+      "file": "[PS] - QwenImage21 RGBA turbo4.json",
+      "requirements": [
+        "qwen21",
+        "qwen21_encoder",
+        "qwen21_vae",
+        "qwen21_turbo"
+      ],
+      "nodes": [],
+      "license": {
+        "id": "qwen-research-2026-09-20",
+        "name": "Qwen Research License",
+        "url": "https://huggingface.co/Qwen/Qwen-Image-2.1/blob/main/LICENSE",
+        "notice": "Qwen Image 2.1 is restricted to strict non-commercial use: research or evaluation only. Commercial use requires a separate license from Qwen. Accept these terms to select this workflow."
+      }
+    },
+    {
+      "id": "qwen21_rgba_edit_base25",
+      "name": "Qwen 2.1 RGBA Edit · 25 steps",
+      "label": "RGBA Edit · 25 steps",
+      "family": "Qwen Image 2.1",
+      "role": "edit",
+      "file": "[PS] - QwenImage21 RGBA Edit base25.json",
+      "requirements": [
+        "qwen21",
+        "qwen21_encoder",
+        "qwen21_vae"
+      ],
+      "nodes": [],
+      "license": {
+        "id": "qwen-research-2026-09-20",
+        "name": "Qwen Research License",
+        "url": "https://huggingface.co/Qwen/Qwen-Image-2.1/blob/main/LICENSE",
+        "notice": "Qwen Image 2.1 is restricted to strict non-commercial use: research or evaluation only. Commercial use requires a separate license from Qwen. Accept these terms to select this workflow."
+      }
+    },
+    {
+      "id": "qwen21_rgba_edit_base40",
+      "name": "Qwen 2.1 RGBA Edit · 40 steps",
+      "label": "RGBA Edit · 40 steps",
+      "family": "Qwen Image 2.1",
+      "role": "edit",
+      "file": "[PS] - QwenImage21 RGBA Edit base40.json",
+      "requirements": [
+        "qwen21",
+        "qwen21_encoder",
+        "qwen21_vae"
+      ],
+      "nodes": [],
+      "license": {
+        "id": "qwen-research-2026-09-20",
+        "name": "Qwen Research License",
+        "url": "https://huggingface.co/Qwen/Qwen-Image-2.1/blob/main/LICENSE",
+        "notice": "Qwen Image 2.1 is restricted to strict non-commercial use: research or evaluation only. Commercial use requires a separate license from Qwen. Accept these terms to select this workflow."
+      }
+    },
+    {
+      "id": "qwen21_rgba_edit_turbo4",
+      "name": "Qwen 2.1 RGBA Edit · Turbo 4 steps",
+      "label": "RGBA Edit · Turbo 4 steps",
+      "family": "Qwen Image 2.1",
+      "role": "edit",
+      "file": "[PS] - QwenImage21 RGBA Edit turbo4.json",
+      "requirements": [
+        "qwen21",
+        "qwen21_encoder",
+        "qwen21_vae",
+        "qwen21_turbo"
+      ],
+      "nodes": [],
+      "license": {
+        "id": "qwen-research-2026-09-20",
+        "name": "Qwen Research License",
+        "url": "https://huggingface.co/Qwen/Qwen-Image-2.1/blob/main/LICENSE",
+        "notice": "Qwen Image 2.1 is restricted to strict non-commercial use: research or evaluation only. Commercial use requires a separate license from Qwen. Accept these terms to select this workflow."
+      }
+    },
+    {
+      "id": "qwen21_background_removal_base25",
+      "name": "Qwen 2.1 Background Removal · 25 steps",
+      "label": "Background Removal · 25 steps",
+      "family": "Qwen Image 2.1",
+      "role": "edit",
+      "file": "[PS] - QwenImage21 Background Removal base25.json",
+      "requirements": [
+        "qwen21",
+        "qwen21_encoder",
+        "qwen21_vae"
+      ],
+      "nodes": [],
+      "license": {
+        "id": "qwen-research-2026-09-20",
+        "name": "Qwen Research License",
+        "url": "https://huggingface.co/Qwen/Qwen-Image-2.1/blob/main/LICENSE",
+        "notice": "Qwen Image 2.1 is restricted to strict non-commercial use: research or evaluation only. Commercial use requires a separate license from Qwen. Accept these terms to select this workflow."
+      }
+    },
+    {
+      "id": "qwen21_background_removal_base40",
+      "name": "Qwen 2.1 Background Removal · 40 steps",
+      "label": "Background Removal · 40 steps",
+      "family": "Qwen Image 2.1",
+      "role": "edit",
+      "file": "[PS] - QwenImage21 Background Removal base40.json",
+      "requirements": [
+        "qwen21",
+        "qwen21_encoder",
+        "qwen21_vae"
+      ],
+      "nodes": [],
+      "license": {
+        "id": "qwen-research-2026-09-20",
+        "name": "Qwen Research License",
+        "url": "https://huggingface.co/Qwen/Qwen-Image-2.1/blob/main/LICENSE",
+        "notice": "Qwen Image 2.1 is restricted to strict non-commercial use: research or evaluation only. Commercial use requires a separate license from Qwen. Accept these terms to select this workflow."
+      }
+    },
+    {
+      "id": "qwen21_background_removal_turbo4",
+      "name": "Qwen 2.1 Background Removal · Turbo 4 steps",
+      "label": "Background Removal · Turbo 4 steps",
+      "family": "Qwen Image 2.1",
+      "role": "edit",
+      "file": "[PS] - QwenImage21 Background Removal turbo4.json",
+      "requirements": [
+        "qwen21",
+        "qwen21_encoder",
+        "qwen21_vae",
+        "qwen21_turbo"
+      ],
+      "nodes": [],
+      "license": {
+        "id": "qwen-research-2026-09-20",
+        "name": "Qwen Research License",
+        "url": "https://huggingface.co/Qwen/Qwen-Image-2.1/blob/main/LICENSE",
+        "notice": "Qwen Image 2.1 is restricted to strict non-commercial use: research or evaluation only. Commercial use requires a separate license from Qwen. Accept these terms to select this workflow."
+      }
+    }
   ],
   "requirements": [
-    {"id": "krea2", "name": "Krea2 diffusion model", "category": "diffusion_models", "default_asset": "krea2_turbo_fp8", "description": "Creates image detail. Compatible installed Krea2 variants can replace Turbo. Sampler settings stay as supplied in the workflows; other variants may need different steps or CFG.", "binding": {"type": "KCPP_PromptStudioModelLoader", "field": "unet_name", "index": 1}},
-    {"id": "encoder", "name": "Qwen3-VL 4B text and vision encoder", "category": "text_encoders", "default_asset": "qwen3vl_4b_bf16", "alternatives": ["qwen3vl_4b_fp8"], "description": "Reads prompts and edit reference images. Reuses either supported BF16 or FP8 weights across all three workflows.", "binding": {"type": "CLIPLoader", "field": "clip_name", "index": 0}},
-    {"id": "vae", "name": "Qwen Image VAE", "category": "vae", "default_asset": "qwen_image_vae", "description": "Converts between images and diffusion latents.", "binding": {"type": "VAELoader", "field": "vae_name", "index": 0}},
-    {"id": "textfusion", "name": "Krea2 TextFusion LoRA", "category": "loras", "default_asset": "krea2_textfusion_refusal_reduction", "description": "The fixed LoRA included in your supplied workflows.", "binding": {"type": "LoraLoaderModelOnly", "field": "lora_name", "index": 0, "asset": "textfusion"}},
-    {"id": "identity_edit", "name": "Krea2 Identity Edit v1.2 LoRA", "category": "loras", "default_asset": "krea2_identity_edit_v1_2", "description": "Provides instruction-based editing and reference identity preservation.", "binding": {"type": "LoraLoaderModelOnly", "field": "lora_name", "index": 0, "asset": "identity_edit"}},
-    {"id": "upscaler", "name": "NMKD Superscale model", "category": "upscale_models", "default_asset": "nmkd_superscale", "description": "Provides the first enlargement pass for Ultimate SD Upscale.", "binding": {"type": "UpscaleModelLoader", "field": "model_name", "index": 0}}
+    {
+      "id": "krea2",
+      "name": "Krea2 diffusion model",
+      "category": "diffusion_models",
+      "default_asset": "krea2_turbo_fp8",
+      "description": "Creates image detail. Compatible installed Krea2 variants can replace Turbo. Sampler settings stay as supplied in the workflows; other variants may need different steps or CFG.",
+      "binding": {
+        "type": "KCPP_PromptStudioModelLoader",
+        "field": "unet_name",
+        "index": 1
+      }
+    },
+    {
+      "id": "encoder",
+      "name": "Qwen3-VL 4B text and vision encoder",
+      "category": "text_encoders",
+      "default_asset": "qwen3vl_4b_bf16",
+      "alternatives": [
+        "qwen3vl_4b_fp8"
+      ],
+      "description": "Reads prompts and edit reference images. Reuses either supported BF16 or FP8 weights across all three workflows.",
+      "binding": {
+        "type": "CLIPLoader",
+        "field": "clip_name",
+        "index": 0
+      }
+    },
+    {
+      "id": "vae",
+      "name": "Qwen Image VAE",
+      "category": "vae",
+      "default_asset": "qwen_image_vae",
+      "description": "Converts between images and diffusion latents.",
+      "binding": {
+        "type": "VAELoader",
+        "field": "vae_name",
+        "index": 0
+      }
+    },
+    {
+      "id": "textfusion",
+      "name": "Krea2 TextFusion LoRA",
+      "category": "loras",
+      "default_asset": "krea2_textfusion_refusal_reduction",
+      "description": "The fixed LoRA included in your supplied workflows.",
+      "binding": {
+        "type": "LoraLoaderModelOnly",
+        "field": "lora_name",
+        "index": 0,
+        "asset": "textfusion"
+      }
+    },
+    {
+      "id": "identity_edit",
+      "name": "Krea2 Identity Edit v1.2 LoRA",
+      "category": "loras",
+      "default_asset": "krea2_identity_edit_v1_2",
+      "description": "Provides instruction-based editing and reference identity preservation.",
+      "binding": {
+        "type": "LoraLoaderModelOnly",
+        "field": "lora_name",
+        "index": 0,
+        "asset": "identity_edit"
+      }
+    },
+    {
+      "id": "upscaler",
+      "name": "NMKD Superscale model",
+      "category": "upscale_models",
+      "default_asset": "nmkd_superscale",
+      "description": "Provides the first enlargement pass for Ultimate SD Upscale.",
+      "binding": {
+        "type": "UpscaleModelLoader",
+        "field": "model_name",
+        "index": 0
+      }
+    },
+    {
+      "id": "qwen21",
+      "name": "Qwen Image 2.1 diffusion model",
+      "category": "diffusion_models",
+      "default_asset": "qwen21_int8",
+      "alternatives": [
+        "qwen21_bf16"
+      ],
+      "description": "Shared by all Qwen 2.1 workflows. INT8 uses less memory; BF16 is also available.",
+      "binding": {
+        "type": "KCPP_PromptStudioModelLoader",
+        "field": "unet_name",
+        "index": 1
+      }
+    },
+    {
+      "id": "qwen21_encoder",
+      "name": "Qwen3-VL 8B encoder",
+      "category": "text_encoders",
+      "default_asset": "qwen21_encoder_int8",
+      "alternatives": [
+        "qwen21_encoder_bf16"
+      ],
+      "description": "Reads prompts and reference images for Qwen 2.1. Shared by generation and editing.",
+      "binding": {
+        "type": "CLIPLoader",
+        "field": "clip_name",
+        "index": 0
+      }
+    },
+    {
+      "id": "qwen21_vae",
+      "name": "Qwen Image 2.1 VAE",
+      "category": "vae",
+      "default_asset": "qwen21_vae_bf16",
+      "description": "Native Qwen 2.1 decoder, including transparency. Separate from the VAE used by Krea2.",
+      "binding": {
+        "type": "VAELoader",
+        "field": "vae_name",
+        "index": 0
+      }
+    },
+    {
+      "id": "qwen21_turbo",
+      "name": "Qwen 2.1 Turbo 4-step LoRA",
+      "category": "loras",
+      "default_asset": "qwen21_viggle_turbo4",
+      "description": "Required only for Turbo 4-step workflows; applied once as a fixed adapter.",
+      "binding": {
+        "type": "LoraLoaderModelOnly",
+        "field": "lora_name",
+        "index": 0,
+        "asset": "qwen21_turbo"
+      }
+    }
   ],
   "node_packs": [
-    {"id": "krea2edit", "name": "Krea2 Edit nodes", "classes": ["Krea2EditGroundedEncode", "Krea2EditModelPatch"], "url": "https://github.com/lbouaraba/comfyui-krea2edit", "required_inputs": {"Krea2EditModelPatch": ["target_latent"]}},
-    {"id": "ultimate", "name": "Ultimate SD Upscale nodes", "classes": ["UltimateSDUpscale"], "url": "https://github.com/ssitu/ComfyUI_UltimateSDUpscale"}
+    {
+      "id": "krea2edit",
+      "name": "Krea2 Edit nodes",
+      "classes": [
+        "Krea2EditGroundedEncode",
+        "Krea2EditModelPatch"
+      ],
+      "url": "https://github.com/lbouaraba/comfyui-krea2edit",
+      "required_inputs": {
+        "Krea2EditModelPatch": [
+          "target_latent"
+        ]
+      }
+    },
+    {
+      "id": "ultimate",
+      "name": "Ultimate SD Upscale nodes",
+      "classes": [
+        "UltimateSDUpscale"
+      ],
+      "url": "https://github.com/ssitu/ComfyUI_UltimateSDUpscale"
+    }
   ],
   "licenses": [
-    {"name": "Krea2 model terms", "url": "https://huggingface.co/Comfy-Org/Krea-2/blob/main/LICENSE.pdf"},
-    {"name": "TextFusion model card", "url": "https://huggingface.co/Quiho/Krea2_TextFusion_Refusal-Reduction_LoRA_v1.0_lora"},
-    {"name": "NMKD Superscale source", "url": "https://huggingface.co/Kalashnikov/NMKD-superscale"},
-    {"name": "Identity Edit model card", "url": "https://huggingface.co/conradlocke/krea2-identity-edit"}
+    {
+      "name": "Krea2 model terms",
+      "url": "https://huggingface.co/Comfy-Org/Krea-2/blob/main/LICENSE.pdf"
+    },
+    {
+      "name": "TextFusion model card",
+      "url": "https://huggingface.co/Quiho/Krea2_TextFusion_Refusal-Reduction_LoRA_v1.0_lora"
+    },
+    {
+      "name": "NMKD Superscale source",
+      "url": "https://huggingface.co/Kalashnikov/NMKD-superscale"
+    },
+    {
+      "name": "Identity Edit model card",
+      "url": "https://huggingface.co/conradlocke/krea2-identity-edit"
+    },
+    {
+      "name": "Qwen Research License",
+      "url": "https://huggingface.co/Qwen/Qwen-Image-2.1/blob/main/LICENSE"
+    },
+    {
+      "name": "Viggle Turbo model card",
+      "url": "https://huggingface.co/Viggle/Qwen-Image-2.1-viggle-turbo"
+    }
   ]
 }

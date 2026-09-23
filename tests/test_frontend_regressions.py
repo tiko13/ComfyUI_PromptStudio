@@ -404,7 +404,10 @@ class FrontendRegressionTests(unittest.TestCase):
         self.assertIn('llm_profile = [ordered]@{', builder)
         self.assertIn('thinking_temperature = [double] $llmThinkingTemperature.Value', builder)
         self.assertIn('presence_penalty = [double] $llmPresencePenalty.Value', builder)
-        self.assertIn('$qwen38ThinkingModesText = "XHigh, Medium, Low, Disabled"', builder)
+        self.assertIn('$qwen38ThinkingModesText = "XHigh, Medium, Low"', builder)
+        self.assertIn('instruct_modes = @($normalizedInstructModes)', builder)
+        self.assertIn("Check the model card for supported modes", builder)
+        self.assertIn("Unsupported modes may fail or produce unpredictable results", builder)
         self.assertIn("Qwen 3.8 uses XHigh, Medium, and Low", builder)
         self.assertIn('Normalize-DeviceList "CUDA devices" $cudaDevices.Text', builder)
         self.assertIn('Normalize-DeviceList "MTP device" $mtpDevice.Text', builder)
@@ -548,8 +551,9 @@ class FrontendRegressionTests(unittest.TestCase):
             "promotePromptAgentIteration",
             "exportPromptAgentIterationToNewSession",
         )
-        self.assertIn("updateMainPromptEditor(effectiveGoal);", exported)
-        self.assertNotIn("state.mainPrompt = effectiveGoal;", exported)
+        self.assertIn("updateMainPromptEditor(exportedPrompt);", exported)
+        self.assertIn("const exportedPrompt = iteration.candidate.prompt;", exported)
+        self.assertNotIn("promptAgentEffectiveGoal(agent)", exported)
         self.assertIn("chat.mainPromptDirty = false;", exported)
         self.assertIn("chat.controlsFingerprint = exportedControlsFingerprint;", exported)
         self.assertIn("chat.pendingGeneration = null;", exported)
@@ -1026,7 +1030,9 @@ class FrontendRegressionTests(unittest.TestCase):
         self.assertIn("Thinking sampler", self.source)
         self.assertIn("Available thinking modes", self.source)
         self.assertIn('name="thinking_modes" type="checkbox"', self.source)
-        self.assertIn("Select at least one available thinking mode", self.source)
+        self.assertIn("Select at least one available thinking or instruct mode", self.source)
+        self.assertIn("Available instruct modes", self.source)
+        self.assertIn("Check the model card for supported modes", self.source)
 
         profile_editor_markup = self.source[
             self.source.index('id="promptstudio-llm-profile-editor"'):

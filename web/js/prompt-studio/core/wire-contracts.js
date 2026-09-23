@@ -3,7 +3,7 @@
 export const WIRE_VERSION = 1;
 export const PROVIDERS = /** @type {const} */ (["koboldcpp", "ollama", "llamacpp"]);
 export const JOB_STATUSES = /** @type {const} */ (["queued", "running", "complete", "failed", "cancelled"]);
-export const THINKING_MODES = /** @type {const} */ (["Disabled", "Minimal", "Low", "Medium", "High", "XHigh"]);
+export const THINKING_MODES = /** @type {const} */ (["Disabled", "Minimal", "Low", "Medium", "High", "XHigh", "Einstein", "Spoon", "Instruct Low", "Instruct Medium", "Instruct XHigh", "Instruct Einstein", "Instruct Spoon"]);
 export const JOB_TRANSITIONS = /** @type {const} */ ({
   queued: ["running", "failed", "cancelled"], running: ["complete", "failed", "cancelled"],
   complete: [], failed: [], cancelled: [],
@@ -11,9 +11,9 @@ export const JOB_TRANSITIONS = /** @type {const} */ ({
 
 /** @typedef {typeof PROVIDERS[number]} LlmProvider */
 /** @typedef {typeof JOB_STATUSES[number]} JobStatus */
-/** @typedef {'Disabled'|'Minimal'|'Low'|'Medium'|'High'|'XHigh'} ThinkingMode */
+/** @typedef {typeof THINKING_MODES[number]} ThinkingMode */
 /** @typedef {'max_response_tokens'|'llamacpp_reasoning_budget_tokens'|'temperature'|'top_p'|'top_k'|'min_p'|'presence_penalty'|'rep_pen'|'rep_pen_range'|'thinking_temperature'|'thinking_top_p'|'thinking_top_k'|'thinking_min_p'|'thinking_presence_penalty'|'thinking_rep_pen'|'thinking_rep_pen_range'|'sampler_seed'|'request_timeout'} ProfileNumberKey */
-/** @typedef {Record<ProfileNumberKey, number> & {id:string, name:string, thinking_mode:ThinkingMode, thinking_modes:readonly ThinkingMode[], stop_sequence:string}} LlmProfile */
+/** @typedef {Record<ProfileNumberKey, number> & {id:string, name:string, thinking_mode:ThinkingMode, thinking_modes:readonly ThinkingMode[], instruct_modes?:readonly ThinkingMode[], stop_sequence:string}} LlmProfile */
 /** @typedef {{workflow:Record<string, unknown>, output:Record<string, unknown>}} WorkflowSnapshot */
 /** @typedef {{wire_version:1, kind:'workflow_snapshot', snapshot:WorkflowSnapshot}} SnapshotWire */
 /** @typedef {{wire_version:1, kind:'llm_job', job_id:string} & ({status:'queued'|'running'}|{status:'complete', result:unknown}|{status:'failed', error:string}|{status:'cancelled'})} JobWire */

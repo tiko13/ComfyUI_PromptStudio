@@ -1557,6 +1557,25 @@ class RegressionTests(unittest.TestCase):
             self.assertTrue(self.nodes._uses_int8_diffusion_loader(renamed_int8.name))
             self.assertFalse(self.nodes._uses_int8_diffusion_loader(misleading_name.name))
 
+    def test_native_quantized_int8_uses_standard_loader(self):
+        storage = Path(self.temp.name)
+        for quant, expected_legacy in (
+            ({"format": "int8_tensorwise", "convrot": True}, False),
+            ({"format": "int8_rowwise", "convrot": True}, True),
+            ({"convrot": True, "per_row": True}, True),
+        ):
+            with self.subTest(quant=quant):
+                path = storage / "native_int8.safetensors"
+                payload = json.dumps(quant).encode("utf-8")
+                header = {
+                    "blocks.0.attn.wq.weight": {"dtype": "I8", "shape": [1], "data_offsets": [0, 1]},
+                    "blocks.0.attn.wq.comfy_quant": {"dtype": "U8", "shape": [len(payload)], "data_offsets": [1, len(payload) + 1]},
+                }
+                encoded = json.dumps(header).encode("utf-8")
+                path.write_bytes(len(encoded).to_bytes(8, "little") + encoded + b"\0" + payload)
+                with mock.patch.object(self.nodes.folder_paths, "get_full_path_or_raise", return_value=str(path), create=True):
+                    self.assertEqual(self.nodes._uses_int8_diffusion_loader(path.name), expected_legacy)
+
     def test_auto_diffusion_loader_dispatches_with_fixed_defaults(self):
         calls = []
 

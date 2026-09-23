@@ -21,7 +21,8 @@ const resumableStates = new Set(["paused", "interrupted", "failed", "needs_resta
 export function createSetupWizard({ panel, api, buildWorkflow, refreshWorkflows, applyDefaults, restart, providerStatus }) {
   let dialog, plan, state, checkBusy = false, actionBusy = false, pollTimer, validating = false;
   let checkedFirstOpen = false, lastValidated = "", scanSequence = 0;
-  let selections = {packs: ["create", "edit", "upscale"], choices: {}};
+  let selections = {packs: ["create", "edit", "upscale"], choices: {}, license_acceptances: {}};
+  let licenseDialog;
   const doc = () => panel.ownerDocument;
   const el = (tag, className = "", text = "") => {
     const node = doc().createElement(tag); node.className = className; node.textContent = text; return node;
@@ -56,9 +57,8 @@ export function createSetupWizard({ panel, api, buildWorkflow, refreshWorkflows,
     dialog.setAttribute("aria-labelledby", "promptstudio-setup-title");
     const header = el("header", "promptstudio-setup-header");
     const titles = el("div");
-    titles.append(el("span", "promptstudio-setup-eyebrow", "COMFYUI EXTENSION SETUP"));
     const title = el("h2", "", "Set up Prompt Studio"); title.id = "promptstudio-setup-title";
-    titles.append(title, el("p", "", "Check what you have. Add only what your workflows need."));
+    titles.append(title, el("p", "", "Choose workflows. Reuse installed models or download what’s missing."));
     header.append(titles, button("Close", close));
     const steps = el("ol", "promptstudio-setup-steps");
     for (const text of ["Check", "Review", "Set up", "Verify"]) steps.append(el("li", "", text));
@@ -111,15 +111,70 @@ export function createSetupWizard({ panel, api, buildWorkflow, refreshWorkflows,
     checkBusy = true;
     clearError();
     const content = dialog.querySelector("[data-setup-content]");
-    content.replaceChildren(el("p", "promptstudio-setup-checking", "Checking registered models, workflow nodes and storage…"));
-    renderFooter([]);
+    const scrollTop = content.scrollTop;
+    const focused = doc().activeElement;
+    const focusKey = focused?.dataset.setupPack || focused?.dataset.setupModel;
+    const focusAttribute = focused?.dataset.setupPack ? "setupPack" : "setupModel";
+    const expanded = [...content.querySelectorAll("details[open][data-setup-details]")].map(node => node.dataset.setupDetails);
+    content.setAttribute("aria-busy", "true");
+    if (!plan || !content.querySelector(".promptstudio-setup-packs")) {
+      content.replaceChildren(el("p", "promptstudio-setup-checking", "Checking models and workflows…"));
+      renderFooter([]);
+    } else {
+      renderModels(true);
+      dialog.querySelectorAll("[data-setup-content] input,[data-setup-content] select,[data-setup-footer] button").forEach(control => { control.disabled = true; });
+    }
     try {
       const next = await call("plan", selections);
       if (sequence !== scanSequence) return;
       plan = next; state = next.state;
       selections.choices = Object.fromEntries(next.requirements.map(r => [r.id, r.choice]));
       renderPlan(); updateSummary();
-    } finally { if (sequence === scanSequence) checkBusy = false; }
+      content.scrollTop = scrollTop;
+      for (const details of content.querySelectorAll("details[data-setup-details]")) details.open = expanded.includes(details.dataset.setupDetails);
+      if (focusKey) [...content.querySelectorAll("input,select")].find(node => node.dataset[focusAttribute] === focusKey)?.focus({preventScroll: true});
+    } catch (error) {
+      if (sequence === scanSequence) {
+        // A failed refresh must not leave a stale plan startable or controls stuck.
+        dialog.querySelectorAll("button,input,select").forEach(control => { control.disabled = false; });
+        const startControl = dialog.querySelector("[data-setup-start]");
+        if (startControl) startControl.disabled = true;
+        const modelStatus = dialog.querySelector("[data-setup-model-status]");
+        if (modelStatus) modelStatus.textContent = "Could not refresh model choices. Check again to retry.";
+      }
+      throw error;
+    } finally {
+      if (sequence === scanSequence) { checkBusy = false; content.removeAttribute("aria-busy"); }
+    }
+  }
+
+  function acceptLicense(pack, trigger) {
+    return new Promise(resolve => {
+      const popup = el("dialog", "promptstudio-setup-dialog promptstudio-setup-license");
+      licenseDialog = popup;
+      popup.setAttribute("aria-labelledby", "promptstudio-setup-license-title");
+      popup.setAttribute("aria-describedby", "promptstudio-setup-license-notice");
+      const title = el("h2", "", "Strict non-commercial license"); title.id = "promptstudio-setup-license-title";
+      const notice = el("p", "", pack.license.notice); notice.id = "promptstudio-setup-license-notice";
+      const link = el("a", "", "Read the full Qwen Research License");
+      link.href = pack.license.url; link.target = "_blank"; link.rel = "noreferrer";
+      const body = el("div", "promptstudio-setup-content");
+      body.append(title, el("strong", "", pack.name), notice, link);
+      const footer = el("footer", "promptstudio-setup-footer");
+      const cancel = button("Cancel", () => popup.close("cancel")); cancel.autofocus = true;
+      footer.append(cancel, button("Accept", () => popup.close("accept"), true));
+      popup.append(body, footer); panel.append(popup); installDialogFocus(popup);
+      popup.addEventListener("cancel", event => { event.preventDefault(); popup.close("cancel"); });
+      popup.addEventListener("click", event => {
+        const bounds = popup.getBoundingClientRect();
+        if (event.target === popup && (event.clientX < bounds.left || event.clientX > bounds.right || event.clientY < bounds.top || event.clientY > bounds.bottom)) popup.close("cancel");
+      });
+      popup.addEventListener("close", () => {
+        const accepted = popup.returnValue === "accept";
+        popup.remove(); licenseDialog = null; trigger?.focus({preventScroll: true}); resolve(accepted);
+      }, {once: true});
+      popup.showModal();
+    });
   }
 
   function renderFooter(controls) {
@@ -137,71 +192,109 @@ export function createSetupWizard({ panel, api, buildWorkflow, refreshWorkflows,
     dialog.querySelector("[data-setup-footer]").dataset.signature = "";
     const content = dialog.querySelector("[data-setup-content]");
     content.replaceChildren();
+    const packs = plan.available_packs || [{id: "create", name: "Create", family: "Krea2"}, {id: "edit", name: "Edit", family: "Krea2"}, {id: "upscale", name: "Upscale", family: "Krea2"}];
     const choices = el("div", "promptstudio-setup-packs");
-    for (const [id, name] of [["create", "Create"], ["edit", "Edit"], ["upscale", "Upscale"]]) {
-      const label = el("label"); const input = el("input"); input.type = "checkbox"; input.checked = selections.packs.includes(id);
-      input.addEventListener("change", () => {
-        const next = input.checked ? [...selections.packs, id] : selections.packs.filter(p => p !== id);
-        if (!next.length) { input.checked = true; return; }
-        selections.packs = next; void scan().catch(showError);
-      });
-      label.append(input, el("strong", "", name)); choices.append(label);
+    for (const family of new Set(packs.map(pack => pack.family || "Workflows"))) {
+      const group = el("fieldset", "promptstudio-setup-family");
+      group.append(el("legend", "", family));
+      const options = packs.filter(pack => (pack.family || "Workflows") === family);
+      if (options.some(pack => pack.license)) group.append(el("p", "promptstudio-setup-license-hint", "Non-commercial only · acceptance required for each workflow"));
+      const grid = el("div", "promptstudio-setup-pack-grid");
+      for (const pack of options) {
+        const label = el("label"); const input = el("input");
+        input.type = "checkbox"; input.checked = selections.packs.includes(pack.id);
+        input.dataset.setupPack = pack.id; input.setAttribute("aria-label", pack.name);
+        input.addEventListener("change", async () => {
+          if (checkBusy || actionBusy || licenseDialog) { input.checked = selections.packs.includes(pack.id); return; }
+          const selecting = input.checked;
+          if (selecting && pack.license) {
+            input.checked = false;
+            if (!await acceptLicense(pack, input) || !dialog.open || !input.isConnected) return;
+            selections.license_acceptances[pack.id] = pack.license.id;
+            input.checked = true;
+          }
+          if (!selecting) delete selections.license_acceptances[pack.id];
+          selections.packs = selecting ? [...selections.packs, pack.id] : selections.packs.filter(id => id !== pack.id);
+          await scan().catch(showError);
+        });
+        label.append(input, el("span", "", pack.label || pack.name)); grid.append(label);
+      }
+      group.append(grid); choices.append(group);
     }
     content.append(choices);
-    for (const pack of plan.packs) {
-      if (pack.file) content.append(el("p", "promptstudio-setup-workflow-file", `${pack.name}: ${pack.file} — ${pack.existing_status}`));
-    }
+    const modelsHeading = el("div", "promptstudio-setup-section-heading");
+    modelsHeading.append(el("h3", "", "Models"), el("span", "", "Required by your selected workflows · shared files listed once"));
+    content.append(modelsHeading);
+    const list = el("div", "promptstudio-setup-requirements");
+    list.dataset.setupModels = "";
+    content.append(list);
+    renderModels();
+    const environment = el("details", "promptstudio-setup-environment"); environment.dataset.setupDetails = "environment";
+    environment.append(el("summary", "", "Checks, workflow files and model terms"));
     const checks = el("div", "promptstudio-setup-checks");
     for (const check of plan.checks) checks.append(el("span", "", `${check.status === "ready" ? "✓" : "!"} ${check.name}`));
     checks.append(el("span", "", providerStatus?.() || "LLM: optional; direct prompting is available"));
-    content.append(checks);
-    const list = el("div", "promptstudio-setup-requirements");
-    for (const req of plan.requirements) {
+    environment.append(checks);
+    for (const pack of plan.packs) {
+      if (pack.file) environment.append(el("p", "", `${pack.name}: ${pack.file} — ${pack.existing_status}`));
+    }
+    for (const dep of plan.node_packs) {
+      const row = el("div", "promptstudio-setup-node-pack");
+      row.append(el("strong", "", `${dep.name} · ${dep.outdated?.length ? "Update required" : dep.missing.length ? "Install with Manager" : "Loaded"}`));
+      const link = el("a", "", "Source"); link.href = dep.url; link.target = "_blank"; link.rel = "noreferrer"; row.append(link);
+      if (dep.missing.length) row.append(el("p", "", "ComfyUI Manager will install this node pack. A restart is required."));
+      if (dep.missing.length || dep.outdated?.length) content.append(row); else environment.append(row);
+    }
+    for (const disk of plan.disks) environment.append(el("p", "", `${formatBytes(disk.free)} free at ${disk.path}`));
+    for (const item of plan.licenses) { const a = el("a", "", item.name); a.href = item.url; a.target = "_blank"; a.rel = "noreferrer"; environment.append(a, el("br")); }
+    content.append(environment);
+    for (const blocker of plan.blockers) content.append(el("p", "promptstudio-setup-error", blocker));
+    const summary = el("div", "promptstudio-setup-download-summary");
+    summary.append(el("strong", "", `${formatBytes(plan.download_bytes)} to download`), el("span", "", `${plan.packs.length} workflows selected`));
+    const startButton = button("Set up selected workflows", start, true); startButton.dataset.setupStart = "";
+    startButton.disabled = plan.blockers.length > 0;
+    renderFooter([summary, button("Check again", () => { selections.choices = {}; return scan(); }), startButton]);
+  }
+
+  function renderModels(pending = false) {
+    const list = dialog.querySelector("[data-setup-models]");
+    if (!list) return;
+    const expanded = new Set([...list.querySelectorAll("details[open]")].map(node => node.dataset.setupDetails));
+    const selectedPacks = (plan.available_packs || plan.packs).filter(pack => selections.packs.includes(pack.id));
+    const required = new Set(selectedPacks.flatMap(pack => pack.requirements || []));
+    list.replaceChildren();
+    for (const req of plan.requirements.filter(req => required.has(req.id))) {
       const row = el("section", "promptstudio-setup-requirement");
       const heading = el("div", "promptstudio-setup-row-heading");
-      heading.append(el("h3", "", req.name), el("span", "promptstudio-setup-badge", req.status === "available" ? "Reuse installed" : req.status === "blocked" ? "Needs attention" : "Download needed"));
-      row.append(heading, el("p", "promptstudio-setup-used", `Used by ${req.used_by.join(" · ")}`), el("p", "", req.description));
-      const label = el("label", "promptstudio-setup-model-choice", "Use model"); const select = el("select"); select.setAttribute("aria-label", req.name);
+      heading.append(el("h4", "", req.name), el("span", "promptstudio-setup-badge", req.status === "available" ? "Installed" : req.status === "blocked" ? "Needs attention" : "Download"));
+      row.append(heading);
+      const select = el("select"); select.setAttribute("aria-label", req.name); select.dataset.setupModel = req.id;
       for (const candidate of req.candidates) {
         const option = el("option", "", `Installed: ${candidate.name}`); option.value = candidate.name; select.append(option);
       }
       for (const asset of req.download_options) {
-        const option = el("option", "", `Download ${asset.name} · ${formatBytes(asset.size)}`); option.value = `__download__:${asset.id}`; select.append(option);
+        const option = el("option", "", `${asset.name} · ${formatBytes(asset.size)}`); option.value = `__download__:${asset.id}`; select.append(option);
       }
       select.value = req.choice;
       select.addEventListener("change", () => { selections.choices[req.id] = select.value; void scan().catch(showError); });
-      label.append(select); row.append(label);
-      const details = el("details"); details.append(el("summary", "", "Source and compatibility details"));
+      row.append(select);
+      const details = el("details"); details.dataset.setupDetails = req.id;
+      details.open = expanded.has(req.id);
+      const usedBy = selectedPacks.filter(pack => pack.requirements?.includes(req.id)).map(pack => pack.name);
+      details.append(el("summary", "", "Details"), el("p", "promptstudio-setup-used", `Used by ${usedBy.join(" · ")}`), el("p", "", req.description));
       const candidate = req.candidates.find(c => c.name === req.choice);
       if (candidate) details.append(el("p", "", candidate.evidence), el("p", "", candidate.path || candidate.name));
       else {
-        const link = el("a", "", req.source); link.href = req.source; link.target = "_blank"; link.rel = "noreferrer";
+        const link = el("a", "", "Model source"); link.href = req.source; link.target = "_blank"; link.rel = "noreferrer";
         details.append(link, el("p", "", `Save to ${req.destination}`));
       }
       for (const rejected of req.rejected) details.append(el("p", "", `${rejected.name}: ${rejected.reason}`));
       row.append(details); list.append(row);
     }
-    for (const dep of plan.node_packs) {
-      const row = el("section", "promptstudio-setup-requirement");
-      const heading = el("div", "promptstudio-setup-row-heading");
-      heading.append(el("h3", "", dep.name), el("span", "promptstudio-setup-badge", dep.outdated?.length ? "Update required" : dep.missing.length ? "Install with Manager" : "Already loaded"));
-      row.append(heading, el("p", "promptstudio-setup-used", `Used by ${dep.used_by.join(" · ")}`));
-      const link = el("a", "", dep.url); link.href = dep.url; link.target = "_blank"; link.rel = "noreferrer"; row.append(link);
-      if (dep.missing.length) row.append(el("p", "", "ComfyUI Manager will install this node pack. A restart is required before validation."));
-      list.append(row);
+    if (!required.size || pending) {
+      const status = el("p", pending && required.size ? "promptstudio-setup-checking" : "", required.size ? "Updating models for selected workflows…" : "Select a workflow to see its required models.");
+      status.dataset.setupModelStatus = ""; status.setAttribute("role", "status"); list.append(status);
     }
-    content.append(list);
-    for (const blocker of plan.blockers) content.append(el("p", "promptstudio-setup-error", blocker));
-    const summary = el("div", "promptstudio-setup-download-summary");
-    summary.append(el("strong", "", `${formatBytes(plan.download_bytes)} to download`), el("span", "", "Shared files are downloaded once."));
-    for (const disk of plan.disks) summary.append(el("small", "", `${formatBytes(disk.free)} free at ${disk.path}`));
-    content.append(summary);
-    const licenses = el("details"); licenses.append(el("summary", "", "Model sources and terms"));
-    for (const item of plan.licenses) { const a = el("a", "", item.name); a.href = item.url; a.target = "_blank"; a.rel = "noreferrer"; licenses.append(a, el("br")); }
-    content.append(licenses);
-    const startButton = button("Set up selected workflows", start, true);
-    startButton.disabled = plan.blockers.length > 0;
-    renderFooter([button("Set up later", close), button("Check again", () => { selections.choices = {}; return scan(); }), startButton]);
   }
 
   async function start() {
@@ -335,5 +428,5 @@ export function createSetupWizard({ panel, api, buildWorkflow, refreshWorkflows,
     }, 800);
   }
 
-  return {open, maybeOpen, destroy() { if (pollTimer) clearTimeout(pollTimer); dialog?.remove(); }};
+  return {open, maybeOpen, destroy() { if (pollTimer) clearTimeout(pollTimer); licenseDialog?.close("cancel"); dialog?.remove(); }};
 }

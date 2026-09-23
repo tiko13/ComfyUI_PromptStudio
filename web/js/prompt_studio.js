@@ -1,6 +1,9 @@
 import { supportsEditReference, applyEditReference } from "./prompt-studio/generation/edit-reference.js";
+import { applyWorkflowReferences, workflowReferenceValues, normalizeReferenceState, referenceInputsMatch } from "./prompt-studio/generation/reference-inputs.js";
+import { qwenReferenceAdapter, normalizeQwenReferences, validateQwenReferences, applyQwenReferences, directQwenInstruction, requestQwenEdit } from "./prompt-studio/generation/qwen-references.js";
 import { createEditReferenceController } from "./prompt-studio/ui/edit-reference.js";
 let editReferenceController = null;
+let upscaleReferenceController = null;
 import { normalizeReferenceGrounding, requestReferenceGrounding, referenceContextMatches, normalizeReferenceClarification } from "./prompt-studio/generation/reference-grounding.js";
 import { discoverWorkflowFiles } from "./prompt-studio/generation/workflow-adapter.js";
 import { createSetupWizard } from "./prompt-studio/settings/setup-wizard.js";
@@ -18,6 +21,7 @@ import { createImageFocusController } from "./prompt-studio/ui/focus-controller.
 import { createImageGenerationProgressController } from "./prompt-studio/ui/generation-progress-controller.js";
 import { api } from "/scripts/api.js";
 
+import { workflowHelpFacts, helpControlLabels } from "./prompt-studio/generation/help-context.js";
 import {
   ADVANCED_LLM_ACK_STORAGE_KEY,
   AMPLIFY_TYPE,
@@ -149,6 +153,7 @@ import {
 } from "./prompt-studio/llm/status.js";
 import {
   loadLlmProfiles,
+  llmProfileModeOptions,
   normalizeLlmProfile,
 } from "./prompt-studio/settings/llm-profile-store.js";
 import {
@@ -264,10 +269,20 @@ function persistLlmProfiles() {
 
 function selectedLlmProfile() {
   if (selectedLlmProvider() === "llamacpp") {
+    const settings = getSettings();
     const configProfile = state.panel?.querySelector("#promptstudio-llamacpp-config-profile")?.value
-      || getSettings().llamacpp_config_profile;
+      || settings.llamacpp_config_profile;
     const configured = state.llamacppConfigLlmProfiles.get(String(configProfile || ""));
     if (configured) return configured;
+    // Preserve model-specific modes during startup, before profile discovery
+    // finishes. Falling back to the generic profile would reset them to Disabled.
+    if (configProfile === settings.llamacpp_config_profile && settings.llamacpp_generation_settings) {
+      return normalizeLlmProfile({
+        ...settings.llamacpp_generation_settings,
+        id: `llamacpp:${configProfile}`,
+        name: String(configProfile || "Llama.cpp").replace(/\.json$/i, ""),
+      });
+    }
   }
   const selectedId = state.panel?.querySelector("#promptstudio-llm-profile")?.value
     || getSettings().llm_profile
@@ -282,7 +297,13 @@ function selectedLlamacppGenerationSettings() {
   const profile = state.llamacppConfigLlmProfiles.get(String(configProfile || ""));
   if (!profile) return getSettings().llamacpp_generation_settings || null;
   const { id, name, ...settings } = profile;
-  return { ...settings, thinking_modes: [...profile.thinking_modes] };
+  const selectedMode = selectedLlmThinkingMode();
+  return {
+    ...settings,
+    thinking_mode: llmProfileModeOptions(profile).includes(selectedMode) ? selectedMode : profile.thinking_mode,
+    thinking_modes: [...profile.thinking_modes],
+    ...(profile.instruct_modes ? { instruct_modes: [...profile.instruct_modes] } : {}),
+  };
 }
 
 function selectedLlmThinkingMode() {
@@ -290,9 +311,9 @@ function selectedLlmThinkingMode() {
   const mainValue = state.panel?.querySelector("#promptstudio-thinking")?.value;
   const consultValue = state.panel?.querySelector("#promptstudio-consult-thinking")?.value;
   const requested = mainValue || consultValue || getSettings().thinking_mode || profile.thinking_mode;
-  return profile.thinking_modes.find((mode) => mode.toLowerCase() === String(requested).toLowerCase())
+  return llmProfileModeOptions(profile).find((mode) => mode.toLowerCase() === String(requested).toLowerCase())
     || profile.thinking_mode
-    || profile.thinking_modes[0];
+    || llmProfileModeOptions(profile)[0];
 }
 
 function renderLlmThinkingModeOptions(requestedMode = null) {
@@ -300,15 +321,15 @@ function renderLlmThinkingModeOptions(requestedMode = null) {
   if (!select) return;
   const profile = selectedLlmProfile();
   const requested = requestedMode || select.value || getSettings().thinking_mode || profile.thinking_mode;
-  select.replaceChildren(...profile.thinking_modes.map((mode) => {
+  select.replaceChildren(...llmProfileModeOptions(profile).map((mode) => {
     const option = document.createElement("option");
     option.value = mode;
     option.textContent = mode;
     return option;
   }));
-  const selected = profile.thinking_modes.find((mode) => mode.toLowerCase() === String(requested).toLowerCase())
+  const selected = llmProfileModeOptions(profile).find((mode) => mode.toLowerCase() === String(requested).toLowerCase())
     || profile.thinking_mode
-    || profile.thinking_modes[0];
+    || llmProfileModeOptions(profile)[0];
   select.value = selected;
   const consult = state.panel.querySelector("#promptstudio-consult-thinking");
   if (consult) {
@@ -324,7 +345,7 @@ function llmProfileGenerationSettings(thinkingModeOverride = null, profileOverri
   const profile = profileOverride || selectedLlmProfile();
   const thinkingMode = selectedLlmThinkingMode();
   const requestedMode = String(thinkingModeOverride || "").trim();
-  const effectiveThinkingMode = profile.thinking_modes.find((mode) => mode.toLowerCase() === requestedMode.toLowerCase())
+  const effectiveThinkingMode = llmProfileModeOptions(profile).find((mode) => mode.toLowerCase() === requestedMode.toLowerCase())
     || thinkingMode;
   const thinkingEnabled = thinkingModeEnablesReasoning(thinkingMode);
   const effectiveThinkingEnabled = effectiveThinkingMode === thinkingMode
@@ -413,7 +434,7 @@ function openLlmProfileEditor(trigger = null, { create = false } = {}) {
   Object.entries(profile).forEach(([name, value]) => {
     if (name !== "thinking_modes") setValue(name, value);
   });
-  setLlmProfileEditorThinkingModes(profile.thinking_modes);
+  setLlmProfileEditorThinkingModes(llmProfileModeOptions(profile));
   state.llmProfileEditorId = create ? null : profile.id;
   editor.querySelector("#promptstudio-llm-profile-editor-title").textContent = create
     ? "Add LLM profile"
@@ -445,7 +466,7 @@ function restoreLlmProfileEditorDefaults() {
     const control = editor.querySelector(`[name="${name}"]`);
     if (control) control.value = String(value ?? "");
   });
-  setLlmProfileEditorThinkingModes(defaults.thinking_modes);
+  setLlmProfileEditorThinkingModes(llmProfileModeOptions(defaults));
   editor.querySelector("#promptstudio-llm-profile-editor-error").textContent = "";
 }
 
@@ -456,14 +477,17 @@ function submitLlmProfileEditor(event) {
   const data = Object.fromEntries(new FormData(form));
   data.thinking_modes = [...form.querySelectorAll('[name="thinking_modes"]:checked')]
     .map((control) => control.value);
+  data.instruct_modes = data.thinking_modes.filter(mode => !thinkingModeEnablesReasoning(mode))
+    .map(mode => mode.replace(/^Instruct /, ""));
+  data.thinking_modes = data.thinking_modes.filter(thinkingModeEnablesReasoning);
   const name = String(data.name || "").trim();
   if (!name) {
     error.textContent = "Profile name is required.";
     form.elements.name.focus();
     return;
   }
-  if (!data.thinking_modes.length) {
-    error.textContent = "Select at least one available thinking mode.";
+  if (!data.thinking_modes.length && !data.instruct_modes.length) {
+    error.textContent = "Select at least one available thinking or instruct mode.";
     form.querySelector('[name="thinking_modes"]')?.focus();
     return;
   }
@@ -1084,7 +1108,7 @@ function getConsultSettings() {
     return Number.isFinite(value) ? Math.max(min, Math.min(max, value)) : defaults[key];
   };
   return {
-    thinking_mode: ["Disabled", "Minimal", "Low", "Medium", "High", "XHigh"].includes(source.thinking_mode)
+    thinking_mode: LLM_THINKING_MODE_OPTIONS.includes(source.thinking_mode)
       ? source.thinking_mode
       : defaults.thinking_mode,
     max_response_tokens: Math.round(number("max_response_tokens", 1, 8192)),
@@ -1346,7 +1370,8 @@ function setModalOpen(dialog, open) {
 }
 
 function openPromptStudioDialog() {
-  return state.panel?.querySelector('dialog[open], [role="dialog"][aria-modal="true"]:not(dialog):not([hidden])');
+  return state.panel?.ownerDocument.querySelector('.ps-reference-dialog[open]')
+    || state.panel?.querySelector('dialog[open], [role="dialog"][aria-modal="true"]:not(dialog):not([hidden])');
 }
 
 function closeSystemStatus({ restoreFocus = false } = {}) {
@@ -2479,7 +2504,7 @@ async function plotCatalogForAxis(axis, profile) {
     style_preset: state.config?.styles,
     framing_preset: state.config?.framings,
     embellishment_level: state.config?.embellishment_levels,
-    thinking_mode: selectedLlmProfile()?.thinking_modes,
+    thinking_mode: llmProfileModeOptions(selectedLlmProfile()),
   }[axis.type];
   if (Array.isArray(llmValues)) {
     return llmValues.map((value) => ({ name: String(value), label: String(value) }));
@@ -3775,7 +3800,7 @@ function updateComposeMode() {
   const editor = state.panel.querySelector("#promptstudio-current-prompt");
   const action = selectedAction();
   editReferenceController?.render();
-  const referenceUploading = action === "edit" && supportsEditReference(selectedWorkflowProfile(action)) && editReferenceController?.uploading(state.activeChatId);
+  const referenceUploading = editReferenceController?.uploading(state.activeChatId);
   const autoGenerate = state.panel.querySelector("#promptstudio-auto-generate")?.checked !== false;
   const queueingGeneration = hasPendingStudioGenerations();
   const turnBusy = state.studioTurnBusyChatIds.has(state.activeChatId);
@@ -3784,15 +3809,22 @@ function updateComposeMode() {
   if (reroll) reroll.disabled = state.busy || turnBusy || referenceUploading;
   const hasRevision = Boolean(input?.value.trim());
   const editPromptAction = state.panel.querySelector("#promptstudio-edit-prompt-action");
-  const assistedReference = amplificationEnabled && action === "edit" && supportsEditReference(selectedWorkflowProfile(action)) && Boolean(activeChat()?.editReferenceImage);
+  const qwenEdit = action === "edit" && Boolean(qwenReferenceAdapter(selectedWorkflowProfile(action)));
+  const qwenHasReferences = qwenEdit && normalizeQwenReferences(activeChat()?.qwenEditReferences).length > 0;
+  const assistedReference = amplificationEnabled && action === "edit" && (qwenEdit
+    || (supportsEditReference(selectedWorkflowProfile(action)) && Boolean(activeChat()?.editReferenceImage)));
   if (editPromptAction) editPromptAction.hidden = action !== "edit" || assistedReference;
   if (!amplificationEnabled) {
     if (heading) heading.textContent = "Direct prompt";
-    if (hint) hint.textContent = action === "edit" && supportsEditReference(selectedWorkflowProfile(action)) && activeChat()?.editReferenceImage
+    if (hint) hint.textContent = qwenEdit
+      ? "Reference roles define the edit; additional instructions are optional. Main and Final stay unchanged"
+      : action === "edit" && supportsEditReference(selectedWorkflowProfile(action)) && activeChat()?.editReferenceImage
       ? "Direct reference edit; Main and Final stay unchanged" : "Edit directly; no LLM call";
     if (input) {
-      input.placeholder = "Describe the image to generate…";
-      if (!input.value) input.value = state.currentPrompt;
+      input.placeholder = qwenEdit
+        ? (qwenHasReferences ? "Optional: add details to the reference edit…" : "Describe the edit, or add references and choose their roles…")
+        : "Describe the image to generate…";
+      if (!input.value && !qwenEdit) input.value = state.currentPrompt;
     }
     if (send) send.textContent = queueingGeneration
       ? (action === "edit" ? "Queue edit" : "Queue create new")
@@ -3803,13 +3835,17 @@ function updateComposeMode() {
   }
   const discussion = activeStudioDiscussion();
   if (heading) heading.textContent = creating ? "Describe or ask" : "Ask about the image or describe a change";
-  if (hint) hint.textContent = discussion
+  if (hint) hint.textContent = qwenEdit
+    ? "Reference roles define the edit; additional instructions are optional. Main and Final stay unchanged"
+    : discussion
     ? "Continue discussing, accept the suggestion, or request a direct change"
     : creating
       ? `${llmProviderName()} will decide whether to answer or create`
       : assistedReference ? "Reference details update Main and Final; Edit receives a separate instruction"
       : "Leave empty to create from the current prompt";
-  if (input) input.placeholder = creating
+  if (input) input.placeholder = qwenEdit
+    ? (qwenHasReferences ? "Optional: add details to the reference edit…" : "Describe the edit, or add references and choose their roles…")
+    : creating
     ? "A portrait of an astronaut… or ask for prompt advice"
     : "Make the dress casual… or ask what would work better";
   if (send) {
@@ -4236,6 +4272,8 @@ function generationUiFingerprint() {
     finalPrompt: state.currentPrompt,
     sourceImage: action === "create" ? null : storedImageReference(editingSource()),
     referenceImage: action === "edit" && supportsEditReference(profile) ? storedImageReference(activeChat()?.editReferenceImage) : null,
+    workflowReferenceInputs: workflowReferenceValues(activeChat(), profile),
+    qwenReferences: qwenReferenceAdapter(profile) ? normalizeQwenReferences(activeChat()?.qwenEditReferences) : [],
     loraState: generationLoraState(profile),
     modelState: generationModelState(profile),
     additionalInputSelections: state.additionalInputSelections,
@@ -4869,6 +4907,7 @@ function generationRetryOptionsFromMessage(message) {
     workflowName: message.workflowName || "",
     sourceImage: message.sourceImage || null,
     referenceImage: message.referenceImage || null,
+    ...normalizeReferenceState(message),
     referenceGrounding: normalizeReferenceGrounding(message.referenceGrounding),
     upscaleFactor: message.upscaleFactor ?? null,
     resultNodeIds: message.resultNodeIds,
@@ -4894,6 +4933,7 @@ async function retryGeneration(options) {
 }
 
 function closeUpscaleDialog() {
+  upscaleReferenceController?.close();
   const dialog = state.panel?.querySelector("#promptstudio-upscale-dialog");
   if (!dialog || dialog.hidden) return;
   setModalOpen(dialog, false);
@@ -4916,6 +4956,7 @@ function requestImageUpscale(reference, generationData = null) {
   dialog._upscaleTrigger = dialog.ownerDocument.activeElement;
   factor.value = "2";
   setModalOpen(dialog, true);
+  upscaleReferenceController?.render();
   factor.focus({ preventScroll: true });
   factor.select();
 }
@@ -5114,6 +5155,7 @@ function armStoredGenerationReplay(data, { allowMissingProfile = false } = {}) {
     replayFingerprint: "",
     sourceImage: normalizeImageReference(data?.sourceImage),
     referenceImage: normalizeImageReference(data?.referenceImage),
+    ...normalizeReferenceState(data),
     referenceGrounding: normalizeReferenceGrounding(data?.referenceGrounding),
     upscaleFactor: data?.upscaleFactor ?? null,
     resultNodeIds: Array.isArray(data?.resultNodeIds) ? data.resultNodeIds.map(String) : [],
@@ -5126,6 +5168,9 @@ function armStoredGenerationReplay(data, { allowMissingProfile = false } = {}) {
     chat.editReferenceImage = chat.pendingGeneration.referenceImage;
     refreshRenderedImageSources();
   }
+  chat.workflowReferences ||= {};
+  chat.workflowReferences[workflowProfileId] = chat.pendingGeneration.workflowReferenceInputs;
+  if (chat.pendingGeneration.editPromptModel === "qwen_image_2_1") chat.qwenEditReferences = chat.pendingGeneration.qwenReferences;
   chat.pendingGeneration.replayFingerprint = generationUiFingerprint();
   chat.updatedAt = Date.now();
   saveChats();
@@ -5828,6 +5873,12 @@ function clearDeletedMessageReferences(chat, data) {
   const deletedImages = new Set(messageImageReferences(data).map(imageReferenceKey));
   if (deletedImages.has(imageReferenceKey(chat.selectedSource))) chat.selectedSource = null;
   if (deletedImages.has(imageReferenceKey(chat.editReferenceImage))) chat.editReferenceImage = null;
+  for (const slots of Object.values(chat.workflowReferences || {})) {
+    for (const [id, image] of Object.entries(slots)) if (deletedImages.has(imageReferenceKey(image))) slots[id] = null;
+  }
+  chat.qwenEditReferences = normalizeQwenReferences(chat.qwenEditReferences).filter(entry => !deletedImages.has(imageReferenceKey(entry.image)));
+  if (chat.pendingGeneration && (Object.values(chat.pendingGeneration.workflowReferenceInputs || {}).some(image => deletedImages.has(imageReferenceKey(image)))
+      || chat.pendingGeneration.qwenReferences?.some(entry => deletedImages.has(imageReferenceKey(entry.image))))) chat.pendingGeneration = null;
   if (deletedImages.has(imageReferenceKey(chat.pendingGeneration?.sourceImage)) || deletedImages.has(imageReferenceKey(chat.pendingGeneration?.referenceImage))) chat.pendingGeneration = null;
   if (chat.studioDiscussion?.targetMessageId === data.id) chat.studioDiscussion = null;
   if (data.promptId) {
@@ -6092,6 +6143,7 @@ function appendMessage(role, text, options = {}) {
     intentProvenance: normalizeIntentProvenance(options.intentProvenance),
     sourceImage: normalizeImageReference(options.sourceImage),
     referenceImage: normalizeImageReference(options.referenceImage),
+    ...normalizeReferenceState(options),
     referenceGrounding: normalizeReferenceGrounding(options.referenceGrounding),
     upscaleFactor: options.upscaleFactor != null && Number.isFinite(Number(options.upscaleFactor))
       ? Number(options.upscaleFactor)
@@ -6751,7 +6803,7 @@ function syncLlmProviderControls({ refreshModels = false } = {}) {
     const providerHelp = provider === "ollama"
       ? "Ollama receives the selected native reasoning effort."
       : `${llmProviderName()} receives the selected reasoning_effort through Chat Completions.`;
-    thinking.title = `${profile.name} modes: ${profile.thinking_modes.join(", ")}. ${providerHelp}`;
+    thinking.title = `${profile.name} modes: ${llmProfileModeOptions(profile).join(", ")}. ${providerHelp}`;
   }
   if (refreshModels && provider === "ollama") loadOllamaModels({ announce: true });
   if (refreshModels && provider === "llamacpp") loadLlamacppModels({ announce: true });
@@ -6839,6 +6891,8 @@ function captureGenerationQueueSettings(action, chat = activeChat()) {
     modelState: structuredClone(generationModelState(profile)),
     sourceImage: action === "create" ? null : editingSource(null, chat),
     referenceImage: action === "edit" && supportsEditReference(profile) ? normalizeImageReference(chat?.editReferenceImage) : null,
+    workflowReferenceInputs: workflowReferenceValues(chat, profile),
+    qwenReferences: qwenReferenceAdapter(profile) ? normalizeQwenReferences(chat?.qwenEditReferences) : [],
     randomizeSeed: state.panel?.querySelector("#promptstudio-randomize-seed")?.checked === true,
     secondaryInstructionsOverride: state.panel?.querySelector("#promptstudio-secondary-instructions")?.value || "",
     resolutionOverride: structuredClone(resolutionSettings()),
@@ -6857,7 +6911,7 @@ function captureRepeatQueueSettings(action, chat = activeChat()) {
       && completed.mainPrompt === chat.mainPrompt && completed.canonicalPrompt === chat.finalPrompt
       && completed.images?.some(image => imageReferenceKey(image) === imageReferenceKey(settings.sourceImage))
       && imageReferenceKey(completed.referenceImage) === imageReferenceKey(settings.referenceImage)) {
-    settings.sourceImage = normalizeImageReference(completed.sourceImage);
+    if (referenceInputsMatch(completed, settings)) settings.sourceImage = normalizeImageReference(completed.sourceImage);
   }
   return settings;
 }
@@ -7753,6 +7807,10 @@ async function queueGeneration({
   sourceImage = null,
   referenceImage = undefined,
   referenceGrounding = null,
+  workflowReferenceInputs = undefined,
+  qwenReferences = undefined,
+  qwenInstruction = "",
+  editPromptModel = "",
   upscaleFactor = null,
   resultNodeIds = null,
   resultFields = null,
@@ -7802,7 +7860,13 @@ async function queueGeneration({
     throw new Error("The stored generation snapshot is invalid.");
   }
   const replayExactGeneration = Boolean(storedGenerationSnapshot);
-  if (!replayExactGeneration && action === "edit" && editReferenceController?.uploading(chat?.id)) {
+  const submittedProfile = workflowProfileById(workflowProfileId) || selectedWorkflowProfile(action);
+  const referenceState = normalizeReferenceState({
+    workflowReferenceInputs: workflowReferenceInputs === undefined ? workflowReferenceValues(chat, submittedProfile) : workflowReferenceInputs,
+    qwenReferences: qwenReferences === undefined && qwenReferenceAdapter(submittedProfile) ? chat?.qwenEditReferences : qwenReferences,
+    qwenInstruction, editPromptModel,
+  });
+  if (!replayExactGeneration && (editReferenceController?.uploading(chat?.id) || upscaleReferenceController?.uploading(chat?.id))) {
     throw new Error("Wait for the reference image to finish uploading.");
   }
   // Capture before workflow refresh or model handoff can yield to another turn.
@@ -7881,7 +7945,7 @@ async function queueGeneration({
     imageNode.inputs.image_ref = JSON.stringify(storedImageReference(source));
     // A hidden reference is retained per chat but cannot leak into an unsupported workflow.
     if (referenceImage === undefined && !supportsEditReference(context.profile)) reference = null;
-    reference = applyEditReference(context.snapshot, reference);
+    if (supportsEditReference(context.profile)) reference = applyEditReference(context.snapshot, reference);
   } else if (!replayExactGeneration && action === "upscale") {
     const factor = Number(upscaleFactor);
     if (!Number.isFinite(factor) || factor < 1 || factor > 16) {
@@ -7895,6 +7959,14 @@ async function queueGeneration({
     upscaleNode.inputs.upscale_factor = factor;
     upscaleNode.inputs.prompt = executionPrompt;
     upscaleNode.inputs.secondary_instructions = secondaryInstructions;
+  }
+
+  if (!replayExactGeneration) {
+    if (!supportsEditReference(context.profile)) applyWorkflowReferences(context.snapshot, referenceState.workflowReferenceInputs);
+    if (referenceState.qwenReferences.length && referenceState.editPromptModel !== "qwen_image_2_1") {
+      throw new Error("Prepare the Qwen reference edit instruction before generating.");
+    }
+    if (action === "edit") applyQwenReferences(context.snapshot, context.profile, referenceState.qwenReferences);
   }
 
   const requestedLoraState = normalizeGenerationLoraState(loraState);
@@ -7976,6 +8048,7 @@ async function queueGeneration({
   const queuedWorkflowName = String(workflowName || context.workflowName);
 
   const retryOptions = {
+    ...referenceState,
     action,
     intentProvenance: generationIntent,
     executionPrompt,
@@ -8129,6 +8202,7 @@ async function queueGeneration({
   if (chat) {
     if (action === "edit") chat.selectedSource = source;
     chat.lastGeneration = {
+      ...referenceState,
       action,
       intentProvenance: generationIntent,
       mainPrompt,
@@ -8145,6 +8219,7 @@ async function queueGeneration({
   }
   state.generationProgress.set(promptId, { phase: "queued" });
   const resultData = {
+    ...referenceState,
     label: "ComfyUI",
     intentProvenance: generationIntent,
     mainPrompt,
@@ -8202,6 +8277,7 @@ async function queueUpscale(source, generationData = null, factor = null, workfl
     ? String(generationData?.canonicalPrompt || state.currentPrompt || "")
     : "";
   const queueSettings = captureGenerationQueueSettings("upscale", activeChat());
+  queueSettings.workflowReferenceInputs = workflowReferenceValues(chat, workflowProfileById(workflowProfileId) || selectedWorkflowProfile("upscale"));
   const operation = createStudioOperation(chat, "upscale", "Preparing upscale…");
   try {
     await queueGeneration({
@@ -8230,6 +8306,8 @@ async function queueUpscale(source, generationData = null, factor = null, workfl
 }
 
 async function generateDirectPrompt(action = selectedAction(), {repeat = false} = {}) {
+  if (action === "edit" && qwenReferenceAdapter(selectedWorkflowProfile(action))
+      && !(activeChat()?.pendingGeneration?.generationSnapshot && activeChat().pendingGeneration.replayFingerprint === generationUiFingerprint())) return prepareQwenReferenceEdit({forceGenerate: true, repeat});
   if (!state.apiConnected) return setStatus("ComfyUI is disconnected. Prompt Studio is frozen.", "error");
   if (state.busy) return;
   const input = state.panel.querySelector("#promptstudio-revision");
@@ -9079,6 +9157,13 @@ function activeStudioDiscussion(chat = activeChat()) {
   return discussion?.status === "active" ? discussion : null;
 }
 
+function studioDiscussionLabel(discussion) {
+  if (discussion?.helpDomain === "app") return "App help";
+  if (discussion?.helpDomain === "both") return "App and prompting help";
+  if (discussion?.helpDomain === "prompting") return "Prompting advice";
+  return discussion?.targetImage ? "Image discussion" : "Prompt discussion";
+}
+
 function renderStudioDiscussionContext() {
   const context = state.panel?.querySelector("#promptstudio-discussion-context");
   if (!context) return;
@@ -9089,7 +9174,11 @@ function renderStudioDiscussionContext() {
     return;
   }
   const image = context.querySelector("img");
-  if (discussion.targetImage) {
+  const appHelp = discussion.helpDomain === "app";
+  const label = studioDiscussionLabel(discussion);
+  context.querySelector("strong").textContent = label === "Image discussion" ? "Discussing generated image" : label;
+  image.hidden = appHelp || !discussion.targetImage;
+  if (!appHelp && discussion.targetImage) {
     image.src = imageReferenceUrl(discussion.targetImage);
     image.alt = discussion.targetImage.filename || "Discussion target image";
   } else {
@@ -9098,10 +9187,15 @@ function renderStudioDiscussionContext() {
   }
   const detail = context.querySelector("small");
   const end = context.querySelector("button");
-  if (end) end.disabled = state.studioTurnBusyChatIds.has(state.activeChatId);
+  if (end) {
+    end.disabled = state.studioTurnBusyChatIds.has(state.activeChatId);
+    end.title = `End ${label.toLowerCase()}`;
+    end.setAttribute("aria-label", end.title);
+  }
   const parts = [];
-  if (discussion.targetImage?.filename) parts.push(discussion.targetImage.filename);
-  if (discussion.references.length) {
+  if (appHelp || discussion.helpDomain === "both") parts.push("Studio features and controls");
+  if (!appHelp && discussion.targetImage?.filename) parts.push(discussion.targetImage.filename);
+  if (!appHelp && discussion.references.length) {
     parts.push(`${discussion.references.length} pinned reference${discussion.references.length === 1 ? "" : "s"}`);
   }
   if (discussion.pendingProposal?.status === "ready") parts.push("suggestion ready");
@@ -9117,7 +9211,7 @@ function cancelStudioDiscussion({ announce = true } = {}) {
   saveChats();
   renderStudioDiscussionContext();
   renderChatHistory();
-  if (announce) setStatus("Image discussion ended without changing the prompt.", "ready");
+  if (announce) setStatus(`${studioDiscussionLabel(discussion)} ended without changing the prompt.`, "ready");
 }
 
 function clearMainPastedImage() {
@@ -9816,7 +9910,7 @@ async function runConsultAgent(agentId = activeConsultAgent()?.id, runtimeSettin
             ...queueSettings,
             action: "create",
             executionPrompt: iteration.candidate.prompt,
-            mainPrompt: promptAgentEffectiveGoal(agent),
+            mainPrompt: iteration.candidate.prompt,
             finalPrompt: iteration.candidate.prompt,
             preserveSeed: !iteration.validation,
             alwaysNewSeed: iteration.validation,
@@ -10131,27 +10225,27 @@ function promotePromptAgentIteration(iterationId) {
   const agent = activeConsultAgent();
   const iteration = promptAgentIteration(agent, iterationId);
   if (!agent || !iteration?.candidate) return;
-  const effectiveGoal = promptAgentEffectiveGoal(agent);
+  const exportedPrompt = iteration.candidate.prompt;
   const exportedControlsFingerprint = controlsFingerprint();
   const previousVersion = promptVersion();
-  updateMainPromptEditor(effectiveGoal);
+  updateMainPromptEditor(exportedPrompt);
   syncCanonicalEditor(iteration.candidate.prompt, { userEdit: iteration.candidate.prompt !== state.currentPrompt });
   const chat = activeChat();
   if (chat) {
-    chat.renderedMainPrompt = effectiveGoal;
+    chat.renderedMainPrompt = exportedPrompt;
     chat.renderedFinalPrompt = iteration.candidate.prompt;
     chat.mainPromptDirty = false;
     chat.finalPromptManuallyEdited = false;
     chat.controlsFingerprint = exportedControlsFingerprint;
     chat.pendingGeneration = null;
   }
-  if (!promptVersionsEqual(previousVersion, promptVersion())) pushVersion(iteration.candidate.prompt, effectiveGoal);
+  if (!promptVersionsEqual(previousVersion, promptVersion())) pushVersion(iteration.candidate.prompt, exportedPrompt);
   const generation = normalizeConsultExperimentGeneration(iteration.generation);
   if (generation?.images.length) {
     appendMessage("assistant", "", {
       label: `Exported Prompt Agent iteration ${iteration.index}`,
       images: generation.images,
-      mainPrompt: effectiveGoal,
+      mainPrompt: exportedPrompt,
       canonicalPrompt: iteration.candidate.prompt,
       executionPrompt: generation.executionPrompt || iteration.candidate.prompt,
       generationAction: "create",
@@ -10178,15 +10272,15 @@ function exportPromptAgentIterationToNewSession(iterationId) {
   const agent = activeConsultAgent();
   const iteration = promptAgentIteration(agent, iterationId);
   if (!agent || !iteration?.candidate) return;
-  const effectiveGoal = promptAgentEffectiveGoal(agent);
+  const exportedPrompt = iteration.candidate.prompt;
   const generation = normalizeConsultExperimentGeneration(iteration.generation);
   const images = generation?.images || [];
   const chat = normalizeChat({
     initialized: true,
-    mainPrompt: effectiveGoal,
+    mainPrompt: exportedPrompt,
     finalPrompt: iteration.candidate.prompt,
     currentPrompt: iteration.candidate.prompt,
-    versions: [promptVersion(effectiveGoal, iteration.candidate.prompt)],
+    versions: [promptVersion(exportedPrompt, iteration.candidate.prompt)],
     versionIndex: 0,
     controlsFingerprint: controlsFingerprint(),
     createWorkflowId: state.panel?.querySelector("#promptstudio-create-workflow")?.value || "",
@@ -10202,7 +10296,7 @@ function exportPromptAgentIterationToNewSession(iterationId) {
       text: "",
       label: `Exported Prompt Agent iteration ${iteration.index}`,
       images,
-      mainPrompt: effectiveGoal,
+      mainPrompt: exportedPrompt,
       canonicalPrompt: iteration.candidate.prompt,
       executionPrompt: generation.executionPrompt || iteration.candidate.prompt,
       generationAction: "create",
@@ -11335,6 +11429,7 @@ function consultRequestPayload(messages, jobId, experimentMode) {
     origin: {chat_id:state.chats.find(chat => chat.consultPendingJob?.job_id === jobId || chat.consultMessages === messages)?.id || state.activeChatId,
       message_id:messages.at(-1)?.id || ""},
     experiment_mode: experimentMode,
+    help_context: {...currentStudioHelpContext(), surface: "consultation"},
     messages: consultRequestMessages(messages),
   };
 }
@@ -11394,7 +11489,8 @@ async function requestConsultResponse(pending, chatId) {
     const answer = String(data.message || "").trim();
     if (!answer) throw new Error("The local language model returned an empty response.");
     return {
-      ...parseConsultExperimentAnswer(answer, pending.experiment_mode === true),
+      ...(Array.isArray(data.help_documents) && data.allow_experiment_proposal !== true ? {text: answer, proposal: null}
+        : parseConsultExperimentAnswer(answer, pending.experiment_mode === true)),
       warning: String(data.warning || "").trim(),
     };
   }
@@ -12021,6 +12117,19 @@ function beginOrContinueStudioDiscussion(chat, reference = null) {
   return discussion;
 }
 
+function currentStudioHelpContext(chat = activeChat()) {
+  const mode = selectedAction();
+  const select = state.panel?.querySelector(`#promptstudio-${mode}-workflow`);
+  return {
+    ...workflowHelpFacts(selectedWorkflowProfile(mode), chat || {}, mode),
+    ...helpControlLabels(state.panel),
+    auto_generate: state.panel?.querySelector("#promptstudio-auto-generate")?.checked !== false,
+    llm_amplification: useLlmAmplification(),
+    workflow_label: select?.getAttribute("aria-label") || select?.closest("label")?.querySelector("span")?.textContent?.trim() || "unavailable",
+    provider: llmProviderName(),
+  };
+}
+
 async function requestStudioTurnRoute(chat, text, reference, editReference = null, clarification = null) {
   const discussion = activeStudioDiscussion(chat);
   const response = await api.fetchApi(STUDIO_ROUTE_ENDPOINT, {
@@ -12029,6 +12138,7 @@ async function requestStudioTurnRoute(chat, text, reference, editReference = nul
     body: JSON.stringify({
       ...llmConnectionPayload(),
       user_text: text,
+      help_context: currentStudioHelpContext(chat),
       chat_initialized: chat.initialized === true,
       has_latest_image: Boolean(latestGeneratedImage(chat)),
       has_reference_image: Boolean(reference),
@@ -12044,6 +12154,8 @@ async function requestStudioTurnRoute(chat, text, reference, editReference = nul
     route: String(data.route || "clarify"),
     confidence: Number(data.confidence || 0),
     resolvedInstruction: String(data.resolved_instruction || "").trim(),
+    helpDomain: String(data.help_domain || "none"),
+    appHelpQuery: String(data.app_help_query || ""),
     reason: String(data.reason || "").trim(),
     warning: String(data.warning || "").trim(),
   };
@@ -12089,8 +12201,13 @@ function studioDiscussionRequestMessages(chat, discussion) {
   });
 }
 
-async function requestStudioDiscussion(chat, discussion) {
-  const messages = studioDiscussionRequestMessages(chat, discussion);
+async function requestStudioDiscussion(chat, discussion, help = {}) {
+  let messages = studioDiscussionRequestMessages(chat, discussion);
+  if (help.helpDomain === "app") messages = messages.map(({role, text}) => ({role, text}));
+  if (help.appHelpQuery && help.helpDomain === "app") {
+    messages = messages.map((message, index) => index === messages.length - 1
+      ? {...message, text: help.appHelpQuery} : message);
+  }
   const connection = llmConnectionPayload();
   const hasImages = messages.some((message) => Array.isArray(message.images) && message.images.length);
   if (hasImages) await requireVisionCapability(connection);
@@ -12102,10 +12219,12 @@ async function requestStudioDiscussion(chat, discussion) {
       ...llmProfileGenerationSettings(),
       max_response_tokens: 1200,
       messages,
+      help_domain: help.helpDomain || "none",
+      help_context: help.helpContext || currentStudioHelpContext(chat),
     }),
   });
   const data = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(data.error || `Image discussion failed (${response.status}).`);
+  if (!response.ok) throw new Error(data.error || `Discussion failed (${response.status}).`);
   return {
     message: String(data.message || "").trim(),
     proposal: normalizeStudioProposal(data.proposal ? { ...data.proposal, id: makeId(), createdAt: Date.now() } : null),
@@ -12113,14 +12232,15 @@ async function requestStudioDiscussion(chat, discussion) {
   };
 }
 
-async function runStudioDiscussion(chat, text, reference = null, messageId = "") {
+async function runStudioDiscussion(chat, text, reference = null, messageId = "", help = {}) {
   const discussion = beginOrContinueStudioDiscussion(chat, reference);
+  discussion.helpDomain = ["app", "prompting", "both"].includes(help.helpDomain) ? help.helpDomain : "none";
   const now = Date.now();
   discussion.pendingProposal = null;
   appendMessage("user", text, {
     messageId,
     chatId: chat.id,
-    label: "Image discussion",
+    label: studioDiscussionLabel(discussion),
     images: reference ? [reference] : [],
     sourceImage: discussion.editContext?.sourceImage, referenceImage: discussion.editContext?.referenceImage,
     studioMessageKind: "discussion",
@@ -12136,8 +12256,8 @@ async function runStudioDiscussion(chat, text, reference = null, messageId = "")
     renderStudioDiscussionContext();
     updateComposeMode();
   }
-  setStatus(`Looking at the image with ${llmProviderName()}…`, "working");
-  const answer = await requestStudioDiscussion(chat, discussion);
+  setStatus(help.helpDomain === "app" ? "Looking up Studio instructions…" : `Discussing with ${llmProviderName()}…`, "working");
+  const answer = await requestStudioDiscussion(chat, discussion, help);
   discussion.pendingProposal = answer.proposal;
   discussion.updatedAt = Date.now();
   chat.studioDiscussion = discussion;
@@ -12278,7 +12398,7 @@ async function applyStudioDiscussionProposal(chat, discussion, proposal, { userT
     appendMessage("user", userText, {
       messageId,
       chatId: chat.id,
-      label: "Image discussion",
+      label: studioDiscussionLabel(discussion),
       studioMessageKind: "discussion",
       studioDiscussionId: discussion.id,
     });
@@ -12376,6 +12496,7 @@ async function handleStudioTurn() {
   const messageId = makeId();
   const submittedAction = selectedAction();
   const submittedSettings = captureGenerationQueueSettings(submittedAction, chat);
+  const submittedHelpContext = currentStudioHelpContext(chat);
   const clarification = chat.referenceClarification && referenceContextMatches(chat.referenceClarification, submittedSettings)
     && chat.referenceClarification.mainPrompt === chat.mainPrompt && chat.referenceClarification.finalPrompt === chat.finalPrompt
     ? chat.referenceClarification : null;
@@ -12387,7 +12508,8 @@ async function handleStudioTurn() {
   updateComposeMode();
   setStatus(`Understanding your request with ${llmProviderName()}…`, "working");
   try {
-    const routed = await requestStudioTurnRoute(chat, text, reference || submittedSettings.referenceImage, submittedSettings.referenceImage, clarification);
+    const qwenReference = submittedSettings.qwenReferences?.[0]?.image;
+    const routed = await requestStudioTurnRoute(chat, text, reference || submittedSettings.referenceImage || qwenReference, submittedSettings.referenceImage || qwenReference, clarification);
     if (chat.id !== state.activeChatId) {
       throw new Error("Return to the originating session and send the message again.");
     }
@@ -12400,8 +12522,9 @@ async function handleStudioTurn() {
       && ["mutate_now", "commit_pending"].includes(routed.route);
     const route = unsafeLowConfidence ? "clarify" : routed.route;
     const discussion = activeStudioDiscussion(chat);
+    const help = {...routed, helpContext: submittedHelpContext};
     if (route === "discuss") {
-      await runStudioDiscussion(chat, text, reference || submittedSettings.referenceImage, messageId);
+      await runStudioDiscussion(chat, text, reference || submittedSettings.referenceImage, messageId, help);
     } else if (route === "commit_pending") {
       const applied = await applyStudioDiscussionProposal(chat, discussion, discussion?.pendingProposal, { userText: text, messageId });
       if (!applied && !input.value) input.value = text;
@@ -12412,7 +12535,7 @@ async function handleStudioTurn() {
         appendMessage("user", text, {
           messageId,
           chatId: chat.id,
-          label: "Image discussion",
+          label: studioDiscussionLabel(discussion),
           studioMessageKind: "discussion",
           studioDiscussionId: discussion.id,
         });
@@ -12427,6 +12550,11 @@ async function handleStudioTurn() {
       renderChatHistory();
       setStatus("Suggestion cancelled without changing the prompt.", "ready");
     } else if (route === "mutate_now") {
+      if (["app", "both"].includes(routed.helpDomain)) {
+        // Answer the isolated app question; documentation never reaches revision.
+        await runStudioDiscussion(chat, text, null, messageId, {...help, helpDomain: "app"});
+        if (!routed.resolvedInstruction) throw new Error("The image change could not be separated from the app question. Send the change separately.");
+      }
       if (chat.id !== state.activeChatId) throw new Error("Return to the originating session and send the change again.");
       const instruction = routed.resolvedInstruction || text;
       appendMessage("user", text, {
@@ -12455,12 +12583,13 @@ async function handleStudioTurn() {
       }
     } else {
       const active = beginOrContinueStudioDiscussion(chat, reference);
+      active.helpDomain = ["app", "prompting", "both"].includes(routed.helpDomain) ? routed.helpDomain : "none";
       active.pendingProposal = null;
       chat.studioDiscussion = active;
       appendMessage("user", text, {
         messageId,
         chatId: chat.id,
-        label: "Image discussion",
+        label: studioDiscussionLabel(active),
         images: reference ? [reference] : [],
         studioMessageKind: "discussion",
         studioDiscussionId: active.id,
@@ -12489,6 +12618,75 @@ async function handleStudioTurn() {
   }
 }
 
+async function prepareQwenReferenceEdit({revisionOverride = null, userTextOverride = null,
+  queueSettingsOverride = null, forceGenerate = false, recordRevision = true, repeat = false} = {}) {
+  if (!state.apiConnected) return setStatus("ComfyUI is disconnected.", "error");
+  const chat = activeChat(), input = state.panel.querySelector("#promptstudio-revision");
+  if (!chat || editReferenceController?.uploading(chat.id)) return setStatus("Wait for reference uploads to finish.", "warning");
+  const text = repeat ? "" : String(userTextOverride ?? revisionOverride ?? input.value).trim();
+  const settings = structuredClone(queueSettingsOverride || (text ? captureGenerationQueueSettings("edit", chat) : captureRepeatQueueSettings("edit", chat)));
+  if (!settings.sourceImage) return setStatus("Select an image to edit.", "warning");
+  const previous = [chat.pendingGeneration, chat.lastGeneration].find(saved =>
+    saved?.editPromptModel === "qwen_image_2_1" && saved.workflowProfileId === settings.workflowProfileId
+    && referenceInputsMatch(saved, settings) && imageReferenceKey(saved.sourceImage) === imageReferenceKey(settings.sourceImage));
+  const instruction = text || previous?.qwenInstruction || "";
+  const amplified = useLlmAmplification();
+  const autoGenerate = forceGenerate || !amplified || state.panel.querySelector("#promptstudio-auto-generate")?.checked !== false;
+  const mainPrompt = chat.mainPrompt, finalPrompt = chat.finalPrompt;
+  settings.qwenInstruction = instruction; settings.editPromptModel = "qwen_image_2_1";
+  if (text && recordRevision) appendMessage("user", text, {chatId: chat.id, ...normalizeReferenceState(settings)});
+  if (input.value.trim() === text) input.value = "";
+  const operation = createStudioOperation(chat, "edit", "Preparing Qwen edit instruction…");
+  const controller = state.operationControllers.get(operation.operationId);
+  state.studioPreparations.set(operation.operationId, {chatId: chat.id, kind: "reference_edit"});
+  state.latestStudioPreparationByChat.set(chat.id, operation.operationId);
+  updateComposeMode(); syncBackgroundActivityIndicator();
+  try {
+    settings.qwenReferences = validateQwenReferences(settings.qwenReferences);
+    if (!instruction && !settings.qwenReferences.length) throw new Error("Describe the requested edit.");
+    const payload = collectRevisionPayload("", "render", "", "", null);
+    let prompt;
+    if (!text && previous?.executionPrompt) prompt = previous.executionPrompt;
+    else if (amplified) {
+      updateStudioOperation(operation.id, {operationPhase: "checking_vision", operationStatus: "Checking image support…"});
+      await requireVisionCapability(payload, controller?.signal);
+      updateStudioOperation(operation.id, {operationPhase: "llm_processing", operationStatus: "Building the Qwen reference edit instruction…"});
+      prompt = await requestQwenEdit(api.fetchApi.bind(api), {...payload, model: "qwen_image_2_1",
+        source_image: settings.sourceImage, references: settings.qwenReferences, user_text: instruction}, controller?.signal);
+    } else prompt = directQwenInstruction(instruction, settings.qwenReferences);
+    if (controller?.signal.aborted || !state.chats.some(item => item.id === chat.id)) return false;
+    const generation = {action: "edit", mainPrompt, canonicalPrompt: finalPrompt,
+      executionPrompt: prompt, workflowProfileId: settings.workflowProfileId, sourceImage: settings.sourceImage,
+      ...normalizeReferenceState(settings)};
+    if (state.latestStudioPreparationByChat.get(chat.id) === operation.operationId) chat.pendingGeneration = generation;
+    chat.updatedAt = Date.now(); saveChats();
+    if (autoGenerate) {
+      await queueGeneration({...settings, action: "edit", executionPrompt: prompt, mainPrompt,
+        finalPrompt, independent: true, releaseBusy: false, operationMessageId: operation.id,
+        alwaysNewSeed: repeat, cancellationCheck: () => Boolean(controller?.signal.aborted)});
+    } else {
+      updateStudioOperation(operation.id, {operationPhase: "complete", operationStatus: "Edit instruction ready", text: prompt,
+        executionPrompt: prompt, ...normalizeReferenceState(settings)});
+    }
+    return true;
+  } catch (error) {
+    const cancelled = controller?.signal.aborted;
+    updateStudioOperation(operation.id, {operationPhase: cancelled ? "cancelled" : "error",
+      generationState: cancelled ? "cancelled" : "error", operationStatus: cancelled ? "Cancelled" : "Failed",
+      text: cancelled ? "Cancelled." : error.message || String(error)});
+    if (chat.id === state.activeChatId) {
+      if (!input.value) input.value = text;
+      setStatus(cancelled ? "Cancelled." : error.message || String(error), cancelled ? "ready" : "error");
+    }
+    return false;
+  } finally {
+    state.studioPreparations.delete(operation.operationId);
+    if (state.latestStudioPreparationByChat.get(chat.id) === operation.operationId) state.latestStudioPreparationByChat.delete(chat.id);
+    state.operationControllers.delete(operation.operationId);
+    saveChats(); renderChatHistory(); updateComposeMode(); syncBackgroundActivityIndicator();
+  }
+}
+
 async function reviseAndMaybeGenerate({
   controlsOnly = false,
   forceGenerate = false,
@@ -12501,6 +12699,9 @@ async function reviseAndMaybeGenerate({
   queueSettingsOverride = null,
   clarificationQuestion = "",
 } = {}) {
+  if (generationAction === "edit" && qwenReferenceAdapter(selectedWorkflowProfile(generationAction))) {
+    return prepareQwenReferenceEdit({revisionOverride, userTextOverride, queueSettingsOverride, forceGenerate, recordRevision});
+  }
   if (!state.apiConnected) return setStatus("ComfyUI is disconnected. Prompt Studio is frozen.", "error");
   if (!useLlmAmplification()) return generateDirectPrompt(generationAction);
   const chat = activeChat();
@@ -12782,6 +12983,8 @@ async function reviseAndMaybeGenerate({
 }
 
 async function createNewFromCurrentPrompt({ applyControls = true, generationAction = selectedAction() } = {}) {
+  if (generationAction === "edit" && qwenReferenceAdapter(selectedWorkflowProfile(generationAction))
+      && !(activeChat()?.pendingGeneration?.generationSnapshot && activeChat().pendingGeneration.replayFingerprint === generationUiFingerprint())) return prepareQwenReferenceEdit({forceGenerate: true, repeat: true});
   if (state.busy) return;
   const chat = activeChat();
   const lastGeneration = chat?.lastGeneration;
@@ -12789,7 +12992,8 @@ async function createNewFromCurrentPrompt({ applyControls = true, generationActi
   const selectedProfileId = selectedWorkflowProfileId(generationAction);
   const currentReferenceContext = captureRepeatQueueSettings(generationAction, chat);
   const currentReference = currentReferenceContext.referenceImage;
-  const referenceMatches = saved => generationAction !== "edit" || referenceContextMatches(saved, currentReferenceContext);
+  const referenceMatches = saved => referenceInputsMatch(saved, currentReferenceContext)
+    && (generationAction !== "edit" || referenceContextMatches(saved, currentReferenceContext));
   const pendingGenerationMatches = referenceMatches(pendingGeneration) && pendingGeneration?.action === generationAction
     && pendingGeneration.mainPrompt === state.mainPrompt
     && pendingGeneration.canonicalPrompt === state.currentPrompt
@@ -12829,6 +13033,7 @@ async function createNewFromCurrentPrompt({ applyControls = true, generationActi
   const queueSettings = currentReferenceContext;
   const generationOptions = {
     ...queueSettings,
+    ...(replayStoredGeneration ? normalizeReferenceState(pendingGeneration) : {}),
     action: generationAction,
     executionPrompt: usePendingGeneration
       ? (pendingGeneration.executionPrompt || state.currentPrompt)
@@ -12906,6 +13111,7 @@ function applyPreparedPromptToChat(
   }
   chat.pendingGeneration = {
     action: generationAction,
+    ...normalizeReferenceState(queueSettings),
     intentProvenance: normalizeIntentProvenance(chat.intentProvenance),
     mainPrompt,
     canonicalPrompt: finalPrompt,
@@ -12927,6 +13133,9 @@ function applyPreparedPromptToChat(
 }
 
 async function queueBackgroundReroll(generationAction = selectedAction()) {
+  if (generationAction === "edit" && qwenReferenceAdapter(selectedWorkflowProfile(generationAction))) {
+    return prepareQwenReferenceEdit({forceGenerate: true, repeat: true});
+  }
   if (!state.apiConnected) return setStatus("ComfyUI is disconnected. Prompt Studio is frozen.", "error");
   if (!useLlmAmplification()) return generateDirectPrompt(generationAction, {repeat: true});
   const chat = activeChat();
@@ -13218,8 +13427,8 @@ function buildPanel() {
         </div>
         <div id="promptstudio-discussion-context" class="promptstudio-discussion-context" hidden>
           <img alt="" />
-          <span><strong>Discussing generated image</strong><small></small></span>
-          <button type="button" title="End this image discussion" aria-label="End this image discussion">End</button>
+          <span><strong>Discussion</strong><small></small></span>
+          <button type="button" title="End discussion" aria-label="End discussion">End</button>
         </div>
         <div id="promptstudio-pasted-image" class="promptstudio-pasted-image" hidden>
           <img alt="" />
@@ -13611,13 +13820,19 @@ function buildPanel() {
               </div>
             </section>
             <section class="promptstudio-llm-profile-parameter-group">
-              <div class="promptstudio-llm-profile-parameter-heading"><strong>Available thinking modes</strong><span>Only enabled modes appear in Generation controls.</span></div>
+              <div class="promptstudio-llm-profile-parameter-heading"><strong>Available thinking modes</strong><span>Check the model card for supported modes. Unsupported modes may fail or produce unpredictable results.</span></div>
               <div class="promptstudio-llm-profile-thinking-modes">
-                ${LLM_THINKING_MODE_OPTIONS.map((mode) => `<label><input name="thinking_modes" type="checkbox" value="${mode}" /><span>${mode}</span></label>`).join("")}
+                ${LLM_THINKING_MODE_OPTIONS.filter(thinkingModeEnablesReasoning).map((mode) => `<label><input name="thinking_modes" type="checkbox" value="${mode}" /><span>${mode}</span></label>`).join("")}
               </div>
             </section>
             <section class="promptstudio-llm-profile-parameter-group">
-              <div class="promptstudio-llm-profile-parameter-heading"><strong>Non-thinking sampler</strong><span>Used when Thinking is Disabled.</span></div>
+              <div class="promptstudio-llm-profile-parameter-heading"><strong>Available instruct modes</strong><span>Thinking and instruct modes share one dropdown in Generation controls.</span></div>
+              <div class="promptstudio-llm-profile-thinking-modes">
+                ${LLM_THINKING_MODE_OPTIONS.filter(mode => !thinkingModeEnablesReasoning(mode)).map((mode) => `<label><input name="thinking_modes" type="checkbox" value="${mode}" /><span>${mode.replace(/^Instruct /, "")}</span></label>`).join("")}
+              </div>
+            </section>
+            <section class="promptstudio-llm-profile-parameter-group">
+              <div class="promptstudio-llm-profile-parameter-heading"><strong>Non-thinking sampler</strong><span>Used by instruct modes and Disabled.</span></div>
               <div class="promptstudio-llm-profile-parameter-grid">
                 <label><span>Temperature</span><input name="temperature" type="number" min="0" max="5" step="0.05" required /></label>
                 <label><span>Top P</span><input name="top_p" type="number" min="0" max="1" step="0.01" required /></label>
@@ -13629,7 +13844,7 @@ function buildPanel() {
               </div>
             </section>
             <section class="promptstudio-llm-profile-parameter-group">
-              <div class="promptstudio-llm-profile-parameter-heading"><strong>Thinking sampler</strong><span>Used by every available mode except Disabled.</span></div>
+              <div class="promptstudio-llm-profile-parameter-heading"><strong>Thinking sampler</strong><span>Used by thinking modes.</span></div>
               <div class="promptstudio-llm-profile-parameter-grid">
                 <label><span>Temperature</span><input name="thinking_temperature" type="number" min="0" max="5" step="0.05" required /></label>
                 <label><span>Top P</span><input name="thinking_top_p" type="number" min="0" max="1" step="0.01" required /></label>
@@ -13764,6 +13979,11 @@ function buildPanel() {
         <strong id="promptstudio-upscale-title">Upscale image</strong>
         <label for="promptstudio-upscale-factor">Upscale factor</label>
         <input id="promptstudio-upscale-factor" type="number" min="1" max="16" step="0.1" value="2" required />
+        <div class="promptstudio-upscale-reference promptstudio-edit-reference" hidden>
+          <input type="file" accept="image/*" aria-label="Upscale reference image file" hidden />
+          <button type="button" class="promptstudio-edit-reference-choose"><img alt="" hidden /><small>Reference</small></button>
+          <button type="button" class="promptstudio-edit-reference-remove" aria-label="Remove edit reference image" hidden>×</button>
+        </div>
         <div class="promptstudio-upscale-dialog-actions">
           <button id="promptstudio-upscale-cancel" type="button">Cancel</button>
           <button class="promptstudio-primary" type="submit">Upscale</button>
@@ -13849,6 +14069,13 @@ function buildPanel() {
   });
   const compose = panel.querySelector(".promptstudio-compose");
   const mainDropTargets = [history, compose];
+  upscaleReferenceController = createEditReferenceController({panel, tile: panel.querySelector(".promptstudio-upscale-reference"),
+    activeChat, findChat: id => state.chats.find(chat => chat.id === id),
+    selectedProfile: () => workflowProfileById(panel.querySelector("#promptstudio-upscale-dialog")?._upscaleRequest?.workflowProfileId),
+    upload: uploadPromptStudioImage, imageUrl: imageReferenceUrl,
+    changed: chat => {chat.updatedAt = Date.now(); saveChats({immediate: true});}, report: setStatus,
+    refresh: () => {panel.querySelector('#promptstudio-upscale-form button[type="submit"]').disabled = upscaleReferenceController?.uploading(state.activeChatId) || false;},
+  });
   const imageImport = panel.querySelector("#promptstudio-image-import");
   const carriesFiles = (event) => [...(event.dataTransfer?.types || [])].includes("Files");
   const showMainChatDropState = () => {

@@ -1186,10 +1186,8 @@ def _llamacpp_context_length(base_url, timeout, model=""):
 
 def _llamacpp_token_count(base_url, timeout, messages, model, reasoning_effort, enable_thinking):
     chat_template_kwargs = {"enable_thinking": bool(enable_thinking)}
-    if enable_thinking and reasoning_effort != "none":
-        # Qwen 3.8 reads its native xhigh/medium/low level directly from the
-        # Jinja context. Keep this explicit for llama.cpp builds predating the
-        # top-level reasoning_effort forwarding path as well as current builds.
+    if reasoning_effort != "none":
+        # Named instruct modes also need their native effort in the template.
         chat_template_kwargs["reasoning_effort"] = reasoning_effort
     try:
         result = _post_json(
@@ -1825,8 +1823,7 @@ def _generate_llamacpp(
         if reason:
             raise RuntimeError(reason)
 
-    effort = _reasoning_effort(thinking_mode)
-    enable_thinking = effort != "none"
+    effort, enable_thinking = _llamacpp_reasoning_options(thinking_mode)
     prompt_tokens = _llamacpp_token_count(
         base_url,
         timeout,
@@ -1850,13 +1847,12 @@ def _generate_llamacpp(
         reasoning_budget_tokens,
     )
     stop_sequences = _split_stop_sequences(stop_sequence)
-    if include_default_continuation_stops and effort == "none":
+    if include_default_continuation_stops and not enable_thinking:
         stop_sequences = _with_default_continuation_stops(stop_sequences)
     chat_template_kwargs = {"enable_thinking": enable_thinking}
-    if enable_thinking:
-        # Qwen 3.8 has three model-native effort values (xhigh, medium, low).
-        # Sending the selected effort in both locations works with current
-        # llama.cpp and with builds that expose only direct template kwargs.
+    if effort != "none":
+        # Keep the native effort for both reasoning and instruct variants.
+        # Top-level "none" would make llama.cpp erase the template effort.
         chat_template_kwargs["reasoning_effort"] = effort
     payload = {
         "model": model,
@@ -2312,11 +2308,31 @@ def _strip_apply_response(text):
 
 def _reasoning_effort(thinking_mode):
     mode = str(thinking_mode or "Disabled").strip().lower()
+    # Generic prompt policies and token budgets use standard effort levels.
+    # llama.cpp receives the model-native name via _llamacpp_reasoning_options.
+    mode = {"spoon": "xhigh", "einstein": "high"}.get(mode, mode)
     if mode == "disabled":
         return "none"
     if mode in {"minimal", "low", "medium", "high", "xhigh"}:
         return mode
     return "none"
+
+
+def _llamacpp_reasoning_options(thinking_mode):
+    """Return the GGUF template's effort and independent thinking switch.
+
+    Twin Turbo's embedded template accepts bare effort names in both modes;
+    the i-prefixed forms belong to its in-message {REASON:...} syntax only.
+    """
+    mode = str(thinking_mode or "Disabled").strip().lower()
+    if mode in {"spoon", "einstein"}:
+        return mode, True
+    if mode.startswith("instruct "):
+        native = mode.removeprefix("instruct ")
+        if native in {"spoon", "einstein", "xhigh", "medium", "low"}:
+            return native, False
+    effort = _reasoning_effort(thinking_mode)
+    return effort, effort != "none"
 
 
 def _profile_wrappers(profile):
@@ -3913,13 +3929,14 @@ class KCPP_ChatImageInput:
 
 
 class KCPP_ChatImageReference(KCPP_ChatImageInput):
-    """Optional second image for edit nodes that accept an absent reference."""
+    """Universal named image input for Prompt Studio workflows."""
 
     @classmethod
     def INPUT_TYPES(cls):
         schema = super().INPUT_TYPES()
         schema["required"]["source_name"][1]["default"] = "Reference image"
-        schema["required"]["image_ref"][1]["tooltip"] = "Optional reference supplied by Prompt Studio. Empty returns no image; connect to optional reference inputs."
+        schema["required"]["source_name"][1]["tooltip"] = "Label for this workflow image input when the node has no custom title."
+        schema["required"]["image_ref"][1]["tooltip"] = "Image supplied independently by Prompt Studio in any workflow mode. Name this node to label its input. Empty returns no image; downstream nodes must accept an absent image."
         return schema
 
     def load_image(self, image_ref="", source_name="Reference image"):
@@ -4517,7 +4534,7 @@ class KCPP_Ideogram4:
 
 
 def _safetensors_uses_int8(unet_path):
-    """Inspect a safetensors header without reading the model tensor data."""
+    """Identify legacy INT8 weights that need the external W8A8 loader."""
     if not str(unet_path).lower().endswith((".safetensors", ".sft")):
         return False
 
@@ -4531,13 +4548,41 @@ def _safetensors_uses_int8(unet_path):
             if header_size <= 0 or header_size > min(file_size - 8, 64 * 1024 * 1024):
                 return False
             header = json.loads(file.read(header_size))
+            native_weights = set()
+            for name, tensor_info in header.items():
+                if not name.endswith(".comfy_quant") or not isinstance(tensor_info, dict):
+                    continue
+                offsets = tensor_info.get("data_offsets", [])
+                if len(offsets) != 2 or not all(isinstance(value, int) for value in offsets):
+                    continue
+                start, end = offsets
+                if not (0 <= start < end <= file_size - 8 - header_size and end - start <= 4096):
+                    continue
+                file.seek(8 + header_size + start)
+                try:
+                    quant = json.loads(file.read(end - start))
+                except (ValueError, UnicodeDecodeError):
+                    continue
+                # Legacy INT8-Fast also writes comfy_quant, with either no
+                # format or int8_rowwise. Only the native INT8 format can be
+                # handed to ComfyUI's standard quantized operations.
+                if isinstance(quant, dict) and quant.get("format") == "int8_tensorwise":
+                    native_weights.add(name.removesuffix(".comfy_quant") + ".weight")
     except (OSError, ValueError, json.JSONDecodeError, struct.error):
+        return False
+
+    # Native ComfyUI quantized files describe their layers explicitly. They
+    # must use UNETLoader so that the declared quantization (including ConvRot)
+    # is honored rather than being replaced by the legacy INT8 loader defaults.
+    metadata = header.get("__metadata__", {})
+    if isinstance(metadata, dict) and "_quantization_metadata" in metadata:
         return False
 
     return any(
         name.endswith(".weight")
         and isinstance(tensor_info, dict)
         and tensor_info.get("dtype") == "I8"
+        and name not in native_weights
         for name, tensor_info in header.items()
         if name != "__metadata__"
     )
@@ -4714,7 +4759,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "KCPP_PromptAmplify": "KoboldCpp Prompt Amplify",
     "KCPP_PromptSlot": "KoboldCpp Prompt Slot",
     "KCPP_ChatImageInput": "Prompt Studio Image Source",
-    "KCPP_ChatImageReference": "Prompt Studio Reference Image (optional)",
+    "KCPP_ChatImageReference": "Prompt Studio Reference Image",
     "KCPP_PromptStudioUpscale": "Prompt Studio Upscale",
     "KCPP_PromptStudioLoraLoader": "Prompt Studio LoRA Loader",
     "KCPP_Apply": "KoboldCpp Apply",

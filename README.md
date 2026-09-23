@@ -8,7 +8,9 @@ Create, refine, edit, and upscale ComfyUI images in a chat-first studio powered 
 ComfyUI. Setup opens automatically the first time you open image Prompt Studio.
 You can also open **Settings → Setup wizard → Run setup** at any time.
 
-Select Create, Edit and/or Upscale. Setup lists which workflows need each model
+Select individual Krea2 or Qwen Image 2.1 workflows in the compact workflow grid.
+Model selectors show installed files and download choices; expand **Details** for
+usage, sources and compatibility. Setup lists which workflows need each model
 and node pack, checks ComfyUI's registered model folders (including extra paths),
 and reuses compatible installed files. A compatible Krea2 variant satisfies the
 diffusion-model requirement without downloading Turbo. Either the BF16 or FP8
@@ -16,12 +18,26 @@ Qwen3-VL 4B encoder works across all three workflows: reuse an installed encoder
 or choose which format to download. Alternate diffusion models keep the supplied
 sampler settings and may need different steps or CFG for best results.
 
-The bundled workflows are `[PS] - Krea2 Turbo`, `[PS] - Krea2 Turbo_Edit`, and
-`[PS] - Krea2 Upscale UltimateSD`. They contain only the generic landscape prompt;
-hidden saved prompts are empty. Existing workflows are preserved; when content
+The bundled Krea2 workflows are `[PS] - Krea2 Turbo`, `[PS] - Krea2 Turbo_Edit`, and
+`[PS] - Krea2 Upscale UltimateSD`. All bundled workflows start with empty prompt
+and image-reference fields. Existing workflows are preserved; when content
 differs, setup installs a separate numbered Setup copy and reuses that copy on
 subsequent runs. ComfyUI Manager installs missing third-party node packs using
 its existing security policy; these installs require a ComfyUI restart.
+
+Qwen Image 2.1 includes Create, Edit, RGBA, RGBA Edit and Background Removal,
+each in 25-step, 40-step and Turbo 4-step variants. They share the diffusion
+model, Qwen3-VL 8B encoder and native Qwen 2.1 VAE; only Turbo variants need
+the Viggle 4-step LoRA. Setup offers INT8 and BF16 diffusion/encoder choices,
+reuses registered files, and verifies downloads against pinned checksums.
+Bundled examples contain no local reference-image paths. Edit workflows retain
+the saved 1056 encoder resolution and matching Turbo shift settings.
+
+Qwen workflows start unchecked. Selecting each one opens a strict
+non-commercial warning linked to the [Qwen Research License](https://huggingface.co/Qwen/Qwen-Image-2.1/blob/main/LICENSE).
+Only **Accept** selects it; Cancel, Escape or dismissal leaves it unchecked.
+The setup service also requires acceptance for each selected Qwen workflow and
+preserves that acceptance when a setup job is paused or resumed after restart.
 
 Edit includes Identity Edit v1.2 at strength 1 alongside TextFusion. Its defaults
 are 10 steps, CFG 1, Euler/simple, reference fidelity 4 and grounding 768 for both
@@ -67,11 +83,35 @@ additions. Selecting a different base or reference requires a fresh interpretati
 Direct reference mode sends the instruction without analysis and keeps Main and
 Final unchanged; enable LLM amplification to adopt observed details into them.
 
-Workflow authors can add `Prompt Studio Reference Image (optional)` and connect
-its image output to optional reference inputs. The Krea2 Edit recipe connects it
+Workflow authors can add **Prompt Studio Reference Image** (the existing
+`KCPP_ChatImageReference` node) in Create, Edit, Upscale, or Video workflows.
+One connected node shows a compact image input; several open a named input list.
+Each node receives its own image. Custom node titles label the inputs, with
+`source_name` as the fallback. Assignments are saved per session, workflow, and
+node ID, and queued generations retain their exact inputs. These universal inputs
+do not imply model-specific prompting support. The Krea2 Edit recipe connects it
 to `source_image_b` on the model patch and `image_b` on both grounded encoders.
 An empty reference returns no image, so those nodes keep their single-image
 behavior. Connect this node only where an absent image is supported.
+
+**Qwen Image 2.1 edit references** are a separate, explicitly supported capability.
+Connect the Prompt Studio Image Source (optionally through preprocessing) to
+`images.image_1` on one native **Text Encode Qwen Image 2.1** node, and connect the
+Prompt Slot/Amplify prompt to that encoder. Leave the other encoder image inputs
+empty. Prompt Studio exposes a dynamic list of up to **nine** additional images;
+the base image occupies the tenth slot. No additional reference nodes are needed.
+Prewired encoder references remain custom workflow wiring and disable this managed
+list rather than being overwritten. Universal reference nodes elsewhere in the
+workflow remain separate named inputs and do not consume these nine slots.
+
+Each Qwen reference has a role and optional instructions; Custom instruction
+requires text. Click, drop an image, or focus a tile and press Ctrl+V to fill or
+replace it. Drop/paste into the Qwen pop-up outside a tile to add images. The image
+tile spans the full height of its row, beside its controls. With LLM amplification
+enabled, the vision model constructs an execution-only Qwen edit instruction with
+ordered `<image1>` through `<image10>` tags. Main and Final remain unchanged.
+With amplification off, explicit roles/instructions are assembled without an LLM.
+Attachments pasted into the chat composer remain LLM context, not diffusion inputs.
 
 
 Downloads show byte progress, transfer speed and remaining time, followed by
@@ -203,6 +243,8 @@ Llama.cpp treats model-native `reasoning_effort` and its server-side token cutof
 Prompt Studio can also start, stop, and restart Llama.cpp itself. In **Settings → Backend settings**, use **Browse…** to select `llama.exe` or `llama-server.exe`. Launcher profiles always live in `config/LlamaCPP`; Prompt Studio creates that folder automatically. Pick any discovered profile and press **Restart** in System status to apply its model and server settings immediately. Enable **Start with ComfyUI** to launch that validated executable and profile automatically during future ComfyUI startups. **Edit…** opens the selected profile in the included Windows PowerShell config builder; **New…** creates another named JSON profile in the same fixed folder. [`llamacpp_server.example.json`](llamacpp_server.example.json) includes every setting shown by the builder: model GGUF, MMProj GGUF, context size, GPU layers, parallel slots, CUDA devices (`--device`), CUDA-visible devices, split mode, main GPU, tensor split, auto-fit, flash attention, K/V cache types, MTP speculative decoding, host, port, optional extra arguments, and the complete thinking/non-thinking LLM sampler configuration. MTP controls its draft-token range and probability cutoff plus the draft context's GPU layers, device, and K/V cache types; it requires an MTP-capable GGUF and a recent llama.cpp build. `llama.exe` is started with the `serve` subcommand; `llama-server.exe` is started directly. The executable picker, profile discovery, config builder, autostart preference, and process actions are accepted only from a loopback browser connection. Prompt Studio records the exact managed process identity and recovers control after a ComfyUI restart; PID, executable path, and OS creation marker must all still match before it will stop that process. A detached watchdog stops that exact managed process 120 seconds after ComfyUI exits, including an abrupt termination. Restarting ComfyUI during the grace period renews ownership and cancels the pending shutdown. An already-running server at the configured endpoint remains externally managed and is never replaced by autostart, while processing monitoring and stream cancellation still work.
 
 Shared-GPU Llama.cpp handoff requires llama-server router mode (`--models-dir`) because only router mode exposes `/models/unload`; normal chat requests autoload the selected model again. For a single-model llama-server process, use separate GPUs and enable **Keep models loaded**, or let the external launcher own the GPU transition.
+
+Profiles define reasoning modes in `llm_profile.thinking_modes` and non-thinking modes in `llm_profile.instruct_modes`. Each list uses native names, for example `"thinking_modes": ["Spoon", "Einstein", "XHigh", "Medium", "Low"]` and `"instruct_modes": ["Spoon", "Einstein", "XHigh", "Medium", "Low", "Disabled"]` for the updated Twin Turbo model. The single dropdown adds the `Instruct` prefix to distinguish entries. The `thinking_mode` field remains the selected default and can be `"Instruct Spoon"`. Either list may be empty, but at least one mode must be available. Older profiles with a combined `thinking_modes` list remain supported; editors save separate lists. Check the model card for supported modes: unsupported modes may fail or produce unpredictable results. Instruct variants retain the native effort while turning thinking off, use the non-thinking samplers, and do not reserve reasoning tokens. `Disabled` retains the model's default non-thinking behavior (Medium for Twin Turbo). The selected mode is shared with Video Studio.
 
 The launcher example is a template: replace `models/REPLACE_WITH_YOUR_MODEL.gguf`
 with your actual model path using the config builder. Relative model paths resolve

@@ -123,6 +123,13 @@ export const LLM_THINKING_MODE_OPTIONS = Object.freeze([
   "Medium",
   "High",
   "XHigh",
+  "Einstein",
+  "Spoon",
+  "Instruct Low",
+  "Instruct Medium",
+  "Instruct XHigh",
+  "Instruct Einstein",
+  "Instruct Spoon",
 ]);
 export const DEFAULT_LLM_THINKING_MODES = Object.freeze(["Disabled", "Minimal", "Low", "Medium", "High"]);
 export const LLM_PROFILE_DEFAULTS = Object.freeze({

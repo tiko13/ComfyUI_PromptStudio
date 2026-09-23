@@ -517,7 +517,7 @@
         }
       },
       "widgets_values": [
-        "a picture of a landscape",
+        "",
         "",
         "General Natural Language",
         "Cinematic Perfect Quality",
@@ -543,7 +543,7 @@
         8
       ],
       "widgets_values_named": {
-        "text": "a picture of a landscape",
+        "text": "",
         "additional_instructions": "",
         "model_profile": "General Natural Language",
         "style_preset": "Cinematic Perfect Quality",
@@ -1834,29 +1834,13 @@
             "type": "INT"
           }
         ],
-        "extra": {
-          "ue_links": [],
-          "links_added_by_ue": []
-        }
+        "extra": {}
       }
     ]
   },
   "config": {},
   "extra": {
-    "frontendVersion": "1.45.15",
-    "VHS_latentpreview": false,
-    "VHS_latentpreviewrate": 0,
-    "VHS_MetadataImage": true,
-    "VHS_KeepIntermediate": true,
-    "ue_links": [],
-    "links_added_by_ue": [],
-    "ds": {
-      "scale": 0.8307905660377359,
-      "offset": [
-        1568.2344183029738,
-        243.4175306426104
-      ]
-    }
+    "frontendVersion": "1.45.15"
   },
   "version": 0.4
 }

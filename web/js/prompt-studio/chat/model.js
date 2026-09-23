@@ -1,4 +1,6 @@
 import { normalizeReferenceGrounding, normalizeReferenceClarification } from "../generation/reference-grounding.js";
+import { normalizeWorkflowReferences, normalizeReferenceState } from "../generation/reference-inputs.js";
+import { normalizeQwenReferences } from "../generation/qwen-references.js";
 import {
   AMPLIFY_TYPE,
   RENDER_CONTROL_SETTINGS,
@@ -69,7 +71,9 @@ function normalizeStudioSettings(value, fallback = getSettings()) {
   const object = (key) => {
     const requested = source[key] ?? base[key];
     return requested && typeof requested === "object" && !Array.isArray(requested)
-      ? { ...requested, thinking_modes: Array.isArray(requested.thinking_modes) ? [...requested.thinking_modes] : undefined }
+      ? { ...requested,
+        thinking_modes: Array.isArray(requested.thinking_modes) ? [...requested.thinking_modes] : undefined,
+        instruct_modes: Array.isArray(requested.instruct_modes) ? [...requested.instruct_modes] : undefined }
       : null;
   };
   const numeric = (key, minimum, maximum) => {
@@ -177,6 +181,8 @@ function isEmptyChat(chat) {
     && !Number(chat.consultClearedAt || 0)
     && !chat.selectedSource
     && !chat.editReferenceImage
+    && !normalizeQwenReferences(chat.qwenEditReferences).length
+    && !Object.values(normalizeWorkflowReferences(chat.workflowReferences)).some(slots => Object.values(slots).some(Boolean))
     && !chat.lastGeneration
     && !chat.pendingGeneration
     && !chat.consultPendingJob
@@ -381,6 +387,7 @@ function normalizeStudioDiscussion(value) {
     status,
     targetImage: normalizeImageReference(value.targetImage),
     targetMessageId: String(value.targetMessageId || ""),
+    helpDomain: ["app", "prompting", "both"].includes(value.helpDomain) ? value.helpDomain : "none",
     anchorMainPrompt: String(value.anchorMainPrompt || ""),
     anchorFinalPrompt: String(value.anchorFinalPrompt || ""),
     anchorControlsFingerprint: String(value.anchorControlsFingerprint || ""),
@@ -424,6 +431,7 @@ function normalizeChat(chat) {
         generationSnapshot: normalizeGenerationSnapshot(message?.generationSnapshot),
         sourceImage: normalizeImageReference(message?.sourceImage),
         referenceImage: normalizeImageReference(message?.referenceImage),
+        ...normalizeReferenceState(message),
         referenceGrounding: normalizeReferenceGrounding(message?.referenceGrounding),
         upscaleFactor: message?.upscaleFactor != null && Number.isFinite(Number(message.upscaleFactor))
           ? Number(message.upscaleFactor)
@@ -526,6 +534,8 @@ function normalizeChat(chat) {
     selectedSource: normalizeImageReference(chat?.selectedSource),
     autoAdvanceGenerationId: String(chat?.autoAdvanceGenerationId || ""),
     editReferenceImage: normalizeImageReference(chat?.editReferenceImage),
+    workflowReferences: normalizeWorkflowReferences(chat?.workflowReferences),
+    qwenEditReferences: normalizeQwenReferences(chat?.qwenEditReferences),
     referenceClarification: normalizeReferenceClarification(chat?.referenceClarification),
     lastGeneration: lastGeneration
       ? { ...lastGeneration, intentProvenance: normalizeIntentProvenance(chat.lastGeneration.intentProvenance) }
