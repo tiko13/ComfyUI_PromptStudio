@@ -1165,8 +1165,11 @@ def _server_capabilities(base_url, timeout):
     return data if isinstance(data, dict) else {}
 
 
-def _llamacpp_props(base_url, timeout, model=""):
-    query = urllib.parse.urlencode({"model": str(model).strip()}) if str(model).strip() else ""
+def _llamacpp_props(base_url, timeout, model="", *, autoload=True):
+    params = {"model": str(model).strip()} if str(model).strip() else {}
+    if not autoload:
+        params["autoload"] = "false"
+    query = urllib.parse.urlencode(params)
     url = urllib.parse.urljoin(base_url + "/", "props")
     if query:
         url = f"{url}?{query}"

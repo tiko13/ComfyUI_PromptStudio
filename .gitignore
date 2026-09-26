@@ -24,7 +24,9 @@ dist/
 # Node dependencies and build outputs
 node_modules/
 test-results/
-test-results/
+playwright-report/
+blob-report/
+playwright/.auth/
 coverage/
 .cache/
 .parcel-cache/
@@ -62,6 +64,23 @@ Desktop.ini
 *.db
 *.sqlite
 *.sqlite3
+*.db-wal
+*.db-shm
+*.sqlite-wal
+*.sqlite-shm
+*.sqlite3-wal
+*.sqlite3-shm
+*.har
+
+# Local credentials and authenticated browser state
+/.npmrc
+/.pypirc
+/.netrc
+/_netrc
+/credentials.json
+/secrets.json
+/storage-state*.json
+/storageState*.json
 
 # Prompt Studio runtime state
 prompt_studio_chats.json
@@ -76,6 +95,7 @@ prompt_studio_llamacpp_autostart.json
 prompt_studio_llamacpp_autostart.json.tmp
 llamacpp_server.json
 config/LlamaCPP/*.json
+config/LlamaCPP/*.router.ini
 protected_words.txt
 
 # User-owned presets (copy the tracked examples from presets/examples/)

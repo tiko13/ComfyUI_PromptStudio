@@ -215,7 +215,7 @@ class RegressionTests(unittest.TestCase):
         def get_json(url, _timeout, _service_name=""):
             if url.endswith("/health"):
                 return {"status": "ok"}
-            if url.endswith("/slots"):
+            if url.split("?", 1)[0].endswith("/slots"):
                 return [
                     {
                         "id": 0,

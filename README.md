@@ -1,12 +1,380 @@
-# ComfyUI_PromptStudio
+# Prompt Studio for ComfyUI
 
-Create, refine, edit, and upscale ComfyUI images in a chat-first studio powered by your local KoboldCpp, Ollama, or Llama.cpp model.
+**Create by describing. Refine by talking.**
+
+Prompt Studio turns your ComfyUI image workflows into a conversation. Describe a scene, ask for changes, bring in reference images, and upscale the result—all in one workspace, powered by your own models.
+
+![Prompt Studio with a generated botanical studio scene, chat, and editable Main and Final prompts](docs/images/screenshots/01-studio-overview-landscape.png)
+
+- **Create and edit through chat.** Start with an idea, then ask for focused changes while keeping the details you like.
+- **Shape the look.** Combine styles, framing, image references, models, and LoRAs.
+- **Compare before you choose.** Explore settings in a labeled XY(Z) image grid.
+- **Let Prompt Agent iterate.** Give it a visual goal, let it generate and review candidates, then choose what to keep.
+- **Keep your ComfyUI workflows.** Use the standalone studio or open Prompt Chat beside the node canvas.
+- **Pick up where you left off.** Sessions retain prompts, results, and the workflow inputs behind each image.
+
+Connect a local **Ollama**, **KoboldCpp**, or **Llama.cpp** model for conversation and prompt assistance, or turn off LLM amplification and write prompts directly. **ComfyUI is required.**
+
+[Get started](#quick-start-generate-images-through-chat) · [Image creation and editing](#the-interactive-workflow) · [Comparison grids](#xyz-image-plots) · [Prompt Agent](#prompt-agent) · [Canvas and workflows](#bring-your-own-comfyui-workflows) · [Setup and models](#in-app-setup-wizard)
+
+## Quick start: generate images through chat
+
+1. Install this repository in `ComfyUI/custom_nodes/ComfyUI_PromptStudio` and restart ComfyUI.
+2. Click **Prompt Studio** at the lower-right of ComfyUI to open the studio, or **Prompt chat** to work beside the canvas.
+3. Use the [setup wizard](#in-app-setup-wizard) to choose image workflows and install their missing models and nodes. You can also [bring your own saved workflow](#creation-image-editing-and-upscaling-workflows).
+4. In **Settings → General**, choose your LLM provider and connect your running local model through **Backend settings**. See [local model backends](#local-model-backends) for configuration.
+5. Choose a **Create template** under **ComfyUI workflow templates**, describe your image, and press **Create new**.
+6. Keep the conversation going: “Change the blue pot to terracotta,” “Use a wider composition,” or “Make the lighting softer.”
+
+Prefer to write the exact image prompt yourself? Turn off **Use LLM amplification** and use [direct prompt mode](#direct-prompts).
+
+<details>
+<summary>See Prompt Chat beside the ComfyUI canvas</summary>
+
+![Prompt Chat beside real Prompt Slot and text-encoding nodes](docs/images/screenshots/41-canvas-prompt-chat.png)
+
+*The canvas example shows a prompt handoff fragment; the full generation workflow is outside this view.*
+
+</details>
+
+## The interactive workflow
+
+### Create, revise, and inspect
+
+Describe what you want, then ask for the next change. Here, one short request changes the blue pot to terracotta.
+
+![A chat request changes the generated plant pot from blue to terracotta](docs/images/screenshots/02-conversational-revision.png)
+
+The first creation instruction becomes the main prompt and is rendered into a complete final prompt. Later change instructions are treated as revisions rather than as a transcript for the prompt editor. The main prompt is derived only from the initial chat request and later chat revisions; rendered Final-prompt text and prompt-shaping controls are never supplied to the Main-prompt writer. Prompt Studio precision-revises the model-neutral main prompt and the existing detailed final prompt separately, preserving unrelated established detail.
+
+Revisions use the smallest edit scope implied by the request. References that conflict with the requested change are replaced, while unrelated clauses and tags are preserved where possible. Removing an automatic detail that is absent from the main prompt changes only the final prompt; Prompt Studio does not add negative wording to the main prompt.
+
+<details>
+<summary>See the Main and Final prompt editors</summary>
+
+![Source intent in Main alongside the rendered Final prompt](docs/images/screenshots/03-main-and-final-prompts.png)
+
+</details>
+
+The main composer can also discuss the latest completed generated image. A short intent-routing pass distinguishes direct creation or revision requests from questions, exploration, confirmations, and cancellations. Questions open a session-persistent image discussion grounded in the generated pixels, the prompts and saved workflow inputs that produced them, and any pasted visual reference. The assistant may offer one structured **Suggested prompt change**; applying it, or replying with a clear confirmation such as “Okay, let’s do it,” sends that model-neutral change through the normal paired main/final precision-revision pipeline. Discussion alone never changes prompts or generation controls.
+
+<details>
+<summary>See image discussion and a suggested prompt change</summary>
+
+![An assistant discusses the generated image and offers a focused prompt change](docs/images/screenshots/06-image-discussion.png)
+
+</details>
+
+Pasted references remain pinned while that image discussion is active. Prompt Studio sends the generated result as the target and uploaded images as separately labelled visual references, so the model can compare relevant traits without guessing which image should be changed. If the target generation, prompts, or prompt-shaping controls change before a suggestion is applied, the suggestion is marked stale and must be discussed again against the current result. Suggested changes may update the prompt and allow-listed Studio controls such as Secondary instructions, style and framing controls, embellishment, target length, resolution, and seed behavior. The proposal card names every control that Apply will change. Workflows, diffusion models, LoRAs, samplers, schedulers, steps, CFG, and arbitrary workflow-node inputs are never changed automatically.
+
+After a generation completes, the main composer offers an optional **Use latest image for LLM**
+toggle. It sends the newest completed generated image alongside prompt rendering and revision
+requests, giving a vision-capable local model direct visual context for instructions such as
+“correct the pose” or “keep everything else the same.” The option is off by default, is unavailable
+until the current session contains a completed generated image, and never selects an imported source,
+failed generation, or in-progress result.
+
+The inspector displays the stable **Main prompt** and editable **Final prompt**. Manual final-prompt edits are used for generation and preserved by later precision revisions. **Undo** restores the main and final prompt together, and every generated-image message records both plus the complete executable workflow inputs that were queued. Its **i** panel shows the workflow, LoRAs and strengths, and every saved node input. **Use these prompts** restores the prompt, routing, LoRAs, source image when applicable, and arms the saved executable snapshot; generating without making a change reuses every stored input, including seeds, to reproduce the original queue as closely as the installed nodes and runtime allow. In an editing workflow's **Edit instruction** mode, the workflow intentionally receives the latest edit instruction instead of the complete final prompt.
+
+### Style and framing
+
+Change the visual treatment while keeping the scene intent. This example turns the botanical studio into a watercolor illustration with a centered composition.
+
+![Generated watercolor botanical scene with style and framing controls](docs/images/screenshots/04-style-and-framing.png)
+
+If you change the model profile, style, framing, modifiers, embellishment level, or target length, **Reroll** or an empty **Revise & Generate** rebuilds the final prompt from the main prompt. This clean render prevents details from an older control setting from leaking into the new result. Endpoint, thinking, and temperature changes do not mark the final prompt stale. A direct ComfyUI reroll is used when the prompt-shaping controls already match.
+
+**Target length** is a user-facing approximate output goal. Natural-language profiles use a 20–200 word slider; tag-based profiles automatically switch to 5–40 tags. The highlighted mark shows the default for the current model profile and embellishment level. Dragging creates a custom value for that combination. Changing either the model profile or embellishment level clears the custom value and moves the slider to the new highlighted default. Fresh renders use the target, while precision revisions preserve the existing prompt outside the requested edit scope. Prompt Studio converts the target into a larger hidden final-answer token allowance so local-model output is not cut off.
+
+**Additional instructions** supplies persistent general steering or explanatory context to the LLM without treating that text as a style or framing modifier. It participates in initial Final-prompt renders, control rebuilds, Final-prompt revisions, and expansion retries, but it is never sent to Main-prompt creation or revision. The latest explicit creation or revision request always remains authoritative. Persistent guidance may refine unspecified Final-prompt details and active controls; it cannot reverse the latest request or expand a precision edit's scope. **Unmodified part** is separate: it bypasses the LLM and passes phrases such as LoRA trigger words unchanged through the workflow's `secondary_instructions` output.
+
+### Generate and reroll
+
+With **Generate after revision** enabled, creating or revising a prompt immediately queues an API-format snapshot of the selected saved `[PS]` workflow. Turn it off to update the main and final prompts without queueing an image; **Generate** can queue the final prompt later. Generated images appear in the chat, can be opened at full size, and can be scaled down in the conversation with the interface **Image scale** setting.
+
+Prompt preparation and ComfyUI submission run without locking the main interface. This includes initial and revised prompts, control/style rebuilds, rerolls, direct generation, image imports, retries, edits, and upscales. **Generate** and **Reroll** become queue actions, each submission keeps the workflow and controls captured for that item, and chats can be switched while preparation and results continue in their originating conversation. Consultation experiments and Prompt Agent work also leave the main Studio controls available. Local-model requests use one lane per endpoint: Studio prompt work has priority, while consultation requests wait their turn and can run during ComfyUI image generation.
+
+Prompt changes keep the current ComfyUI seed, making before-and-after comparisons easier. **New seed on reroll** randomizes widgets named `seed` or `noise_seed` only when **Reroll**, or an unchanged **Generate**, queues the same prompt and controls again. Turn it off to keep the current seed on rerolls too.
+
+<details>
+<summary>See the full-size image preview</summary>
+
+![The botanical scene opened in the full-size image viewer](docs/images/screenshots/28-full-size-preview.png)
+
+</details>
+
+### Direct prompts
+
+Turn off **Use LLM amplification** to send your text straight to the selected ComfyUI workflow. The composer becomes a direct-prompt editor, and Main and Final stay identical.
+
+<details>
+<summary>See generation without LLM amplification</summary>
+
+![A blue watering can generated directly from the entered prompt](docs/images/screenshots/05-direct-generation.png)
+
+</details>
+
+### Edit and upscale
+
+Choose **Edit this image** on a result, describe the change, and generate through your selected Edit workflow. Here, the edit adds a copper watering can while retaining the plant, blue pot, and window light.
+
+![A generated edit adds a copper watering can to the botanical scene](docs/images/screenshots/07-image-editing.png)
+
+Use an image's **Upscale** action to choose a scale factor and run your selected upscale workflow.
+
+<details>
+<summary>See the upscale controls</summary>
+
+![The upscale dialog with a factor of two](docs/images/screenshots/11-upscale-dialog.png)
+
+</details>
+
+<details>
+<summary>See the generated upscale result</summary>
+
+![The botanical image after a two-times upscale](docs/images/screenshots/11a-upscaled-result.png)
+
+</details>
+
+#### Single image references
+
+When Edit is selected, compatible workflows show an optional Reference tile to
+the left of the message box. Drop an image there or click to upload; use × to
+clear it. The reference is saved per chat and included in generation history and
+exact replay. It goes directly to the edit model and works without LLM
+amplification. The selected editing source remains the base image.
+
+<details>
+<summary>See a single edit reference and workflow controls</summary>
+
+![A watering-can source image with an optional botanical reference and Krea edit controls](docs/images/screenshots/08-single-edit-reference.png)
+
+*Reference attachment and controls shown before generation.*
+
+</details>
+
+<details>
+<summary>How reference edits preserve the requested change</summary>
+
+With LLM amplification enabled, a vision-capable LLM reads the base (image 1)
+and reference (image 2) once for each requested change. It identifies only the
+requested detail, updates Main and Final with a self-contained visual description,
+and prepares a separate instruction for the edit workflow. For example, using
+a referenced dress adopts its visible cut, colour and pattern without adopting
+the wearer or background. With a reference attached, ordinary shorthand such as
+"replace the mug" means using the matching mug from the reference; clarification
+is reserved for meaningful ambiguity after inspecting both images. Explicit
+removal, partial changes and attribute overrides keep their requested scope.
+This interpretation applies to any visible subject, object, attribute or spatial
+relationship. Adding, copying, moving, replacing and removing remain distinct:
+"add the reference mug next to the original" keeps the original and adds a second
+mug; a hairstyle, colour or background request changes only that requested part.
+The thumbnail beside the composer supplies ordinary references such as "this":
+"place this mug next to the blue one" adds the reference mug beside the existing
+blue mug. Semantic checks verify the requested action, count, attributes and
+placement before saving Main and Final; a failed revision is retried once.
+Switching to Create uses Final without needing the
+reference. Clearing the tile does not undo adopted details; Undo restores the
+previous prompt pair. Reference observations and the exact edit instruction are
+saved with the generation. If vision fails or the target needs clarification,
+the existing prompts are kept. Clarification retains the original request and
+image pair across reloads, so a short answer can complete it. A target that already
+matches is reported without automatically generating an unrelated change.
+Discussion uses the selected base and the same reference tile. Reroll retains
+the original base even after automatic source advancement, avoiding repeated
+additions. Selecting a different base or reference requires a fresh interpretation.
+Direct reference mode sends the instruction without analysis and keeps Main and
+Final unchanged; enable LLM amplification to adopt observed details into them.
+
+</details>
+
+#### Qwen edit references
+
+Assign a role to each reference so the edit can borrow the background, style, object, or specific detail you want.
+
+![Two Qwen reference images with background and custom-instruction roles](docs/images/screenshots/09-multiple-edit-references.png)
+
+*Reference roles configured before submitting an edit.*
+
+<details>
+<summary>Qwen reference roles and workflow requirements</summary>
+
+**Qwen Image 2.1 edit references** are a separate, explicitly supported capability.
+Connect the Prompt Studio Image Source (optionally through preprocessing) to
+`images.image_1` on one native **Text Encode Qwen Image 2.1** node, and connect the
+Prompt Slot/Amplify prompt to that encoder. Leave the other encoder image inputs
+empty. Prompt Studio exposes a dynamic list of up to **nine** additional images;
+the base image occupies the tenth slot. No additional reference nodes are needed.
+Prewired encoder references remain custom workflow wiring and disable this managed
+list rather than being overwritten. Universal reference nodes elsewhere in the
+workflow remain separate named inputs and do not consume these nine slots.
+
+Each Qwen reference has a role and optional instructions; Custom instruction
+requires text. Click, drop an image, or focus a tile and press Ctrl+V to fill or
+replace it. Drop/paste into the Qwen pop-up outside a tile to add images. The image
+tile spans the full height of its row, beside its controls. With LLM amplification
+enabled, the vision model constructs an execution-only Qwen edit instruction with
+ordered `<image1>` through `<image10>` tags. Main and Final remain unchanged.
+With amplification off, explicit roles/instructions are assembled without an LLM.
+Attachments pasted into the chat composer remain LLM context, not diffusion inputs.
+
+</details>
+
+### XY(Z) image plots
+
+![Six completed botanical images comparing three step counts against two CFG values](docs/images/screenshots/14-xyz-comparison-results.png)
+
+*One prompt, six settings: Steps across columns and CFG down rows.*
+
+A new empty session offers **Start XY(Z) plot** alongside ordinary prompt and image-import actions. The plot builder uses the selected `[PS]` creation workflow and supports X and Y axes plus an optional Z axis. Each axis independently targets a workflow-owned model, LoRA, LoRA strength, seed, sampler, scheduler, step count, CFG, or denoise strength. Model and LoRA axes can add one item or every available item; numerical axes accept individual values, ranges, and random seed batches. Duplicate workflow targets and plots larger than 512 cells are rejected before submission.
+
+Generated images also offer a small **XYZ** button immediately to the right of the Video Studio handoff button. Choose **Main prompt (LLM mode)** or **Final prompt (normal mode)** to open a new plot session with the selected prompt, session controls, and saved generation inputs, including model, LoRAs, resolution, and sampling parameters. The source session stays intact and no generation starts until you configure and start the plot. This action requires an available creation workflow; edit and upscale workflows are not supported by the plot builder.
+
+Starting a plot immediately creates the complete labelled grid, then fills each cell as its ComfyUI result arrives. Z values are navigated as separate grid slices, the cell-size control supports both overview and detail inspection, and completed images open in the normal full-size viewer. The run can cancel remaining cells or retry one failed cell or all failures without rebuilding the plot inputs.
+
+Plot state lives under the ignored `prompt_studio_plots/` runtime directory. Its manifest contains one base executable workflow snapshot, axis overrides, prompt IDs, statuses, and references to the original ComfyUI output images; it does not copy each generated image. This lets a refreshed browser resume queued results. When all cells reach a terminal state, Prompt Studio writes a labelled PNG composite to `output/PromptStudio/Plots/` (one PNG per Z slice plus an overview for multi-slice plots) and a portable JSON sidecar. **Rebuild composite** regenerates those artifacts after retries.
+
+<details>
+<summary>See how the comparison grid is configured</summary>
+
+![XY plot builder with Steps 10, 20 and 30 against CFG 2 and 5](docs/images/screenshots/13-xyz-plot-builder.png)
+
+</details>
+
+### Sessions and persistence
+
+The **Sessions** sidebar creates, switches, and deletes independent prompt conversations. Each session remembers its main and final prompts, paired prompt versions, messages, selected creation and editing workflows, and the prompt-shaping controls last applied by the selected LLM provider. A new session starts with clean prompt-shaping controls: style and framing return to **None**, free-text instructions and modifiers are cleared, and other prompt-shaping controls return to their defaults. Thinking and embellishment levels carry over, as do the selected LoRAs and models.
+
+![Saved workflow, output dimensions, models and node inputs for a generated image](docs/images/screenshots/15-saved-generation-inputs.png)
+
+Chats are stored under `prompt_studio_chats/`, with an `index.json` for ordering and one JSON file per session. The directory is excluded from Git and is shared by browsers connected to the same ComfyUI installation. Saves use revision checks so an older browser cannot silently overwrite a newer save. A conflicting client merges with the latest store before retrying. Previous chat and index copies are kept under `prompt_studio_chats/_backups/`. Existing `prompt_studio_chats.json` stores are migrated automatically on first load and archived in that backup directory.
+
+The standalone page is available at the short URL:
+
+```text
+/PromptStudio
+```
+
+The original extension URL remains available for compatibility:
+
+```text
+/extensions/ComfyUI_PromptStudio/prompt_studio.html
+```
+
+On direct navigation or refresh, it reconnects to an open ComfyUI tab when possible and otherwise starts a hidden same-origin workflow host.
+
+### Local model consultation chat
+
+The standalone interface adds a chat-bubble button beside its header controls. It opens a normal,
+session-specific conversation with the local KoboldCpp, Ollama, or Llama.cpp model selected in Prompt Studio
+settings. This assistant chat is separate from prompt rewriting: responses are conversational and
+never modify the main prompt, final prompt, or generation controls automatically.
+
+<details>
+<summary>See explicit prompt, settings and image-context attachments</summary>
+
+![Local assistant context tray with Main, Final and generation settings selected](docs/images/screenshots/16a-assistant-context.png)
+
+*The question is prepared with explicit context; it has not been sent.*
+
+</details>
+
+#### Prompt experiments
+
+Ordinary consultation starts without Prompt Studio context. Previous experiment messages are also
+excluded from ordinary chat requests, so using the assistant for an unrelated question does not
+silently attach prompts, presets, settings, or images. Open **Attach context** and choose
+**Start prompt experiment** to explicitly create an isolated experiment from the current main and
+final prompts plus read-only copies of the selected style and framing instructions.
+
+Inside an active prompt experiment, the assistant may propose a complete candidate prompt and
+temporary style or framing guidance. Candidate cards can generate through the currently selected
+Studio workflow while keeping the result in consultation history. **Promote to Studio** explicitly
+copies the selected candidate into the Final Prompt and, when available, adds its chosen generated
+result to the main conversation. Promotion does not change preset selections or files, workflows,
+diffusion models, LoRAs, resolution, seeds, or provider settings. Ending an experiment returns the
+assistant to ordinary chat; completed candidates remain available in consultation history until
+normal consultation expiry.
+
+#### Prompt Agent
+
+Turn on **Prompt agent** directly above the chat composer, describe the desired image, and press
+**Start agent**. The current draft becomes the image goal and selected consultation images become
+labelled references. To give the prompt architect the current run-local style and framing preset
+text, explicitly select **Generation settings** under **Attach context** before starting; otherwise
+those settings are omitted. The agent card keeps its labelled reference thumbnails beside the goal
+for visual context, and the open context panel collapses when the run starts. Prompt Agent
+requires a vision-capable local model and a compatible `[PS]` creation workflow. It runs a
+checkpointed loop with separate, fresh local-model contexts for brief compilation, prompt
+architecture, and pixel-grounded visual judging:
+
+1. Compile the goal into weighted required and preferred visual criteria.
+2. Build a complete prompt with run-local style and framing guidance.
+3. Generate through the selected creation workflow.
+4. Judge only the generated candidate pixels against the locked goal and the rubric's compiled reference notes. Raw references stay out of defect judging so similar subjects cannot be confused as one merged image.
+5. Refine and repeat until the rubric passes, five iterations are exhausted, or progress plateaus.
+
+Prompt comparisons preserve the workflow seed. A passing candidate is generated once more with a
+fresh seed and must pass again before autonomous completion. The run keeps its best-scoring result
+if a later iteration regresses. **Pause** checkpoints the loop, **Stop** interrupts an active
+ComfyUI generation, and **Promote best to Studio** explicitly copies the chosen prompt and image
+into the main session. The agent never changes global style or framing preset files, workflow
+selection, models, LoRAs, resolution, provider settings, or other Studio controls.
+
+Visual defects are confidence-gated separately from ordinary rubric mismatches. Only a serious,
+precisely located candidate-local defect reported with high confidence can veto a pass or steer the
+next prompt; uncertain or unstructured defect claims are discarded.
+
+Agent mode remains selected after a run finishes. Enter a correction in the same composer and press
+**Continue agent** to compile the updated goal and run more iterations. Earlier iterations remain
+visible for comparison, while the new cycle chooses a fresh best result against the corrected goal.
+Turn off **Prompt agent** to return the composer to ordinary consultation chat.
+
+Agent state is stored with the session and can resume after a refresh. If Prompt Studio is closed,
+an already queued ComfyUI image may finish, but further local-model phases resume only after Prompt
+Studio is opened again.
+
+#### Attach prompts and images
+
+Each message can attach the current main prompt, final prompt, and generation settings. Attached
+generation settings include the selected style and framing preset names plus their full resolved
+instruction text, so the assistant can audit exactly how those presets shaped the prompt. Recent
+generated images can also be attached. An image attachment sends only the image and its explicitly
+selected role; prompts and generation settings are included only when their separate context
+checkboxes are selected. Images may be labelled as base/target images, generated results, general references, pose
+references, style references, or composition references so the model can compare them without
+guessing their intended roles.
+Additional reference images can be uploaded directly in the attachment tray.
+The upload control is also a drop target, so one image can be dragged directly beside the recent
+image thumbnails.
+
+The chat composer's **Gen settings** panel shows the active shared LLM configuration and links to
+its editor. For Ollama and KoboldCpp, sampling behavior is managed in **Settings → General → LLM
+Profiles**. For Llama.cpp, it comes from the selected JSON config and **Edit config** opens the
+Llama.cpp config builder.
+
+Consultation messages are temporary and automatically expire seven days after they are created.
+The **Clear** action removes the full consultation history, draft, and all pending context
+attachments for that session.
+Normal Prompt Studio session history is retained as before. When expired consultation messages
+contained uploaded Prompt Studio reference images, files that are no longer referenced anywhere
+else are removed from the managed image store as well.
+
+Image attachment is available only when the connected model reports vision support. Text chat
+continues to work with non-vision models. Prompt Studio sanitizes uploaded images and sends stored
+image references to its Python backend; the browser does not send local filesystem paths to the
+model service.
 
 ## In-app setup wizard
 
 **ComfyUI is required.** Install Prompt Studio as a ComfyUI extension and restart
 ComfyUI. Setup opens automatically the first time you open image Prompt Studio.
 You can also open **Settings → Setup wizard → Run setup** at any time.
+
+![Setup wizard with workflow families and installed model choices](docs/images/screenshots/19-setup-wizard.png)
+
+<details>
+<summary>Workflow packages, model choices and installation details</summary>
 
 Select individual Krea2 or Qwen Image 2.1 workflows in the compact workflow grid.
 Model selectors show installed files and download choices; expand **Details** for
@@ -47,73 +415,6 @@ verifies the Identity Edit download and checks that the Krea2 Edit nodes support
 `target_latent` (node pack v1.2.5 or newer); older nodes must be updated and
 ComfyUI restarted before setup can complete.
 
-When Edit is selected, compatible workflows show an optional Reference tile to
-the left of the message box. Drop an image there or click to upload; use × to
-clear it. The reference is saved per chat and included in generation history and
-exact replay. It goes directly to the edit model and works without LLM
-amplification. The selected editing source remains the base image.
-
-With LLM amplification enabled, a vision-capable LLM reads the base (image 1)
-and reference (image 2) once for each requested change. It identifies only the
-requested detail, updates Main and Final with a self-contained visual description,
-and prepares a separate instruction for the edit workflow. For example, using
-a referenced dress adopts its visible cut, colour and pattern without adopting
-the wearer or background. With a reference attached, ordinary shorthand such as
-"replace the mug" means using the matching mug from the reference; clarification
-is reserved for meaningful ambiguity after inspecting both images. Explicit
-removal, partial changes and attribute overrides keep their requested scope.
-This interpretation applies to any visible subject, object, attribute or spatial
-relationship. Adding, copying, moving, replacing and removing remain distinct:
-"add the reference mug next to the original" keeps the original and adds a second
-mug; a hairstyle, colour or background request changes only that requested part.
-The thumbnail beside the composer supplies ordinary references such as "this":
-"place this mug next to the blue one" adds the reference mug beside the existing
-blue mug. Semantic checks verify the requested action, count, attributes and
-placement before saving Main and Final; a failed revision is retried once.
-Switching to Create uses Final without needing the
-reference. Clearing the tile does not undo adopted details; Undo restores the
-previous prompt pair. Reference observations and the exact edit instruction are
-saved with the generation. If vision fails or the target needs clarification,
-the existing prompts are kept. Clarification retains the original request and
-image pair across reloads, so a short answer can complete it. A target that already
-matches is reported without automatically generating an unrelated change.
-Discussion uses the selected base and the same reference tile. Reroll retains
-the original base even after automatic source advancement, avoiding repeated
-additions. Selecting a different base or reference requires a fresh interpretation.
-Direct reference mode sends the instruction without analysis and keeps Main and
-Final unchanged; enable LLM amplification to adopt observed details into them.
-
-Workflow authors can add **Prompt Studio Reference Image** (the existing
-`KCPP_ChatImageReference` node) in Create, Edit, Upscale, or Video workflows.
-One connected node shows a compact image input; several open a named input list.
-Each node receives its own image. Custom node titles label the inputs, with
-`source_name` as the fallback. Assignments are saved per session, workflow, and
-node ID, and queued generations retain their exact inputs. These universal inputs
-do not imply model-specific prompting support. The Krea2 Edit recipe connects it
-to `source_image_b` on the model patch and `image_b` on both grounded encoders.
-An empty reference returns no image, so those nodes keep their single-image
-behavior. Connect this node only where an absent image is supported.
-
-**Qwen Image 2.1 edit references** are a separate, explicitly supported capability.
-Connect the Prompt Studio Image Source (optionally through preprocessing) to
-`images.image_1` on one native **Text Encode Qwen Image 2.1** node, and connect the
-Prompt Slot/Amplify prompt to that encoder. Leave the other encoder image inputs
-empty. Prompt Studio exposes a dynamic list of up to **nine** additional images;
-the base image occupies the tenth slot. No additional reference nodes are needed.
-Prewired encoder references remain custom workflow wiring and disable this managed
-list rather than being overwritten. Universal reference nodes elsewhere in the
-workflow remain separate named inputs and do not consume these nine slots.
-
-Each Qwen reference has a role and optional instructions; Custom instruction
-requires text. Click, drop an image, or focus a tile and press Ctrl+V to fill or
-replace it. Drop/paste into the Qwen pop-up outside a tile to add images. The image
-tile spans the full height of its row, beside its controls. With LLM amplification
-enabled, the vision model constructs an execution-only Qwen edit instruction with
-ordered `<image1>` through `<image10>` tags. Main and Final remain unchanged.
-With amplification off, explicit roles/instructions are assembled without an LLM.
-Attachments pasted into the chat composer remain LLM context, not diffusion inputs.
-
-
 Downloads show byte progress, transfer speed and remaining time, followed by
 separate checksum verification. Pause/resume retains partial downloads. Closing
 the wizard does not stop setup; use the header activity button to reconnect.
@@ -122,78 +423,15 @@ live under the current ComfyUI user's `.promptstudio-setup` directory. Completio
 means the installed workflows passed Studio conversion, not that a generation
 test was run. The wizard does not install ComfyUI, Python, drivers or LLM runtimes.
 
-## Create and revise images through conversation
+</details>
 
-Describe what you want, generate it through any compatible saved ComfyUI workflow, then ask for focused changes in plain language. Prompt Studio preserves established details while updating the image and prompt together.
-
-![Create and revise an image in Prompt Studio](docs/images/example1.png)
-
-## Let Prompt Agent iterate for you
-
-Give the vision-capable Prompt Agent a goal and optional reference images. It writes a prompt, generates, judges the actual pixels, refines weak points, and keeps the best result for you to promote into Studio.
-
-<!-- Screenshot slot: autonomous Prompt Agent iterations and scores.
-Suggested file: docs/images/prompt-agent.png
-![Prompt Agent iterating toward an image goal](docs/images/prompt-agent.png)
--->
-
-## Bring your own ComfyUI workflows
-
-Turn saved `[PS]` workflows into creation, image-editing, and upscaling templates. Prompt Studio can expose workflow-owned models, LoRAs, resolution controls, and source images without replacing the graph you already use.
-
-<!-- Screenshot slot: workflow, model, LoRA, and resolution controls.
-Suggested file: docs/images/workflow-controls.png
-![ComfyUI workflow controls inside Prompt Studio](docs/images/workflow-controls.png)
--->
-
-## Keep every experiment reproducible and local
-
-Independent sessions retain prompts, images, controls, and complete executable workflow snapshots. Restore an earlier result, rerun its saved inputs, or consult your local model without sending the conversation to a hosted service.
-
-<!-- Screenshot slot: sessions plus a generated image's saved-input inspector.
-Suggested file: docs/images/sessions-and-replay.png
-![Prompt Studio sessions and generation inspector](docs/images/sessions-and-replay.png)
--->
-
-## Continue in Video Studio
-
-When the companion `PromptStudio_Video` extension is installed, send a generated image directly into an open video project as a MiniMax reference or frame and continue building on the same visual idea.
-
-<!-- Screenshot slot: Send to Video Studio action and completed handoff.
-Suggested file: docs/images/video-studio-handoff.png
-![Sending a Prompt Studio image to Video Studio](docs/images/video-studio-handoff.png)
--->
-
-The sections below cover setup, everyday use, workflow contracts, nodes, presets, security, and APIs in depth.
-
-## Quick start: generate images through chat
-
-The package installation range remains Python `>=3.9`; it is not a tested-version
-matrix. The current local regression run uses ComfyUI's Python **3.14** VENV.
-Python 3.9–3.13 have not been verified in this audit. The automated quality workflow
-also targets 3.14; a configured CI job is not evidence that a remote run passed.
-See the [release checklist](docs/release-checklist.md) for the required paired
-Image/Video checks and the minimum-version verification still needed.
-
-ComfyUI supplies `server`, `folder_paths`, `aiohttp`, its frontend app/API modules,
-and the model/media runtime dependencies. Prompt Studio adds no runtime pip
-requirements and does not install packages on every startup. Workflow conversion
-requires the host's `graphToPrompt`, native node metadata, and serialized-subgraph
-support; a version number alone does not establish these capabilities. The
-setup wizard checks the bundled workflows' required node capabilities directly.
-
-1. Install this repository in `ComfyUI/custom_nodes/ComfyUI_PromptStudio` and restart ComfyUI.
-2. Add a **KoboldCpp Prompt Slot** or **KoboldCpp Prompt Amplify** node to an image-generation workflow.
-3. Connect its `prompt` output to the positive prompt input or text encoder used by the workflow.
-4. Make sure the rest of the workflow can be queued normally and has exactly one image output.
-5. Save it in ComfyUI with a filename beginning `[PS]`, such as `[PS] Flux Create`.
-6. Use one of the launchers at the lower-right of ComfyUI:
-   - **Prompt chat** opens the embedded interface.
-   - **Prompt Studio** opens the same interface in its own tab.
-7. Select the saved workflow under **ComfyUI workflows** in Prompt Studio settings, then describe the image you want.
-8. Click **Create & Generate**. After the first result, ask for changes such as `use a wider composition`, `replace the coat with a red rain jacket`, or `make the lighting softer`.
+## Local model backends
 
 Prompt Studio uses Ollama at `http://localhost:11434` by default. Open Prompt Studio settings to select **Ollama**, **KoboldCpp**, or **Llama.cpp** as the LLM provider, then use the adjacent **Backend settings** button for endpoints, models, memory behavior, request profiles, and managed-server controls. The latter two providers are advanced options that require a separately configured local server. The first time either advanced option is selected, Prompt Studio displays a confirmation that is remembered after acceptance. KoboldCpp defaults to `http://localhost:5001`; Llama.cpp defaults to `http://127.0.0.1:8080`. Select a model discovered from the provider's model-list endpoint. For safety, all providers accept loopback hosts only by default.
+
+![Llama.cpp backend configuration with Keep models loaded enabled](docs/images/screenshots/21-local-backend.png)
+
+*Separate-GPU configuration shown. Leave Keep models loaded off when the LLM and ComfyUI share a GPU.*
 
 **Settings → Backend settings → Keep models loaded** is off by default. In this shared-GPU mode, Prompt Studio keeps ComfyUI's models resident after image generation so reruns and already-queued work remain fast. Only when the next LLM operation begins does it wait for the ComfyUI queue to become idle, unload ComfyUI's models, and free its allocator cache. The LLM remains available across routing, rewriting, discussion, and consultation stages; immediately before Prompt Studio queues another ComfyUI workflow, it unloads the active LLM and hands the GPU back to ComfyUI. This transition is serialized so background LLM work cannot overlap ComfyUI inference on the shared device.
 
@@ -218,6 +456,13 @@ chat, image discussion, and Prompt Agent when Ollama or KoboldCpp is selected. L
 display or consume these browser profiles; its selected `config/LlamaCPP/*.json` file owns the same
 thinking, response-token, reasoning-cap, sampler, stop-sequence, and timeout settings under
 `llm_profile`.
+
+<details>
+<summary>See the Ollama and KoboldCpp request-profile editor</summary>
+
+![LLM profile editor with request limits, thinking modes and sampler controls](docs/images/screenshots/22-llm-profile-editor.png)
+
+</details>
 
 Profiles can also limit the choices shown by the Generation controls' **Thinking** selector. Existing
 and newly added profiles default to **Disabled**, **Minimal**, **Low**, **Medium**, and **High**.
@@ -261,187 +506,95 @@ separate comma-separated llama.cpp `--device` list (such as `CUDA0`), while
 `CUDA<N>` to its position in that filtered list. Check the server's device listing
 after applying visibility filters before setting `main_gpu` or `tensor_split`.
 
-> Want to use the chat UI without an LLM? Turn off **Use LLM amplification**. The composer becomes a direct-prompt editor, the main and final prompts stay identical, and **Generate** sends that text straight to ComfyUI.
+## Bring your own ComfyUI workflows
 
-## The interactive workflow
+Your graph defines how images are made. Prompt Studio exposes its models, LoRAs, resolution, image inputs, and selected controls in the studio, while the canvas remains available for the full workflow.
 
-### Create, revise, and inspect
+![Prompt Studio Model Loader, LoRA Loader and Sampler connected on the ComfyUI canvas](docs/images/screenshots/40-model-lora-sampler-canvas.png)
 
-The first creation instruction becomes the main prompt and is rendered into a complete final prompt. Later change instructions are treated as revisions rather than as a transcript for the prompt editor. The main prompt is derived only from the initial chat request and later chat revisions; rendered Final-prompt text and prompt-shaping controls are never supplied to the Main-prompt writer. Prompt Studio precision-revises the model-neutral main prompt and the existing detailed final prompt separately, preserving unrelated established detail.
+*Canvas examples below show focused node wiring. Complete workflows also need conditioning, image or latent inputs, and an output.*
 
-Revisions use the smallest edit scope implied by the request. References that conflict with the requested change are replaced, while unrelated clauses and tags are preserved where possible. Removing an automatic detail that is absent from the main prompt changes only the final prompt; Prompt Studio does not add negative wording to the main prompt.
+<details>
+<summary>See model, LoRA and resolution controls in Studio</summary>
 
-The main composer can also discuss the latest completed generated image. A short intent-routing pass distinguishes direct creation or revision requests from questions, exploration, confirmations, and cancellations. Questions open a session-persistent image discussion grounded in the generated pixels, the prompts and saved workflow inputs that produced them, and any pasted visual reference. The assistant may offer one structured **Suggested prompt change**; applying it, or replying with a clear confirmation such as “Okay, let’s do it,” sends that model-neutral change through the normal paired main/final precision-revision pipeline. Discussion alone never changes prompts or generation controls.
+![Studio controls for a diffusion model, photography LoRA and landscape resolution](docs/images/screenshots/12-model-lora-resolution.png)
 
-Pasted references remain pinned while that image discussion is active. Prompt Studio sends the generated result as the target and uploaded images as separately labelled visual references, so the model can compare relevant traits without guessing which image should be changed. If the target generation, prompts, or prompt-shaping controls change before a suggestion is applied, the suggestion is marked stale and must be discussed again against the current result. Suggested changes may update the prompt and allow-listed Studio controls such as Secondary instructions, style and framing controls, embellishment, target length, resolution, and seed behavior. The proposal card names every control that Apply will change. Workflows, diffusion models, LoRAs, samplers, schedulers, steps, CFG, and arbitrary workflow-node inputs are never changed automatically.
+*Configuration example; these selections are not the settings that produced the displayed earlier image.*
 
-After a generation completes, the main composer offers an optional **Use latest image for LLM**
-toggle. It sends the newest completed generated image alongside prompt rendering and revision
-requests, giving a vision-capable local model direct visual context for instructions such as
-“correct the pose” or “keep everything else the same.” The option is off by default, is unavailable
-until the current session contains a completed generated image, and never selects an imported source,
-failed generation, or in-progress result.
+</details>
 
-The inspector displays the stable **Main prompt** and editable **Final prompt**. Manual final-prompt edits are used for generation and preserved by later precision revisions. **Undo** restores the main and final prompt together, and every generated-image message records both plus the complete executable workflow inputs that were queued. Its **i** panel shows the workflow, LoRAs and strengths, and every saved node input. **Use these prompts** restores the prompt, routing, LoRAs, source image when applicable, and arms the saved executable snapshot; generating without making a change reuses every stored input, including seeds, to reproduce the original queue as closely as the installed nodes and runtime allow. In an editing workflow's **Edit instruction** mode, the workflow intentionally receives the latest edit instruction instead of the complete final prompt.
+<details>
+<summary>See Create, Edit and Upscale template selection</summary>
 
-### Generate and reroll
+![Settings with separate creation, editing and upscaling workflow selectors](docs/images/screenshots/20-workflow-templates.png)
 
-With **Generate after revision** enabled, creating or revising a prompt immediately queues an API-format snapshot of the selected saved `[PS]` workflow. Turn it off to update the main and final prompts without queueing an image; **Generate** can queue the final prompt later. Generated images appear in the chat, can be opened at full size, and can be scaled down in the conversation with the interface **Image scale** setting.
+</details>
 
-Prompt preparation and ComfyUI submission run without locking the main interface. This includes initial and revised prompts, control/style rebuilds, rerolls, direct generation, image imports, retries, edits, and upscales. **Generate** and **Reroll** become queue actions, each submission keeps the workflow and controls captured for that item, and chats can be switched while preparation and results continue in their originating conversation. Consultation experiments and Prompt Agent work also leave the main Studio controls available. Local-model requests use one lane per endpoint: Studio prompt work has priority, while consultation requests wait their turn and can run during ComfyUI image generation.
+## Creation, image-editing, and upscaling workflows
 
-Prompt changes keep the current ComfyUI seed, making before-and-after comparisons easier. **New seed on reroll** randomizes widgets named `seed` or `noise_seed` only when **Reroll**, or an unchanged **Generate**, queues the same prompt and controls again. Turn it off to keep the current seed on rerolls too.
+Prompt Studio uses normal workflows saved in ComfyUI's workflow library. Prefix a workflow's filename with `[PS]` to make it visible to Prompt Studio; other saved workflows remain available for manual use without cluttering Studio's selectors.
 
-### XY(Z) image plots
+A `[PS]` workflow is accepted only when:
 
-A new empty session offers **Start XY(Z) plot** alongside ordinary prompt and image-import actions. The plot builder uses the selected `[PS]` creation workflow and supports X and Y axes plus an optional Z axis. Each axis independently targets a workflow-owned model, LoRA, LoRA strength, seed, sampler, scheduler, step count, CFG, or denoise strength. Model and LoRA axes can add one item or every available item; numerical axes accept individual values, ranges, and random seed batches. Duplicate workflow targets and plots larger than 512 cells are rejected before submission.
+- its filename starts with `[PS]` and ends in `.json`;
+- creation and editing workflows contain an executable **KoboldCpp Prompt Slot** or **KoboldCpp Prompt Amplify** node;
+- it contains exactly one executable image-output node;
+- editing workflows contain an executable **Prompt Studio Image Source** node;
+- upscaling workflows contain an executable **Prompt Studio Upscale** node.
 
-Generated images also offer a small **XYZ** button immediately to the right of the Video Studio handoff button. Choose **Main prompt (LLM mode)** or **Final prompt (normal mode)** to open a new plot session with the selected prompt, session controls, and saved generation inputs, including model, LoRAs, resolution, and sampling parameters. The source session stays intact and no generation starts until you configure and start the plot. This action requires an available creation workflow; edit and upscale workflows are not supported by the plot builder.
+Workflows with **Prompt Studio Upscale** are listed as upscaling templates. Otherwise, workflows with **Prompt Studio Image Source** are listed as editing templates and workflows without an image input are listed as creation templates. Saving, renaming, or deleting a `[PS]` workflow through ComfyUI refreshes Prompt Studio immediately after the operation succeeds. The refresh button remains available, and the selected workflow is checked again immediately before it is queued. Widget values and other workflow settings therefore stay owned by ComfyUI and automatically flow into Prompt Studio.
 
-Generated images also offer a small **XYZ** button immediately to the right of the Video Studio handoff button. Choose **Main prompt (LLM mode)** or **Final prompt (normal mode)** to open a new plot session with the selected prompt, session controls, and saved generation inputs, including model, LoRAs, resolution, and sampling parameters. The source session stays intact and no generation starts until you configure and start the plot. This action requires an available creation workflow; edit and upscale workflows are not supported by the plot builder.
+### Prepare a creation workflow
 
-Starting a plot immediately creates the complete labelled grid, then fills each cell as its ComfyUI result arrives. Z values are navigated as separate grid slices, the cell-size control supports both overview and detail inspection, and completed images open in the normal full-size viewer. The run can cancel remaining cells or retry one failed cell or all failures without rebuilding the plot inputs.
+1. Add **KoboldCpp Prompt Slot** or **KoboldCpp Prompt Amplify** to an image-generation workflow.
+2. Connect its `prompt` output to the positive text encoder or prompt input used by the workflow.
+3. Check that the complete workflow queues normally and has exactly one active image output.
+4. Save it with a name such as `[PS] My Image Workflow`, then select it as Studio's **Create template**.
 
-Plot state lives under the ignored `prompt_studio_plots/` runtime directory. Its manifest contains one base executable workflow snapshot, axis overrides, prompt IDs, statuses, and references to the original ComfyUI output images; it does not copy each generated image. This lets a refreshed browser resume queued results. When all cells reach a terminal state, Prompt Studio writes a labelled PNG composite to `output/PromptStudio/Plots/` (one PNG per Z slice plus an overview for multi-slice plots) and a portable JSON sidecar. **Rebuild composite** regenerates those artifacts after retries.
+### Prepare an editing workflow
 
-If you change the model profile, style, framing, modifiers, embellishment level, or target length, **Reroll** or an empty **Revise & Generate** rebuilds the final prompt from the main prompt. This clean render prevents details from an older control setting from leaking into the new result. Endpoint, thinking, and temperature changes do not mark the final prompt stale. A direct ComfyUI reroll is used when the prompt-shaping controls already match.
+1. Replace the workflow's normal **Load Image** node with **Prompt Studio Image Source** and connect its `image` output to the editing pipeline.
+2. Keep the workflow's prompt input connected through a Prompt Slot or Prompt Amplify node.
+3. Ensure only the intended final image-output node is active.
+4. Save it in ComfyUI with a name such as `[PS] Kontext Edit`.
 
-**Target length** is a user-facing approximate output goal. Natural-language profiles use a 20–200 word slider; tag-based profiles automatically switch to 5–40 tags. The highlighted mark shows the default for the current model profile and embellishment level. Dragging creates a custom value for that combination. Changing either the model profile or embellishment level clears the custom value and moves the slider to the new highlighted default. Fresh renders use the target, while precision revisions preserve the existing prompt outside the requested edit scope. Prompt Studio converts the target into a larger hidden final-answer token allowance so local-model output is not cut off.
+Generated images have an **Edit this image** action. The selected chat image is injected into the saved editing workflow as a small JSON reference containing `filename`, `subfolder`, and `type`. If no image was explicitly selected, **Edit** automatically uses the last image in the active conversation. The image-source node loads that existing file directly from ComfyUI's `output`, `temp`, or `input` storage; it never copies a generated image into `input`.
 
-**Additional instructions** supplies persistent general steering or explanatory context to the LLM without treating that text as a style or framing modifier. It participates in initial Final-prompt renders, control rebuilds, Final-prompt revisions, and expansion retries, but it is never sent to Main-prompt creation or revision. The latest explicit creation or revision request always remains authoritative. Persistent guidance may refine unspecified Final-prompt details and active controls; it cannot reverse the latest request or expand a precision edit's scope. **Unmodified part** is separate: it bypasses the LLM and passes phrases such as LoRA trigger words unchanged through the workflow's `secondary_instructions` output.
+Prompt Studio records each result's actual pixel dimensions. Editing an image injects those exact dimensions into the Prompt Slot or bypassed Prompt Amplify outputs, preserving the source size even when it does not match a Resolution Selector preset. Switching back to **Create** for a revised new image uses the aspect ratio, megapixels, and multiple currently selected in Prompt Studio again.
 
-### Sessions and persistence
+### Image source and named reference nodes
 
-The **Sessions** sidebar creates, switches, and deletes independent prompt conversations. Each session remembers its main and final prompts, paired prompt versions, messages, selected creation and editing workflows, and the prompt-shaping controls last applied by the selected LLM provider. A new session starts with clean prompt-shaping controls: style and framing return to **None**, free-text instructions and modifiers are cleared, and other prompt-shaping controls return to their defaults. Thinking and embellishment levels carry over, as do the selected LoRAs and models.
+Workflow authors can add **Prompt Studio Reference Image** (the existing
+`KCPP_ChatImageReference` node) in Create, Edit, Upscale, or Video workflows.
+One connected node shows a compact image input; several open a named input list.
+Each node receives its own image. Custom node titles label the inputs, with
+`source_name` as the fallback. Assignments are saved per session, workflow, and
+node ID, and queued generations retain their exact inputs. These universal inputs
+do not imply model-specific prompting support. The Krea2 Edit recipe connects it
+to `source_image_b` on the model patch and `image_b` on both grounded encoders.
+An empty reference returns no image, so those nodes keep their single-image
+behavior. Connect this node only where an absent image is supported.
 
-Chats are stored under `prompt_studio_chats/`, with an `index.json` for ordering and one JSON file per session. The directory is excluded from Git and is shared by browsers connected to the same ComfyUI installation. Saves use revision checks so an older browser cannot silently overwrite a newer save. A conflicting client merges with the latest store before retrying. Previous chat and index copies are kept under `prompt_studio_chats/_backups/`. Existing `prompt_studio_chats.json` stores are migrated automatically on first load and archived in that backup directory.
+![Prompt Studio Image Source and a named Reference Image node](docs/images/screenshots/35-source-and-reference-canvas.png)
 
-The standalone page is available at the short URL:
+### Upscaling workflow wiring
 
-```text
-/PromptStudio
-```
+To prepare an upscaling workflow, add **Prompt Studio Upscale**, connect its `image` output to the upscaling pipeline, and use its `width`, `height`, or `upscale_factor` outputs wherever the model requires target sizing. Its `prompt` and `secondary_instructions` outputs can be connected to conditioning nodes when needed. Keep exactly one final image output active and save the workflow with a `[PS]` prefix.
 
-The original extension URL remains available for compatibility:
+Every generated image has a compact **Upscale** action beside **Edit this image**. Prompt Studio asks for an upscale factor (default `2`) and injects the selected image reference, factor, optional final prompt, and secondary instructions into the dedicated node. The node loads the image and outputs target width and height calculated from the source dimensions. **Use prompt when upscaling** controls whether the final prompt output is populated.
 
-```text
-/extensions/ComfyUI_PromptStudio/prompt_studio.html
-```
+When **Edit** is selected, a second switch controls the workflow prompt payload. **Edit instruction** sends the current revision text as the editing instruction, while **Full prompt** sends the complete revised target prompt. The switch is remembered per chat. With an optional reference and LLM amplification enabled, the switch is hidden: the grounded edit instruction is used automatically, while Main and Final remain standalone scene descriptions.
 
-On direct navigation or refresh, it reconnects to an open ComfyUI tab when possible and otherwise starts a hidden same-origin workflow host.
+The interface can automatically advance the editing source to the newest result, while still allowing any earlier image to be selected at any time. **Reroll** repeats the previous execution prompt and source image while both the Create/Edit action and selected workflow are unchanged. Switching either control before rerolling routes through the newly selected workflow instead. Workflow seeds change only when seed randomization is enabled.
 
-### Local model consultation chat
+The ignored runtime file `prompt_studio_workflows.json` is now only a last-known-good cache. If a changed `[PS]` workflow becomes invalid or cannot be converted, Prompt Studio marks it as **cached**, reports why the live update was rejected, and continues using the previous working snapshot. Correct and save the ComfyUI workflow, then refresh or generate again to replace the cache. Cache writes keep the existing revision checks and `.bak` recovery copy.
 
-The standalone interface adds a chat-bubble button beside its header controls. It opens a normal,
-session-specific conversation with the local KoboldCpp, Ollama, or Llama.cpp model selected in Prompt Studio
-settings. This assistant chat is separate from prompt rewriting: responses are conversational and
-never modify the main prompt, final prompt, or generation controls automatically.
+<details>
+<summary>See the Upscale node on the canvas</summary>
 
-Ordinary consultation starts without Prompt Studio context. Previous experiment messages are also
-excluded from ordinary chat requests, so using the assistant for an unrelated question does not
-silently attach prompts, presets, settings, or images. Open **Attach context** and choose
-**Start prompt experiment** to explicitly create an isolated experiment from the current main and
-final prompts plus read-only copies of the selected style and framing instructions.
+![Prompt Studio Upscale connected to a downstream image-scaling node](docs/images/screenshots/36-upscale-node-canvas.png)
 
-Inside an active prompt experiment, the assistant may propose a complete candidate prompt and
-temporary style or framing guidance. Candidate cards can generate through the currently selected
-Studio workflow while keeping the result in consultation history. **Promote to Studio** explicitly
-copies the selected candidate into the Final Prompt and, when available, adds its chosen generated
-result to the main conversation. Promotion does not change preset selections or files, workflows,
-diffusion models, LoRAs, resolution, seeds, or provider settings. Ending an experiment returns the
-assistant to ordinary chat; completed candidates remain available in consultation history until
-normal consultation expiry.
-
-Turn on **Prompt agent** directly above the chat composer, describe the desired image, and press
-**Start agent**. The current draft becomes the image goal and selected consultation images become
-labelled references. To give the prompt architect the current run-local style and framing preset
-text, explicitly select **Generation settings** under **Attach context** before starting; otherwise
-those settings are omitted. The agent card keeps its labelled reference thumbnails beside the goal
-for visual context, and the open context panel collapses when the run starts. Prompt Agent
-requires a vision-capable local model and a compatible `[PS]` creation workflow. It runs a
-checkpointed loop with separate, fresh local-model contexts for brief compilation, prompt
-architecture, and pixel-grounded visual judging:
-
-1. Compile the goal into weighted required and preferred visual criteria.
-2. Build a complete prompt with run-local style and framing guidance.
-3. Generate through the selected creation workflow.
-4. Judge only the generated candidate pixels against the locked goal and the rubric's compiled reference notes. Raw references stay out of defect judging so similar subjects cannot be confused as one merged image.
-5. Refine and repeat until the rubric passes, five iterations are exhausted, or progress plateaus.
-
-Prompt comparisons preserve the workflow seed. A passing candidate is generated once more with a
-fresh seed and must pass again before autonomous completion. The run keeps its best-scoring result
-if a later iteration regresses. **Pause** checkpoints the loop, **Stop** interrupts an active
-ComfyUI generation, and **Promote best to Studio** explicitly copies the chosen prompt and image
-into the main session. The agent never changes global style or framing preset files, workflow
-selection, models, LoRAs, resolution, provider settings, or other Studio controls.
-
-Visual defects are confidence-gated separately from ordinary rubric mismatches. Only a serious,
-precisely located candidate-local defect reported with high confidence can veto a pass or steer the
-next prompt; uncertain or unstructured defect claims are discarded.
-
-Agent mode remains selected after a run finishes. Enter a correction in the same composer and press
-**Continue agent** to compile the updated goal and run more iterations. Earlier iterations remain
-visible for comparison, while the new cycle chooses a fresh best result against the corrected goal.
-Turn off **Prompt agent** to return the composer to ordinary consultation chat.
-
-Agent state is stored with the session and can resume after a refresh. If Prompt Studio is closed,
-an already queued ComfyUI image may finish, but further local-model phases resume only after Prompt
-Studio is opened again.
-
-Each message can attach the current main prompt, final prompt, and generation settings. Attached
-generation settings include the selected style and framing preset names plus their full resolved
-instruction text, so the assistant can audit exactly how those presets shaped the prompt. Recent
-generated images can also be attached. An image attachment sends only the image and its explicitly
-selected role; prompts and generation settings are included only when their separate context
-checkboxes are selected. Images may be labelled as base/target images, generated results, general references, pose
-references, style references, or composition references so the model can compare them without
-guessing their intended roles.
-Additional reference images can be uploaded directly in the attachment tray.
-The upload control is also a drop target, so one image can be dragged directly beside the recent
-image thumbnails.
-
-The chat composer's **Gen settings** panel shows the active shared LLM configuration and links to
-its editor. For Ollama and KoboldCpp, sampling behavior is managed in **Settings → General → LLM
-Profiles**. For Llama.cpp, it comes from the selected JSON config and **Edit config** opens the
-Llama.cpp config builder.
-
-Consultation messages are temporary and automatically expire seven days after they are created.
-The **Clear** action removes the full consultation history, draft, and all pending context
-attachments for that session.
-Normal Prompt Studio session history is retained as before. When expired consultation messages
-contained uploaded Prompt Studio reference images, files that are no longer referenced anywhere
-else are removed from the managed image store as well.
-
-Image attachment is available only when the connected model reports vision support. Text chat
-continues to work with non-vision models. Prompt Studio sanitizes uploaded images and sends stored
-image references to its Python backend; the browser does not send local filesystem paths to the
-model service.
-
-### Password-protected LAN access
-
-Prompt Studio can be opened from another device on the same private network. Because the standalone interface uses ComfyUI's workflow, queue, history, image, and WebSocket APIs, LAN mode protects the complete remotely reachable ComfyUI server rather than only the Prompt Studio HTML page. Requests from the machine running ComfyUI continue to work without a password.
-
-Set a password of at least 12 characters before starting ComfyUI, then listen on all local interfaces:
-
-```powershell
-$env:PROMPT_STUDIO_LAN_PASSWORD = "replace-with-a-long-unique-password"
-C:\EasyDiffusion\ComfyUI\venv\Scripts\python.exe C:\EasyDiffusion\ComfyUI\main.py --listen 0.0.0.0 --port 8188
-```
-
-Open Prompt Studio from a LAN device by replacing the example address with the ComfyUI machine's private IPv4 or IPv6 address:
-
-```text
-http://192.168.1.25:8188/PromptStudio
-```
-
-Private IPv4 ranges (`10/8`, `172.16/12`, and `192.168/16`), IPv4 link-local addresses, and IPv6 unique-local/link-local addresses are accepted. Public, carrier-grade NAT, invalid, and missing client addresses are rejected. Authentication uses an HTTP-only, same-site signed cookie that expires after 12 hours or whenever ComfyUI restarts. Five failed sign-in attempts from one address trigger a five-minute throttle.
-
-Keep this deployment LAN-only:
-
-- Use the operating system firewall's private-network profile to allow TCP port `8188`; do not create a public-network rule.
-- Do not forward port `8188` on the router, expose it through a tunnel, or put it behind a public reverse proxy. A reverse proxy on the LAN appears to the server as a private client and defeats source-address enforcement.
-- Prefer a trusted home network. The password is submitted over ordinary HTTP, so it is not encrypted on the wire; use a local TLS reverse proxy only if you understand and preserve the LAN boundary.
-- Remove `PROMPT_STUDIO_LAN_PASSWORD` and return ComfyUI to its default loopback listen address to disable LAN mode.
+</details>
 
 ## Choosing a workflow prompt node
 
@@ -458,11 +611,15 @@ Both nodes return the image prompt and unchanged `secondary_instructions` as the
 
 If a `[PS]` workflow contains more than one compatible prompt node, Prompt Studio uses the first executable one in graph order.
 
+![Prompt Slot connected to the text input of CLIP Text Encode](docs/images/screenshots/30-prompt-slot-canvas.png)
+
 ## Prompt Studio Sampler
 
 Use **Prompt Studio Sampler** in place of the standard KSampler when a saved `[PS]` workflow should expose deterministic sampling controls to XY(Z) plots. It is a drop-in sampler with the same model, conditioning, latent, seed, steps, CFG, sampler, scheduler, and denoise inputs and the same latent output. Normal ComfyUI execution still calls the standard `common_ksampler` implementation.
 
 Prompt Studio discovers only this explicit node contract for seed and sampling axes. It never searches arbitrary workflow inputs named `seed`, `cfg`, or `scheduler`, which prevents a plot from silently changing an unrelated node. Multiple Prompt Studio Samplers are supported; the axis builder names the exact target node.
+
+![Empty Latent Image connected through Prompt Studio Sampler to VAE Decode](docs/images/screenshots/34-sampler-canvas.png)
 
 ## Prompt Studio LoRA Loader
 
@@ -474,46 +631,31 @@ LoRA filenames beginning with `_` are reserved for internal use and are never sh
 
 When the active workflow contains this loader, the inspector shows a **LoRA** section. Add any number of the available LoRAs, set an independent model strength for each one, and remove them without editing the saved workflow. Prompt Studio injects the ordered selection only into the temporary queued snapshot. Each generated-image message records the ordered LoRA selections and strengths used by its workflow; the image's **i** panel displays them, and selecting that image or choosing **Use these prompts** restores them. Older history entries without a LoRA snapshot leave the current selection unchanged. Normal ComfyUI queues of the saved workflow remain pass-through unless a stack was explicitly supplied through the API.
 
+<details>
+<summary>See LoRA Loader wiring</summary>
+
+![Prompt Studio LoRA Loader connected to the model input of the sampler](docs/images/screenshots/33-lora-loader-canvas.png)
+
+</details>
+
 ## Prompt Studio Model Loader
 
 Use **Prompt Studio Model Loader** in place of ComfyUI's standard diffusion-model loader in a saved `[PS]` workflow. Set **Model Type** to the name of a top-level folder under any configured ComfyUI diffusion-model directory. The match is case-insensitive and includes models in nested folders below that top-level folder.
 
 When the active workflow contains this loader, Prompt Studio shows a **Model** selector directly below **LoRA** in the sidebar. Only models from the configured Model Type folder are offered, and the selection is injected into the temporary queued workflow. INT8 weights are detected from the safetensors header and use **Load Diffusion Model INT8 (W8A8)** with the fixed Krea 2 defaults; other weights use ComfyUI's standard loader. Model selections are recorded with generated images and restored with their saved generation state.
 
-## Creation, image-editing, and upscaling workflows
+<details>
+<summary>See Model Loader wiring</summary>
 
-Prompt Studio uses normal workflows saved in ComfyUI's workflow library. Prefix a workflow's filename with `[PS]` to make it visible to Prompt Studio; other saved workflows remain available for manual use without cluttering Studio's selectors.
+![Prompt Studio Model Loader connected to a LoRA Loader](docs/images/screenshots/32-model-loader-canvas.png)
 
-A `[PS]` workflow is accepted only when:
+</details>
 
-- its filename starts with `[PS]` and ends in `.json`;
-- creation and editing workflows contain an executable **KoboldCpp Prompt Slot** or **KoboldCpp Prompt Amplify** node;
-- it contains exactly one executable image-output node;
-- editing workflows contain an executable **Prompt Studio Image Source** node;
-- upscaling workflows contain an executable **Prompt Studio Upscale** node.
+## Prompt Studio Input
 
-Workflows with **Prompt Studio Upscale** are listed as upscaling templates. Otherwise, workflows with **Prompt Studio Image Source** are listed as editing templates and workflows without an image input are listed as creation templates. Saving, renaming, or deleting a `[PS]` workflow through ComfyUI refreshes Prompt Studio immediately after the operation succeeds. The refresh button remains available, and the selected workflow is checked again immediately before it is queued. Widget values and other workflow settings therefore stay owned by ComfyUI and automatically flow into Prompt Studio.
+Connect **Prompt Studio Input** to exactly one supported widget input to expose that value under **Additional Inputs** in Studio. Give the node a descriptive title, such as **Image steps**, so the control has a useful label. The connected input supplies its type, bounds, and available choices.
 
-To prepare an editing workflow:
-
-1. Replace the workflow's normal **Load Image** node with **Prompt Studio Image Source** and connect its `image` output to the editing pipeline.
-2. Keep the workflow's prompt input connected through a Prompt Slot or Prompt Amplify node.
-3. Ensure only the intended final image-output node is active.
-4. Save it in ComfyUI with a name such as `[PS] Kontext Edit`.
-
-Generated images have an **Edit this image** action. The selected chat image is injected into the saved editing workflow as a small JSON reference containing `filename`, `subfolder`, and `type`. If no image was explicitly selected, **Edit** automatically uses the last image in the active conversation. The image-source node loads that existing file directly from ComfyUI's `output`, `temp`, or `input` storage; it never copies a generated image into `input`.
-
-Prompt Studio records each result's actual pixel dimensions. Editing an image injects those exact dimensions into the Prompt Slot or bypassed Prompt Amplify outputs, preserving the source size even when it does not match a Resolution Selector preset. Switching back to **Create** for a revised new image uses the aspect ratio, megapixels, and multiple currently selected in Prompt Studio again.
-
-To prepare an upscaling workflow, add **Prompt Studio Upscale**, connect its `image` output to the upscaling pipeline, and use its `width`, `height`, or `upscale_factor` outputs wherever the model requires target sizing. Its `prompt` and `secondary_instructions` outputs can be connected to conditioning nodes when needed. Keep exactly one final image output active and save the workflow with a `[PS]` prefix.
-
-Every generated image has a compact **Upscale** action beside **Edit this image**. Prompt Studio asks for an upscale factor (default `2`) and injects the selected image reference, factor, optional final prompt, and secondary instructions into the dedicated node. The node loads the image and outputs target width and height calculated from the source dimensions. **Use prompt when upscaling** controls whether the final prompt output is populated.
-
-When **Edit** is selected, a second switch controls the workflow prompt payload. **Edit instruction** sends the current revision text as the editing instruction, while **Full prompt** sends the complete revised target prompt. The switch is remembered per chat. With an optional reference and LLM amplification enabled, the switch is hidden: the grounded edit instruction is used automatically, while Main and Final remain standalone scene descriptions.
-
-The interface can automatically advance the editing source to the newest result, while still allowing any earlier image to be selected at any time. **Reroll** repeats the previous execution prompt and source image while both the Create/Edit action and selected workflow are unchanged. Switching either control before rerolling routes through the newly selected workflow instead. Workflow seeds change only when seed randomization is enabled.
-
-The ignored runtime file `prompt_studio_workflows.json` is now only a last-known-good cache. If a changed `[PS]` workflow becomes invalid or cannot be converted, Prompt Studio marks it as **cached**, reports why the live update was rejected, and continues using the previous working snapshot. Correct and save the ComfyUI workflow, then refresh or generate again to replace the cache. Cache writes keep the existing revision checks and `.bak` recovery copy.
+![A Prompt Studio Input titled Image steps feeds 25 into the sampler steps input](docs/images/screenshots/39-workflow-input-canvas.png)
 
 ## Amplification nodes
 
@@ -522,6 +664,8 @@ The node suite also supports prompt rewriting directly inside a ComfyUI graph, w
 ### KoboldCpp Prompt Amplify
 
 **KoboldCpp Prompt Amplify** turns a short or rough `text` input into a model-ready image prompt and returns it as `amplified_text`.
+
+![Prompt Amplify controls and its connection to the positive text encoder](docs/images/screenshots/31-prompt-amplify-canvas.png)
 
 Typical graph:
 
@@ -574,6 +718,13 @@ It preserves bounding boxes, element types, literal text elements, unknown keys,
 
 `seed_mode` either offsets a fixed seed for each processed field or reuses the same seed. `on_error` can stop the workflow or retain the original field, and `pretty_json` controls formatted versus compact output. Model profile, style, framing, embellishment, thinking, additional instructions, and KoboldCpp request controls behave like Prompt Amplify.
 
+<details>
+<summary>See the Ideogram JSON amplification node</summary>
+
+![Ideogram4-KoboldCPP configured with a botanical JSON prompt](docs/images/screenshots/38-ideogram-json-canvas.png)
+
+</details>
+
 ## General local-LLM node
 
 ### KoboldCpp Apply
@@ -581,6 +732,13 @@ It preserves bounding boxes, element types, literal text elements, unknown keys,
 **KoboldCpp Apply** sends its `text` input directly to KoboldCpp as the complete prompt/context and returns the generated text. It does not add image-prompt profiles, style guidance, framing guidance, embellishment rules, or amplification instructions.
 
 Use it when you want a raw local-LLM call inside a workflow rather than an image-prompt rewrite. This node intentionally remains on KoboldCpp's native `/api/v1/generate` endpoint so its `text` input continues to mean the complete raw prompt/context. Its token setting is therefore a total raw-generation limit, not the final-answer allowance used by the Chat Completions-based rewriting nodes. Native reasoning separation is most reliable in Prompt Amplify, Ideogram4-KoboldCPP, and Prompt Studio.
+
+<details>
+<summary>See the general local-LLM node</summary>
+
+![KoboldCpp Apply with a botanical text request](docs/images/screenshots/37-general-llm-node-canvas.png)
+
+</details>
 
 ### Remote Ollama hosts
 
@@ -638,6 +796,15 @@ uses token boundaries for word-like entries; comment lines start with `# `. Prom
 matching source literals exactly during rewrites unless the requested edit explicitly removes their
 content.
 
+<details>
+<summary>See the protected-word editor</summary>
+
+![Adding a botanical name as a protected phrase](docs/images/screenshots/23d-protected-words.png)
+
+*Example shown before saving.*
+
+</details>
+
 ### Style presets
 
 Built-in styles live in `presets/default/style_templates.json`. That file is maintained by the
@@ -657,6 +824,15 @@ style presets**. The same entries remain directly editable in `style_templates.a
   ]
 }
 ```
+
+<details>
+<summary>See the custom style editor</summary>
+
+![A reusable botanical watercolor style](docs/images/screenshots/23a-style-presets.png)
+
+*Example shown before saving.*
+
+</details>
 
 ### Framing presets
 
@@ -690,6 +866,15 @@ tracked, `.gitignore` can no longer provide this protection. Manager changes tak
 immediately. While Settings is open, valid direct file changes refresh the manager and active
 controls automatically within a few seconds.
 
+<details>
+<summary>See the framing editor</summary>
+
+![A reusable workbench-detail composition](docs/images/screenshots/23b-framing-presets.png)
+
+*Example shown before saving.*
+
+</details>
+
 ### Additional instruction templates
 
 The tracked `presets/examples/additional_instruction_templates.example.json` file seeds the ignored
@@ -717,6 +902,15 @@ exactly match an enabled template name is sent unchanged. Additional instruction
 over conflicting main-prompt, style, style-modifier, framing, and framing-modifier guidance.
 Manager changes take effect immediately, and direct file changes are detected while Settings is
 open.
+
+<details>
+<summary>See the instruction-template editor</summary>
+
+![A reusable scene-preservation instruction](docs/images/screenshots/23c-instruction-templates.png)
+
+*Example shown before saving.*
+
+</details>
 
 ### Known references
 
@@ -757,6 +951,45 @@ case, incomplete or disabled entries are ignored, and longer names win when conf
 overlap at the same position. Manager changes take effect immediately, and direct file changes are
 detected while Settings is open.
 
+<details>
+<summary>See the known-reference editor</summary>
+
+![A Botanical Studio definition that expands a reusable name](docs/images/screenshots/23-known-references.png)
+
+*Example shown before saving.*
+
+</details>
+
+## Continue in Video Studio
+
+When the optional `PromptStudio_Video` companion is installed, send a generated image into an open video project as a MiniMax reference or frame. Prompt Studio also works on its own.
+
+## Password-protected LAN access
+
+Prompt Studio can be opened from another device on the same private network. Because the standalone interface uses ComfyUI's workflow, queue, history, image, and WebSocket APIs, LAN mode protects the complete remotely reachable ComfyUI server rather than only the Prompt Studio HTML page. Requests from the machine running ComfyUI continue to work without a password.
+
+Set a password of at least 12 characters before starting ComfyUI, then listen on all local interfaces:
+
+```powershell
+$env:PROMPT_STUDIO_LAN_PASSWORD = "replace-with-a-long-unique-password"
+C:\EasyDiffusion\ComfyUI\venv\Scripts\python.exe C:\EasyDiffusion\ComfyUI\main.py --listen 0.0.0.0 --port 8188
+```
+
+Open Prompt Studio from a LAN device by replacing the example address with the ComfyUI machine's private IPv4 or IPv6 address:
+
+```text
+http://192.168.1.25:8188/PromptStudio
+```
+
+Private IPv4 ranges (`10/8`, `172.16/12`, and `192.168/16`), IPv4 link-local addresses, and IPv6 unique-local/link-local addresses are accepted. Public, carrier-grade NAT, invalid, and missing client addresses are rejected. Authentication uses an HTTP-only, same-site signed cookie that expires after 12 hours or whenever ComfyUI restarts. Five failed sign-in attempts from one address trigger a five-minute throttle.
+
+Keep this deployment LAN-only:
+
+- Use the operating system firewall's private-network profile to allow TCP port `8188`; do not create a public-network rule.
+- Do not forward port `8188` on the router, expose it through a tunnel, or put it behind a public reverse proxy. A reverse proxy on the LAN appears to the server as a private client and defeats source-address enforcement.
+- Prefer a trusted home network. The password is submitted over ordinary HTTP, so it is not encrypted on the wire; use a local TLS reverse proxy only if you understand and preserve the LAN boundary.
+- Remove `PROMPT_STUDIO_LAN_PASSWORD` and return ComfyUI to its default loopback listen address to disable LAN mode.
+
 ## Backend API
 
 Prompt Studio revisions are served by ComfyUI at:
@@ -790,6 +1023,8 @@ KoboldCpp, Ollama, and Llama.cpp requests remain on the Python side, so the brow
 
 ## Updating and troubleshooting
 
+![System status with Llama.cpp readiness, ComfyUI controls and activity tools](docs/images/screenshots/24-system-status.png)
+
 - Restart ComfyUI after changing Python files or updating this extension.
 - Refresh the browser after frontend-only changes.
 - If Prompt Studio does not list a workflow, make sure its saved ComfyUI filename starts with `[PS]` and that it meets all four validation rules above.
@@ -798,6 +1033,22 @@ KoboldCpp, Ollama, and Llama.cpp requests remain on the Python side, so the brow
 - If shared-GPU generation reaches the KoboldCpp admin error, enable Admin Mode, configure a valid Admin Directory, and restart KoboldCpp. Set `PROMPT_STUDIO_KOBOLD_ADMIN_PASSWORD` before ComfyUI starts when the admin API is password-protected.
 - If prompt creation succeeds but no image appears, queue the workflow normally in ComfyUI and fix any disconnected or invalid generation nodes first.
 - If Prompt Studio reports a save conflict, reload it to obtain the newest chat or workflow-cache revision before making further changes.
+
+## Runtime requirements
+
+The package installation range remains Python `>=3.9`; it is not a tested-version
+matrix. The current local regression run uses ComfyUI's Python **3.14** VENV.
+Python 3.9–3.13 have not been verified in this audit. The automated quality workflow
+also targets 3.14; a configured CI job is not evidence that a remote run passed.
+Before a release, verify the minimum supported Python version and the paired
+Image/Video checks.
+
+ComfyUI supplies `server`, `folder_paths`, `aiohttp`, its frontend app/API modules,
+and the model/media runtime dependencies. Prompt Studio adds no runtime pip
+requirements and does not install packages on every startup. Workflow conversion
+requires the host's `graphToPrompt`, native node metadata, and serialized-subgraph
+support; a version number alone does not establish these capabilities. The
+setup wizard checks the bundled workflows' required node capabilities directly.
 
 ## Development checks
 

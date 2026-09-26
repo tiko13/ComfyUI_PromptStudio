@@ -91,5 +91,6 @@ export function showDraftStorageFailure(container, record, message) {
   if (!notice) { notice=container.ownerDocument.createElement('div');notice.dataset.draftFailure='true';notice.setAttribute('role','alert');container.prepend(notice); }
   const text=container.ownerDocument.createElement('p');text.textContent=message;
   const button=container.ownerDocument.createElement('button');button.type='button';button.textContent='Export unsaved draft';
+  button.dataset.promptstudioAllowDisconnected = 'true';
   button.addEventListener('click',()=>exportDraft(record,container.ownerDocument));notice.replaceChildren(text,button);
 }

@@ -1291,6 +1291,8 @@ def _load_llamacpp_launcher_config(data):
     url_host = f"[{host}]" if ":" in host and not host.startswith("[") else host
     return {
         "executable": executable,
+        "model": model,
+        "mmproj": mmproj,
         "config_path": config_path,
         "config_revision": hashlib.sha256(raw_config).hexdigest(),
         "command": command,
@@ -1299,6 +1301,33 @@ def _load_llamacpp_launcher_config(data):
         "port": port,
         "url": f"http://{url_host}:{port}",
     }
+
+
+def _llamacpp_router_command(launcher):
+    """Keep the HTTP server alive while its selected model can be unloaded."""
+    model = launcher["model"]
+    mmproj = launcher["mmproj"]
+    if any(char in model for char in "\r\n]") or any(char in mmproj for char in "\r\n"):
+        raise ValueError("Llama.cpp model paths contain characters unsupported by router presets")
+    preset_path = launcher["config_path"] + ".router.ini"
+    # A Windows drive colon in a preset section is interpreted as a quant tag.
+    # Use the filename as the ID and retain the old full-path ID as an alias.
+    model_id = os.path.basename(model)
+    lines = ["version = 1", f"[{model_id}]", f"model = {model}", f"alias = {model}"]
+    if mmproj:
+        lines.append(f"mmproj = {mmproj}")
+    # Remaining CLI options are inherited by the model worker, including GPU,
+    # MTP, cache settings and extra arguments.
+    command = list(launcher["command"])
+    for flag in ("--model", "--mmproj"):
+        if flag in command:
+            index = command.index(flag)
+            del command[index:index + 2]
+    with open(preset_path + ".tmp", "w", encoding="utf-8", newline="\n") as handle:
+        handle.write("\n".join(lines) + "\n")
+    os.replace(preset_path + ".tmp", preset_path)
+    command.extend(["--models-preset", preset_path, "--models-max", "1"])
+    return command
 
 
 def _llamacpp_managed_process_status(data=None):
@@ -1393,7 +1422,7 @@ def _start_llamacpp_server(data, *, allow_external=True):
         try:
             try:
                 process = subprocess.Popen(
-                    launcher["command"],
+                    _llamacpp_router_command(launcher),
                     cwd=os.path.dirname(launcher["executable"]),
                     env=environment,
                     stdin=subprocess.DEVNULL,
@@ -1612,6 +1641,12 @@ def _release_comfy_models(timeout=GPU_HANDOFF_TIMEOUT_SECONDS):
             return
         if time.monotonic() >= deadline:
             raise RuntimeError("ComfyUI did not release its models before the local LLM handoff.")
+        # A render marks its queue item done before the worker finishes cleanup.
+        # Our first notification can land before it starts waiting again. Re-notify
+        # only outstanding flags so that this lost wakeup cannot stall the handoff.
+        for name in ("unload_models", "free_memory"):
+            if flags.get(name):
+                prompt_queue.set_flag(name, True)
         time.sleep(0.05)
 
 
@@ -1733,6 +1768,14 @@ def _unload_llamacpp_model(llamacpp_url, llamacpp_model, request_timeout=15):
             model = models[0]
         else:
             raise ValueError("Select a Llama.cpp model in Prompt Studio settings")
+    catalog = _get_json(urllib.parse.urljoin(base_url + "/", "models"), int(request_timeout), "Llama.cpp")
+    entries = catalog.get("data", []) if isinstance(catalog, dict) else []
+    model = next((item["id"] for item in entries if isinstance(item, dict)
+                  and model in item.get("aliases", []) and item.get("id")), model)
+    if any(isinstance(item, dict) and item.get("id") == model
+           and isinstance(item.get("status"), dict) and item["status"].get("value") == "unloaded"
+           for item in entries):
+        return {"provider": "llamacpp", "model": model, "unloaded": True, "already_released": True}
     try:
         result = _post_json(
             urllib.parse.urljoin(base_url + "/", "models/unload"),
@@ -1742,12 +1785,26 @@ def _unload_llamacpp_model(llamacpp_url, llamacpp_model, request_timeout=15):
         )
     except RuntimeError as exc:
         raise RuntimeError(
-            "Llama.cpp shared-GPU handoff requires llama-server router mode so Prompt Studio "
-            "can call /models/unload. Start llama-server with --models-dir, or enable Keep models "
+            "Llama.cpp shared-GPU handoff requires router mode. Restart it through Prompt Studio's "
+            "Backend settings to enable model unloading, or start an external llama-server with "
+            "--models-dir. Enable Keep models "
             "loaded only when Llama.cpp and ComfyUI use separate GPUs."
         ) from exc
     if not isinstance(result, dict) or result.get("success") is not True:
         raise RuntimeError(f"Llama.cpp could not unload '{model}': {result}")
+    # The router acknowledges its stop request before the worker has exited.
+    # Do not let ComfyUI allocate until the router confirms memory is released.
+    deadline = time.monotonic() + GPU_HANDOFF_TIMEOUT_SECONDS
+    while True:
+        catalog = _get_json(urllib.parse.urljoin(base_url + "/", "models"), int(request_timeout), "Llama.cpp")
+        entries = catalog.get("data", []) if isinstance(catalog, dict) else []
+        if any(isinstance(item, dict) and item.get("id") == model
+               and isinstance(item.get("status"), dict) and item["status"].get("value") == "unloaded"
+               for item in entries):
+            break
+        if time.monotonic() >= deadline:
+            raise RuntimeError(f"Llama.cpp did not finish unloading '{model}' before the GPU handoff.")
+        time.sleep(0.1)
     return {"provider": "llamacpp", "model": model, "unloaded": True}
 
 
@@ -2185,7 +2242,31 @@ def _llamacpp_generation_status(data):
         return status
     models = _list_llamacpp_models(base_url, request_timeout=3)
     model = selected_model or (models[0] if len(models) == 1 else "")
-    slots = _get_json(urllib.parse.urljoin(base_url + "/", "slots"), 3, "Llama.cpp")
+    # /models is router metadata and never autoloads. Polling /props or /slots
+    # without autoload=false would otherwise reclaim the GPU during a render.
+    catalog = _get_json(urllib.parse.urljoin(base_url + "/", "models"), 3, "Llama.cpp")
+    entries = catalog.get("data", []) if isinstance(catalog, dict) else []
+    entry = next((item for item in entries if isinstance(item, dict)
+                  and (item.get("id") == model or model in item.get("aliases", []))), {})
+    model = entry.get("id", model)
+    model_status = entry.get("status")
+    model_state = model_status.get("value") if isinstance(model_status, dict) else None
+    if model_state in {"unloaded", "loading", "sleeping"}:
+        failed = model_status.get("failed") is True
+        architecture = entry.get("architecture")
+        modalities = architecture.get("input_modalities") if isinstance(architecture, dict) else None
+        return {
+            "provider": "llamacpp", "reachable": True, "busy": model_state == "loading",
+            "model": model, "model_installed": True, "model_state": model_state,
+            "vision": "image" in modalities if isinstance(modalities, list) else None,
+            "server_process": _llamacpp_managed_process_status(data),
+            "message": ("Model failed to load; check the Llama.cpp server log." if failed else
+                        "Loading Llama.cpp model…" if model_state == "loading" else
+                        "Model unloaded; server ready. Reloads automatically for the next LLM request."),
+            **({"handoff_error": "Llama.cpp model failed to load."} if failed else {}),
+        }
+    query = urllib.parse.urlencode({"model": model, "autoload": "false"})
+    slots = _get_json(urllib.parse.urljoin(base_url + "/", "slots") + "?" + query, 3, "Llama.cpp")
     managed_stream = _llamacpp_active_stream_status(base_url)
     busy = None
     active_slots = 0
@@ -2219,7 +2300,7 @@ def _llamacpp_generation_status(data):
             generated_tokens = sum(decoded)
     if managed_stream:
         busy = True
-    props = _llamacpp_props(base_url, 3, model) if model else {}
+    props = _llamacpp_props(base_url, 3, model, autoload=False) if model else {}
     modalities = props.get("modalities") if isinstance(props, dict) else None
     vision = modalities.get("vision") if isinstance(modalities, dict) else None
     status = {

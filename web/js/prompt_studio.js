@@ -785,6 +785,7 @@ function openMutationManager(category, trigger = null) {
   manager.querySelector("#promptstudio-mutation-search").value = "";
   manager.querySelector("#promptstudio-mutation-add").textContent = `Add ${metadata.itemLabel}`;
   renderMutationManager();
+  if (!manager.open) manager.showModal();
   manager.querySelector("#promptstudio-mutation-search")?.focus({ preventScroll: true });
   loadMutationConfig({ conditional: Boolean(state.mutationConfig), external: true });
 }
@@ -793,6 +794,7 @@ function closeMutationManager({ restoreFocus = true } = {}) {
   const manager = state.panel?.querySelector("#promptstudio-mutation-manager");
   if (!manager || manager.hidden) return;
   closeMutationEditor({ restoreFocus: false });
+  manager.close();
   manager.hidden = true;
   state.mutationManagerCategory = "";
   state.mutationDeleteIndex = null;
@@ -920,11 +922,13 @@ function openMutationEditor(index = null) {
   editor.querySelector("#promptstudio-mutation-editor-text").value = metadata.textField
     ? String(item?.[metadata.textField] || "")
     : "";
+  editor.querySelector("#promptstudio-mutation-editor-text").required = Boolean(metadata.textField);
   const enabledRow = editor.querySelector("#promptstudio-mutation-editor-enabled-row");
   enabledRow.hidden = category === "protected_words";
   editor.querySelector("#promptstudio-mutation-editor-enabled").checked = item?.enabled !== false;
   editor.querySelector("#promptstudio-mutation-editor-error").textContent = "";
   setModalOpen(editor, true);
+  state.panel.querySelector(".promptstudio-mutation-manager-content").inert = true;
   nameInput.focus({ preventScroll: true });
 }
 
@@ -932,6 +936,7 @@ function closeMutationEditor({ restoreFocus = true } = {}) {
   const editor = state.panel?.querySelector("#promptstudio-mutation-editor");
   if (!editor || editor.hidden) return;
   setModalOpen(editor, false);
+  state.panel.querySelector(".promptstudio-mutation-manager-content").inert = false;
   state.mutationEditorIndex = null;
   state.mutationEditorDirty = false;
   if (state.mutationConfigPending) {
@@ -1371,6 +1376,7 @@ function setModalOpen(dialog, open) {
 
 function openPromptStudioDialog() {
   return state.panel?.ownerDocument.querySelector('.ps-reference-dialog[open]')
+    || state.panel?.querySelector('#promptstudio-mutation-editor[aria-modal="true"]:not([hidden])')
     || state.panel?.querySelector('dialog[open], [role="dialog"][aria-modal="true"]:not(dialog):not([hidden])');
 }
 
@@ -13615,17 +13621,15 @@ function buildPanel() {
         <div class="promptstudio-studio-settings-header-actions"><span class="promptstudio-studio-settings-context">Prompt Studio</span><button id="promptstudio-close-studio-settings" type="button">Done</button></div>
       </header>
       <div class="promptstudio-studio-settings-layout">
-        <section class="promptstudio-studio-settings-card">
-          <div class="promptstudio-studio-setting">
-            <span class="promptstudio-studio-setting-copy"><strong>Setup wizard</strong><small id="promptstudio-setup-summary">Check workflows, models and prerequisites</small></span>
-            <button id="promptstudio-run-setup" type="button">Run setup</button>
-          </div>
-        </section>
         <section class="promptstudio-studio-settings-card" aria-labelledby="promptstudio-general-settings-title">
           <header class="promptstudio-studio-settings-card-header">
             <div><strong id="promptstudio-general-settings-title">General</strong><span>Backend selection, chat display, and editing behavior</span></div>
           </header>
           <div class="promptstudio-studio-settings-list">
+            <div class="promptstudio-studio-setting">
+              <span class="promptstudio-studio-setting-copy"><strong>Setup wizard</strong><small id="promptstudio-setup-summary">Check workflows, models and prerequisites</small></span>
+              <button id="promptstudio-run-setup" type="button">Run setup</button>
+            </div>
             <div class="promptstudio-studio-setting promptstudio-endpoint-control">
               <span class="promptstudio-studio-setting-copy"><strong>LLM provider</strong><small>Choose the local service used to rewrite prompts.</small></span>
               <span class="promptstudio-backend-selector-field">
@@ -13773,11 +13777,11 @@ function buildPanel() {
           </div>
         </section>
       </div>
-      <section id="promptstudio-mutation-manager" class="promptstudio-mutation-manager" aria-labelledby="promptstudio-mutation-manager-title" hidden>
+      <dialog id="promptstudio-mutation-manager" class="promptstudio-mutation-manager" aria-labelledby="promptstudio-mutation-manager-title" aria-describedby="promptstudio-mutation-manager-description" hidden>
+        <div class="promptstudio-mutation-manager-content">
         <header class="promptstudio-mutation-manager-header">
-          <button id="promptstudio-mutation-back" type="button" class="promptstudio-mutation-back">‹ Settings</button>
           <div><strong id="promptstudio-mutation-manager-title"></strong><span id="promptstudio-mutation-manager-description"></span></div>
-          <button id="promptstudio-mutation-add" type="button"></button>
+          <button id="promptstudio-mutation-close" type="button">Close</button>
         </header>
         <div id="promptstudio-mutation-manager-banner" class="promptstudio-mutation-manager-banner" role="status" hidden>
           <span></span><button type="button" hidden></button>
@@ -13785,8 +13789,10 @@ function buildPanel() {
         <div class="promptstudio-mutation-toolbar">
           <label><span class="promptstudio-sr-only">Search configuration</span><input id="promptstudio-mutation-search" type="search" placeholder="Search" autocomplete="off" /></label>
           <output id="promptstudio-mutation-manager-count"></output>
+          <button id="promptstudio-mutation-add" type="button"></button>
         </div>
         <div id="promptstudio-mutation-list" class="promptstudio-mutation-list"></div>
+        </div>
         <div id="promptstudio-mutation-editor" class="promptstudio-mutation-editor" role="dialog" aria-labelledby="promptstudio-mutation-editor-title" hidden>
           <form class="promptstudio-mutation-editor-card">
             <header><div><strong id="promptstudio-mutation-editor-title"></strong><span>Changes are saved to the corresponding local configuration file.</span></div><button id="promptstudio-mutation-editor-close" type="button" aria-label="Close editor">×</button></header>
@@ -13800,7 +13806,7 @@ function buildPanel() {
             <footer><button id="promptstudio-mutation-editor-cancel" type="button">Cancel</button><button type="submit">Save</button></footer>
           </form>
         </div>
-      </section>
+      </dialog>
       <div id="promptstudio-llm-profile-editor" class="promptstudio-llm-profile-editor" role="dialog" aria-labelledby="promptstudio-llm-profile-editor-title" hidden>
         <form class="promptstudio-llm-profile-editor-card">
           <header>
@@ -14220,7 +14226,16 @@ function buildPanel() {
   panel.querySelectorAll("[data-mutation-category]").forEach((button) => {
     button.addEventListener("click", () => openMutationManager(button.dataset.mutationCategory, button));
   });
-  panel.querySelector("#promptstudio-mutation-back").addEventListener("click", () => closeMutationManager());
+  panel.querySelector("#promptstudio-mutation-close").addEventListener("click", () => closeMutationManager());
+  panel.querySelectorAll("[data-mutation-category]").forEach((button) => {
+    button.setAttribute("aria-haspopup", "dialog");
+    button.setAttribute("aria-controls", "promptstudio-mutation-manager");
+  });
+  panel.querySelector("#promptstudio-mutation-manager").addEventListener("cancel", (event) => {
+    event.preventDefault();
+    if (mutationEditorIsOpen()) closeMutationEditor();
+    else closeMutationManager();
+  });
   panel.querySelector("#promptstudio-mutation-add").addEventListener("click", () => openMutationEditor());
   panel.querySelector("#promptstudio-mutation-search").addEventListener("input", renderMutationManager);
   panel.querySelector("#promptstudio-mutation-list").addEventListener("click", handleMutationListAction);
@@ -14243,6 +14258,7 @@ function buildPanel() {
   panel.querySelector("#promptstudio-mutation-editor").addEventListener("keydown", (event) => {
     if (event.key === "Escape") {
       event.preventDefault();
+      event.stopPropagation();
       closeMutationEditor();
     }
   });

@@ -1,10 +1,12 @@
 import { api } from "/scripts/api.js";
 import { requireHistoryIndex, prepareHistoryIndex } from "../ui/history-maintenance.js";
-import { createDraftOutbox, createDraftScheduler, draftTabKey, showDraftStorageFailure } from "./draft-outbox.js";
+import { createDraftOutbox, createDraftScheduler, draftTabKey, exportDraft, showDraftStorageFailure } from "./draft-outbox.js";
 
 import { CHAT_SYNC_CHANNEL } from "../core/constants.js";
 import { state } from "../core/state.js";
 import { consultMessagesAfterClear } from "../consult/model.js";
+
+import { validateStoreResponse } from "./store-response.js";
 
 const CHAT_PAGE_SIZE = 20;
 const CHAT_PAGE_MAX = 100;
@@ -33,8 +35,43 @@ let draftMutation = 0;
 let restoredComposerText = null;
 let draftChatsVersion = -1;
 let draftChats = [];
+let savedMutationVersion = state.chatMutationVersion;
 const draftScheduler = createDraftScheduler(writeDraft);
 function draftContainer() { return state.panel?.querySelector('.promptstudio-chat-sidebar'); }
+function showChatFailure(error, loading = false) {
+  setStatus(error.message || "Chat history could not be saved.", "warning");
+  const container = draftContainer();
+  if (!container) return;
+  const attribute = loading ? 'data-chat-load-failure' : 'data-chat-save-failure';
+  let notice = container.querySelector('[' + attribute + ']');
+  if (!notice) {
+    notice = container.ownerDocument.createElement('div');
+    notice.setAttribute(attribute, 'true');
+    notice.setAttribute('role', 'alert');
+    container.prepend(notice);
+  }
+  const text = container.ownerDocument.createElement('p');
+  text.textContent = (error.message || error) + ' ' + (loading
+    ? 'History is unavailable; new edits stay local until loading succeeds.'
+    : 'Your edits remain in this tab. Retry saving or export them before closing.');
+  const retry = container.ownerDocument.createElement('button');
+  retry.type = 'button';
+  retry.dataset.promptstudioAllowDisconnected = 'true';
+  retry.textContent = loading ? 'Retry loading history' : 'Retry save';
+  retry.addEventListener('click', async () => {
+    retry.disabled = true;
+    try {
+      if (loading) await loadChats();
+      else { saveChats({ immediate: true }); await state.chatSaveChain; }
+    } finally { retry.disabled = false; }
+  });
+  const download = container.ownerDocument.createElement('button');
+  download.type = 'button';
+  download.dataset.promptstudioAllowDisconnected = 'true';
+  download.textContent = 'Export unsaved draft';
+  download.addEventListener('click', async () => exportDraft(await writeDraft(), container.ownerDocument));
+  notice.replaceChildren(text, retry, download);
+}
 async function writeDraft() {
   draftScheduler.cancel();
   if (draftChatsVersion !== state.chatMutationVersion) {
@@ -247,6 +284,7 @@ async function persistChats() {
       const latest = await latestResponse.json().catch(() => ({}));
       requireHistoryIndex(latest, draftContainer(), '/promptstudio/prompt-studio/chats', loadChats);
       if (!latestResponse.ok) throw new Error(latest.error || `Chat synchronization failed (${latestResponse.status}).`);
+      validateStoreResponse(latest, 'chats');
       acknowledgeChats(latest.chats || []);
       const deleted = new Set(deletedChatIds);
       const filteredLatest = withoutDeletedMessages({
@@ -260,6 +298,7 @@ async function persistChats() {
       const mergedMutationVersion = state.chatMutationVersion;
       response = await writeChatStore(snapshot, Number(latest.revision || 0), deletedChatIds, deletedMessageIds);
       data = await response.json().catch(() => ({}));
+      if (response.ok) validateStoreResponse(data);
       if (response.ok && state.chatMutationVersion === mergedMutationVersion) {
         applyChatStoreSnapshot({
           ...snapshot,
@@ -272,7 +311,10 @@ async function persistChats() {
       }
     }
     if (!response.ok) throw new Error(data.error || `Chat save failed (${response.status}).`);
+    validateStoreResponse(data);
     acknowledgeChats(snapshot.chats);
+    savedMutationVersion = saveMutationVersion;
+    if (state.chatMutationVersion === savedMutationVersion) draftContainer()?.querySelector('[data-chat-save-failure]')?.remove();
     state.chatRevision = Number(data.revision || state.chatRevision);
     if (state.chatMutationVersion === saveMutationVersion) {
       deletedChatIds.forEach((chatId) => state.chatDeletedIds.delete(chatId));
@@ -293,7 +335,8 @@ async function persistChats() {
 }
 
 function saveChats({ immediate = false } = {}) {
-  if (state.chatPersistenceBlocked || !state.chatStoreLoaded) return;
+  // Initialization must not replace an existing browser draft with an empty one.
+  if (!state.chatStoreLoaded && !state.chats.length) return;
   const previousChatIds = new Set(state.chats.map((chat) => chat.id));
   state.chats = deduplicateEmptyChats(state.chats, state.activeChatId);
   const retainedChatIds = new Set(state.chats.map((chat) => chat.id));
@@ -303,13 +346,14 @@ function saveChats({ immediate = false } = {}) {
   if (pruneExpiredConsultMessages()) renderConsultHistory();
   state.chatMutationVersion += 1;
   draftScheduler.schedule();
+  if (state.chatPersistenceBlocked || !state.chatStoreLoaded) return;
   if (state.chatSaveTimer) clearTimeout(state.chatSaveTimer);
   const persist = () => {
     state.chatSaveTimer = null;
     state.chatSaveChain = state.chatSaveChain
       .catch(() => {})
       .then(persistChats)
-      .catch((error) => setStatus(error.message || "Chat history could not be saved.", "warning"));
+      .catch((error) => showChatFailure(error));
   };
   if (immediate) persist();
   else state.chatSaveTimer = setTimeout(persist, 150);
@@ -318,6 +362,8 @@ function saveChats({ immediate = false } = {}) {
 async function refreshChatsFromServer({ force = false } = {}) {
   if (!state.chatStoreLoaded || state.chatPersistenceBlocked || state.chatSyncInFlight || state.chatPageLoading) return;
   if (!force && (state.chatSaveTimer || state.chatSaveInFlight || state.busy)) return;
+  // A failed save stays dirty after its timer and request have finished.
+  if (state.chatMutationVersion !== savedMutationVersion) return;
   const syncMutationVersion = state.chatMutationVersion;
   state.chatSyncInFlight = true;
   try {
@@ -330,6 +376,7 @@ async function refreshChatsFromServer({ force = false } = {}) {
     const stored = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(stored.error || `Chat synchronization failed (${response.status}).`);
     requireHistoryIndex(stored, draftContainer(), '/promptstudio/prompt-studio/chats', loadChats);
+    validateStoreResponse(stored, 'chats');
     if (Number(stored.revision || 0) <= state.chatRevision) return;
     // A generation or other local action may have changed chat state while this request was in flight.
     // Keep that state authoritative; its pending save will merge against the newer server revision.
@@ -346,7 +393,7 @@ function setupChatSync() {
   if (state.panel && !state.panel.dataset.draftInputAttached) {
     state.panel.dataset.draftInputAttached = 'true';
     state.panel.addEventListener('input', event => {
-      if (event.target.id === 'promptstudio-revision' && state.chatStoreLoaded) draftScheduler.schedule();
+      if (event.target.id === 'promptstudio-revision') draftScheduler.schedule();
     });
   }
   if (!state.chatSyncTimer) {
@@ -384,6 +431,7 @@ async function loadOlderChats() {
     const stored = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(stored.error || `Older chats could not be loaded (${response.status}).`);
     requireHistoryIndex(stored, draftContainer(), '/promptstudio/prompt-studio/chats', loadChats);
+    validateStoreResponse(stored, 'chats');
     const existingIds = new Set(state.chats.map((chat) => chat.id));
     for (const chat of Array.isArray(stored.chats) ? stored.chats.map(normalizeChat) : []) {
       if (!existingIds.has(chat.id) && !state.chatDeletedIds.has(chat.id)) {
@@ -406,6 +454,12 @@ async function loadOlderChats() {
 
 async function loadChats() {
   let recoveredOrMigratedPromptState = false;
+  // Preserve sessions written while initial history loading was unavailable.
+  const pendingChats = !state.chatStoreLoaded ? state.chats.filter(chat => (
+    chat.initialized || chat.mainPrompt || chat.finalPrompt || chat.messages?.length || chat.consultMessages?.length
+  )) : [];
+  const pendingActiveId = state.activeChatId;
+  const pendingComposer = state.panel?.querySelector('#promptstudio-revision')?.value || '';
   try {
     let response = await api.fetchApi(chatPageUrl({ includeActive: true }));
     let stored = await response.json().catch(() => ({}));
@@ -416,6 +470,7 @@ async function loadChats() {
       if (!response.ok) throw new Error(stored.error || `Chat load failed (${response.status}).`);
     }
     requireHistoryIndex(stored, draftContainer(), '/promptstudio/prompt-studio/chats', loadChats);
+    validateStoreResponse(stored, 'chats');
     const storedChats = Array.isArray(stored.chats) ? stored.chats : [];
     const normalizedChats = storedChats.map(normalizeChat);
     recoveredOrMigratedPromptState = normalizedChats.some((chat, index) => {
@@ -444,6 +499,7 @@ async function loadChats() {
     recoveredOrMigratedPromptState ||= state.chats.length !== normalizedChats.length;
     state.chatStoreLoaded = true;
     state.chatPersistenceBlocked = false;
+    savedMutationVersion = state.chatMutationVersion;
     state.activeChatId = state.chats.some((chat) => chat.id === stored.activeChatId)
       ? stored.activeChatId
       : state.chats[0]?.id || null;
@@ -469,17 +525,23 @@ async function loadChats() {
         }
       }
     } catch (error) { showDraftStorageFailure(draftContainer(),{chats:state.chats},error.message); }
+    for (const chat of pendingChats) {
+      if (!state.chats.some(saved => saved.id === chat.id)) {
+        state.chats.push(chat);
+        recoveredOrMigratedPromptState = true;
+      }
+    }
+    if (pendingChats.some(chat => chat.id === pendingActiveId)) state.activeChatId = pendingActiveId;
+    if (pendingComposer) restoredComposerText = pendingComposer;
   } catch (error) {
-    state.chats = [];
-    state.activeChatId = null;
-    state.chatDeletedIds.clear();
+    // Keep any in-memory edits intact when a retry also fails.
     state.chatPageOffset = 0;
     state.chatPageCursor = null;
     state.chatTotal = 0;
     state.chatHasMore = false;
     state.chatStoreLoaded = false;
     state.chatPersistenceBlocked = true;
-    setStatus(error.message || "Chat history could not be loaded.", "warning");
+    showChatFailure(error, true);
   }
   if (!state.chats.length) {
     const chat = normalizeChat({ studioSettings: newChatStudioSettings() });
@@ -499,6 +561,7 @@ async function loadChats() {
     restoredComposerText = null;
   }
   if (recoveredOrMigratedPromptState) saveChats({ immediate: true });
+  if (state.chatStoreLoaded) draftContainer()?.querySelector('[data-chat-load-failure]')?.remove();
 }
 
   return {

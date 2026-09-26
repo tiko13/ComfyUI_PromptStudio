@@ -1,0 +1,524 @@
+{
+  "date": "2026-09-24",
+  "viewport": "1920 x 1080",
+  "format": "PNG",
+  "scope": "Prompt Studio only; Video excluded",
+  "items": [
+    {
+      "name": "01-studio-overview-landscape",
+      "file": "01-studio-overview-landscape.png",
+      "caption": "Overview: landscape generation, conversation, Main and Final prompts.",
+      "width": 1920,
+      "height": 1080,
+      "bytes": 1040405,
+      "group": "studio",
+      "status": "README candidate",
+      "sha256": "deffdc1afaea5a472898e2873d91ca50fc827b3d0d06dd63342cc0fb3affc9cc",
+      "privacy_redacted": true,
+      "redactions": [
+        "Session history redacted"
+      ]
+    },
+    {
+      "name": "02-conversational-revision",
+      "file": "02-conversational-revision.png",
+      "caption": "Two generated variants show a blue-to-terracotta pot revision.",
+      "width": 1920,
+      "height": 1080,
+      "bytes": 517460,
+      "group": "studio",
+      "status": "README candidate",
+      "sha256": "e0e32c1999c45a1dc6ece5adcdacc251776dffb99cc29c1aa64b5717c6de1604",
+      "privacy_redacted": true,
+      "redactions": [
+        "Session history redacted"
+      ]
+    },
+    {
+      "name": "03-main-and-final-prompts",
+      "file": "03-main-and-final-prompts.png",
+      "caption": "Main preserves scene intent; Final contains the rendered generation prompt.",
+      "width": 1920,
+      "height": 1080,
+      "bytes": 818951,
+      "group": "studio",
+      "status": "README candidate",
+      "sha256": "48968224ae0e00e26497a49724966b0c628a4aa46a08181c45bea57bd1755b25",
+      "privacy_redacted": true,
+      "redactions": [
+        "Session history redacted"
+      ]
+    },
+    {
+      "name": "04-style-and-framing",
+      "file": "04-style-and-framing.png",
+      "caption": "A generated watercolor scene with style and framing controls.",
+      "width": 1920,
+      "height": 1080,
+      "bytes": 879761,
+      "group": "studio",
+      "status": "README candidate",
+      "sha256": "09b8b6c73067969fb1f79b17046bc6fba84d63e7bec4308007a60af63444b798",
+      "privacy_redacted": true,
+      "redactions": [
+        "Session history redacted"
+      ]
+    },
+    {
+      "name": "05-direct-generation",
+      "file": "05-direct-generation.png",
+      "caption": "Direct prompt generation with LLM amplification disabled.",
+      "width": 1920,
+      "height": 1080,
+      "bytes": 539988,
+      "group": "studio",
+      "status": "README candidate",
+      "sha256": "d26c880a1b661be55aa4d9bafcba5b4f91983b7b8bcb44e4de694b7d321d0046",
+      "privacy_redacted": true,
+      "redactions": [
+        "Session history redacted"
+      ]
+    },
+    {
+      "name": "06-image-discussion",
+      "file": "06-image-discussion.png",
+      "caption": "Image discussion and a proposed prompt change.",
+      "width": 1920,
+      "height": 1080,
+      "bytes": 561445,
+      "group": "studio",
+      "status": "README candidate",
+      "sha256": "585b20dd1cee823357da58e97eb43b59301a33d9a82d3e89b115019266c70025",
+      "privacy_redacted": true,
+      "redactions": [
+        "Session history redacted"
+      ]
+    },
+    {
+      "name": "07-image-editing",
+      "file": "07-image-editing.png",
+      "caption": "A real edit adds a copper watering can to the botanical scene.",
+      "width": 1920,
+      "height": 1080,
+      "bytes": 834303,
+      "group": "studio",
+      "status": "README candidate",
+      "sha256": "8b8ed27d228176be6ebe3f3cac05c1dd4f86fd99bd44938443f58e3eb2d2a510",
+      "privacy_redacted": true,
+      "redactions": [
+        "Session history redacted"
+      ]
+    },
+    {
+      "name": "08-single-edit-reference",
+      "file": "08-single-edit-reference.png",
+      "caption": "Single Krea reference and workflow controls. Staged attachment; no Krea edit was run.",
+      "width": 1920,
+      "height": 1080,
+      "bytes": 466701,
+      "group": "studio",
+      "status": "README candidate",
+      "sha256": "22f38b4fd8ff3da6f2e87ab2b1f10d7cd4cede3074d7d7dd349ed87ecf96b16a",
+      "privacy_redacted": true,
+      "redactions": [
+        "Session history redacted"
+      ]
+    },
+    {
+      "name": "09-multiple-edit-references",
+      "file": "09-multiple-edit-references.png",
+      "caption": "Two Qwen references with background and custom-instruction roles. Staged; not submitted.",
+      "width": 1920,
+      "height": 1080,
+      "bytes": 663286,
+      "group": "studio",
+      "status": "README candidate",
+      "sha256": "22d571f878bfce3621d78bfa2d2c4d2b911dde8cff220d47e2d3f835ca7aa1da",
+      "privacy_redacted": true,
+      "redactions": [
+        "Session history redacted"
+      ]
+    },
+    {
+      "name": "11-upscale-dialog",
+      "file": "11-upscale-dialog.png",
+      "caption": "Choose the upscale factor for an existing image.",
+      "width": 1920,
+      "height": 1080,
+      "bytes": 372874,
+      "group": "studio",
+      "status": "README candidate",
+      "sha256": "d07db94da2918a4d0f5449db5fa14a7428160c167b7b137ba091fca6f388367e",
+      "privacy_redacted": true,
+      "redactions": [
+        "Session history redacted"
+      ]
+    },
+    {
+      "name": "11a-upscaled-result",
+      "file": "11a-upscaled-result.png",
+      "caption": "Actual result from the 2x Krea UltimateSD upscale workflow.",
+      "width": 1920,
+      "height": 1080,
+      "bytes": 851872,
+      "group": "studio",
+      "status": "README candidate",
+      "sha256": "bfb1c99acf101176881a8a074ab46dd842a401b1cefb9b57f911ade6de110b6d",
+      "privacy_redacted": true,
+      "redactions": [
+        "Session history redacted"
+      ]
+    },
+    {
+      "name": "12-model-lora-resolution",
+      "file": "12-model-lora-resolution.png",
+      "caption": "Select a model, add a photography LoRA, and choose landscape resolution. Configuration example.",
+      "width": 1920,
+      "height": 1080,
+      "bytes": 860645,
+      "group": "studio",
+      "status": "README candidate",
+      "sha256": "1b7250d9bb0de1feb37c1869eb3f9daa1f2c59c722a542b657eb35c2858177ac",
+      "privacy_redacted": true,
+      "redactions": [
+        "Session history redacted"
+      ]
+    },
+    {
+      "name": "13-xyz-plot-builder",
+      "file": "13-xyz-plot-builder.png",
+      "caption": "Configure six cells: Steps 10/20/30 against CFG 2/5.",
+      "width": 1920,
+      "height": 1080,
+      "bytes": 186010,
+      "group": "studio",
+      "status": "README candidate",
+      "sha256": "3a02afae5430015fda9e76e9445985cee8fea0ce14fe6189b4c5895c284582b0",
+      "privacy_redacted": true,
+      "redactions": [
+        "Session history redacted"
+      ]
+    },
+    {
+      "name": "14-xyz-comparison-results",
+      "file": "14-xyz-comparison-results.png",
+      "caption": "The completed six-image comparison with labeled axes.",
+      "width": 1920,
+      "height": 1080,
+      "bytes": 429042,
+      "group": "studio",
+      "status": "README candidate",
+      "sha256": "46258275ba88b11fb46a9d70b579907521d0575828ada951cf6cda5e9c0eae33",
+      "privacy_redacted": true,
+      "redactions": [
+        "Session history redacted"
+      ]
+    },
+    {
+      "name": "15-saved-generation-inputs",
+      "file": "15-saved-generation-inputs.png",
+      "caption": "Saved workflow, dimensions, model, node inputs, and prompt replay.",
+      "width": 1920,
+      "height": 1080,
+      "bytes": 257120,
+      "group": "studio",
+      "status": "README candidate",
+      "sha256": "bbc17bc510b2457761433d51944758e427021782355a713d7b793aa70537a0e7",
+      "privacy_redacted": true,
+      "redactions": [
+        "Session history redacted",
+        "redacted",
+        "redacted"
+      ]
+    },
+    {
+      "name": "16a-assistant-context",
+      "file": "16a-assistant-context.png",
+      "caption": "Explicit Main, Final and generation-settings attachments. Question is staged; image attachment is available.",
+      "width": 1920,
+      "height": 1080,
+      "bytes": 259341,
+      "group": "studio",
+      "status": "README candidate",
+      "sha256": "48037a596d8db521e7ab663093831b1560b32901e85437bda644213e460dc935",
+      "privacy_redacted": true,
+      "redactions": [
+        "Image"
+      ]
+    },
+    {
+      "name": "19-setup-wizard",
+      "file": "19-setup-wizard.png",
+      "caption": "Workflow and model choices in setup. No installation was started.",
+      "width": 1920,
+      "height": 1080,
+      "bytes": 208683,
+      "group": "studio",
+      "status": "README candidate",
+      "sha256": "8ec711717701f7006aa6a609ae7fee83350f5c0e8360b2abd8fc311419b77e44",
+      "privacy_redacted": true,
+      "redactions": [
+        "Session history redacted"
+      ]
+    },
+    {
+      "name": "20-workflow-templates",
+      "file": "20-workflow-templates.png",
+      "caption": "Create, Edit and Upscale workflow selection.",
+      "width": 1920,
+      "height": 1080,
+      "bytes": 199826,
+      "group": "studio",
+      "status": "README candidate",
+      "sha256": "4778542578e9491a8d4bc14b52741a65cb4449f166a989a2b7d955ede260cadf"
+    },
+    {
+      "name": "21-local-backend",
+      "file": "21-local-backend.png",
+      "caption": "Llama.cpp settings with Keep models loaded enabled for separate GPUs.",
+      "width": 1920,
+      "height": 1080,
+      "bytes": 212779,
+      "group": "studio",
+      "status": "README candidate",
+      "sha256": "1d435d58bc06d9f74259a8723999ceb90580a4968439c673892a03e3d8e18339",
+      "privacy_redacted": true,
+      "redactions": [
+        "Local model",
+        "Path redacted",
+        "Profile redacted"
+      ]
+    },
+    {
+      "name": "22-llm-profile-editor",
+      "file": "22-llm-profile-editor.png",
+      "caption": "Thinking and sampler profile editor. Viewed without saving; Llama.cpp restored afterward.",
+      "width": 1920,
+      "height": 1080,
+      "bytes": 180794,
+      "group": "studio",
+      "status": "README candidate",
+      "sha256": "40e9d5966855bf29a463f844c37ec55eb99dd85439a0d9be6581c71ec955b282"
+    },
+    {
+      "name": "23-known-references",
+      "file": "23-known-references.png",
+      "caption": "A staged Botanical Studio named-reference definition; canceled without saving.",
+      "width": 1920,
+      "height": 1080,
+      "bytes": 125348,
+      "group": "studio",
+      "status": "README candidate",
+      "sha256": "2c333574b794986e3d203f74c5905f5c1cb7d7eab07f714b1d32472d32f4c8b2"
+    },
+    {
+      "name": "23a-style-presets",
+      "file": "23a-style-presets.png",
+      "caption": "A staged botanical watercolor style preset; canceled without saving.",
+      "width": 1920,
+      "height": 1080,
+      "bytes": 126948,
+      "group": "studio",
+      "status": "README candidate",
+      "sha256": "adfcc2046c095f855921bb0b9219406f9448dc32a9b31b503625757e6ea0f8dc"
+    },
+    {
+      "name": "23b-framing-presets",
+      "file": "23b-framing-presets.png",
+      "caption": "A staged workbench-detail framing preset; canceled without saving.",
+      "width": 1920,
+      "height": 1080,
+      "bytes": 126923,
+      "group": "studio",
+      "status": "README candidate",
+      "sha256": "605fa154f668a163d9e224fa1ffea0bf6dd065bd04c3764226dee70bd54b377c"
+    },
+    {
+      "name": "23c-instruction-templates",
+      "file": "23c-instruction-templates.png",
+      "caption": "A staged scene-preservation instruction template; canceled without saving.",
+      "width": 1920,
+      "height": 1080,
+      "bytes": 126724,
+      "group": "studio",
+      "status": "README candidate",
+      "sha256": "591aa276fe195a18d3d0025d083701f2dcc063ac16173aadb2117b1dec26564d"
+    },
+    {
+      "name": "23d-protected-words",
+      "file": "23d-protected-words.png",
+      "caption": "A staged protected botanical phrase; canceled without saving.",
+      "width": 1920,
+      "height": 1080,
+      "bytes": 115762,
+      "group": "studio",
+      "status": "README candidate",
+      "sha256": "ec2471b503097ba00902c94e23edc7e761bb742c344b2162c1f6545342c07ca1"
+    },
+    {
+      "name": "24-system-status",
+      "file": "24-system-status.png",
+      "caption": "Local backend readiness, ComfyUI controls, recent activity and diagnostics entry points.",
+      "width": 1920,
+      "height": 1080,
+      "bytes": 854987,
+      "group": "studio",
+      "status": "README candidate",
+      "sha256": "d555e94bfd9872a61ed44a3bd4225686a91fa9fd338bb8b2826a57916e03c5d0",
+      "privacy_redacted": true,
+      "redactions": [
+        "Session history redacted",
+        "Local model",
+        "Local details redacted"
+      ]
+    },
+    {
+      "name": "28-full-size-preview",
+      "file": "28-full-size-preview.png",
+      "caption": "Full-size image preview inside Prompt Studio.",
+      "width": 1920,
+      "height": 1080,
+      "bytes": 1901013,
+      "group": "studio",
+      "status": "README candidate",
+      "sha256": "efe3818986d08d519806696c6b0423deefc133fb3bafd4f7cb9c4dc5f0402e5d"
+    },
+    {
+      "name": "30-prompt-slot-canvas",
+      "file": "30-prompt-slot-canvas.png",
+      "caption": "Prompt Slot wired to CLIP Text Encode.",
+      "width": 1920,
+      "height": 1080,
+      "bytes": 96628,
+      "group": "canvas",
+      "status": "README candidate",
+      "sha256": "112219e05129584c6a57ecc302b89aef51d382809cbc0dfefa764aff9d911f02"
+    },
+    {
+      "name": "31-prompt-amplify-canvas",
+      "file": "31-prompt-amplify-canvas.png",
+      "caption": "Prompt Amplify controls and the text-encoding handoff.",
+      "width": 1920,
+      "height": 1080,
+      "bytes": 148137,
+      "group": "canvas",
+      "status": "README candidate",
+      "sha256": "fb0edfa2ae9be399b7a8d9b207c3a721dac65592b255d326df336831114ee96c"
+    },
+    {
+      "name": "32-model-loader-canvas",
+      "file": "32-model-loader-canvas.png",
+      "caption": "Model Loader connected to the LoRA Loader.",
+      "width": 1920,
+      "height": 1080,
+      "bytes": 95165,
+      "group": "canvas",
+      "status": "README candidate",
+      "sha256": "d361abece31bda6462d5805ac85dc219017406ec5ef3d40adb854dad8bf73bf9"
+    },
+    {
+      "name": "33-lora-loader-canvas",
+      "file": "33-lora-loader-canvas.png",
+      "caption": "LoRA Loader connected to the Prompt Studio Sampler.",
+      "width": 1920,
+      "height": 1080,
+      "bytes": 111634,
+      "group": "canvas",
+      "status": "README candidate",
+      "sha256": "73877bce69ea359e3a0742224751dc5fdff9c11ab9331a470e5c11c0da804911"
+    },
+    {
+      "name": "34-sampler-canvas",
+      "file": "34-sampler-canvas.png",
+      "caption": "Latent image through the Sampler to VAE Decode.",
+      "width": 1920,
+      "height": 1080,
+      "bytes": 119995,
+      "group": "canvas",
+      "status": "README candidate",
+      "sha256": "314fe531dea656c7713da31fe0b9adce9373e9a7e53adcc6791bf269345e4bb6"
+    },
+    {
+      "name": "35-source-and-reference-canvas",
+      "file": "35-source-and-reference-canvas.png",
+      "caption": "Image Source and a named Reference Image node.",
+      "width": 1920,
+      "height": 1080,
+      "bytes": 96191,
+      "group": "canvas",
+      "status": "README candidate",
+      "sha256": "6738e648c681a6b9b8068323831b7f336796768b9162d4780737c7b228a38767",
+      "privacy_redacted": true,
+      "redactions": [
+        "Local image reference redacted"
+      ]
+    },
+    {
+      "name": "36-upscale-node-canvas",
+      "file": "36-upscale-node-canvas.png",
+      "caption": "Prompt Studio Upscale image output and downstream scaling.",
+      "width": 1920,
+      "height": 1080,
+      "bytes": 111340,
+      "group": "canvas",
+      "status": "README candidate",
+      "sha256": "72122bd15c874bfc9634b6fba6c5b4f693004baaa13d9ed3f2e38df5a9f125e7"
+    },
+    {
+      "name": "37-general-llm-node-canvas",
+      "file": "37-general-llm-node-canvas.png",
+      "caption": "KoboldCpp Apply for general local-LLM text processing.",
+      "width": 1920,
+      "height": 1080,
+      "bytes": 109788,
+      "group": "canvas",
+      "status": "README candidate",
+      "sha256": "88d9f4bd8491c482c07226d31300cefc6e56000485f9aace67ce91ced51c8ef6"
+    },
+    {
+      "name": "38-ideogram-json-canvas",
+      "file": "38-ideogram-json-canvas.png",
+      "caption": "Ideogram JSON amplification with a safe botanical description.",
+      "width": 1920,
+      "height": 1080,
+      "bytes": 141079,
+      "group": "canvas",
+      "status": "README candidate",
+      "sha256": "db50262cbd0612f2389019541a49fe98b3e61c3155f8ea9fc2a8a4ab569134d2"
+    },
+    {
+      "name": "39-workflow-input-canvas",
+      "file": "39-workflow-input-canvas.png",
+      "caption": "A named workflow input feeds a 25-step value into the sampler.",
+      "width": 1920,
+      "height": 1080,
+      "bytes": 110420,
+      "group": "canvas",
+      "status": "README candidate",
+      "sha256": "74cbc406ed99ed079a57ff4e118801e67ca32a82cf5aa1fec50589949c02e163"
+    },
+    {
+      "name": "40-model-lora-sampler-canvas",
+      "file": "40-model-lora-sampler-canvas.png",
+      "caption": "Model, LoRA and Sampler wiring in one canvas view.",
+      "width": 1920,
+      "height": 1080,
+      "bytes": 116079,
+      "group": "canvas",
+      "status": "README candidate",
+      "sha256": "703c9ee1c9e4fd3b6a46d257b3b495fa27ab72548b7007bfe4c17fde14f910e7"
+    },
+    {
+      "name": "41-canvas-prompt-chat",
+      "file": "41-canvas-prompt-chat.png",
+      "caption": "Embedded Prompt Chat beside the ComfyUI node canvas.",
+      "width": 1920,
+      "height": 1080,
+      "bytes": 820409,
+      "group": "canvas",
+      "status": "README candidate",
+      "sha256": "8716a89aa9d369543586999198482fb67595873049cad020479a6221585f9e8a"
+    }
+  ],
+  "privacy_note": "Opaque privacy redactions cover session history and local runtime identifiers. Pixels outside the redacted rectangles and native dimensions are unchanged."
+}
