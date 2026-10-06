@@ -11,7 +11,8 @@ export function createImageGenerationProgressController({ state, studioGeneratio
       );
       scope.listen(api, "execution_start", (event) => {
         const promptId = eventPromptId(event);
-        if (studioGenerationRecord(promptId)) {
+        const record = studioGenerationRecord(promptId);
+        if (record && !["complete", "error", "cancelled"].includes(record.message?.generationState)) {
           state.activeGenerationPromptId = promptId;
           setStudioGenerationState(promptId, "generating");
         }

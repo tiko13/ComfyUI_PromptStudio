@@ -100,7 +100,7 @@ export function exportGenerationProvenance(generation) {
   const visit=(value,path=[],key='')=>{
     if(Array.isArray(value))return value.map((item,index)=>visit(item,[...path,index],key));
     if(value&&typeof value==='object')return Object.fromEntries(Object.entries(value).map(([name,item])=>[name,visit(item,[...path,name],name)]));
-    if(typeof value==='string'&&['lora_stack_json','document_json'].includes(key)) {
+    if(typeof value==='string'&&['lora_stack_json','reference_stack_json','document_json'].includes(key)) {
       try { return JSON.stringify(visit(JSON.parse(value),path,key)); } catch { return value; }
     }
     if(typeof value==='string'&&absolutePath(value)&&!authoredTextKey.test(key)) {

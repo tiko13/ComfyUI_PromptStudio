@@ -215,6 +215,15 @@ export const DISCONNECTED_ALLOWED_CONTROL_IDS = [
 ];
 
 export const MUTATION_CONFIG_CATEGORIES = Object.freeze({
+  forbidden_words: {
+    title: "Forbidden words",
+    description: "Keep unwanted words and phrases out of final prompts in both studios.",
+    itemLabel: "forbidden phrase",
+    textField: "replacement",
+    textLabel: "Replacement",
+    optionalText: true,
+    help: "Matching ignores case and uses word boundaries. Verbatim inserts Replacement exactly. Guidance tells the backend LLM how to rephrase. In either mode, leave Replacement empty to ask the LLM for natural alternative wording. Longer overlapping phrases take priority.",
+  },
   protected_words: {
     title: "Protected words",
     description: "Preserve specific words and phrases during prompt rewriting.",

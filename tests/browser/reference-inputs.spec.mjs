@@ -61,8 +61,10 @@ try {
  await select("qwen","edit");await tile.getByRole("button",{name:"References",exact:true}).click();
  assert.equal(await dialog.locator(".ps-reference-row").count(),2,"Workflow slots are separate from Qwen edit references");
  await upload(dialog.getByRole("button",{name:"Add reference images"}),2);
+ await dialog.getByRole("button",{name:"Expand reference 1",exact:true}).click();
  await dialog.getByRole("combobox",{name:"Role for reference 1"}).selectOption("clothing");
  await dialog.getByRole("textbox",{name:"Instruction for reference 1"}).fill("Use only the jacket");
+ await dialog.getByRole("button",{name:"Expand reference 2",exact:true}).click();
  await dialog.getByRole("combobox",{name:"Role for reference 2"}).selectOption("pose");
  await upload(dialog.getByRole("button",{name:"Choose image for Upscale detail"}));
  for(const width of [1440,390]){
@@ -146,6 +148,7 @@ try {
  assert.equal(await dialog.getByRole("button",{name:"Add reference images"}).isDisabled(),true);
  await dialog.getByRole("button",{name:"Remove reference 1",exact:true}).click();
  assert.equal((await chat()).qwenEditReferences.length,8);
+ await dialog.getByRole("button",{name:"Expand reference 1",exact:true}).click();
  assert.equal(await dialog.getByRole("combobox",{name:"Role for reference 1"}).inputValue(),"pose","Roles remain bound to images after removal");
  await dialog.getByRole("textbox",{name:"Instruction for reference 1"}).focus();
  await page.keyboard.press("Tab");

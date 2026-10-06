@@ -25,7 +25,8 @@ await fixture.context.route('**/promptstudio/setup/*', async route => {
   const gate = nextPlanGate; nextPlanGate = null;
   if (gate) await gate;
   const packs=catalog.packs.filter(p=>(input.packs||['create','edit','upscale']).includes(p.id));
-  const requirements=catalog.requirements.filter(r=>packs.some(p=>p.requirements.includes(r.id))).map(req=>{
+  const addons=(catalog.addons||[]).filter(p=>(input.addons||[]).includes(p.id));
+  const requirements=catalog.requirements.filter(r=>[...packs,...addons].some(p=>p.requirements.includes(r.id))).map(req=>{
    const asset=assets.find(a=>a.id===req.default_asset);
    const row=req.id==='encoder'?structuredClone(encoder):{...req,status:'available',choice:asset.relative_path,
     candidates:[{name:asset.relative_path,evidence:'Verified fixture asset'}],rejected:[],download_options:[asset,...(req.alternatives||[]).map(id=>assets.find(a=>a.id===id))],source:asset.url,destination:asset.relative_path};
@@ -35,8 +36,8 @@ await fixture.context.route('**/promptstudio/setup/*', async route => {
    row.download_bytes=row.status==='download'?row.download_options.find(a=>row.choice==='__download__:'+a.id).size:0;
    return row;
   });
-  data={version:1,packs,available_packs:catalog.packs,requirements,node_packs:[],
-   blockers:packs.length?[]:['Select at least one workflow'],checks:[{name:'ComfyUI and Prompt Studio nodes',status:'ready'},{name:'Workflow and setup storage',status:'ready'}],
+  data={version:1,packs,available_packs:catalog.packs,addons,available_addons:catalog.addons,requirements,node_packs:[],
+   blockers:packs.length||addons.length?[]:['Select at least one workflow'],checks:[{name:'ComfyUI and Prompt Studio nodes',status:'ready'},{name:'Workflow and setup storage',status:'ready'}],
    disks:[],download_bytes:requirements.reduce((sum,row)=>sum+row.download_bytes,0),licenses:catalog.licenses,state:structuredClone(state)};
  } else if(action === 'dismiss') {state.onboarding='deferred';data=state;}
  else if(action === 'start') {
@@ -56,9 +57,12 @@ try {
  await wizard.getByRole('checkbox',{name:'Create',exact:true}).waitFor();
  const waitForModels = () => wizard.locator('[data-setup-content]').evaluate(async el=>{while(el.getAttribute('aria-busy')==='true') await new Promise(requestAnimationFrame);});
  const modelIds = () => wizard.locator('[data-setup-model]').evaluateAll(nodes=>nodes.map(node=>node.dataset.setupModel).sort());
- assert.equal(await wizard.getByRole('checkbox').count(),18);
+ assert.equal(await wizard.getByRole('checkbox').count(),22);
  assert.equal(await wizard.getByRole('checkbox',{checked:true}).count(),3);
  assert.deepEqual(await modelIds(),['encoder','identity_edit','krea2','textfusion','upscaler','vae']);
+ await wizard.getByRole('checkbox',{name:'Depth extraction',exact:true}).check(); await waitForModels();
+ assert.ok((await modelIds()).includes('controlnet_depth'));
+ await wizard.getByRole('checkbox',{name:'Depth extraction',exact:true}).uncheck(); await waitForModels();
  await wizard.getByRole('checkbox',{name:'Edit',exact:true}).uncheck(); await waitForModels();
  assert.deepEqual(await modelIds(),['encoder','krea2','textfusion','upscaler','vae']);
  await wizard.getByRole('checkbox',{name:'Upscale',exact:true}).uncheck(); await waitForModels();
@@ -72,9 +76,9 @@ try {
   await wizard.getByRole('checkbox',{name,exact:true}).uncheck();
   await wizard.locator('[data-setup-content]').evaluate(async el=>{while(el.getAttribute('aria-busy')==='true') await new Promise(requestAnimationFrame);});
  }
- assert.equal(await wizard.getByRole('button',{name:'Set up selected workflows',exact:true}).isDisabled(),true);
+ assert.equal(await wizard.getByRole('button',{name:'Set up selections',exact:true}).isDisabled(),true);
  assert.equal(await wizard.locator('.promptstudio-setup-requirement').count(),0);
- await wizard.getByText('Select a workflow to see its required models.',{exact:true}).waitFor();
+ await wizard.getByText('Select a workflow or optional feature to see its required models.',{exact:true}).waitFor();
  for(const name of ['Create','Edit','Upscale']) {
   await wizard.getByRole('checkbox',{name,exact:true}).check();
   await wizard.locator('[data-setup-content]').evaluate(async el=>{while(el.getAttribute('aria-busy')==='true') await new Promise(requestAnimationFrame);});
@@ -106,9 +110,9 @@ try {
  await qwen.click(); await popup.waitFor({state:'visible'}); assert.equal(await qwen.isChecked(),false);
  await popup.getByRole('button',{name:'Accept',exact:true}).click();
  await wizard.getByLabel('Qwen Image 2.1 diffusion model',{exact:true}).waitFor();
- await wizard.getByRole('checkbox',{name:'Qwen 2.1 Edit · Turbo 4 steps',exact:true}).click();
+ await wizard.getByRole('checkbox',{name:'Qwen 2.1 Edit · Turbo v0.3 · 6 steps',exact:true}).click();
  await popup.waitFor({state:'visible'}); await popup.getByRole('button',{name:'Accept',exact:true}).click();
- await wizard.getByLabel('Qwen 2.1 Turbo 4-step LoRA',{exact:true}).waitFor();
+ await wizard.getByLabel('Qwen 2.1 Turbo v0.3 LoRA',{exact:true}).waitFor();
  // Keep only Qwen: the last Krea selection removes all Krea models immediately,
  // even while the server's next model scan is held open.
  for(const name of ['Edit','Upscale']) { await wizard.getByRole('checkbox',{name,exact:true}).uncheck(); await waitForModels(); }
@@ -116,13 +120,13 @@ try {
  nextPlanGate = new Promise(resolve => { releasePlan = resolve; });
  await wizard.getByRole('checkbox',{name:'Create',exact:true}).uncheck();
  assert.deepEqual(await modelIds(),['qwen21','qwen21_encoder','qwen21_turbo','qwen21_vae']);
- await wizard.getByText('Updating models for selected workflows…',{exact:true}).waitFor();
- assert.equal(await wizard.getByRole('button',{name:'Set up selected workflows',exact:true}).isDisabled(),true);
+ await wizard.getByText('Updating models for your selections…',{exact:true}).waitFor();
+ assert.equal(await wizard.getByRole('button',{name:'Set up selections',exact:true}).isDisabled(),true);
  releasePlan(); await waitForModels();
  assert.deepEqual(await modelIds(),['qwen21','qwen21_encoder','qwen21_turbo','qwen21_vae']);
- await wizard.getByRole('checkbox',{name:'Qwen 2.1 Edit · Turbo 4 steps',exact:true}).uncheck(); await waitForModels();
+ await wizard.getByRole('checkbox',{name:'Qwen 2.1 Edit · Turbo v0.3 · 6 steps',exact:true}).uncheck(); await waitForModels();
  assert.deepEqual(await modelIds(),['qwen21','qwen21_encoder','qwen21_vae']);
- await wizard.getByRole('checkbox',{name:'Qwen 2.1 Edit · Turbo 4 steps',exact:true}).click();
+ await wizard.getByRole('checkbox',{name:'Qwen 2.1 Edit · Turbo v0.3 · 6 steps',exact:true}).click();
  await popup.getByRole('button',{name:'Accept',exact:true}).click(); await waitForModels();
  for(const name of ['Create','Edit','Upscale']) { await wizard.getByRole('checkbox',{name,exact:true}).check(); await waitForModels(); }
  await wizard.getByLabel(encoder.name).selectOption('__download__:bf16');
@@ -145,10 +149,10 @@ try {
   await popup.screenshot({path:resolve(output,`setup-license-${width}.png`)});
   await popup.getByRole('button',{name:'Cancel',exact:true}).click(); await popup.waitFor({state:'detached'});
  }
- await wizard.getByRole('button',{name:'Set up selected workflows',exact:true}).click();
+ await wizard.getByRole('button',{name:'Set up selections',exact:true}).click();
  await wizard.getByText('Downloading selected encoder',{exact:true}).first().waitFor();
  assert.equal(calls.filter(c=>c.action==='start').length,1);
- assert.deepEqual(Object.keys(calls.find(c=>c.action==='start').input.license_acceptances).sort(),['qwen21_create_base25','qwen21_edit_turbo4']);
+ assert.deepEqual(Object.keys(calls.find(c=>c.action==='start').input.license_acceptances).sort(),['qwen21_create_base25','qwen21_edit_turbo6']);
  assert.match(await wizard.locator('[data-metric="metrics"]').textContent(),/50.0 MB\/s/);
  assert.equal(await wizard.getByRole('progressbar',{name:'Current operation'}).count(),1);
  await wizard.getByRole('button',{name:'Pause',exact:true}).click();

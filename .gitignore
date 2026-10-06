@@ -83,6 +83,7 @@ Desktop.ini
 /storageState*.json
 
 # Prompt Studio runtime state
+reference_models/
 prompt_studio_chats.json
 prompt_studio_chats.json.tmp
 prompt_studio_chats/
@@ -97,6 +98,7 @@ llamacpp_server.json
 config/LlamaCPP/*.json
 config/LlamaCPP/*.router.ini
 protected_words.txt
+forbidden_words.json
 
 # User-owned presets (copy the tracked examples from presets/examples/)
 style_templates.additional.json

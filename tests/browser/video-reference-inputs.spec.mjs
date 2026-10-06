@@ -32,16 +32,35 @@ else {
    await page.waitForFunction(()=>document.querySelector(".psvstudio-workflow-reference").getAttribute("aria-busy")==="false");
   }
   assert.equal(await dialog.getByRole("combobox").count(),0,"Universal inputs have no Qwen prompt controls");
+  const preparation=dialog.locator(".ps-reference-preparation").first();
+  await preparation.locator("summary").click();
+  await preparation.getByRole("button",{name:"Hide all",exact:true}).click();
+  await preparation.getByRole("button",{name:"Use prepared reference",exact:true}).click();
+  await page.waitForFunction(()=>document.querySelector(".psvstudio-workflow-reference").getAttribute("aria-busy")==="false");
   await dialog.getByRole("button",{name:"Done"}).click();
+  await page.evaluate(() => {
+    const m = window.videoReferenceTest;
+    const plain = structuredClone(m.state.workflows[0]);
+    plain.id = "plain"; plain.name = "[PSV] No reference inputs";
+    for (const id of ["a", "b", "extra"]) delete plain.snapshot.output[id];
+    m.state.workflows.push(plain); m.renderHeader();
+  });
+  await page.locator("#psvstudio-workflow").selectOption("plain");
+  assert.equal(await tile.isVisible(), false, "Switching workflows immediately hides unsupported references");
+  assert.match(await page.locator("#psvstudio-run-summary").textContent(), /No reference inputs/);
+  await page.locator("#psvstudio-workflow").selectOption("refs");
+  assert.equal(await tile.isVisible(), true, "Switching back immediately restores workflow references");
+  assert.match(await tile.locator("small").textContent(), /References \(2\)/);
   await page.evaluate(()=>window.videoReferenceTest.generateProject());
   const result=await page.evaluate(()=>({snapshot:window.videoQueued,project:window.videoReferenceTest.state.projects.find(p=>p.id==="reference-project")}));
   assert.ok(result.snapshot,JSON.stringify(result.project.generations));
-  assert.equal(JSON.parse(result.snapshot.output.a.inputs.image_ref).filename,"video-ref-1.png");
+  assert.equal(JSON.parse(result.snapshot.output.a.inputs.image_ref).filename,"video-ref-3.png");
   assert.equal(JSON.parse(result.snapshot.output.b.inputs.image_ref).filename,"video-ref-2.png");
   await page.waitForFunction(()=>document.querySelector("#psvstudio-save-state")?.textContent==="Saved");
   await page.reload();await page.waitForFunction(()=>window.studioReady);await attachVideo(page);
   const restored=await page.evaluate(async()=>{const {state}=await import("/extensions/PromptStudio_Video/js/promptstudio_video_studio.js");return state.projects.find(p=>p.id==="reference-project").workflowReferences;});
   assert.equal(restored.refs.b.filename,"video-ref-2.png");
+  assert.equal(restored.refs.a.filename,"video-ref-3.png");
   assert.deepEqual(fixture.errors,[]);
   console.log("Video workflow inputs: shared popup, independent queue binding, and persistence passed.");
  }finally{await fixture.close();}

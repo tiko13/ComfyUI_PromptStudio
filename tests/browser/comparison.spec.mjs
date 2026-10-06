@@ -95,7 +95,7 @@ try {
   await page.setViewportSize({width:1440,height:1000});
   if (videoEnabled) {
     await attachVideo(page);
-    await page.locator('[data-generation-id="saved-video"]').getByRole('button',{name:'Compare saved inputs'}).click();
+    await page.locator('#psvstudio-player-details').getByRole('button',{name:'Compare saved inputs'}).click();
     await page.getByRole('button',{name:'Restore candidate inputs'}).click();
     await page.waitForFunction(()=>document.querySelector('.ps-result-comparison [role="status"]')?.textContent.includes('restored'));
     assert.equal(await page.evaluate(()=>window.comparisonQueued?.length||0),0);
@@ -112,13 +112,16 @@ try {
     await page.locator('#psvstudio-generate').click();
     await page.getByRole('button',{name:'Replay saved inputs',exact:true}).click();
     await page.waitForFunction(()=>window.comparisonQueued?.length===1);
-    const queued=await page.evaluate(()=>window.comparisonQueued[0]);assert.deepEqual(queued.workflow,savedSnapshot.workflow);assert.equal(queued.output['2'].inputs.seed,1729);
+    const queued=await page.evaluate(()=>window.comparisonQueued[0]);
+    assert.ok(queued.workflow.extra.promptstudio_submission, 'Replay retains durable submission recovery metadata');
+    const replayWorkflow=structuredClone(queued.workflow);delete replayWorkflow.extra.promptstudio_submission;
+    assert.deepEqual(replayWorkflow,savedSnapshot.workflow);assert.equal(queued.output['2'].inputs.seed,1729);
     await page.waitForFunction(()=>!document.querySelector('#psvstudio-run-summary')?.textContent.includes('Next generation uses saved inputs'));
     assert.deepEqual(fixture.projects.projects[0].generations.find(item=>item.id==='saved-video').workflow_snapshot,savedSnapshot);
     // Arm again after marking the synthetic replay finished, then edit the document.
     await page.evaluate(async()=>{const video=await import('/extensions/PromptStudio_Video/js/promptstudio_video_studio.js');
       for(const generation of video.state.projects[0].generations)generation.status='complete';});
-    await page.locator('[data-generation-id="saved-video"]').getByRole('button',{name:'Compare saved inputs'}).click();
+    await page.locator('#psvstudio-player-details').getByRole('button',{name:'Compare saved inputs'}).click();
     await page.getByRole('button',{name:'Restore candidate inputs'}).click();
     await page.waitForFunction(()=>document.querySelector('.ps-result-comparison [role="status"]')?.textContent.includes('restored'));
     await page.keyboard.press('Escape');

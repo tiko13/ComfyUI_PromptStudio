@@ -1,6 +1,7 @@
 import { normalizeImageReference } from "../chat/image-reference.js";
 import { editReferenceNodeIds } from "./edit-reference.js";
 import { normalizeQwenReferences } from "./qwen-references.js";
+import { currentWorkflowId } from "./workflow-migrations.js";
 
 export function normalizeReferenceState(value) {
   const inputs = value?.workflowReferenceInputs;
@@ -33,7 +34,7 @@ export function referenceInputDescriptors(snapshot) {
 export function normalizeWorkflowReferences(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return {};
   return Object.fromEntries(Object.entries(value).filter(([, slots]) => slots && typeof slots === "object" && !Array.isArray(slots))
-    .map(([workflow, slots]) => [workflow, Object.fromEntries(Object.entries(slots).map(([id, image]) => [id, normalizeImageReference(image)]))]));
+    .map(([workflow, slots]) => [currentWorkflowId(workflow), Object.fromEntries(Object.entries(slots).map(([id, image]) => [id, normalizeImageReference(image)]))]));
 }
 
 export function workflowReferenceValues(owner, profile) {

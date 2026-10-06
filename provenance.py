@@ -58,6 +58,19 @@ def snapshot_asset_references(snapshot):
             name = _relative_name(item["name"])
             references.append({"node_id": str(node_id), "input": f"lora_stack_json[{index}]", "category": "loras",
                                "name": name or "[private path]", "invalid": name is None})
+        try:
+            adapters = json.loads(inputs.get("reference_stack_json", "[]"))
+        except (ValueError, TypeError):
+            adapters = []
+        for index, item in enumerate(adapters if isinstance(adapters, list) else []):
+            if not isinstance(item, dict) or not item.get("name"):
+                continue
+            name = _relative_name(item["name"])
+            category = item.get("category", "loras" if item.get("kind") == "reflora" else "refmods")
+            valid_category = category in {"loras", "refmods", "audio_refmods"}
+            references.append({"node_id": str(node_id), "input": f"reference_stack_json[{index}]",
+                               "category": category if valid_category else "refmods",
+                               "name": name or "[private path]", "invalid": name is None or not valid_category})
     return references
 
 

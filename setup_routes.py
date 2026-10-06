@@ -4,6 +4,8 @@ import json
 from pathlib import Path
 import urllib.error
 import urllib.request
+import time
+import uuid
 
 from .setup_service import SetupService
 
@@ -15,6 +17,10 @@ def register_setup_routes(server):
     from aiohttp import web
     import folder_paths
     import nodes
+    from .controlnet import register_aux_path
+    register_aux_path(folder_paths)
+    from .reference_regions import register_paths
+    register_paths(folder_paths)
 
     def user_root(request):
         resolved = server.user_manager.get_request_user_filepath(request, None, create_dir=False)
@@ -27,10 +33,36 @@ def register_setup_routes(server):
         return path
 
     def manager_available():
-        return any(getattr(route.resource, "canonical", "") == "/customnode/install/git_url"
+        return any(getattr(route.resource, "canonical", "") in {"/customnode/install/git_url", "/v2/manager/queue/task"}
                    for route in server.app.router.routes())
 
     def install_node(dependency):
+        routes = {getattr(route.resource, "canonical", "") for route in server.app.router.routes()}
+        if "/v2/manager/queue/task" in routes:
+            identity = "promptstudio-" + uuid.uuid4().hex
+            base = f"http://127.0.0.1:{server.port}/v2/manager/queue/"
+            def call(action, payload=None):
+                req = urllib.request.Request(base + action, data=None if payload is None else json.dumps(payload).encode(),
+                                             headers={"Content-Type": "application/json"})
+                with urllib.request.urlopen(req, timeout=60) as response:
+                    data = response.read()
+                    return json.loads(data) if data else {}
+            registry = dependency.get("registry_id")
+            call("task", {"ui_id": identity, "client_id": "promptstudio-setup", "kind": "install", "params": {
+                "id": registry or dependency["url"].removeprefix("https://github.com/"),
+                "version": "latest" if registry else "nightly", "selected_version": "latest" if registry else "nightly",
+                "repository": dependency["url"], "mode": "cache", "channel": "default", "skip_post_install": False}})
+            call("start", {})
+            deadline = time.monotonic() + 1200
+            while time.monotonic() < deadline:
+                history = call("history?ui_id=" + identity)
+                item = history.get(identity) or history.get("history")
+                if item and item.get("status", {}).get("completed"):
+                    if item["status"]["status_str"] not in {"success", "skip", "skipped"}:
+                        raise ValueError(f"ComfyUI Manager could not install {dependency['name']}: {item.get('result', '')}")
+                    return
+                time.sleep(1)
+            raise ValueError("Manager installation is still pending. Check Manager before resuming setup.")
         # The reviewed catalog owns this URL. Use the existing Manager contract
         # and let its security/install policy handle third-party code.
         url = f"http://127.0.0.1:{server.port}/customnode/install/git_url"
@@ -56,6 +88,7 @@ def register_setup_routes(server):
             if action == "status" and request.method == "GET":
                 result = await asyncio.to_thread(service.status, root)
             elif action == "plan" and request.method == "POST":
+                register_aux_path(folder_paths)
                 result = await asyncio.to_thread(service.plan, root, payload)
             elif action == "start" and request.method == "POST":
                 result = await asyncio.to_thread(service.start, root, payload)

@@ -1,7 +1,7 @@
+import { isStudioSampler, samplingControls } from "./sampling.js";
 import {
   LORA_LOADER_TYPE,
   MODEL_LOADER_TYPE,
-  SAMPLER_CONTROL_TYPE,
 } from "../core/constants.js";
 import { editReferenceNodeIds } from "./edit-reference.js";
 import { cleanModelName } from "./model-name.js";
@@ -51,18 +51,11 @@ export function normalizeWorkflowProfile(profile) {
     })).filter((node) => node.id)
     : snapshotModelNodes;
   const snapshotSamplingNodes = Object.entries(snapshot?.output || {})
-    .filter(([, node]) => node?.class_type === SAMPLER_CONTROL_TYPE)
+    .filter(([, node]) => isStudioSampler(node?.class_type))
     .map(([id, node]) => ({
       id: String(id),
       label: `Sampler ${id}`,
-      controls: {
-        seed: Number(node.inputs?.seed ?? 0),
-        steps: Number(node.inputs?.steps ?? 20),
-        cfg: Number(node.inputs?.cfg ?? 8),
-        sampler: String(node.inputs?.sampler_name || ""),
-        scheduler: String(node.inputs?.scheduler || ""),
-        denoise: Number(node.inputs?.denoise ?? 1),
-      },
+      controls: samplingControls(node),
     }));
   const samplingNodes = Array.isArray(profile?.samplingNodes)
     ? profile.samplingNodes.map((node) => ({

@@ -1,4 +1,5 @@
 import { normalizeImageReference } from "../chat/image-reference.js";
+import { normalizeReferenceState, referenceInputsMatch } from "./reference-inputs.js";
 
 export function referenceContextMatches(saved, current) {
   const key = value => {
@@ -7,10 +8,18 @@ export function referenceContextMatches(saved, current) {
   };
   return Boolean(saved && current)
     && key(saved.sourceImage) === key(current.sourceImage)
+    && (saved.editPromptModel !== "qwen_image_2_1" || (saved.workflowProfileId === current.workflowProfileId && referenceInputsMatch(saved, current)))
     && key(saved.referenceImage) === key(current.referenceImage);
 }
 
 export function normalizeReferenceClarification(value) {
+  if (value?.editPromptModel === "qwen_image_2_1") {
+    if (!normalizeImageReference(value.sourceImage) || !value.workflowProfileId || !String(value.question || "").trim()) return null;
+    return {...normalizeReferenceState(value), workflowProfileId: String(value.workflowProfileId),
+      userText: String(value.userText || "").slice(0, 16000), question: String(value.question).slice(0, 4000),
+      sourceImage: normalizeImageReference(value.sourceImage), referenceImage: null,
+      mainPrompt: String(value.mainPrompt || ""), finalPrompt: String(value.finalPrompt || "")};
+  }
   if (!value || typeof value !== "object" || !String(value.userText || "").trim() || !String(value.question || "").trim()) return null;
   if (!normalizeImageReference(value.sourceImage) || !normalizeImageReference(value.referenceImage)) return null;
   return {userText: String(value.userText).slice(0,16000), question: String(value.question).slice(0,4000),
@@ -34,6 +43,7 @@ export function normalizeReferenceGrounding(value) {
 
 export async function requestReferenceGrounding(fetchApi, payload, signal) {
   const response = await fetchApi("/promptstudio/prompt-studio/ground-edit-reference", {
+    timeoutMs: null,
     method: "POST", headers: {"Content-Type": "application/json"}, signal,
     body: JSON.stringify(payload),
   });

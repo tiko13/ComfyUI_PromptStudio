@@ -77,3 +77,56 @@ class QwenReferenceTests(unittest.TestCase):
         qwen_edit.validate_result({"prompt": "Recolor the jacket in the image.", "clarification": ""}, 1)
         with self.assertRaises(ValueError):
             qwen_edit.validate_result({"prompt": "Recolor <image1>.", "clarification": ""}, 1)
+
+    def test_structure_only_is_analysis_context_without_execution_tag(self):
+        for kind in ("pose", "depth", "edges", "sketch"):
+            payload = self.payload(1)
+            payload["user_text"] = ""
+            payload["references"][0].update(use="structure", role="custom", guide={"type": kind, "strength": .8})
+            prompt = f"Follow the supplied {kind} guide while preserving the subject in the image."
+            with mock.patch(self.routes.__package__+".reference_detection.pose_mapping_clarification",return_value=None), mock.patch.object(self.routes, "_consult", return_value=json.dumps({"prompt": prompt, "clarification": ""})) as generate:
+                self.assertEqual(self.routes._build_qwen_edit_prompt(payload), prompt)
+            message = generate.call_args.args[0]["messages"][0]
+            context = json.loads(message["text"])
+            self.assertEqual(len(message["images"]), 2)
+            self.assertEqual(context["execution_image_count"], 1)
+            self.assertEqual(context["references"], [])
+            self.assertEqual(context["structure_guides"][0]["analysis_image_position"], 2)
+            self.assertEqual(context["structure_guides"][0]["guide"]["type"], kind)
+
+    def test_detected_ambiguity_prevents_llm_from_inventing_recipient(self):
+        with mock.patch(self.routes.__package__+".reference_detection.pose_mapping_clarification",return_value="Select the recipient"),mock.patch.object(self.routes,"_consult") as generate:
+            with self.assertRaisesRegex(ValueError,"Select the recipient"):
+                self.routes._build_qwen_edit_prompt(self.payload(1))
+            generate.assert_not_called()
+
+    def test_mixed_references_keep_execution_numbering_and_targeting(self):
+        payload = self.payload(2)
+        region = dict(x=.1, y=.2, width=.3, height=.4)
+        payload["references"][0].update(use="structure", guide={"type": "pose", "strength": .6}, targeting={"reference": region, "target": region})
+        payload["references"][1]["instruction"] = "Use the left person's jacket for the dark-haired person"
+        images, context = qwen_edit.request_context(payload)
+        self.assertEqual([i["filename"] for i in images], ["base.png", "ref-1.png", "ref-0.png"])
+        self.assertEqual(context["execution_image_count"], 2)
+        self.assertEqual(context["references"][0]["image"], "<image2>")
+        self.assertEqual(context["structure_guides"][0]["targeting"]["target"], region)
+        payload["references"][0]["use"] = "both"
+        images, context = qwen_edit.request_context(payload)
+        self.assertEqual(len(images), 3)
+        self.assertEqual(context["execution_image_count"], 3)
+        self.assertEqual(context["structure_guides"][0]["analysis_image_position"], 2)
+
+    def test_inactive_guide_and_invalid_targeting_fail_before_llm(self):
+        payload = self.payload(1)
+        payload["user_text"] = ""
+        payload["references"][0].update(use="structure", guide={"type": "pose", "strength": 0})
+        with self.assertRaisesRegex(ValueError, "Describe"):
+            qwen_edit.request_context(payload)
+        payload["user_text"] = "Make the jacket red"
+        images, context = qwen_edit.request_context(payload)
+        self.assertEqual(len(images), 1)
+        self.assertFalse(context["structure_guides"][0]["active"])
+        for region in (dict(x=0, y=0, width=2, height=1), dict(x=0, y=0, width=float("nan"), height=1)):
+            payload["references"][0]["targeting"] = {"target": region}
+            with self.assertRaises(ValueError):
+                qwen_edit.request_context(payload)

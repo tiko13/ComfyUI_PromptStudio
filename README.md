@@ -188,9 +188,9 @@ Final unchanged; enable LLM amplification to adopt observed details into them.
 
 </details>
 
-#### Qwen edit references
+#### Qwen references
 
-Assign a role to each reference so the edit can borrow the background, style, object, or specific detail you want.
+Assign a role to each reference so Qwen 2.1 Create or Edit can borrow the subject, background, style, object, or specific detail you want.
 
 ![Two Qwen reference images with background and custom-instruction roles](docs/images/screenshots/09-multiple-edit-references.png)
 
@@ -199,12 +199,19 @@ Assign a role to each reference so the edit can borrow the background, style, ob
 <details>
 <summary>Qwen reference roles and workflow requirements</summary>
 
-**Qwen Image 2.1 edit references** are a separate, explicitly supported capability.
+**Qwen Image 2.1 Create** supports up to **ten** reference images, including with
+Turbo v0.3. Reference roles and instructions are appended to the execution prompt;
+the normal Main/Final prompt flow and requested output size are preserved. Custom
+Create graphs need one native **Text Encode Qwen Image 2.1** node connected to the
+Prompt Slot/Amplify, unassigned image inputs, an independent canvas latent, and
+one downstream VAE decoder. The decoder's VAE also encodes the references.
+
+**Qwen Image 2.1 Edit** supports references alongside its source image.
 Connect the Prompt Studio Image Source (optionally through preprocessing) to
 `images.image_1` on one native **Text Encode Qwen Image 2.1** node, and connect the
 Prompt Slot/Amplify prompt to that encoder. Leave the other encoder image inputs
 empty. Prompt Studio exposes a dynamic list of up to **nine** additional images;
-the base image occupies the tenth slot. No additional reference nodes are needed.
+the base image occupies the first slot. No additional reference nodes are needed.
 Prewired encoder references remain custom workflow wiring and disable this managed
 list rather than being overwritten. Universal reference nodes elsewhere in the
 workflow remain separate named inputs and do not consume these nine slots.
@@ -247,7 +254,7 @@ The **Sessions** sidebar creates, switches, and deletes independent prompt conve
 
 ![Saved workflow, output dimensions, models and node inputs for a generated image](docs/images/screenshots/15-saved-generation-inputs.png)
 
-Chats are stored under `prompt_studio_chats/`, with an `index.json` for ordering and one JSON file per session. The directory is excluded from Git and is shared by browsers connected to the same ComfyUI installation. Saves use revision checks so an older browser cannot silently overwrite a newer save. A conflicting client merges with the latest store before retrying. Previous chat and index copies are kept under `prompt_studio_chats/_backups/`. Existing `prompt_studio_chats.json` stores are migrated automatically on first load and archived in that backup directory.
+Chats are stored under `prompt_studio_chats/`, with an `index.json` for ordering and compressed, content-addressed JSON records. The directory is excluded from Git and is shared by browsers connected to the same ComfyUI installation. Saves use revision checks so an older browser cannot silently overwrite a newer save. A conflicting client merges with the latest store before retrying. At backend startup, both complete Image and Video libraries are automatically migrated and verified. Current sessions are preserved; recovery keeps three recent saves, daily checkpoints for seven days, and weekly checkpoints for four weeks. A 256 MiB compressed recovery budget retires oldest checkpoints first, while always preserving current data and the newest verified fallback. Cleanup runs separately from saving, at most every 30 minutes of access. Legacy migration backups are compressed and expire after seven days. Settings → General → History storage shows usage, dates, and individual-session recovery. Recovery does not recreate separately deleted media. See [storage recovery](docs/history-storage.md) for maintenance and CLI commands.
 
 The standalone page is available at the short URL:
 
@@ -394,12 +401,25 @@ subsequent runs. ComfyUI Manager installs missing third-party node packs using
 its existing security policy; these installs require a ComfyUI restart.
 
 Qwen Image 2.1 includes Create, Edit, RGBA, RGBA Edit and Background Removal,
-each in 25-step, 40-step and Turbo 4-step variants. They share the diffusion
+each in 25-step, 40-step and Turbo v0.3 six-step variants. They share the diffusion
 model, Qwen3-VL 8B encoder and native Qwen 2.1 VAE; only Turbo variants need
-the Viggle 4-step LoRA. Setup offers INT8 and BF16 diffusion/encoder choices,
+the Viggle v0.3 rank-128 LoRA. Setup offers INT8 and BF16 diffusion/encoder choices,
 reuses registered files, and verifies downloads against pinned checksums.
 Bundled examples contain no local reference-image paths. Edit workflows retain
 the saved 1056 encoder resolution and matching Turbo shift settings.
+
+Turbo uses the bundled unmerged LoRA loader and a dedicated six-step Euler sampler with CFG 1 and a resolution-aware schedule. Seed and user LoRAs remain adjustable; sampling overrides are fixed to the trained recipe. The 25-step and 40-step base variants retain normal sampler controls.
+
+**Structure guide (ControlNet)** is an optional Qwen 2.1 feature in References.
+Expand a reference card to select pose, depth, edges or sketch, adjust strength,
+and preview its guide. More options accepts prepared maps and controls fit/crop.
+One structural guide works in compatible Create and Edit workflows, including
+Turbo v0.3. Both modes can combine it with ordinary references; Edit can reuse its source.
+Other workflows keep the saved guide inactive. Setup offers the Qwen union
+weights and separate optional pose, depth and sketch extractors; native edges
+need no extra extractor. Extractors use the optional ControlNet Auxiliary
+Preprocessors pack installed through Manager. Qwen ControlNet follows the
+same research-license acceptance flow as Qwen workflows.
 
 Qwen workflows start unchecked. Selecting each one opens a strict
 non-commercial warning linked to the [Qwen Research License](https://huggingface.co/Qwen/Qwen-Image-2.1/blob/main/LICENSE).
@@ -485,7 +505,7 @@ With Llama.cpp selected, Prompt Studio uses llama-server's streaming OpenAI-comp
 
 Llama.cpp treats model-native `reasoning_effort` and its server-side token cutoff as separate controls. With the selected config's **Reasoning token cap** set to `0`, Prompt Studio passes the selected qualitative effort to the model's Jinja template and allows thinking to use the available server context window. This matters for Qwen 3.8: Low, Medium, and XHigh change the template's reasoning instructions rather than imposing three arbitrary token budgets. A positive cap opts into llama-server's `thinking_budget_tokens` cutoff; Prompt Studio then requests the cap plus the final-answer allowance, bounded by the available context. Reaching that cap forcibly ends thinking, which can reduce answer quality, so the shipped config example leaves it at `0`. Prompt Studio does not retain or resend private reasoning from earlier turns.
 
-Prompt Studio can also start, stop, and restart Llama.cpp itself. In **Settings → Backend settings**, use **Browse…** to select `llama.exe` or `llama-server.exe`. Launcher profiles always live in `config/LlamaCPP`; Prompt Studio creates that folder automatically. Pick any discovered profile and press **Restart** in System status to apply its model and server settings immediately. Enable **Start with ComfyUI** to launch that validated executable and profile automatically during future ComfyUI startups. **Edit…** opens the selected profile in the included Windows PowerShell config builder; **New…** creates another named JSON profile in the same fixed folder. [`llamacpp_server.example.json`](llamacpp_server.example.json) includes every setting shown by the builder: model GGUF, MMProj GGUF, context size, GPU layers, parallel slots, CUDA devices (`--device`), CUDA-visible devices, split mode, main GPU, tensor split, auto-fit, flash attention, K/V cache types, MTP speculative decoding, host, port, optional extra arguments, and the complete thinking/non-thinking LLM sampler configuration. MTP controls its draft-token range and probability cutoff plus the draft context's GPU layers, device, and K/V cache types; it requires an MTP-capable GGUF and a recent llama.cpp build. `llama.exe` is started with the `serve` subcommand; `llama-server.exe` is started directly. The executable picker, profile discovery, config builder, autostart preference, and process actions are accepted only from a loopback browser connection. Prompt Studio records the exact managed process identity and recovers control after a ComfyUI restart; PID, executable path, and OS creation marker must all still match before it will stop that process. A detached watchdog stops that exact managed process 120 seconds after ComfyUI exits, including an abrupt termination. Restarting ComfyUI during the grace period renews ownership and cancels the pending shutdown. An already-running server at the configured endpoint remains externally managed and is never replaced by autostart, while processing monitoring and stream cancellation still work.
+Prompt Studio can also start, stop, and restart Llama.cpp itself. In **Settings → Backend settings**, use **Browse…** to select `llama.exe` or `llama-server.exe`. Launcher profiles always live in `config/LlamaCPP`; Prompt Studio creates that folder automatically. Pick any discovered profile and press **Restart** in System status to apply its model and server settings immediately. Enable **Start with ComfyUI** to launch that validated executable and profile automatically during future ComfyUI startups. **Edit…** opens the selected profile in the native in-app config window; **New…** opens a new profile in the same window. Save config validates and writes the named JSON profile in the fixed folder, refreshes the shared Image/Video settings, and queues managed-server changes until LLM work is idle. Cancel or Escape discards unsaved edits. The editor detects conflicting saves from another window. [`llamacpp_server.example.json`](llamacpp_server.example.json) includes every setting shown by the builder: model GGUF, MMProj GGUF, context size, GPU layers, parallel slots, CUDA devices (`--device`), CUDA-visible devices, split mode, main GPU, tensor split, auto-fit, flash attention, K/V cache types, MTP speculative decoding, host, port, optional extra arguments, and the complete thinking/non-thinking LLM sampler configuration. MTP controls its draft-token range and probability cutoff plus the draft context's GPU layers, device, and K/V cache types; it requires an MTP-capable GGUF and a recent llama.cpp build. `llama.exe` is started with the `serve` subcommand; `llama-server.exe` is started directly. The executable picker, profile discovery, config builder, autostart preference, and process actions are accepted only from a loopback browser connection. Prompt Studio records the exact managed process identity and recovers control after a ComfyUI restart; PID, executable path, and OS creation marker must all still match before it will stop that process. A detached watchdog stops that exact managed process 120 seconds after ComfyUI exits, including an abrupt termination. Restarting ComfyUI during the grace period renews ownership and cancels the pending shutdown. An already-running server at the configured endpoint remains externally managed and is never replaced by autostart, while processing monitoring and stream cancellation still work.
 
 Shared-GPU Llama.cpp handoff requires llama-server router mode (`--models-dir`) because only router mode exposes `/models/unload`; normal chat requests autoload the selected model again. For a single-model llama-server process, use separate GPUs and enable **Keep models loaded**, or let the external launcher own the GPU transition.
 
@@ -942,14 +962,27 @@ edited directly in the JSON file.
 Matched names remain verbatim while Prompt Studio stores and revises the Main Prompt, including
 when a name is typed directly into the Main Prompt editor. When it creates or revises a Final
 Prompt, the backend sends only the matched definitions to the LLM. The
-LLM uses each definition as guidance, replaces the reference with described prompt content, and
-omits the reference name from the Final Prompt. Multiple definitions are applied independently in
+LLM interprets each definition semantically, replaces the reference with described prompt content,
+and omits the reference name or alias from the Final Prompt, even if the definition repeats it.
+Definitions may contain descriptions, instructions for the LLM, or both. Descriptive qualities,
+qualifiers, and their strength should be retained in the same or closely equivalent wording;
+guidance should shape the result without appearing as meta-instructions in the prompt. Reference
+details count as supplied intent even at low embellishment levels, not as optional additions.
+This uses LLM instructions rather than scripted substitutions. Multiple definitions are applied independently in
 the grammatical roles where their names occur. Explicit local modifiers attached to a reference
 may refine its baseline definition; otherwise the definition takes priority over conflicting
 generic prompt, style, framing, or embellishment guidance. Names must be unique without regard to
 case, incomplete or disabled entries are ignored, and longer names win when configured names
 overlap at the same position. Manager changes take effect immediately, and direct file changes are
 detected while Settings is open.
+
+Reference names are lookup keys, even when they are ordinary nouns; their dictionary meaning
+does not add content to the definition. Final output is checked for matched names. If one leaks
+through, the LLM gets up to two correction attempts that preserve the expanded description;
+no automatic deletion or text substitution is used. Unresolved leaks report an error instead
+of replacing the existing prompt. Local edits retain their authorized scope; rebuild Final
+from Main when a leaked name is outside that scope. Reference identity locks are preserved in
+Main but do not force names back into Final; explicit verbatim-content locks remain protected.
 
 <details>
 <summary>See the known-reference editor</summary>

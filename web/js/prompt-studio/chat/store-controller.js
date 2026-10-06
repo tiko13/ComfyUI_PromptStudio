@@ -1,12 +1,14 @@
 import { api } from "/scripts/api.js";
 import { requireHistoryIndex, prepareHistoryIndex } from "../ui/history-maintenance.js";
-import { createDraftOutbox, createDraftScheduler, draftTabKey, exportDraft, showDraftStorageFailure } from "./draft-outbox.js";
+import { createDraftOutbox, createDraftScheduler, draftTabKey, exportDraft, showDraftStorageFailure, clearDraftStorageFailure } from "./draft-outbox.js";
+import { archiveDraft, showDraftReviews, draftDifferences, applyDraftDifference, draftChatLabel } from './draft-review.js';
 
 import { CHAT_SYNC_CHANNEL } from "../core/constants.js";
 import { state } from "../core/state.js";
 import { consultMessagesAfterClear } from "../consult/model.js";
 
 import { validateStoreResponse } from "./store-response.js";
+import { newChatWorkflowSelections } from "../settings/workflow-defaults.js";
 
 const CHAT_PAGE_SIZE = 20;
 const CHAT_PAGE_MAX = 100;
@@ -27,6 +29,7 @@ export function createChatStoreController({
   restoreChatState,
   resumeConsultJobs,
   resumeSyncedGeneration,
+  recoverStudioSubmissions,
   setStatus,
 }) {
 const acknowledgedChats = new Map();
@@ -35,6 +38,7 @@ let draftMutation = 0;
 let restoredComposerText = null;
 let draftChatsVersion = -1;
 let draftChats = [];
+let draftReviewInFlight = false;
 let savedMutationVersion = state.chatMutationVersion;
 const draftScheduler = createDraftScheduler(writeDraft);
 function draftContainer() { return state.panel?.querySelector('.promptstudio-chat-sidebar'); }
@@ -72,7 +76,7 @@ function showChatFailure(error, loading = false) {
   download.addEventListener('click', async () => exportDraft(await writeDraft(), container.ownerDocument));
   notice.replaceChildren(text, retry, download);
 }
-async function writeDraft() {
+async function writeDraft({ throwOnFailure = false } = {}) {
   draftScheduler.cancel();
   if (draftChatsVersion !== state.chatMutationVersion) {
     draftChats = structuredClone(state.chats.filter(chat => acknowledgedChats.get(chat.id) !== JSON.stringify(chat)));
@@ -82,16 +86,134 @@ async function writeDraft() {
     mutation: ++draftMutation, revision: state.chatRevision,
     activeChatId: state.activeChatId,
     chats: draftChats,
+    baseChats: draftChats.map(chat => acknowledgedChats.has(chat.id) ? JSON.parse(acknowledgedChats.get(chat.id)) : null).filter(Boolean),
     deletedChatIds: [...state.chatDeletedIds], deletedMessageIds: deletedMessageIdsPayload(),
     composerText: state.panel?.querySelector('#promptstudio-revision')?.value || '',
   };
-  try { await draftOutbox.put(draftTabKey('image'), record); }
-  catch (error) { showDraftStorageFailure(draftContainer(),record,error.message); }
+  try {
+    if (record.chats.length || record.composerText || record.deletedChatIds.length || Object.keys(record.deletedMessageIds).length) {
+      await draftOutbox.put(draftTabKey('image'), record);
+    } else {
+      await draftOutbox.acknowledge(draftTabKey('image'), record.mutation);
+    }
+    if (record.mutation === draftMutation) clearDraftStorageFailure(draftContainer(), record);
+  }
+  catch (error) {
+    if (record.mutation === draftMutation) showDraftStorageFailure(draftContainer(),record,error.message);
+    if (throwOnFailure) throw error;
+  }
   return record;
 }
 function acknowledgeChats(chats) {
   for (const chat of chats || []) acknowledgedChats.set(chat.id, JSON.stringify(chat));
   draftChatsVersion = -1;
+}
+
+async function readDraftReviewStore() {
+  const response = await api.fetchApi('/promptstudio/prompt-studio/chats');
+  const data = await response.json();
+  if (!response.ok) throw new Error(data.error || 'History could not be loaded. Try again.');
+  validateStoreResponse(data, 'chats');
+  return { ...data, chats: data.chats.map(normalizeChat) };
+}
+
+async function reviewDifferences(draft) {
+  const current = await readDraftReviewStore();
+  const local = { chats: (draft.chats || []).map(normalizeChat) };
+  const base = Array.isArray(draft.baseChats) ? { chats: draft.baseChats.map(normalizeChat) } : undefined;
+  const items = draftDifferences(local, current, base);
+  for (const id of draft.deletedChatIds || []) {
+    const chat = current.chats.find(chat => chat.id === id);
+    for (let index = items.length - 1; index >= 0; index--) if (items[index].path[1]?.id === id) items.splice(index, 1);
+    if (chat) items.push({ id: `delete-chat:${id}`, path: ['chats', { id }], title: `${draftChatLabel(chat)} → Delete chat`, current: chat, value: undefined });
+  }
+  for (const [id, ids] of Object.entries(draft.deletedMessageIds || {})) {
+    const chat = current.chats.find(chat => chat.id === id);
+    for (const messageId of ids) {
+      const message = chat?.messages?.find(message => message.id === messageId);
+      if (message) {
+        const path = ['chats', { id }, 'messages', { id: messageId }];
+        const duplicate = items.findIndex(item => item.id === JSON.stringify(path));
+        if (duplicate >= 0) items.splice(duplicate, 1);
+        items.push({ id: JSON.stringify(path), path, title: `${draftChatLabel(chat)} → Delete message`, current: message, value: undefined });
+      }
+    }
+  }
+  if (draft.composerText) {
+    const chat = current.chats.find(chat => chat.id === draft.activeChatId);
+    const currentText = state.activeChatId === draft.activeChatId ? state.panel?.querySelector('#promptstudio-revision')?.value || '' : '';
+    if (currentText !== draft.composerText) items.push({ id: 'composer', path: ['composerText'], title: `${draftChatLabel(chat)} → Unsent message`, current: currentText, value: draft.composerText });
+  }
+  return items;
+}
+
+async function applyReviewedDraft(item, draft) {
+  if (state.busy || state.chatSyncInFlight) throw new Error('Wait for current work to finish, then apply this change.');
+  if (item.id === 'composer') {
+    const chat = state.chats.find(chat => chat.id === draft.activeChatId)
+      || (await readDraftReviewStore()).chats.find(chat => chat.id === draft.activeChatId);
+    if (!chat) throw new Error('Restore the original chat from this draft first.');
+    const input = state.panel?.querySelector('#promptstudio-revision');
+    if (input.value !== item.current && input.value !== item.value) throw new Error('The unsent message changed. Open its original chat and refresh differences first.');
+    if (!state.chats.some(saved => saved.id === chat.id)) state.chats.push(chat);
+    state.activeChatId = chat.id;
+    restoreChatState(chat); renderChatHistory(); renderConsultHistory(); renderChatList();
+    input.value = item.value;
+    await writeDraft({ throwOnFailure: true });
+    return;
+  }
+  clearTimeout(state.chatSaveTimer); state.chatSaveTimer = null;
+  const operation = state.chatSaveChain.catch(() => {}).then(async () => {
+    draftReviewInFlight = true;
+    try { await applyReviewedChatDifference(item); }
+    finally { draftReviewInFlight = false; }
+  });
+  state.chatSaveChain = operation.catch(() => {});
+  return operation;
+}
+
+async function applyReviewedChatDifference(item) {
+  // Check the reviewed value before flushing local saves, which may themselves merge history.
+  applyDraftDifference(await readDraftReviewStore(), item);
+  if (state.chatMutationVersion !== savedMutationVersion) await persistChats();
+  const mutation = state.chatMutationVersion;
+  const current = await readDraftReviewStore();
+  const next = applyDraftDifference(current, item);
+  if (mutation !== state.chatMutationVersion) throw new Error('History changed during review. Refresh differences and try again.');
+  const id = item.path[1].id;
+  const selectedChat = next.chats.find(chat => chat.id === id);
+  const chat = selectedChat ? normalizeChat(selectedChat) : null;
+  if (chat) chat.updatedAt = Date.now();
+  const response = await api.fetchApi('/promptstudio/prompt-studio/chats', {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ revision: current.revision, partial: true, chats: chat ? [chat] : [], deletedChatIds: chat ? [] : [id] }),
+  });
+  const result = await response.json();
+  if (response.status === 409) throw new Error('Server history changed. Refresh differences and review this item again.');
+  if (!response.ok) throw new Error(result.error || 'The change could not be saved. Try again.');
+  validateStoreResponse(result);
+  state.chatRevision = result.revision;
+  if (chat) acknowledgeChats([chat]);
+  else acknowledgedChats.delete(id);
+  if (mutation === state.chatMutationVersion) {
+    const index = state.chats.findIndex(saved => saved.id === id);
+    if (!chat) { if (index >= 0) state.chats.splice(index, 1); acknowledgedChats.delete(id); }
+    else { if (index >= 0) state.chats[index] = chat; else state.chats.push(chat); acknowledgeChats([chat]); }
+    if (!state.chats.some(saved => saved.id === state.activeChatId)) state.activeChatId = state.chats[0]?.id || null;
+    if (activeChat()) restoreChatState(activeChat());
+    renderChatHistory(); renderConsultHistory(); renderChatList();
+    refreshWorkflowControls(); refreshSecondaryInstructionsControl(); refreshStudioStatus();
+  } else {
+    // Background completion may add messages during the request. Retain those edits
+    // while incorporating the reviewed field if it has not independently changed.
+    try { state.chats = applyDraftDifference({ chats: state.chats }, item).chats; }
+    catch (_) { /* A newer local edit owns this value and its scheduled save. */ }
+  }
+  state.chatSyncChannel?.postMessage({ type: 'chat-store-updated', revision: result.revision });
+}
+
+function showRecoveredDrafts() {
+  return showDraftReviews({ container: draftContainer(), outbox: draftOutbox, key: draftTabKey('image'), differences: reviewDifferences, apply: applyReviewedDraft });
 }
 function chatPageUrl({ limit = CHAT_PAGE_SIZE, cursor = null, revision = null, includeActive = false } = {}) {
   const params = new URLSearchParams({ limit: String(limit), offset: "0" });
@@ -268,7 +390,7 @@ async function writeChatStore(snapshot, revision, deletedChatIds = [], deletedMe
 async function persistChats() {
   if (state.chatPersistenceBlocked || !state.chatStoreLoaded) return;
   const saveMutationVersion = state.chatMutationVersion;
-  const savedDraft = await writeDraft();
+  await writeDraft();
   const deletedChatIds = [...state.chatDeletedIds];
   const deletedMessageIds = deletedMessageIdsPayload();
   state.chatSaveInFlight = true;
@@ -325,10 +447,9 @@ async function persistChats() {
       }
     }
     state.chatSyncChannel?.postMessage({ type: "chat-store-updated", revision: state.chatRevision });
-    if (!savedDraft.composerText) {
-      try { await draftOutbox.acknowledge(draftTabKey('image'), savedDraft.mutation); }
-      catch (error) { showDraftStorageFailure(draftContainer(),savedDraft,error.message); }
-    }
+    // Refresh the recovery copy after acknowledgement: saved chat history no longer
+    // belongs in it, but a newer edit or unsent composer must still be protected.
+    await writeDraft();
   } finally {
     state.chatSaveInFlight = false;
   }
@@ -360,7 +481,7 @@ function saveChats({ immediate = false } = {}) {
 }
 
 async function refreshChatsFromServer({ force = false } = {}) {
-  if (!state.chatStoreLoaded || state.chatPersistenceBlocked || state.chatSyncInFlight || state.chatPageLoading) return;
+  if (!state.chatStoreLoaded || state.chatPersistenceBlocked || state.chatSyncInFlight || state.chatPageLoading || draftReviewInFlight) return;
   if (!force && (state.chatSaveTimer || state.chatSaveInFlight || state.busy)) return;
   // A failed save stays dirty after its timer and request have finished.
   if (state.chatMutationVersion !== savedMutationVersion) return;
@@ -380,7 +501,7 @@ async function refreshChatsFromServer({ force = false } = {}) {
     if (Number(stored.revision || 0) <= state.chatRevision) return;
     // A generation or other local action may have changed chat state while this request was in flight.
     // Keep that state authoritative; its pending save will merge against the newer server revision.
-    if (state.chatMutationVersion !== syncMutationVersion) return;
+    if (state.chatMutationVersion !== syncMutationVersion || draftReviewInFlight) return;
     applyChatStoreSnapshot(stored, { preserveActive: true });
   } catch (error) {
     if (force) setStatus(error.message || "Chat history could not be synchronized.", "warning");
@@ -444,6 +565,7 @@ async function loadOlderChats() {
     state.chatPageCursor = stored.nextCursor || null;
     state.chatTotal = Number(stored.total ?? state.chatTotal);
     state.chatHasMore = Boolean(stored.hasMore) && state.chats.length < state.chatTotal;
+    resumeSyncedGeneration();
   } catch (error) {
     setStatus(error.message || "Older chats could not be loaded.", "warning");
   } finally {
@@ -507,10 +629,6 @@ async function loadChats() {
       const draft = await draftOutbox.get(draftTabKey('image'));
       if (draft) {
         draftMutation = Math.max(draftMutation, Number(draft.mutation) || 0);
-        if (draft.composerText && state.chats.some(chat => chat.id === draft.activeChatId)) {
-          state.activeChatId = draft.activeChatId;
-          restoredComposerText = draft.composerText;
-        }
         if (Number(draft.revision) === state.chatRevision && Array.isArray(draft.chats)) {
           const deleted = new Set(draft.deletedChatIds || []);
           const merged = withoutDeletedMessages(mergeChatStores({chats:state.chats}, draft), draft.deletedMessageIds || {});
@@ -520,10 +638,11 @@ async function loadChats() {
           if (state.chats.some(chat=>chat.id===draft.activeChatId)) state.activeChatId=draft.activeChatId;
           restoredComposerText = draft.composerText || null;
           recoveredOrMigratedPromptState ||= draft.chats.length > 0 || deleted.size > 0;
-        } else if (draft.chats?.length || draft.deletedChatIds?.length || draft.composerText) {
-          showDraftStorageFailure(draftContainer(),draft,`Unsaved draft from ${new Date(draft.saved_at).toLocaleString()} is available. Server history changed; export the draft to review it without replacing newer sessions.`);
+        } else if (draft.chats?.length || draft.deletedChatIds?.length || Object.keys(draft.deletedMessageIds || {}).length || draft.composerText) {
+          await archiveDraft(draftOutbox, draftTabKey('image'), draft);
         }
       }
+      await showRecoveredDrafts();
     } catch (error) { showDraftStorageFailure(draftContainer(),{chats:state.chats},error.message); }
     for (const chat of pendingChats) {
       if (!state.chats.some(saved => saved.id === chat.id)) {
@@ -544,7 +663,7 @@ async function loadChats() {
     showChatFailure(error, true);
   }
   if (!state.chats.length) {
-    const chat = normalizeChat({ studioSettings: newChatStudioSettings() });
+    const chat = normalizeChat({ ...newChatWorkflowSelections(), studioSettings: newChatStudioSettings() });
     state.chats.push(chat);
     state.activeChatId = chat.id;
     if (state.chatStoreLoaded) saveChats({ immediate: true });
@@ -561,10 +680,23 @@ async function loadChats() {
     restoredComposerText = null;
   }
   if (recoveredOrMigratedPromptState) saveChats({ immediate: true });
-  if (state.chatStoreLoaded) draftContainer()?.querySelector('[data-chat-load-failure]')?.remove();
+  if (state.chatStoreLoaded) {
+    draftContainer()?.querySelector('[data-chat-load-failure]')?.remove();
+    recoverStudioSubmissions?.();
+    resumeConsultJobs();
+    resumeSyncedGeneration();
+  }
 }
 
   return {
+    async flushChatStore() {
+      if (!state.chatStoreLoaded || state.chatPersistenceBlocked) throw new Error("Resolve the history loading or saving error first.");
+      clearTimeout(state.chatSaveTimer);
+      state.chatSaveTimer = null;
+      await state.chatSaveChain;
+      await persistChats();
+      if (savedMutationVersion !== state.chatMutationVersion) throw new Error("History is still changing. Wait for current work to finish.");
+    },
     applyChatStoreSnapshot,
     loadChats,
     loadOlderChats,

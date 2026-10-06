@@ -17,8 +17,13 @@ DOMAIN_RULE = """
 Also classify help_domain independently: none, prompting, app, or both.
 prompting means advice about describing the desired image/video: 'How do I make
 a shirt with tiny sleeves?' is prompting advice, not application help or an edit.
-app means operating Studio: 'How to make an image?', 'How do I change model?', uploading references,
-finding buttons, settings, workflow selection, queue operations or troubleshooting.
+app means operating Studio or authoring its ComfyUI workflows: 'How to make an image?',
+'How do I change model?', uploading references, finding buttons, settings, workflow
+selection, queue operations or troubleshooting. Listing nodes, explaining what a
+node does, its inputs/outputs, wiring, custom inputs and multi-stage graphs are app
+help, including prompt-processing nodes such as Prompt Amplify. A follow-up like
+'What are its inputs and where do I connect them?' remains app help when the recent
+conversation identifies a node. Explaining a node is not advice about scene wording.
 'Make the sleeves tiny' is an edit, with help_domain none. Judge meaning and recent
 conversation, not keywords or question grammar. 'Where is that button?' continues
 app help; 'what wording should I use?' can continue prompting advice.
@@ -45,6 +50,7 @@ FACT_DEFAULTS = {
     "workflow": "unknown", "reference_mode": "unknown",
     "reference_limit": "unknown", "reference_count": "unknown",
     "reference_roles": "unknown", "reference_inputs": "unknown",
+    "structure_guide": "unknown", "guide_types": "unknown",
     "model_selection": "unknown", "reference_label": "unknown",
     "model_label": "unknown", "workflow_label": "unknown",
     "provider": "unknown", "media_limit": "unknown",

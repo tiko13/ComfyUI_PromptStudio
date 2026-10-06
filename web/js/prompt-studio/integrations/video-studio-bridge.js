@@ -5,22 +5,23 @@ import {
   VIDEO_STUDIO_PRESENCE_TIMEOUT_MS,
 } from "../core/constants.js";
 import { state } from "../core/state.js";
+import { createVideoAvailabilityReader } from "./video-availability.js";
 
 export function createVideoStudioBridge({ refreshVideoHandoffActions }) {
+  const readAvailability = createVideoAvailabilityReader({ fetch: (path, options) => api.fetchApi(path, options) });
   if (typeof refreshVideoHandoffActions !== "function") {
     throw new TypeError("Video Studio bridge requires a handoff-action refresher.");
   }
 
   function refreshVideoStudioServerPresence() {
     if (state.videoStudioCapabilityRequest) return state.videoStudioCapabilityRequest;
-    state.videoStudioCapabilityRequest = api.fetchApi("/promptstudio-video/capabilities", { cache: "no-store" })
-      .then(async response => {
-        state.videoStudioInstalled = response.ok;
-        if (!response.ok) {
-          state.videoStudioServerPresence.clear();
-          return;
-        }
-        const data = await response.json().catch(() => ({}));
+    state.videoStudioCapabilityRequest = readAvailability()
+      .then(result => {
+        state.videoStudioAvailability = result.state;
+        if (state.videoStudioInstalled !== true) state.videoStudioInstalled = result.installed;
+        const data = result.capabilities;
+        // Let previously observed presences expire normally during an outage.
+        if (!data) return;
         const seenAt = Date.now();
         state.videoStudioServerPresence = new Map(
           (Array.isArray(data.studio_instances) ? data.studio_instances : [])
@@ -30,9 +31,8 @@ export function createVideoStudioBridge({ refreshVideoHandoffActions }) {
       })
       .catch(() => {
         if (state.videoStudioInstalled === null) {
-          state.videoStudioInstalled = Boolean(globalThis.__promptstudioVideoStudioHost);
+          state.videoStudioInstalled = globalThis.__promptstudioVideoStudioHost ? true : null;
         }
-        state.videoStudioServerPresence.clear();
       })
       .finally(() => {
         state.videoStudioCapabilityRequest = null;

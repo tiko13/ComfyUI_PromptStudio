@@ -1,6 +1,19 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createPollingScope,createHealthReader} from '../web/js/prompt-studio/ui/polling.js';
+test('health invalidation bypasses a pending pre-restart request', async () => {
+ let release, calls=0;
+ const read=createHealthReader({fetch:async()=>{
+  const model=++calls===1?'old':'new';
+  if(model==='old')await new Promise(resolve=>release=resolve);
+  return {ok:true,json:async()=>({model})};
+ }});
+ const old=read('/health');read.invalidate();
+ assert.equal((await read('/health')).model,'new');
+ release();await old;
+ assert.equal((await read('/health')).model,'new');
+ assert.equal(calls,2);
+});
 test('health subscribers share one request, receive isolated results, and retry failures',async()=>{
  let calls=0,release;const gate=new Promise(resolve=>release=resolve);
  const read=createHealthReader({fetch:async()=>{calls++;await gate;return {ok:true,json:async()=>({busy:true})};}});

@@ -1,9 +1,9 @@
+import { isStudioSampler, samplingControls } from "./sampling.js";
 import {
   AMPLIFY_TYPE,
   IMAGE_SOURCE_TYPE,
   LORA_LOADER_TYPE,
   MODEL_LOADER_TYPE,
-  SAMPLER_CONTROL_TYPE,
   SLOT_TYPE,
   UPSCALE_TYPE,
 } from "../core/constants.js";
@@ -60,18 +60,11 @@ export function createWorkflowTemplateBuilder({ app, nodeClassName }) {
           modelName: cleanModelName(node.inputs?.unet_name),
         }));
       const samplingNodes = Object.entries(output)
-        .filter(([, node]) => node?.class_type === SAMPLER_CONTROL_TYPE)
+        .filter(([, node]) => isStudioSampler(node?.class_type))
         .map(([id, node]) => ({
           id: String(id),
           label: String(nodes.find(record => record.id === id)?.node?.title || `Sampler ${id}`).trim(),
-          controls: {
-            seed: Number(node.inputs?.seed ?? 0),
-            steps: Number(node.inputs?.steps ?? 20),
-            cfg: Number(node.inputs?.cfg ?? 8),
-            sampler: String(node.inputs?.sampler_name || ""),
-            scheduler: String(node.inputs?.scheduler || ""),
-            denoise: Number(node.inputs?.denoise ?? 1),
-          },
+          controls: samplingControls(node),
         }));
       const imageOutputs = nodes.filter(record => imageOutputNode(record.node));
       if (imageOutputs.length !== 1) {

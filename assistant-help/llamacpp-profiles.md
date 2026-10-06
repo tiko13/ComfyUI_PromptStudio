@@ -1,0 +1,10 @@
+---
+{"id":"llamacpp-profiles","topic":"llamacpp-profiles","studio":"shared","summary":"Create, edit, manage or delete llama.cpp config profiles and check missing model or MMProj files for both studios."}
+---
+Open Image Studio's sidebar gear > Backend settings > Llama.cpp > Manage profiles. Both studios share profiles.
+Inactivity timeout renews during reasoning/output or confirmed server processing. Stop and token/context limits still apply.
+Edit… opens the selected config in a native Prompt Studio window; New… opens an unsaved profile with a filename field. Configure model/MMProj paths, GPU and memory, MTP, modes, samplers and extra arguments in its sections. Browse selects GGUF files on Windows; paths can also be entered manually. Save config validates and saves, selects the profile for both studios, and applies managed-server changes when LLM work is idle. Cancel or Escape discards edits. A save conflict keeps your edits visible: reopen the profile to load its latest contents, or choose another name for a new profile.
+The thinking selector follows the profile's supported modes. Off (stored as Disabled) appears only when the profile includes it; Config Builder does not add it automatically. Include it only when the model/server supports disabling reasoning. Muse-Glimmer's current template ignores that switch, so its profile omits Off.
+Every profile has separate Model/MMProj checks: green means present, red means missing; an unset optional MMProj says Not configured. Refresh rechecks files. Unreadable JSON profiles display an error and can still be deleted.
+Selecting a config restarts managed Llama.cpp when LLM work is idle; the latest selection wins. Its model is saved for both studios. Stopped/external servers are not automatically started or replaced.
+Delete then Delete profile removes only that config JSON, keeps model/MMProj files and running servers, and disables Start with ComfyUI if it used that profile. Cancel keeps it. Deleting the selected profile updates the shared selection; select a replacement to apply it.

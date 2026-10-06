@@ -30,6 +30,37 @@
 .ps-reference-dialog button { padding: 7px 12px; border: 1px solid #606073; border-radius: 6px; background: #30313e; color: #eee; font: inherit; cursor: pointer; }
 .ps-reference-dialog button:disabled { opacity: .5; cursor: default; }
 .ps-reference-dialog :focus-visible { outline: 2px solid #b3a0ff; outline-offset: 2px; }
+.ps-reference-dialog .ps-reference-compact { grid-template-columns: 46px minmax(0, 1fr); min-height: 46px; gap: 6px 10px; padding: 8px; margin: 6px 0; border: 1px solid #41424e; border-radius: 8px; }
+.ps-reference-dialog .ps-reference-compact .ps-reference-image { width: 46px; height: 46px; min-height: 46px; }
+.ps-reference-compact .ps-reference-fields { gap: 0; }
+.ps-reference-compact small { color: #bdbdcc; font-size: 12px; }
+.ps-reference-summary { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ps-reference-dialog .ps-reference-toggle { flex: 1; text-align: left; padding: 0; border: 0; background: transparent; font-weight: 600; }
+.ps-reference-toggle::after { content: " ▾"; color: #bdbdcc; }
+.ps-reference-toggle[aria-expanded="true"]::after { content: " ▴"; }
+.ps-reference-detail { grid-column: 1 / -1; display: grid; gap: 6px; padding-top: 4px; }
+.ps-reference-detail[hidden] { display: none; }
+.ps-reference-dialog .ps-reference-detail textarea { min-height: 36px; }
+.ps-structure-controls { display: grid; gap: 6px; }
+.ps-structure-controls label { display: flex; align-items: center; gap: 8px; white-space: nowrap; font-size: 12px; min-width: 0; }
+.ps-structure-controls select { flex: 1; padding: 5px; }
+.ps-structure-row { display: flex; flex-wrap: wrap; gap: 6px 12px; }
+.ps-structure-row > label { flex: 1; min-width: 170px; }
+.ps-structure-row input { min-width: 40px; width: 100%; accent-color: #b3a0ff; }
+.ps-structure-row output { min-width: 32px; font-variant-numeric: tabular-nums; }
+.ps-structure-controls details { font-size: 12px; }
+.ps-structure-controls details[open] summary { margin-bottom: 6px; }
+.ps-structure-controls > button { justify-self: start; padding: 4px 8px; font-size: 12px; }
+.ps-guide-preview { width: 100%; max-height: 300px; object-fit: contain; background: #111; }
+.ps-reference-targeting { min-width: 0; font-size: 12px; }
+.ps-reference-targeting fieldset { min-width: 0; margin: 8px 0; padding: 8px; border: 1px solid #606073; border-radius: 6px; }
+.ps-target-image { position: relative; width: 100%; max-width: 400px; margin: 6px auto; touch-action: none; cursor: crosshair; }
+.ps-target-image img { display: block; width: 100%; height: auto; user-select: none; }
+.ps-target-rectangle { position: absolute; box-sizing: border-box; border: 2px solid #c6baff; background: #a68bff33; pointer-events: none; }
+.ps-target-rectangle[hidden] { display: none; }
+.ps-target-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; margin: 8px 0; }
+.ps-target-fields label { min-width: 0; }
+.ps-target-fields input { box-sizing: border-box; width: 100%; min-width: 0; color: #eee; background: #14151a; border: 1px solid #606073; border-radius: 4px; padding: 5px; }
 @media (max-width: 480px) {
   .ps-reference-dialog { padding: 12px; font-size: 13px; }
   .ps-reference-row { grid-template-columns: 92px minmax(0,1fr); gap: 10px; }
@@ -38,3 +69,20 @@
   .ps-reference-dialog .ps-reference-heading select { grid-column: 1 / -1; grid-row: 2; width: 100%; max-width: none; }
   .ps-reference-heading .ps-reference-remove { grid-column: 2; grid-row: 1; }
 }
+.ps-target-candidates { display: flex; flex-wrap: wrap; gap: 4px; }
+.ps-reference-preparation { min-width: 0; margin: 6px 0; }
+.ps-reference-preparation > * { max-width: 100%; box-sizing: border-box; }
+.ps-reference-preparation canvas { display: block; width: 100%; height: auto; touch-action: none; cursor: crosshair; margin: 8px 0; }
+.ps-reference-preparation canvas:focus-visible { outline: 2px solid var(--ps-accent, #f1b54c); outline-offset: 2px; }
+.ps-reference-brush-preview { position: relative; margin: 8px 0; overflow: hidden; }
+.ps-reference-brush-preview canvas { margin: 0; }
+.ps-reference-brush-preview canvas:focus-visible { outline-offset: -2px; }
+.ps-reference-brush-circle { position: absolute; pointer-events: none; box-sizing: border-box; transform: translate(-50%, -50%); border: 1px solid white; border-radius: 50%; box-shadow: 0 0 0 1px black; }
+.ps-reference-brush-circle[hidden] { display: none; }
+.ps-reference-preparation-tools output { display: inline-block; min-width: 4em; margin-left: 6px; font-variant-numeric: tabular-nums; }
+.ps-reference-preparation-tools { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.ps-reference-preparation-tools button[aria-pressed="true"] { outline: 2px solid var(--ps-accent, #f1b54c); }
+.ps-reference-preparation small { display: block; margin: 6px 0; }
+.ps-reference-preparation .ps-target-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+#promptstudio-prompt-studio .ps-reference-prepare-open, .ps-reference-prepare-open { position: absolute; bottom: 3px; left: 3px; z-index: 2; width: calc(100% - 6px); min-height: 0; padding: 3px; font-size: 11px; line-height: 1.2; border-radius: 5px; background: #202129; color: #eee; }
+.ps-reference-prepare-open[hidden] { display: none; }

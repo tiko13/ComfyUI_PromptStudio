@@ -37,3 +37,16 @@ test("shared Image and Video status treats instruct variants as non-thinking", (
     assert.equal(llmActivityLabel({}, enabled), enabled ? "Thinking / processing" : "Processing");
   }
 });
+
+test("profiles without non-thinking support do not expose or restore Off", () => {
+  for (const definition of [
+    {thinking_modes: ["High", "Low"], instruct_modes: []},
+    {thinking_modes: ["High"]},
+  ]) {
+    const profile = normalizeLlmProfile({...definition, thinking_mode: "Disabled"});
+    const restored = normalizeLlmProfile(JSON.parse(JSON.stringify(profile)));
+    assert.equal(restored.thinking_mode, "High");
+    assert.equal(llmProfileModeOptions(restored).includes("Disabled"), false);
+    assert.equal(thinkingModeEnablesReasoning(restored.thinking_mode), true);
+  }
+});

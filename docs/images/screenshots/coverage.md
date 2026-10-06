@@ -17,7 +17,7 @@ Suggested first selection: 01 overview, 04 watercolor, 07 edit, 09 reference rol
 ## Remaining UI coverage
 
 - **Multiple named workflow image slots:** none of the 22 installed templates exposes more than one generic Reference Image node. Qwen roles are captured in 09; the underlying named source/reference nodes are shown in 35. A separate multi-slot dialog capture needs an appropriate real workflow.
-- **Native Llama.cpp config builder:** the browser cannot capture the separately opened desktop editor. Browser backend/profile controls are captured in 21 and 22.
+- **Native Llama.cpp config builder:** the editor now opens inside Prompt Studio and is browser-capturable. Existing captures 21 and 22 show backend/profile controls; they predate the in-app editor.
 - **Password-protected LAN login:** the local loopback session bypasses this screen; LAN access/security configuration was not changed for a screenshot.
 - **Mobile layout:** intentionally omitted because this set is strictly 1920 × 1080 desktop captures.
 

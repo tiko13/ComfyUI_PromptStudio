@@ -1,8 +1,8 @@
+import { samplerSupportsField } from "../generation/sampling.js";
 import {effectiveSecondaryInstructions} from "../chat/intent-provenance.js";
 import {
   LORA_LOADER_TYPE,
   MODEL_LOADER_TYPE,
-  SAMPLER_CONTROL_TYPE,
 } from "../core/constants.js";
 
 export const PLOT_MAX_CELLS = 512;
@@ -82,7 +82,10 @@ export function plotAxisTargets(profile, type) {
     }));
   }
   const field = requested === "sampler" ? "sampler_name" : requested;
-  return (profile?.samplingNodes || []).map((node) => ({
+  return (profile?.samplingNodes || []).filter(node => {
+    const apiNode = profile?.snapshot?.output?.[node.id];
+    return !apiNode || samplerSupportsField(apiNode, field);
+  }).map((node) => ({
     key: `sampling:${node.id}:${field}`,
     nodeId: String(node.id),
     label: node.label || `Sampler ${node.id}`,
@@ -299,7 +302,7 @@ export function snapshotForPlotCell(plot, cell) {
       loraStacks.set(axis.targetNodeId, stack);
       node.inputs.lora_stack_json = JSON.stringify(stack);
     } else {
-      if (node.class_type !== SAMPLER_CONTROL_TYPE) throw new Error("Sampling plot target is incompatible.");
+      if (!samplerSupportsField(node, axis.type)) throw new Error("Sampling plot target is incompatible; Qwen Turbo v0.3 only supports seed overrides.");
       const field = axis.type === "sampler" ? "sampler_name" : axis.type;
       node.inputs[field] = ["seed", "steps"].includes(axis.type)
         ? Math.trunc(Number(selected.value))

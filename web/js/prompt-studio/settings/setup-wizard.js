@@ -222,6 +222,32 @@ export function createSetupWizard({ panel, api, buildWorkflow, refreshWorkflows,
       group.append(grid); choices.append(group);
     }
     content.append(choices);
+    if (plan.available_addons?.length) {
+      selections.addons ||= [];
+      const group = el("fieldset", "promptstudio-setup-family");
+      group.append(el("legend", "", "Optional · Structure guides (ControlNet)"));
+      group.append(el("p", "", "Add to existing Qwen workflows. Edges and prepared guides need no extra extractor."));
+      const grid = el("div", "promptstudio-setup-pack-grid");
+      for (const addon of plan.available_addons) {
+        const label = el("label"), input = el("input"); input.type = "checkbox";
+        input.checked = selections.addons.includes(addon.id); input.dataset.setupPack = addon.id;
+        input.setAttribute("aria-label", addon.name); label.title = addon.description;
+        input.addEventListener("change", async () => {
+          if (checkBusy || actionBusy || licenseDialog) { input.checked = selections.addons.includes(addon.id); return; }
+          const selecting = input.checked;
+          if (selecting && addon.license) {
+            input.checked = false;
+            if (!await acceptLicense(addon, input) || !dialog.open || !input.isConnected) return;
+            selections.license_acceptances[addon.id] = addon.license.id;
+          }
+          if (!selecting) delete selections.license_acceptances[addon.id];
+          selections.addons = selecting ? [...selections.addons, addon.id] : selections.addons.filter(id => id !== addon.id);
+          await scan().catch(showError);
+        });
+        label.append(input, el("span", "", addon.name)); grid.append(label);
+      }
+      group.append(grid); content.append(group);
+    }
     const modelsHeading = el("div", "promptstudio-setup-section-heading");
     modelsHeading.append(el("h3", "", "Models"), el("span", "", "Required by your selected workflows · shared files listed once"));
     content.append(modelsHeading);
@@ -250,8 +276,8 @@ export function createSetupWizard({ panel, api, buildWorkflow, refreshWorkflows,
     content.append(environment);
     for (const blocker of plan.blockers) content.append(el("p", "promptstudio-setup-error", blocker));
     const summary = el("div", "promptstudio-setup-download-summary");
-    summary.append(el("strong", "", `${formatBytes(plan.download_bytes)} to download`), el("span", "", `${plan.packs.length} workflows selected`));
-    const startButton = button("Set up selected workflows", start, true); startButton.dataset.setupStart = "";
+    summary.append(el("strong", "", `${formatBytes(plan.download_bytes)} to download`), el("span", "", `${plan.packs.length} workflows · ${plan.addons?.length || 0} optional features`));
+    const startButton = button("Set up selections", start, true); startButton.dataset.setupStart = "";
     startButton.disabled = plan.blockers.length > 0;
     renderFooter([summary, button("Check again", () => { selections.choices = {}; return scan(); }), startButton]);
   }
@@ -260,7 +286,8 @@ export function createSetupWizard({ panel, api, buildWorkflow, refreshWorkflows,
     const list = dialog.querySelector("[data-setup-models]");
     if (!list) return;
     const expanded = new Set([...list.querySelectorAll("details[open]")].map(node => node.dataset.setupDetails));
-    const selectedPacks = (plan.available_packs || plan.packs).filter(pack => selections.packs.includes(pack.id));
+    const selectedPacks = [...(plan.available_packs || plan.packs).filter(pack => selections.packs.includes(pack.id)),
+      ...(plan.available_addons || []).filter(addon => selections.addons?.includes(addon.id))];
     const required = new Set(selectedPacks.flatMap(pack => pack.requirements || []));
     list.replaceChildren();
     for (const req of plan.requirements.filter(req => required.has(req.id))) {
@@ -292,7 +319,7 @@ export function createSetupWizard({ panel, api, buildWorkflow, refreshWorkflows,
       row.append(details); list.append(row);
     }
     if (!required.size || pending) {
-      const status = el("p", pending && required.size ? "promptstudio-setup-checking" : "", required.size ? "Updating models for selected workflows…" : "Select a workflow to see its required models.");
+      const status = el("p", pending && required.size ? "promptstudio-setup-checking" : "", required.size ? "Updating models for your selections…" : "Select a workflow or optional feature to see its required models.");
       status.dataset.setupModelStatus = ""; status.setAttribute("role", "status"); list.append(status);
     }
   }

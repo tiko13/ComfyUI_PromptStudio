@@ -29,7 +29,7 @@ export function createPollingScope({view=globalThis,online=()=>view.navigator?.o
 /** Identical read-only health requests share in-flight work and a short cache. */
 export function createHealthReader({fetch,now=()=>Date.now(),ttl=2000,maxEntries=16}={}) {
   const cache=new Map();
-  return async (endpoint,settings={})=>{
+  const read=async (endpoint,settings={})=>{
     const provider=settings.llm_provider || 'koboldcpp';
     const fields=Object.keys(settings).filter(key=>key==='llm_provider'||key.startsWith(provider==='koboldcpp'?'kobold_':provider+'_')).sort();
     const key=endpoint+JSON.stringify(fields.map(name=>[name,settings[name]]));
@@ -46,9 +46,11 @@ export function createHealthReader({fetch,now=()=>Date.now(),ttl=2000,maxEntries
         const response=await fetch(endpoint,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(settings),signal:AbortSignal.timeout(10000)});
         const data=await response.json();if(!response.ok)throw new Error(data.error||`Health check failed (${response.status}).`);
         entry.time=now();return data;
-      } catch(error) {cache.delete(key);throw error;}
+      } catch(error) {if(cache.get(key)===entry)cache.delete(key);throw error;}
       finally {entry.pending=false;}
     })();
     cache.set(key,entry);return entry.promise.then(value=>structuredClone(value));
   };
+  read.invalidate=()=>cache.clear();
+  return read;
 }

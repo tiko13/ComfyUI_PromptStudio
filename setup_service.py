@@ -30,6 +30,12 @@ RESUMABLE = {"paused", "interrupted", "failed", "needs_restart"}
 def load_catalog():
     catalog = json.loads((ROOT / "catalog.json").read_text(encoding="utf-8-sig"))
     catalog["assets"] = json.loads((ROOT / "assets.json").read_text(encoding="utf-8-sig"))
+    region_assets = json.loads((ROOT / "reference-assets.json").read_text(encoding="utf-8"))
+    catalog["assets"].extend(region_assets)
+    catalog["requirements"].extend({"id":a["id"],"name":a["name"],"category":a["category"],"default_asset":a["id"]} for a in region_assets)
+    catalog.setdefault("addons", []).append({"id":"reference_objects","name":"Object detection (Grounding DINO Tiny)",
+        "description":"Optional CPU object boxes for selective reference edits. Uses the host Transformers runtime; no LLM required.",
+        "requirements":[a["id"] for a in region_assets],"nodes":[],"classes":[]})
     return catalog
 
 
@@ -221,6 +227,12 @@ class SetupService:
         if not isinstance(acceptances, dict):
             raise ValueError("License acceptances must be an object")
         packs = [copy.deepcopy(p) for p in self.catalog["packs"] if p["id"] in selected]
+        selected_addons = request.get("addons", [])
+        known_addons = {a["id"] for a in self.catalog.get("addons", [])}
+        if not isinstance(selected_addons, list) or not all(isinstance(a, str) for a in selected_addons) or len(set(selected_addons)) != len(selected_addons) or not set(selected_addons) <= known_addons:
+            raise ValueError("Unknown optional feature selection")
+        addons = [copy.deepcopy(a) for a in self.catalog.get("addons", []) if a["id"] in selected_addons]
+        selections = packs + addons
         for pack in packs:
             existing = Path(user_root) / "workflows" / pack["file"]
             pack["existing"] = existing.is_file()
@@ -231,13 +243,13 @@ class SetupService:
                     pack["existing_status"] = "Saved workflow found; your copy will be preserved" if isinstance(saved, dict) and isinstance(saved.get("nodes"), list) else "Saved file has invalid workflow structure; your copy will be preserved"
                 except (ValueError, OSError):
                     pack["existing_status"] = "Saved file could not be read; your copy will be preserved"
-        rows, blockers = [], [] if packs else ["Select at least one workflow"]
-        for pack in packs:
+        rows, blockers = [], [] if selections else ["Select at least one workflow or optional feature"]
+        for pack in selections:
             license = pack.get("license")
             if license and acceptances.get(pack["id"]) != license["id"]:
                 blockers.append(f"Accept the strict non-commercial license for {pack['name']} before setup.")
         for req in self.catalog["requirements"]:
-            used = [p["name"] for p in packs if req["id"] in p["requirements"]]
+            used = [p["name"] for p in selections if req["id"] in p["requirements"]]
             if not used:
                 continue
             candidates, rejected = self.candidates(req)
@@ -259,7 +271,7 @@ class SetupService:
                 blockers.append(f"{target.name} already exists but was not accepted. Choose an existing compatible file or move the conflicting file yourself.")
             rows.append(row)
         definitions = set()
-        required_nodes = set()
+        required_nodes = {name for addon in addons for name in addon.get("classes", [])}
         for pack in packs:
             flow = self.workflow_source(pack["id"])
             definitions.update(d["id"] for d in flow.get("definitions", {}).get("subgraphs", []))
@@ -285,7 +297,7 @@ class SetupService:
         node_rows = []
         third_party = {name for p in self.catalog["node_packs"] for name in p["classes"]}
         for dep in self.catalog["node_packs"]:
-            used = [p["name"] for p in packs if dep["id"] in p["nodes"]]
+            used = [p["name"] for p in selections if dep["id"] in p["nodes"]]
             if not used:
                 continue
             missing = [n for n in dep["classes"] if n in required_nodes and n not in self.nodes]
@@ -309,8 +321,10 @@ class SetupService:
                               "status": "update" if outdated else "install" if missing else "available"})
             if missing and not self.manager_available():
                 blockers.append(f"Install {dep['name']} through ComfyUI Manager or from {dep['url']}, then restart ComfyUI.")
-        # This frontend control is resolved to a literal during Studio conversion.
-        missing_core = sorted(required_nodes - definitions - third_party - set(self.nodes) - {"PromptStudioInput"})
+        # Frontend notes never execute; PromptStudioInput becomes a literal
+        # during Studio conversion. None has a backend node registration.
+        frontend_only = {"PromptStudioInput", "MarkdownNote", "Note"}
+        missing_core = sorted(required_nodes - definitions - third_party - set(self.nodes) - frontend_only)
         if missing_core:
             blockers.append("Update ComfyUI / Prompt Studio and restart to load: " + ", ".join(missing_core))
         # Aggregate required space by the actual destination volume, including
@@ -348,6 +362,7 @@ class SetupService:
         if not os.access(parent, os.W_OK):
             blockers.append("ComfyUI user storage is not writable")
         return {"version": self.catalog["version"], "packs": packs,
+                "addons": addons, "available_addons": copy.deepcopy(self.catalog.get("addons", [])),
                 "available_packs": copy.deepcopy(self.catalog["packs"]), "requirements": rows, "node_packs": node_rows,
                 "blockers": blockers, "disks": list(disks.values()), "download_bytes": sum(r["download_bytes"] for r in rows),
                 "licenses": self.catalog.get("licenses", []), "workflow_directory": str(user_root / "workflows"),
@@ -386,8 +401,9 @@ class SetupService:
             if root in self.workers and self.workers[root].is_alive():
                 return self.status(root)
             request = {"packs": [p["id"] for p in plan["packs"]],
+                       "addons": [a["id"] for a in plan.get("addons", [])],
                        "choices": {r["id"]: r["choice"] for r in plan["requirements"]},
-                       "license_acceptances": {p["id"]: p["license"]["id"] for p in plan["packs"] if p.get("license")}}
+                       "license_acceptances": {p["id"]: p["license"]["id"] for p in plan["packs"] + plan.get("addons", []) if p.get("license")}}
             previous = self._state(root).get("job") if resume else None
             self._state(root)["job"] = {"id": previous["id"] if previous else uuid.uuid4().hex, "status": "running", "phase": "Checking",
                 "started_at": previous["started_at"] if previous else time.time(), "events": previous["events"] if previous else [], "request": request, "bytes": 0, "total": 0,
@@ -463,6 +479,15 @@ class SetupService:
 
     def _run(self, root, plan):
         try:
+            installed_nodes = False
+            for dep in plan["node_packs"]:
+                self._checkpoint(root)
+                if dep["missing"]:
+                    self._update(root, phase="Installing nodes", item=dep["name"], bytes=0, total=0, speed=0, eta=None,
+                                 event=f"ComfyUI Manager: installing {dep['name']} from {dep['url']}. Waiting for Manager to finish.")
+                    self.install_node(dep)
+                    installed_nodes = True
+                    self._update(root, event=f"{dep['name']} installed; restart required")
             replacements = {}
             downloaded = 0
             for row in plan["requirements"]:
@@ -496,15 +521,6 @@ class SetupService:
                             raise ValueError(error)
                 replacements[row["id"]] = name
                 self._update(root, event=f"{row['name']} ready", downloaded=downloaded)
-            installed_nodes = False
-            for dep in plan["node_packs"]:
-                self._checkpoint(root)
-                if dep["missing"]:
-                    self._update(root, phase="Installing nodes", item=dep["name"], bytes=0, total=0, speed=0, eta=None,
-                                 event=f"ComfyUI Manager: installing {dep['name']} from {dep['url']}. Waiting for Manager to finish.")
-                    self.install_node(dep)
-                    installed_nodes = True
-                    self._update(root, event=f"{dep['name']} installed; restart required")
             self._checkpoint(root)
             self._update(root, phase="Installing workflows", bytes=0, total=len(plan["packs"]), speed=0, eta=None)
             results = []

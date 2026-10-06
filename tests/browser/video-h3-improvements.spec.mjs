@@ -1,0 +1,72 @@
+import assert from 'node:assert/strict';
+import {resolve} from 'node:path';
+import {startFixture, attachVideo, root, videoEnabled} from './fixture.mjs';
+if (!videoEnabled) { console.log('Video H3 integration is opt-in.'); process.exit(0); }
+const fixture = await startFixture();
+try {
+  await fixture.context.route('**/js/promptstudio_video_studio.js', async route => {
+    const response = await route.fetch();
+    await route.fulfill({response, body: await response.text() + '\nwindow.h3Test = {activeProject, renderAll, showRewriterReview, markProjectChanged, persistProjects, localResolvedMode};'});
+  });
+  let fail = true;
+  await fixture.context.route('**/default-workflows?bundle=*', async route => {
+    if (fail) return route.fulfill({status: 503, json: {error: 'Temporary setup failure'}});
+    const bundle = new URL(route.request().url()).searchParams.get('bundle');
+    await route.fulfill({json:{bundle, label: bundle, workflows:[{path:'[PSV] test.json',data:{nodes:[]}}],models:[{name:'adapter.safetensors',size:100,installed:false}],missing_bytes:100}});
+  });
+  const page = await fixture.newPage();
+  await attachVideo(page);
+  await page.locator('#psvstudio-new-project').click();
+  await page.getByRole('button',{name:'Install workflows',exact:true}).click();
+  const installer = page.getByRole('dialog',{name:'Install Video workflows'});
+  await installer.getByText('Temporary setup failure',{exact:true}).waitFor();
+  assert.equal(await installer.getByRole('button',{name:'Install selected workflows'}).isEnabled(),false);
+  fail = false;
+  await installer.getByRole('combobox',{name:'Workflow bundle'}).selectOption('sparse');
+  await installer.getByText(/adapter.safetensors/).waitFor();
+  assert.equal(await installer.getByRole('button',{name:'Install selected workflows'}).isEnabled(),true);
+  await page.setViewportSize({width:390,height:844});
+  assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true);
+  await page.screenshot({path:resolve(root,'test-results/browser/h3-workflow-installer.png')});
+  await page.keyboard.press('Escape');
+  assert.equal(await installer.count(),0);
+  await page.evaluate(()=>{
+    const project=window.h3Test.activeProject();
+    project.document.references=[{id:'timed',kind:'audio',name:'Guide tone',path:'fixture.wav',roles:['timeline_guide'],guide_frame:48}];
+    window.h3Test.markProjectChanged(); window.h3Test.renderAll();
+  });
+  assert.equal(await page.evaluate(()=>window.h3Test.localResolvedMode(window.h3Test.activeProject().document)),'t2va');
+  const marker=page.locator('.psvstudio-guide-lane button');
+  await marker.press('ArrowRight');
+  await marker.press('Shift+ArrowRight');
+  assert.equal(await page.evaluate(()=>window.h3Test.activeProject().document.references[0].guide_frame),73);
+  await page.evaluate(()=>{window.h3Test.activeProject().document.references[0].kind='video'; window.h3Test.renderAll();});
+  await page.getByRole('checkbox',{name:'Use guide soundtrack',exact:true}).check();
+  await page.getByRole('spinbutton',{name:'Guide source start (seconds) for Guide 1',exact:true}).fill('0.5');
+  await page.getByRole('spinbutton',{name:'Guide source start (seconds) for Guide 1',exact:true}).press('Tab');
+  await page.getByRole('spinbutton',{name:'Guide source end (seconds) for Guide 1',exact:true}).fill('1.5');
+  await page.getByRole('spinbutton',{name:'Guide source end (seconds) for Guide 1',exact:true}).press('Tab');
+  assert.equal(await page.evaluate(()=>window.h3Test.activeProject().document.references[0].use_embedded_audio),true);
+  assert.equal(await page.evaluate(()=>window.h3Test.activeProject().document.references[0].trim_end),1.5);
+  await page.evaluate(()=>window.h3Test.persistProjects({immediate:true}));
+  await page.reload(); await page.waitForFunction(()=>window.studioReady); await attachVideo(page);
+  assert.equal(await page.evaluate(()=>window.h3Test.activeProject().document.references[0].guide_frame),73);
+  await page.evaluate(()=>window.h3Test.showRewriterReview(window.h3Test.activeProject()));
+  const review=page.getByRole('dialog',{name:'Review specialist rewrite'});
+  await fixture.context.route('**/rewriter/review',route=>route.fulfill({json:{draft:'candidate',baseline:'original',issues:[],eligible_for_proposal:true,notice:'Review details.'}}));
+  await review.getByRole('textbox',{name:'Rewriter output'}).fill('candidate');
+  await review.getByRole('button',{name:'Compare with current prompt'}).click();
+  await review.getByText('Review details.',{exact:true}).waitFor();
+  assert.equal(await review.getByRole('button',{name:'Use as Director draft'}).isEnabled(),true);
+  await review.getByRole('textbox',{name:'Rewriter output'}).fill('changed');
+  assert.equal(await review.getByRole('button',{name:'Use as Director draft'}).isEnabled(),false);
+  await fixture.context.route('**/rewriter/review',route=>route.fulfill({json:{}}));
+  await review.getByRole('button',{name:'Compare with current prompt'}).click();
+  await review.getByText('Rewrite review returned an invalid response.',{exact:true}).waitFor();
+  assert.equal(await review.getByRole('button',{name:'Use as Director draft'}).isEnabled(),false);
+  assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true);
+  await page.screenshot({path:resolve(root,'test-results/browser/h3-rewriter-review.png')});
+  await page.keyboard.press('Escape');
+  assert.deepEqual(fixture.errors,[]);
+  console.log('H3 installer recovery, narrow layouts, timed-guide keyboard/persistence and stale/malformed rewriter review passed.');
+} finally { await fixture.close(); }

@@ -688,28 +688,14 @@ class RegressionTests(unittest.TestCase):
         self.assertEqual(configured["temperature"], 1.0)
         self.assertEqual(configured["top_k"], 20)
 
-    def test_llamacpp_config_builder_launches_fixed_script_without_shell(self):
-        root = Path(self.temp.name)
-        config_path = root / "llamacpp.json"
+    def test_llamacpp_config_builder_reads_without_launching_process(self):
+        config_path = Path(self.temp.name) / "llamacpp.json"
         config_path.write_text("{}", encoding="utf-8")
-        process = mock.Mock(pid=321)
-        with mock.patch.object(self.routes.os, "name", "nt"), mock.patch.object(
-            self.routes.os.path, "isfile", return_value=True,
-        ), mock.patch.object(
-            self.routes.shutil, "which", return_value=r"C:\Windows\powershell.exe",
-        ), mock.patch.object(
-            self.routes.subprocess, "Popen", return_value=process,
-        ) as popen:
-            result = self.routes._launch_llamacpp_config_builder({
-                "llamacpp_config_profile": config_path.name,
-            })
-
-        self.assertEqual(result["config_path"], str(config_path))
-        self.assertEqual(result["pid"], 321)
-        command = popen.call_args.args[0]
-        self.assertIn("-STA", command)
-        self.assertIn(str(config_path), command)
-        self.assertEqual(popen.call_args.kwargs["shell"], False)
+        with mock.patch.object(self.routes.subprocess, "Popen") as popen:
+            result = self.routes._edit_llamacpp_config({"llamacpp_config_profile": config_path.name})
+        self.assertTrue(result["native_editor"])
+        self.assertEqual(result["config_profile"], config_path.name)
+        popen.assert_not_called()
 
     def test_llamacpp_managed_process_is_recovered_after_comfyui_restart(self):
         root = Path(self.temp.name)
@@ -2029,11 +2015,12 @@ class RegressionTests(unittest.TestCase):
     def test_final_prompt_builders_receive_only_matched_known_reference_definitions(self):
         references_path = Path(self.temp.name) / "known-references.json"
         definitions = {
-            "Jane": "A blonde woman wearing denim pants.",
+            "Jane": "Jane is a beautiful blonde woman wearing denim pants. Emphasize her graceful posture.",
             "Victory Pose": "A confident pose with both arms raised.",
             "Quiet Smile": "A restrained closed-mouth smile.",
             "Blue Lantern": "A weathered lantern with blue glass.",
             "Old Courtyard": "An aged stone courtyard with ivy.",
+            "Quiet Focus": "Keep the composition uncluttered. If a lantern is present, make its light subtle; avoid competing focal props.",
         }
         references_path.write_text(
             json.dumps(
@@ -2049,7 +2036,7 @@ class RegressionTests(unittest.TestCase):
             ),
             encoding="utf-8",
         )
-        source = "Jane uses Victory Pose and Quiet Smile, holding Blue Lantern in Old Courtyard."
+        source = "Jane uses Victory Pose and Quiet Smile, holding Blue Lantern in Old Courtyard. Use Quiet Focus."
         profile = self.nodes.DEFAULT_PROFILE
         style = self.nodes.DEFAULT_STYLE_TEMPLATE
         framing = self.nodes.DEFAULT_FRAMING_TEMPLATE
@@ -2139,9 +2126,8 @@ class RegressionTests(unittest.TestCase):
             )
 
         protected_section = request.split("Protected literals found in the source text:", 1)[1]
-        protected_section = protected_section.split("Known references used by the source text:", 1)[0]
-        self.assertIn('["Ciri"]', protected_section)
-        self.assertNotIn("Jane", protected_section)
+        protected_literals = json.loads(protected_section.strip().splitlines()[0])
+        self.assertEqual(protected_literals, ["Ciri"])
         self.assertIn("A woman wearing a green coat.", request)
 
     def test_output_length_defaults_follow_profile_and_embellishment(self):
@@ -2791,7 +2777,7 @@ class RegressionTests(unittest.TestCase):
         self.assertEqual(timeout, 120)
         self.assertEqual(payload["model"], "qwen3:8b")
         self.assertEqual(payload["think"], "medium")
-        self.assertFalse(payload["stream"])
+        self.assertTrue(payload["stream"])
         self.assertEqual(payload["keep_alive"], 30)
         self.assertEqual(payload["options"]["num_predict"], 750)
         self.assertGreaterEqual(payload["options"]["num_ctx"], payload["options"]["num_predict"])
@@ -3005,7 +2991,7 @@ class RegressionTests(unittest.TestCase):
         self.assertEqual(result["route"], "mutate_now")
         request_data = consult.call_args.args[0]
         self.assertEqual(request_data["thinking_mode"], "Disabled")
-        self.assertEqual(request_data["max_response_tokens"], 320)
+        self.assertEqual(request_data["max_response_tokens"], 640)
 
     def test_ollama_generation_does_not_start_after_setup_is_cancelled(self):
         cancelled = threading.Event()
@@ -3188,9 +3174,44 @@ class RegressionTests(unittest.TestCase):
         ) as generate:
             caption = self.routes._caption_image(payload)
 
-        self.assertEqual(caption, "A navy blue rectangular field.")
+        self.assertEqual(caption, {"prompt": "A navy blue rectangular field."})
         self.assertIn("model-neutral source prompt", generate.call_args.args[0])
         self.assertTrue(generate.call_args.kwargs["image_data_uri"].startswith("data:image/jpeg;base64,"))
+
+    def test_caption_separates_full_final_from_scene_main_for_all_providers(self):
+        caption = 'A cinematic close-up watercolor of a red cat beside a sign reading "Hello".'
+        main = 'A red cat beside a sign reading "Hello".'
+        for provider, generator, image_key in (
+            ("koboldcpp", "_generate_kcpp", "image_data_uri"),
+            ("ollama", "_generate_ollama", "image_base64"),
+            ("llamacpp", "_generate_llamacpp", "image_data_uri"),
+        ):
+            with self.subTest(provider=provider), mock.patch.object(
+                self.routes, "_chat_image_vision_payload", return_value=("image", "data:image/png;base64,image")
+            ), mock.patch.object(self.routes, "_llamacpp_configured_generation_data", side_effect=lambda data: data), mock.patch.object(
+                self.routes, generator, side_effect=[caption, main]
+            ) as generate:
+                result = self.routes._caption_image({
+                    "image": {"filename": "cat.png", "type": "input"},
+                    "llm_provider": provider, "derive_main_prompt": True,
+                    "style_preset": "MUST NOT LEAK", "additional_instructions": "MUST NOT LEAK",
+                })
+                self.assertEqual(result, {"prompt": caption, "main_prompt": main})
+                first, second = generate.call_args_list
+                self.assertTrue(first.kwargs[image_key])
+                self.assertIsNone(second.kwargs[image_key])
+                self.assertIn(json.dumps(caption, ensure_ascii=False), second.args[0])
+                self.assertIn("Remove all rendering style", second.args[0])
+                self.assertIn("framing", second.args[0])
+                self.assertIn("legible text verbatim", second.args[0])
+                self.assertNotIn("MUST NOT LEAK", second.args[0])
+
+    def test_caption_rejects_empty_main_without_returning_partial_prompts(self):
+        with mock.patch.object(self.routes, "_chat_image_vision_payload", return_value=("image", "uri")), mock.patch.object(
+            self.routes, "_generate_kcpp", side_effect=["A cinematic portrait of a cat.", ""]
+        ):
+            with self.assertRaisesRegex(RuntimeError, "empty Main prompt"):
+                self.routes._caption_image({"image": {"filename": "cat.png"}, "derive_main_prompt": True})
 
     def test_consultation_uses_separate_multi_turn_messages_and_context(self):
         payload = {
@@ -4450,7 +4471,7 @@ class RegressionTests(unittest.TestCase):
                 "chats": [second_chat],
             })
             self.assertEqual(second["revision"], 2)
-            backup = json.loads((Path(chat_dir) / "_backups" / "index.bak").read_text(encoding="utf-8"))
+            backup = json.loads(self.routes.transactional_store._json_bytes(Path(chat_dir) / "_backups" / "index.bak"))
             self.assertEqual(backup["revision"], 1)
 
     def test_chat_store_unchanged_writes_reuse_the_current_revision(self):
@@ -4590,7 +4611,7 @@ class RegressionTests(unittest.TestCase):
                 current_revision=0,
             )
             index = json.loads((chat_dir / "index.json").read_text(encoding="utf-8"))
-            self.assertEqual(len(list(chat_dir.glob("chat_*.json"))), 2)
+            self.assertEqual(len(list(chat_dir.glob("chat_*.json.gz"))), 2)
             self.assertEqual(len(index["chatFiles"]), 2)
             self.assertEqual(self.routes._read_chat_store()["chats"], chats)
 
@@ -4598,7 +4619,7 @@ class RegressionTests(unittest.TestCase):
                 {"activeChatId": "chat-one", "chats": [chats[0]]},
                 current_revision=1,
             )
-            self.assertEqual(len(list(chat_dir.glob("chat_*.json"))), 2)
+            self.assertEqual(len(list(chat_dir.glob("chat_*.json.gz"))), 2)
             previous = self.routes.transactional_store.read_records(str(chat_dir), index, "chatFiles", "chat")
             self.assertEqual(previous, chats)
             self.assertEqual([chat["id"] for chat in self.routes._read_chat_store()["chats"]], ["chat-one"])
@@ -4622,7 +4643,7 @@ class RegressionTests(unittest.TestCase):
         self.assertEqual(stored["revision"], 9)
         self.assertTrue(chat_path.exists())
         self.assertTrue((chat_dir / "index.json").is_file())
-        self.assertEqual(len(list(chat_dir.glob("chat_*.json"))), 1)
+        self.assertEqual(len(list(chat_dir.glob("chat_*.json.gz"))), 1)
         self.assertTrue((chat_dir / "_backups" / "legacy_store.bak").is_file())
 
     def test_chat_store_preserves_generation_loader_state(self):

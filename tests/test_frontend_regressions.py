@@ -204,7 +204,7 @@ class FrontendRegressionTests(unittest.TestCase):
         self.assertIn("lora: 1", self.plot_model)
         self.assertIn("lora_strength: 1", self.plot_model)
         self.assertIn("seed: 3", self.plot_model)
-        self.assertIn("SAMPLER_CONTROL_TYPE", self.plot_model)
+        self.assertIn("samplerSupportsField", self.plot_model)
         self.assertIn("Two axes cannot control the same workflow field", self.plot_model)
         self.assertIn("PLOT_MAX_CELLS = 512", self.plot_model)
         self.assertIn("Start XY(Z) plot", self.source)
@@ -394,23 +394,18 @@ class FrontendRegressionTests(unittest.TestCase):
         selected = self.function_source("selectedLlmProfile", "selectedLlamacppGenerationSettings")
         providers = self.function_source("syncLlmProviderControls", "loadConfig")
         configs = self.function_source("loadLlamacppConfigProfiles", "applyLlamacppAutostartStatus")
-        builder = (REPO_ROOT / "llamacpp_config_builder.ps1").read_text(encoding="utf-8")
+        builder = (REPO_ROOT / "web/js/prompt-studio/ui/llamacpp-config-editor.js").read_text(encoding="utf-8")
 
         self.assertIn('selectedLlmProvider() === "llamacpp"', selected)
         self.assertIn("state.llamacppConfigLlmProfiles.get", selected)
         self.assertIn('profileControl.hidden = provider === "llamacpp"', providers)
         self.assertIn("llamacpp_config_profile: selected", configs)
         self.assertIn("data.llm_profile", configs)
-        self.assertIn('llm_profile = [ordered]@{', builder)
-        self.assertIn('thinking_temperature = [double] $llmThinkingTemperature.Value', builder)
-        self.assertIn('presence_penalty = [double] $llmPresencePenalty.Value', builder)
-        self.assertIn('$qwen38ThinkingModesText = "XHigh, Medium, Low"', builder)
-        self.assertIn('instruct_modes = @($normalizedInstructModes)', builder)
         self.assertIn("Check the model card for supported modes", builder)
         self.assertIn("Unsupported modes may fail or produce unpredictable results", builder)
-        self.assertIn("Qwen 3.8 uses XHigh, Medium, and Low", builder)
-        self.assertIn('Normalize-DeviceList "CUDA devices" $cudaDevices.Text', builder)
-        self.assertIn('Normalize-DeviceList "MTP device" $mtpDevice.Text', builder)
+        self.assertIn('"instruct_modes"', builder)
+        self.assertIn('"cuda_devices"', builder)
+        self.assertIn('"mtp_device"', builder)
 
     def test_new_chats_reset_generation_controls_except_thinking_and_embellishment(self):
         fresh = self.function_source(
@@ -468,7 +463,7 @@ class FrontendRegressionTests(unittest.TestCase):
         self.assertIn("localStorage.getItem", confirmation)
         self.assertIn("localStorage.setItem", confirmation)
         self.assertIn("view?.confirm", confirmation)
-        self.assertIn('select.value = "ollama"', change)
+        self.assertIn('select.value = previous', change)
         self.assertIn('addEventListener("change", handleLlmProviderChange)', self.source)
         self.assertLess(
             self.source.index('<option value="ollama"'),
@@ -527,7 +522,7 @@ class FrontendRegressionTests(unittest.TestCase):
         self.assertIn('id="promptstudio-build-llamacpp-config"', self.source)
         self.assertIn('id="promptstudio-new-llamacpp-config"', self.source)
         self.assertIn("LLAMACPP_FILE_PICKER_ENDPOINT", file_picker)
-        self.assertIn("LLAMACPP_CONFIG_BUILDER_ENDPOINT", config_builder)
+        self.assertIn("openLlamacppConfigEditor", config_builder)
         self.assertIn("LLAMACPP_CONFIG_PROFILES_ENDPOINT", self.source)
         self.assertIn('browseLlamacppPath("executable")', self.source)
         self.assertNotIn('browseLlamacppPath("config_directory")', self.source)
@@ -864,10 +859,10 @@ class FrontendRegressionTests(unittest.TestCase):
         ]
         self.assertLess(
             queue.index("llmHandoffToken = await releaseLlmBeforeGeneration();"),
-            queue.index("await api.queuePrompt(-1, context.snapshot);"),
+            queue.index("await api.queuePrompt(-1, submittedSnapshot);"),
         )
         self.assertLess(
-            queue.index("await api.queuePrompt(-1, context.snapshot);"),
+            queue.index("await api.queuePrompt(-1, submittedSnapshot);"),
             queue.index("await completeLlmHandoff(llmHandoffToken);"),
         )
 
@@ -939,9 +934,10 @@ class FrontendRegressionTests(unittest.TestCase):
         self.assertIn("if (routed.warning)", turn)
         self.assertIn('appendMessage("system", routed.warning', turn)
 
-    def test_mutation_settings_expose_five_focused_managers(self):
-        self.assertEqual(self.source.count('data-mutation-category="'), 5)
+    def test_mutation_settings_expose_six_focused_managers(self):
+        self.assertEqual(self.source.count('data-mutation-category="'), 6)
         for category in (
+            "forbidden_words",
             "protected_words",
             "additional_instruction_templates",
             "known_references",

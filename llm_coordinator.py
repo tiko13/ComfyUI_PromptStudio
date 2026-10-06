@@ -57,6 +57,11 @@ class CancellationToken:
     def cancelled(self):
         return self._cancelled.is_set() or bool(self._check and self._check())
 
+    def note_activity(self):
+        # An active inference may outlive the operation's initial hour budget.
+        # Queue waits and stages with no activity remain bounded.
+        self.deadline = time.monotonic() + provider_transport.MAX_TOTAL_SECONDS
+
     def check(self):
         if self.cancelled():
             raise asyncio.CancelledError("LLM operation was logically cancelled")
@@ -128,7 +133,8 @@ class LlmCoordinator:
             while self._pending or any(self._active.values()):
                 self._condition.wait(0.05)
 
-    def run(self, resources, operation, *, priority=0, token=None):
+    def run(self, resources, operation, *, priority=0, token=None, exclusive=False):
+        """Reserve one slot, or every slot for exclusive endpoint maintenance."""
         resources = frozenset(resources)
         context = getattr(self._local, "context", None)
         if context is not None:
@@ -148,13 +154,13 @@ class LlmCoordinator:
             try:
                 while True:
                     token.check()
-                    available = all(self._active.get(key, 0) < self._capacities.get(key, 1)
+                    available = all(self._active.get(key, 0) < (1 if exclusive else self._capacities.get(key, 1))
                                     for key in resources)
                     earlier = any(other[:2] < ticket[:2] and other[2] & resources
                                   for other in self._pending)
                     if available and not earlier:
                         for key in resources:
-                            self._active[key] = self._active.get(key, 0) + 1
+                            self._active[key] = self._active.get(key, 0) + (self._capacities.get(key, 1) if exclusive else 1)
                         break
                     self._condition.wait(0.05)
             except BaseException:
@@ -167,7 +173,7 @@ class LlmCoordinator:
         try:
             token.check()
             try:
-                with provider_transport.operation_scope(token.deadline, token.cancelled):
+                with provider_transport.operation_scope(lambda: token.deadline, token.cancelled, token.note_activity):
                     result = operation()
             except Exception:
                 token.check()
@@ -180,7 +186,7 @@ class LlmCoordinator:
             with self._condition:
                 self._tokens.discard(token)
                 for key in resources:
-                    self._active[key] -= 1
+                    self._active[key] -= self._capacities.get(key, 1) if exclusive else 1
                 self._condition.notify_all()
 
 

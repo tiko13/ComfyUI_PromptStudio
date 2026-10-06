@@ -64,6 +64,21 @@ class TwinTurboModeTests(unittest.TestCase):
             with self.subTest(definitions=definitions), self.assertRaises(ValueError):
                 normalize({"thinking_mode": "Spoon", **definitions})
 
+    def test_unsupported_off_is_rejected_in_profile_and_not_used_for_generation(self):
+        for definition in ({"thinking_modes": ["High", "Low"], "instruct_modes": []},
+                           {"thinking_modes": ["High"]}):
+            with self.subTest(definition=definition):
+                with self.assertRaises(ValueError):
+                    self.routes._normalize_llamacpp_llm_profile({**definition, "thinking_mode": "Disabled"})
+                profile = self.routes._normalize_llamacpp_llm_profile({**definition, "thinking_mode": "High"})
+                self.assertNotIn("Disabled", self.routes._llamacpp_profile_mode_options(profile))
+                self.profile.write_text(json.dumps({"llm_profile": profile}), encoding="utf-8")
+                result = self.routes._llamacpp_configured_generation_data({
+                    "llm_provider": "llamacpp",
+                    "llamacpp_config_profile": self.profile.name, "thinking_mode": "Disabled",
+                })
+                self.assertEqual(result["thinking_mode"], "High")
+
     def test_generation_and_token_count_use_identical_native_mode_and_thinking_switch(self):
         response = {"choices": [{"message": {"content": "A forest."}, "finish_reason": "stop"}]}
         for mode in ALL_MODES:

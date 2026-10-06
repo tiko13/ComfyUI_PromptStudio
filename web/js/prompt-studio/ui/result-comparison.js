@@ -46,6 +46,7 @@ export function videoComparisonRecord(saved) {
 
 export function plotComparisonRecord(plot, cell) {
   const snapshot = snapshotForPlotCell(plot, cell);
+  snapshot.promptStudioSettings = {...snapshot.promptStudioSettings, ...plot.controlSettings, ...plotControlOverridesForCell(plot, cell)};
   const axes = plot.axes.map((axis,index)=>({axis:axis.name,label:axis.label,type:axis.type,
     value:axis.values[cell.coordinate[index]]?.value,labelValue:axis.values[cell.coordinate[index]]?.label,
     targetNode:axis.targetNodeId,targetName:axis.targetName,
@@ -58,7 +59,8 @@ export function plotComparisonRecord(plot, cell) {
       selections:JSON.parse(snapshot.output?.[loader.nodeId]?.inputs?.lora_stack_json || JSON.stringify(loader.selections || []))})),
     modelState:(plot.base.modelState || []).map(loader=>({...loader,
       modelName:snapshot.output?.[loader.nodeId]?.inputs?.unet_name ?? loader.modelName})),
-    generationSnapshot:snapshot,provenance:cell.provenance,images:cell.images || [],axisOverrides:axes,
+    generationSnapshot:snapshot,intentProvenance:cell.intentProvenance ?? plot.base.intentProvenance,
+    provenance:cell.provenance,images:cell.images || [],axisOverrides:axes,
     plotId:plot.id,cellId:cell.id,resultNodeIds:plot.base.resultNodeIds,resultFields:plot.base.resultFields};
   return record({...imageComparisonRecord(saved),label:axes.map(axis=>`${axis.label}: ${axis.labelValue ?? ''}`).join(' · '),
     finalOrigin:'Saved plot prompt',settings:{axisOverrides:axes,controls:plotControlOverridesForCell(plot,cell)},saved});

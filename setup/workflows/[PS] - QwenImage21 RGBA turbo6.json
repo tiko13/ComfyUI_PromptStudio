@@ -1,8 +1,8 @@
 {
-  "id": "f2322435-9921-495b-9a24-03f431d97812",
+  "id": "72129a71-343f-465e-ac6a-e25aa5961d53",
   "revision": 0,
   "last_node_id": 99,
-  "last_link_id": 19,
+  "last_link_id": 18,
   "nodes": [
     {
       "id": 1,
@@ -100,8 +100,7 @@
           "name": "VAE",
           "type": "VAE",
           "links": [
-            10,
-            18
+            16
           ]
         }
       ],
@@ -148,12 +147,16 @@
         {
           "name": "width",
           "type": "INT",
-          "links": []
+          "links": [
+            9
+          ]
         },
         {
           "name": "height",
           "type": "INT",
-          "links": []
+          "links": [
+            10
+          ]
         }
       ],
       "properties": {
@@ -182,7 +185,7 @@
         140
       ],
       "flags": {},
-      "order": 6,
+      "order": 5,
       "mode": 0,
       "inputs": [
         {
@@ -212,7 +215,7 @@
     },
     {
       "id": 6,
-      "type": "LoraLoaderModelOnly",
+      "type": "KCPP_QwenImage21TurboLora",
       "pos": [
         430,
         540
@@ -236,72 +239,22 @@
           "name": "MODEL",
           "type": "MODEL",
           "links": [
-            3
+            18
           ]
         }
       ],
-      "title": "Fixed Viggle Turbo adapter — do not add it again in the PS LoRA stack",
+      "title": "Qwen Image 2.1 Turbo v0.3 LoRA",
       "properties": {
-        "Node name for S&R": "LoraLoaderModelOnly",
+        "Node name for S&R": "KCPP_QwenImage21TurboLora",
         "cnr_id": "comfy-core",
         "ver": "0.37.0",
         "promptstudio_asset": "qwen21_turbo"
       },
       "widgets_values": [
-        "QwenImage21/_Qwen-Image-2.1-viggle-turbo-4step-lora-r64.safetensors",
-        1
+        "QwenImage21/_Qwen-Image-2.1-viggle-turbo-v0.3-6step-lora-r128.safetensors"
       ],
       "widgets_values_named": {
-        "lora_name": "QwenImage21/_Qwen-Image-2.1-viggle-turbo-4step-lora-r64.safetensors",
-        "strength_model": 1
-      }
-    },
-    {
-      "id": 16,
-      "type": "ModelSamplingFlux",
-      "pos": [
-        830,
-        530
-      ],
-      "size": [
-        340,
-        140
-      ],
-      "flags": {},
-      "order": 10,
-      "mode": 0,
-      "inputs": [
-        {
-          "name": "model",
-          "type": "MODEL",
-          "link": 3
-        }
-      ],
-      "outputs": [
-        {
-          "name": "MODEL",
-          "type": "MODEL",
-          "links": [
-            6
-          ]
-        }
-      ],
-      "properties": {
-        "Node name for S&R": "ModelSamplingFlux",
-        "cnr_id": "comfy-core",
-        "ver": "0.37.0"
-      },
-      "widgets_values": [
-        0.7066532258064516,
-        0.7066532258064516,
-        1056,
-        1056
-      ],
-      "widgets_values_named": {
-        "max_shift": 0.7066532258064516,
-        "base_shift": 0.7066532258064516,
-        "width": 1056,
-        "height": 1056
+        "lora_name": "QwenImage21/_Qwen-Image-2.1-viggle-turbo-v0.3-6step-lora-r128.safetensors"
       }
     },
     {
@@ -316,13 +269,13 @@
         140
       ],
       "flags": {},
-      "order": 11,
+      "order": 10,
       "mode": 0,
       "inputs": [
         {
           "name": "model",
           "type": "MODEL",
-          "link": 6
+          "link": 18
         }
       ],
       "outputs": [
@@ -330,7 +283,7 @@
           "name": "MODEL",
           "type": "MODEL",
           "links": [
-            13
+            11
           ]
         }
       ],
@@ -360,7 +313,7 @@
         310
       ],
       "flags": {},
-      "order": 9,
+      "order": 6,
       "mode": 0,
       "inputs": [
         {
@@ -372,31 +325,13 @@
           "name": "images.image_1",
           "shape": 7,
           "type": "IMAGE",
-          "link": 9
-        },
-        {
-          "name": "images.image_2",
-          "shape": 7,
-          "type": "IMAGE",
-          "link": null
-        },
-        {
-          "name": "images.image_3",
-          "shape": 7,
-          "type": "IMAGE",
-          "link": null
-        },
-        {
-          "name": "images.image_4",
-          "shape": 7,
-          "type": "IMAGE",
           "link": null
         },
         {
           "name": "vae",
           "shape": 7,
           "type": "VAE",
-          "link": 10
+          "link": null
         },
         {
           "name": "prompt",
@@ -412,22 +347,18 @@
           "name": "positive",
           "type": "CONDITIONING",
           "links": [
-            14
+            12
           ]
         },
         {
           "name": "negative",
           "type": "CONDITIONING",
-          "links": [
-            15
-          ]
+          "links": []
         },
         {
           "name": "latent",
           "type": "LATENT",
-          "links": [
-            16
-          ]
+          "links": []
         }
       ],
       "properties": {
@@ -436,72 +367,27 @@
         "ver": "0.37.0",
         "autogrow": {
           "images": {
-            "names": [
-              "image_1"
-            ]
+            "names": []
           }
         }
       },
       "widgets_values": [
         "",
         "",
-        1056
+        1024
       ],
       "widgets_values_named": {
         "prompt": "",
         "negative_prompt": "",
-        "resolution": 1056
+        "resolution": 1024
       }
     },
     {
-      "id": 20,
-      "type": "KCPP_ChatImageInput",
+      "id": 9,
+      "type": "EmptyLatentImage",
       "pos": [
-        0,
-        750
-      ],
-      "size": [
-        340,
-        140
-      ],
-      "flags": {},
-      "order": 4,
-      "mode": 0,
-      "inputs": [],
-      "outputs": [
-        {
-          "name": "image",
-          "type": "IMAGE",
-          "links": [
-            11
-          ]
-        },
-        {
-          "name": "mask",
-          "type": "MASK",
-          "links": [
-            12
-          ]
-        }
-      ],
-      "properties": {
-        "Node name for S&R": "KCPP_ChatImageInput"
-      },
-      "widgets_values": [
-        "",
-        "Edit target"
-      ],
-      "widgets_values_named": {
-        "image_ref": "",
-        "source_name": "Edit target"
-      }
-    },
-    {
-      "id": 40,
-      "type": "JoinImageWithAlpha",
-      "pos": [
-        430,
-        800
+        850,
+        720
       ],
       "size": [
         340,
@@ -512,34 +398,50 @@
       "mode": 0,
       "inputs": [
         {
-          "name": "image",
-          "type": "IMAGE",
-          "link": 11
+          "name": "width",
+          "type": "INT",
+          "widget": {
+            "name": "width"
+          },
+          "link": 9
         },
         {
-          "name": "alpha",
-          "type": "MASK",
-          "link": 12
+          "name": "height",
+          "type": "INT",
+          "widget": {
+            "name": "height"
+          },
+          "link": 10
         }
       ],
       "outputs": [
         {
-          "name": "IMAGE",
-          "type": "IMAGE",
+          "name": "LATENT",
+          "type": "LATENT",
           "links": [
-            9
+            14
           ]
         }
       ],
       "properties": {
-        "Node name for S&R": "JoinImageWithAlpha",
+        "Node name for S&R": "EmptyLatentImage",
         "cnr_id": "comfy-core",
         "ver": "0.37.0"
+      },
+      "widgets_values": [
+        1024,
+        1024,
+        1
+      ],
+      "widgets_values_named": {
+        "width": 1024,
+        "height": 1024,
+        "batch_size": 1
       }
     },
     {
       "id": 10,
-      "type": "KCPP_PromptStudioSampler",
+      "type": "KCPP_QwenImage21TurboSampler",
       "pos": [
         1300,
         0
@@ -549,28 +451,23 @@
         310
       ],
       "flags": {},
-      "order": 12,
+      "order": 11,
       "mode": 0,
       "inputs": [
         {
           "name": "model",
           "type": "MODEL",
-          "link": 13
+          "link": 11
         },
         {
           "name": "positive",
           "type": "CONDITIONING",
-          "link": 14
-        },
-        {
-          "name": "negative",
-          "type": "CONDITIONING",
-          "link": 15
+          "link": 12
         },
         {
           "name": "latent_image",
           "type": "LATENT",
-          "link": 16
+          "link": 14
         }
       ],
       "outputs": [
@@ -578,31 +475,21 @@
           "name": "samples",
           "type": "LATENT",
           "links": [
-            17
+            15
           ]
         }
       ],
       "properties": {
-        "Node name for S&R": "KCPP_PromptStudioSampler"
+        "Node name for S&R": "KCPP_QwenImage21TurboSampler"
       },
       "widgets_values": [
         210923,
-        "fixed",
-        4,
-        1,
-        "euler",
-        "simple",
-        1
+        "randomize"
       ],
       "widgets_values_named": {
-        "seed": 210923,
-        "control_after_generate": "fixed",
-        "steps": 4,
-        "cfg": 1,
-        "sampler_name": "euler",
-        "scheduler": "simple",
-        "denoise": 1
-      }
+        "seed": 210923
+      },
+      "title": "Qwen Image 2.1 Turbo v0.3 Sampler"
     },
     {
       "id": 11,
@@ -616,18 +503,18 @@
         140
       ],
       "flags": {},
-      "order": 13,
+      "order": 12,
       "mode": 0,
       "inputs": [
         {
           "name": "samples",
           "type": "LATENT",
-          "link": 17
+          "link": 15
         },
         {
           "name": "vae",
           "type": "VAE",
-          "link": 18
+          "link": 16
         }
       ],
       "outputs": [
@@ -635,7 +522,7 @@
           "name": "IMAGE",
           "type": "IMAGE",
           "links": [
-            19
+            17
           ]
         }
       ],
@@ -657,13 +544,13 @@
         200
       ],
       "flags": {},
-      "order": 14,
+      "order": 13,
       "mode": 0,
       "inputs": [
         {
           "name": "images",
           "type": "IMAGE",
-          "link": 19
+          "link": 17
         },
         {
           "localized_name": "filename_prefix",
@@ -714,13 +601,13 @@
         "Node name for S&R": "Save_as_webp_cond"
       },
       "widgets_values": [
-        "PromptStudio/QwenImage21/RGBA_Edit/turbo4",
+        "PromptStudio/QwenImage21/RGBA/turbo6",
         "lossy",
         80,
         "yes"
       ],
       "widgets_values_named": {
-        "filename_prefix": "PromptStudio/QwenImage21/RGBA_Edit/turbo4",
+        "filename_prefix": "PromptStudio/QwenImage21/RGBA/turbo6",
         "mode": "lossy",
         "compression": 80,
         "save": "yes"
@@ -738,16 +625,16 @@
         390
       ],
       "flags": {},
-      "order": 5,
+      "order": 4,
       "mode": 0,
       "inputs": [],
       "outputs": [],
       "properties": {},
       "widgets_values": [
-        "# Qwen Image 2.1 RGBA Edit — Turbo 4 steps\n\nStrict non-commercial use: research or evaluation only. Read the Qwen Research License: https://huggingface.co/Qwen/Qwen-Image-2.1/blob/main/LICENSE\n\nSetup defaults: INT8 diffusion and encoder, native Qwen 2.1 BF16 VAE. WebP output (Save as WebP Conditional). Select models in the setup wizard.\n\nSupply an edit target in Prompt Studio. The encoder latent controls output size and preserves reference aspect ratio. Encoder resolution stays at 1056 to avoid the grainy-output issue observed at 1024 (ComfyUI #16435). Keep the Turbo shift resolution in sync.\n\nThe Turbo adapter is already applied. Do not add it again in the LoRA stack."
+        "# Qwen Image 2.1 RGBA — Turbo v0.3 · 6 steps\n\nStrict non-commercial use: research or evaluation only. Read the Qwen Research License: https://huggingface.co/Qwen/Qwen-Image-2.1/blob/main/LICENSE\n\nSetup defaults: INT8 diffusion and encoder, native Qwen 2.1 BF16 VAE. WebP output (Save as WebP Conditional). Select models in the setup wizard.\n\nPrompt Studio supplies output dimensions through Prompt Slot.\n\nThe Turbo adapter is already applied. Do not add it again in the LoRA stack.\n\nViggle v0.3: fixed six-step Euler schedule, CFG 1, resolution-aware sigmas, unmerged rank-128 adapter. Change the seed or user LoRAs; sampling settings are fixed. Base40 remains preferable for difficult identity edits or dense text."
       ],
       "widgets_values_named": {
-        "text": "# Qwen Image 2.1 RGBA Edit — Turbo 4 steps\n\nStrict non-commercial use: research or evaluation only. Read the Qwen Research License: https://huggingface.co/Qwen/Qwen-Image-2.1/blob/main/LICENSE\n\nSetup defaults: INT8 diffusion and encoder, native Qwen 2.1 BF16 VAE. WebP output (Save as WebP Conditional). Select models in the setup wizard.\n\nSupply an edit target in Prompt Studio. The encoder latent controls output size and preserves reference aspect ratio. Encoder resolution stays at 1056 to avoid the grainy-output issue observed at 1024 (ComfyUI #16435). Keep the Turbo shift resolution in sync.\n\nThe Turbo adapter is already applied. Do not add it again in the LoRA stack."
+        "text": "# Qwen Image 2.1 RGBA — Turbo v0.3 · 6 steps\n\nStrict non-commercial use: research or evaluation only. Read the Qwen Research License: https://huggingface.co/Qwen/Qwen-Image-2.1/blob/main/LICENSE\n\nSetup defaults: INT8 diffusion and encoder, native Qwen 2.1 BF16 VAE. WebP output (Save as WebP Conditional). Select models in the setup wizard.\n\nPrompt Studio supplies output dimensions through Prompt Slot.\n\nThe Turbo adapter is already applied. Do not add it again in the LoRA stack.\n\nViggle v0.3: fixed six-step Euler schedule, CFG 1, resolution-aware sigmas, unmerged rank-128 adapter. Change the seed or user LoRAs; sampling settings are fixed. Base40 remains preferable for difficult identity edits or dense text."
       },
       "color": "#432",
       "bgcolor": "#653"
@@ -771,94 +658,6 @@
       "MODEL"
     ],
     [
-      3,
-      6,
-      0,
-      16,
-      0,
-      "MODEL"
-    ],
-    [
-      6,
-      16,
-      0,
-      7,
-      0,
-      "MODEL"
-    ],
-    [
-      11,
-      20,
-      0,
-      40,
-      0,
-      "IMAGE"
-    ],
-    [
-      12,
-      20,
-      1,
-      40,
-      1,
-      "MASK"
-    ],
-    [
-      13,
-      7,
-      0,
-      10,
-      0,
-      "MODEL"
-    ],
-    [
-      14,
-      8,
-      0,
-      10,
-      1,
-      "CONDITIONING"
-    ],
-    [
-      15,
-      8,
-      1,
-      10,
-      2,
-      "CONDITIONING"
-    ],
-    [
-      16,
-      8,
-      2,
-      10,
-      3,
-      "LATENT"
-    ],
-    [
-      17,
-      10,
-      0,
-      11,
-      0,
-      "LATENT"
-    ],
-    [
-      18,
-      3,
-      0,
-      11,
-      1,
-      "VAE"
-    ],
-    [
-      19,
-      11,
-      0,
-      12,
-      0,
-      "IMAGE"
-    ],
-    [
       7,
       2,
       0,
@@ -868,27 +667,83 @@
     ],
     [
       9,
-      40,
+      4,
+      2,
+      9,
       0,
-      8,
-      1,
-      "IMAGE"
+      "INT"
     ],
     [
       10,
+      4,
+      3,
+      9,
+      1,
+      "INT"
+    ],
+    [
+      11,
+      7,
+      0,
+      10,
+      0,
+      "MODEL"
+    ],
+    [
+      12,
+      8,
+      0,
+      10,
+      1,
+      "CONDITIONING"
+    ],
+    [
+      14,
+      9,
+      0,
+      10,
+      2,
+      "LATENT"
+    ],
+    [
+      15,
+      10,
+      0,
+      11,
+      0,
+      "LATENT"
+    ],
+    [
+      16,
       3,
       0,
-      8,
-      5,
+      11,
+      1,
       "VAE"
+    ],
+    [
+      17,
+      11,
+      0,
+      12,
+      0,
+      "IMAGE"
     ],
     [
       8,
       4,
       0,
       8,
-      6,
+      3,
       "STRING"
+    ],
+    [
+      18,
+      6,
+      0,
+      7,
+      0,
+      "MODEL"
     ]
   ],
   "groups": [],

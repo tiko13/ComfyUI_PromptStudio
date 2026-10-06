@@ -137,16 +137,82 @@
     "source_url": "https://huggingface.co/Comfy-Org/Qwen-Image-2.1"
   },
   {
-    "id": "qwen21_viggle_turbo4",
-    "name": "Qwen Image 2.1 Viggle Turbo 4-step LoRA",
+    "id": "qwen21_viggle_turbo6",
+    "name": "Qwen Image 2.1 Viggle Turbo v0.3 6-step LoRA",
     "category": "loras",
-    "relative_path": "QwenImage21/_Qwen-Image-2.1-viggle-turbo-4step-lora-r64.safetensors",
+    "relative_path": "QwenImage21/_Qwen-Image-2.1-viggle-turbo-v0.3-6step-lora-r128.safetensors",
     "aliases": [
-      "Qwen-Image-2.1-viggle-turbo-4step-lora-r64.safetensors"
+      "Qwen-Image-2.1-viggle-turbo-v0.3-6step-lora-r128.safetensors"
     ],
-    "size": 339832808,
-    "sha256": "5c494dce662a95898d0988831af733b203ceced9116a82aa099c997f96ea1a3a",
-    "url": "https://huggingface.co/Viggle/Qwen-Image-2.1-viggle-turbo/resolve/e57a0bbc496f25277773f725be6ddb8f6b109010/Qwen-Image-2.1-viggle-turbo-4step-lora-r64.safetensors?download=true",
+    "size": 679604800,
+    "sha256": "0c98591700346f9777051d4e6fa29aa94519abec0d85b1f1f672a2a3db8c94b3",
+    "url": "https://huggingface.co/Viggle/Qwen-Image-2.1-viggle-turbo/resolve/009a44a895ef85f7e643c80fdca9543795248867/Qwen-Image-2.1-viggle-turbo-v0.3-6step-lora-r128.safetensors?download=true",
     "source_url": "https://huggingface.co/Viggle/Qwen-Image-2.1-viggle-turbo"
+  },
+  {
+    "id": "qwen21_controlnet",
+    "name": "Qwen Image 2.1 Fun ControlNet Union",
+    "category": "model_patches",
+    "relative_path": "QwenImage21/Qwen-Image-2.1-Fun-Controlnet-Union.safetensors",
+    "aliases": [],
+    "size": 7550979904,
+    "sha256": "65d6b66d734da9e7ff5ef04e7db3a133553a52a3f29a7fcb3e9cce8fa21dcfcd",
+    "url": "https://huggingface.co/alibaba-pai/Qwen-Image-2.1-Fun-Controlnet-Union/resolve/8a4702014d4dabb5f896fcba917e2ee0a961465f/Qwen-Image-2.1-Fun-Controlnet-Union.safetensors?download=true",
+    "source_url": "https://huggingface.co/alibaba-pai/Qwen-Image-2.1-Fun-Controlnet-Union"
+  },
+  {
+    "id": "controlnet_depth",
+    "name": "Depth Anything V2 Small",
+    "category": "promptstudio_controlnet_aux",
+    "relative_path": "depth-anything/Depth-Anything-V2-Small/depth_anything_v2_vits.pth",
+    "aliases": [],
+    "size": 99218434,
+    "sha256": "715fade13be8f229f8a70cc02066f656f2423a59effd0579197bbf57860e1378",
+    "url": "https://huggingface.co/depth-anything/Depth-Anything-V2-Small/resolve/03876f8651c73a60fe4c2c48294e09fcb6838fcf/depth_anything_v2_vits.pth?download=true",
+    "source_url": "https://huggingface.co/depth-anything/Depth-Anything-V2-Small"
+  },
+  {
+    "id": "controlnet_pose",
+    "name": "DWPose pose estimator",
+    "category": "promptstudio_controlnet_aux",
+    "relative_path": "yzd-v/DWPose/dw-ll_ucoco_384.onnx",
+    "aliases": [],
+    "size": 134399116,
+    "sha256": "724f4ff2439ed61afb86fb8a1951ec39c6220682803b4a8bd4f598cd913b1843",
+    "url": "https://huggingface.co/yzd-v/DWPose/resolve/1a7144101628d69ee7a3768d1ee3a094070dc388/dw-ll_ucoco_384.onnx?download=true",
+    "source_url": "https://huggingface.co/yzd-v/DWPose"
+  },
+  {
+    "id": "controlnet_person",
+    "name": "DWPose person detector",
+    "category": "promptstudio_controlnet_aux",
+    "relative_path": "yzd-v/DWPose/yolox_l.onnx",
+    "aliases": [],
+    "size": 216746733,
+    "sha256": "7860ae79de6c89a3c1eb72ae9a2756c0ccfbe04b7791bb5880afabd97855a411",
+    "url": "https://huggingface.co/yzd-v/DWPose/resolve/1a7144101628d69ee7a3768d1ee3a094070dc388/yolox_l.onnx?download=true",
+    "source_url": "https://huggingface.co/yzd-v/DWPose"
+  },
+  {
+    "id": "controlnet_sketch",
+    "name": "Lineart sketch extractor",
+    "category": "promptstudio_controlnet_aux",
+    "relative_path": "lllyasviel/Annotators/sk_model.pth",
+    "aliases": [],
+    "size": 17173511,
+    "sha256": "c686ced2a666b4850b4bb6ccf0748031c3eda9f822de73a34b8979970d90f0c6",
+    "url": "https://huggingface.co/lllyasviel/Annotators/resolve/982e7edaec38759d914a963c48c4726685de7d96/sk_model.pth?download=true",
+    "source_url": "https://huggingface.co/lllyasviel/Annotators"
+  },
+  {
+    "id": "controlnet_sketch_coarse",
+    "name": "Lineart coarse extractor",
+    "category": "promptstudio_controlnet_aux",
+    "relative_path": "lllyasviel/Annotators/sk_model2.pth",
+    "aliases": [],
+    "size": 17173511,
+    "sha256": "30a534781061f34e83bb9406b4335da4ff2616c95d22a585c1245aa8363e74e0",
+    "url": "https://huggingface.co/lllyasviel/Annotators/resolve/982e7edaec38759d914a963c48c4726685de7d96/sk_model2.pth?download=true",
+    "source_url": "https://huggingface.co/lllyasviel/Annotators"
   }
 ]

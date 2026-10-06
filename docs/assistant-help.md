@@ -45,3 +45,22 @@ verify routing contracts; they do not prove a particular LLM classifies correctl
 The catalog has no embeddings, external service, package dependency or manual
 index. Source files are read for help requests, so documentation-only edits do
 not require restarting ComfyUI. Python/schema changes do require a restart.
+
+## Node and workflow authoring help
+
+`nodes` is the shared suite inventory, including the frontend-only
+`PromptStudioInput`; `video-nodes` adds the companion's registered nodes. Keep
+display names and class IDs aligned with both repositories' node registrations.
+Detail cards cover inputs, outputs, wiring and limitations. Give each small node
+group its own topic and include its names/IDs in the summary so specific-node
+questions and conversational follow-ups can retrieve details without loading
+the entire inventory. Do not put every detail card under `nodes`: selection
+composes all applicable cards for a topic into the same bounded answer packet.
+
+`workflow-inputs` is shared by both studios. `workflow-stages` and `video-stages`
+explain their different graph contracts and distinguish graph stages from UI
+actions, sampling iterations and video shots. Describe canvas behavior separately
+from Studio injection; availability of a shared node does not imply both studios
+expose the same controls. Verify registrations, workflow adapters and execution
+code when updating these cards. Tests check inventory/detail coverage and every
+three-topic packet for both catalogs; live LLM selection remains a separate check.

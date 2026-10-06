@@ -12,6 +12,8 @@ register_job_routes(routes.PromptServer.instance)
 from . import provenance_routes  # noqa: F401
 from .setup_routes import register_setup_routes
 register_setup_routes(routes.PromptServer.instance)
+from .controlnet import register_controlnet_routes
+register_controlnet_routes(routes.PromptServer.instance)
 
 WEB_DIRECTORY = "./web"
 

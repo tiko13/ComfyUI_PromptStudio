@@ -1,7 +1,7 @@
 """Bounded synchronous HTTP transport shared by node and route execution.
 
-No event loop is created here. A monotonic deadline covers headers and body,
-and the owned socket is interrupted on cancellation or deadline expiry.
+No event loop is created here. Metadata has a total deadline; inference has
+an activity-renewed deadline. Both cover headers/body and support cancellation.
 """
 import contextlib
 import http.client
@@ -53,14 +53,14 @@ def _create_connection(address, timeout, source_address, deadline, cancellation_
         finally:
             _dns_slots.release()
     threading.Thread(target=resolve, daemon=True, name="promptstudio-provider-dns").start()
-    connect_deadline = min(deadline, time.monotonic() + timeout)
+    connect_deadline = time.monotonic() + min(_remaining(deadline), timeout)
     while True:
         if cancellation_check and cancellation_check():
             raise RuntimeError("Provider request was cancelled")
         if time.monotonic() >= connect_deadline:
             raise ProviderDeadlineError("Provider connection deadline exceeded")
         try:
-            addresses, error = result.get(timeout=max(.001, min(.05, connect_deadline - time.monotonic())))
+            addresses, error = result.get(timeout=max(.001, min(.05, _remaining(connect_deadline))))
             break
         except queue.Empty:
             continue
@@ -68,7 +68,7 @@ def _create_connection(address, timeout, source_address, deadline, cancellation_
         raise error
     last_error = OSError("Provider address did not resolve")
     for family, kind, protocol, _canonname, target in addresses:
-        remaining = connect_deadline - time.monotonic()
+        remaining = _remaining(connect_deadline)
         if remaining <= 0:
             raise ProviderDeadlineError("Provider connection deadline exceeded")
         if cancellation_check and cancellation_check():
@@ -79,7 +79,7 @@ def _create_connection(address, timeout, source_address, deadline, cancellation_
             if source_address:
                 sock.bind(source_address)
             sock.connect(target)
-            sock.settimeout(max(.001, min(timeout, deadline - time.monotonic())))
+            sock.settimeout(max(.001, min(timeout, _remaining(deadline))))
             return sock
         except OSError as exc:
             last_error = exc
@@ -88,13 +88,59 @@ def _create_connection(address, timeout, source_address, deadline, cancellation_
 
 
 @contextlib.contextmanager
-def operation_scope(deadline, cancellation_check):
+def operation_scope(deadline, cancellation_check, on_activity=None):
     previous = getattr(_local, "operation", None)
-    _local.operation = (deadline, cancellation_check)
+    _local.operation = (deadline, cancellation_check, on_activity)
     try:
         yield
     finally:
         _local.operation = previous
+
+
+def _remaining(deadline):
+    return (deadline() if callable(deadline) else deadline) - time.monotonic()
+
+
+def _deadline_error(deadline):
+    return ProviderDeadlineError("Provider inactivity deadline exceeded: no generation progress or confirmed processing"
+                                 if isinstance(deadline, _ActivityDeadline) else "Provider total deadline exceeded")
+
+
+class _ActivityDeadline:
+    """Inference expires after inactivity, including time waiting for headers.
+
+    Only provider-confirmed work or decoded generation output renews it. An
+    open connection or our own running-job flag is not evidence of activity.
+    """
+    def __init__(self, seconds, parent=None, activity_check=None, on_activity=None):
+        self.seconds = seconds
+        self.expires = time.monotonic() + seconds
+        self.parent = parent
+        self.on_activity = on_activity
+        self.closed = threading.Event()
+        if activity_check is not None:
+            def monitor():
+                while not self.closed.wait(min(5, seconds / 3)) and _remaining(self) > 0:
+                    try:
+                        if activity_check() is True and not self.closed.is_set():
+                            self.touch()
+                    except Exception:
+                        pass  # Unreachable/unknown status never renews the wait.
+            threading.Thread(target=monitor, daemon=True, name="promptstudio-provider-activity").start()
+
+    def __call__(self):
+        parent = self.parent() if callable(self.parent) else self.parent
+        return min(self.expires, parent) if parent is not None else self.expires
+
+    def touch(self):
+        if self.closed.is_set() or _remaining(self) <= 0:
+            return
+        if self.on_activity:
+            self.on_activity()
+        self.expires = time.monotonic() + self.seconds
+
+    def close(self):
+        self.closed.set()
 
 
 class ValidatedRedirectHandler(urllib.request.HTTPRedirectHandler):
@@ -179,11 +225,11 @@ class _PollingSocket:
         previous = self._socket.gettimeout()
         try:
             while True:
-                if time.monotonic() >= self.deadline:
-                    raise ProviderDeadlineError("Provider total deadline exceeded")
+                if _remaining(self.deadline) <= 0:
+                    raise _deadline_error(self.deadline)
                 if self.interrupted.is_set() or (self.cancellation_check and self.cancellation_check()):
                     raise RuntimeError("Provider request was cancelled")
-                self._socket.settimeout(min(.1, max(.001, self.deadline - time.monotonic())))
+                self._socket.settimeout(min(.1, max(.001, _remaining(self.deadline))))
                 try:
                     return self._socket.recv_into(*args)
                 except socket.timeout:
@@ -218,9 +264,9 @@ class BoundedResponse:
         self._watcher.start()
 
     def _watch(self):
-        while not self._closed.wait(min(.05, max(.001, self.deadline - time.monotonic()))):
-            if time.monotonic() >= self.deadline:
-                self._interrupted = ProviderDeadlineError("Provider total deadline exceeded")
+        while not self._closed.wait(min(.05, max(.001, _remaining(self.deadline)))):
+            if _remaining(self.deadline) <= 0:
+                self._interrupted = _deadline_error(self.deadline)
                 self.close()
                 return
             if self.cancellation_check and self.cancellation_check():
@@ -231,8 +277,8 @@ class BoundedResponse:
     def _check(self):
         if self._interrupted:
             raise self._interrupted
-        if time.monotonic() >= self.deadline:
-            raise ProviderDeadlineError("Provider total deadline exceeded")
+        if _remaining(self.deadline) <= 0:
+            raise _deadline_error(self.deadline)
         if self.cancellation_check and self.cancellation_check():
             raise RuntimeError("Provider request was cancelled")
 
@@ -251,6 +297,10 @@ class BoundedResponse:
         if self.total > self.max_bytes:
             raise ProviderLimitError(f"Provider response exceeds {self.max_bytes} bytes")
         return chunk
+
+    def note_activity(self):
+        if isinstance(self.deadline, _ActivityDeadline):
+            self.deadline.touch()
 
     def read(self, size=None):
         target = self.max_bytes + 1 if size is None else min(size, self.max_bytes + 1)
@@ -285,6 +335,8 @@ class BoundedResponse:
         if self._closed.is_set():
             return
         self._closed.set()
+        if isinstance(self.deadline, _ActivityDeadline):
+            self.deadline.close()
         # HTTPResponse.close alone may block on a buffered read's lock. Shut
         # down its socket first so the reader exits and ownership can settle.
         raw = getattr(getattr(self.response, "fp", None), "raw", None)
@@ -308,38 +360,46 @@ class BoundedResponse:
         self.close()
 
 
-def open_response(request, timeout, validator):
+def open_response(request, timeout, validator, *, inference=False, activity_check=None):
     seconds = float(timeout)
     if not math.isfinite(seconds) or seconds <= 0:
         raise ValueError("Provider timeout must be a positive finite number")
     if request.data is not None and len(request.data) > MAX_REQUEST_BYTES:
         raise ProviderLimitError("Provider request exceeds its byte limit")
-    deadline = time.monotonic() + min(seconds, MAX_TOTAL_SECONDS)
+    seconds = min(seconds, MAX_TOTAL_SECONDS)
+    deadline = time.monotonic() + seconds
     operation = getattr(_local, "operation", None)
     check = None
     if operation:
-        deadline = min(deadline, operation[0])
+        deadline = min(deadline, time.monotonic() + _remaining(operation[0]))
         check = operation[1]
     if check and check():
         raise RuntimeError("Provider request was cancelled")
-    remaining = deadline - time.monotonic()
+    remaining = _remaining(deadline)
     if remaining <= 0:
         raise ProviderDeadlineError("Provider total deadline exceeded")
     validator(request.full_url)
+    if inference:
+        deadline = _ActivityDeadline(seconds, operation[0] if operation else None,
+                                     activity_check, operation[2] if operation else None)
     try:
         response = _open(request, min(remaining, CONNECT_TIMEOUT_SECONDS), validator, deadline, check)
     except urllib.error.HTTPError as exc:
         # Error responses are provider-controlled too. Never read an unbounded
         # error page, and always close its stream.
-        with BoundedResponse(exc, deadline, check, max_bytes=16 * 1024) as error:
+        if isinstance(deadline, _ActivityDeadline):
+            deadline.close()
+        with BoundedResponse(exc, time.monotonic() + min(seconds, CONNECT_TIMEOUT_SECONDS), check, max_bytes=16 * 1024) as error:
             detail = error.read().decode("utf-8", errors="replace")
         raise RuntimeError(f"Provider request failed with HTTP {exc.code}: {detail}") from exc
-    except (OSError, urllib.error.URLError):
-        if time.monotonic() >= deadline:
-            raise ProviderDeadlineError("Provider total deadline exceeded") from None
+    except BaseException:
+        if isinstance(deadline, _ActivityDeadline):
+            deadline.close()
+        if _remaining(deadline) <= 0:
+            raise _deadline_error(deadline) from None
         raise
     # Restore the remaining total budget after the bounded connect/header phase.
     sock = getattr(getattr(getattr(response, "fp", None), "raw", None), "_sock", None)
     if sock is not None:
-        sock.settimeout(max(.001, deadline - time.monotonic()))
+        sock.settimeout(max(.001, _remaining(deadline)))
     return BoundedResponse(response, deadline, check)

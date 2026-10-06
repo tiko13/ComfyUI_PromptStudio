@@ -26,6 +26,8 @@ class SetupRouteTests(unittest.IsolatedAsyncioTestCase):
         spec = importlib.util.spec_from_file_location("setup_route_fixture.setup_routes", Path(__file__).resolve().parents[1] / "setup_routes.py")
         module = importlib.util.module_from_spec(spec)
         with mock.patch.dict(sys.modules, {"setup_route_fixture": package, "setup_route_fixture.setup_service": SETUP,
+                                          "setup_route_fixture.controlnet": types.SimpleNamespace(register_aux_path=lambda paths: None),
+                                          "setup_route_fixture.reference_regions": types.SimpleNamespace(register_paths=lambda paths: None),
                                           "aiohttp": types.SimpleNamespace(web=web),
                                           "folder_paths": paths, "nodes": types.SimpleNamespace(NODE_CLASS_MAPPINGS={})}):
             spec.loader.exec_module(module)

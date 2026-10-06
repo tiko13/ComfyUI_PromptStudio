@@ -58,7 +58,7 @@ try {
   });
   await page.locator('#promptstudio-toggle-studio-settings').click();
   // The browser profile editor serves other providers; llama.cpp uses its
-  // Windows config builder (whose separated load/save path is checked separately).
+  // native config builder (whose separated load/save path is checked separately).
   await page.evaluate(async () => {
     document.querySelector('#promptstudio-llm-provider').value = 'koboldcpp';
     window.twinModeTest.saveSettings();
@@ -94,6 +94,27 @@ try {
   });
   assert.deepEqual(new Set(saved.thinking_modes), new Set(profile.thinking_modes));
   assert.deepEqual(new Set(saved.instruct_modes), new Set(profile.instruct_modes));
+  // A reasoning-only profile removes unsupported Off and replaces stale selections.
+  profile.thinking_modes = ['High', 'Medium', 'Low'];
+  profile.instruct_modes = [];
+  profile.thinking_mode = 'High';
+  await page.evaluate(async () => {
+    document.querySelector('#promptstudio-llm-provider').value = 'llamacpp';
+    document.querySelector('#promptstudio-thinking').value = 'Disabled';
+    await window.twinModeTest.loadLlamacppConfigProfiles({preferred:'twin.json'});
+  });
+  assert.equal(await page.locator('#promptstudio-thinking option[value="Disabled"]').count(), 0);
+  assert.equal(await page.locator('#promptstudio-thinking').inputValue(), 'High');
+  await page.evaluate(async () => {
+    const {state} = await import('/extensions/ComfyUI_PromptStudio/js/prompt-studio/core/state.js');
+    await state.chatSaveChain;
+  });
+  await page.reload();
+  await page.waitForFunction(() => window.studioReady || window.bootError);
+  assert.equal(await page.locator('#promptstudio-thinking option[value="Disabled"]').count(), 0);
+  assert.equal(await page.locator('#promptstudio-thinking').inputValue(), 'High');
+  assert.equal(await page.evaluate(() => window.twinModeTest.llmProfileGenerationSettings().thinking_mode), 'High');
+  if (videoEnabled) assert.equal(await page.evaluate(() => window.twinVideoSettings().thinking_mode), 'High');
   assert.deepEqual(fixture.errors, []);
   console.log(`Twin Turbo selector, sampling and persistence passed${videoEnabled ? ' including Video Studio' : ''}.`);
 } finally {

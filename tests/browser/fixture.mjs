@@ -87,11 +87,16 @@ const server = createServer(async (req, res) => {
     data={...projects,projects:page,total:projects.projects.length,hasMore:page.length<ordered.length,nextCursor:last?{updated_at:last.updated_at,created_at:last.created_at,id:last.id}:null};
     if(active&&!page.some(item=>item.id===active.id))data.projects=[...page,active];
    }
+  } else if (path.endsWith('/validate-final-prompts')) {
+   data = {prompts: input.prompts};
   } else if (path.endsWith('/config')) data = config;
   else if (path.endsWith('/workflows')) data = {templates: [], workflows: [], revision: 1};
   else if (path === '/userdata') data = [];
+  else if (path === '/queue') data = {queue_running: [], queue_pending: []};
   else if (path.endsWith('/default-setup')) data = {status:'idle', installed: true, available: true};
   else if (path.endsWith('/default-workflows')) data = {workflows: []};
+  else if (path.endsWith('/video-status')) data = {installed: videoEnabled, loaded: videoEnabled, state: videoEnabled ? 'loaded' : 'missing'};
+  else if (path.endsWith('/capabilities') && path.startsWith('/promptstudio-video/')) data = {features: ['unified_studio_shell'], studio_instances: []};
   else if (path.endsWith('/runtime-health')) data = {connected: true};
   else if (path.endsWith('/status')) data = {status: 'idle', connected: true, available: true};
   else if (path.endsWith('/models')) data = {models: []};

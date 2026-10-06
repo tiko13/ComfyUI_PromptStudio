@@ -40,11 +40,42 @@ try {
     await focusInside(manager);
     await manager.getByRole('button', {name: `Add ${metadata.itemLabel}`, exact: true}).click();
     await page.locator('#promptstudio-mutation-editor-name').fill(`Test ${category}`);
-    if (metadata.textField) await page.locator('#promptstudio-mutation-editor-text').fill('Preserve this guidance.');
+    if (metadata.textField && !metadata.optionalText) await page.locator('#promptstudio-mutation-editor-text').fill('Preserve this guidance.');
     await focusInside(editor);
     await editor.getByRole('button', {name: 'Save', exact: true}).click();
     await editor.waitFor({state: 'hidden'});
     assert.equal(config[category].length, 1);
+    if (category === 'forbidden_words') {
+      assert.equal(config[category][0].replacement, '');
+      assert.equal(config[category][0].replacement_mode, 'verbatim');
+      assert.equal(await manager.getByText('LLM must rephrase', {exact:true}).count(), 1);
+      await manager.getByRole('button', {name:'Edit', exact:true}).click();
+      assert.equal(await editor.getByRole('radio', {name:'Verbatim',exact:true}).isChecked(), true);
+      assert.match(await page.locator('#promptstudio-mutation-editor-help').textContent(), /In either mode.*empty/);
+      await editor.getByRole('radio', {name:'Verbatim',exact:true}).focus();
+      await page.keyboard.press('ArrowRight');
+      assert.equal(await editor.getByRole('radio', {name:'Guidance',exact:true}).isChecked(), true);
+      await page.locator('#promptstudio-mutation-editor-text').fill('Alternative phrase');
+      await editor.getByRole('button', {name:'Save', exact:true}).click();
+      await editor.waitFor({state:'hidden'});
+      assert.equal(config[category][0].replacement, 'Alternative phrase');
+      assert.equal(config[category][0].replacement_mode, 'guidance');
+      assert.equal(await manager.getByText('Replacement · Guidance', {exact:true}).count(), 1);
+      await manager.getByRole('button', {name:'Edit', exact:true}).click();
+      assert.equal(await editor.getByRole('radio', {name:'Guidance',exact:true}).isChecked(), true);
+      await editor.getByRole('radio', {name:'Verbatim',exact:true}).check();
+      await editor.getByRole('button', {name:'Save',exact:true}).click();
+      await editor.waitFor({state:'hidden'});
+      assert.equal(config[category][0].replacement_mode, 'verbatim');
+      await manager.getByRole('checkbox').uncheck();
+      await page.waitForFunction(() => document.querySelector('.promptstudio-mutation-row.is-disabled'));
+      assert.equal(config[category][0].enabled, false);
+      await manager.getByRole('checkbox').check();
+      await page.waitForFunction(() => !document.querySelector('.promptstudio-mutation-row.is-disabled'));
+      await page.locator('#promptstudio-mutation-search').fill('Alternative phrase');
+      assert.equal(await manager.locator('.promptstudio-mutation-row').count(), 1);
+      await page.locator('#promptstudio-mutation-search').fill('');
+    }
     await manager.getByRole('button', {name: 'Edit', exact: true}).click();
     await page.locator('#promptstudio-mutation-editor-name').fill('Unsaved draft');
     await page.keyboard.press('Escape');
@@ -68,6 +99,8 @@ try {
   failSave = false;
   await editor.getByRole('button', {name: 'Save', exact: true}).click();
   await editor.waitFor({state: 'hidden'});
+  await manager.getByRole('button', {name:'Close', exact:true}).click();
+  await page.locator('[data-mutation-category="forbidden_words"]').click();
   await mkdir(resolve(root, 'test-results/browser'), {recursive: true});
   for (const viewport of [{width: 1440, height: 1000}, {width: 390, height: 844}]) {
     await page.setViewportSize(viewport);
@@ -79,10 +112,18 @@ try {
     const accessibility = await new AxeBuilder({page}).include('#promptstudio-mutation-manager').withTags(['wcag2a', 'wcag2aa', 'wcag21aa']).analyze();
     assert.deepEqual(accessibility.violations.map(v => ({id: v.id, targets: v.nodes.map(n => n.target)})), []);
     await page.screenshot({path: resolve(root, `test-results/browser/mutation-${viewport.width}.png`)});
+    await manager.getByRole('button', {name:'Edit',exact:true}).click();
+    const editorBounds = await editor.locator('form').evaluate(el => ({width:el.scrollWidth, client:el.clientWidth,
+      left:el.getBoundingClientRect().left, right:el.getBoundingClientRect().right}));
+    assert.ok(editorBounds.width <= editorBounds.client && editorBounds.left >= 0 && editorBounds.right <= viewport.width);
+    const editorAccessibility = await new AxeBuilder({page}).include('#promptstudio-mutation-editor').withTags(['wcag2a','wcag2aa','wcag21aa']).analyze();
+    assert.deepEqual(editorAccessibility.violations.map(v => ({id:v.id,targets:v.nodes.map(n => n.target)})), []);
+    await page.screenshot({path:resolve(root, `test-results/browser/replacement-mode-${viewport.width}.png`)});
+    await page.keyboard.press('Escape');
   }
   await page.keyboard.press('Escape');
   assert.equal(await manager.isHidden(), true);
   assert.equal(await settings.isVisible(), true);
   assert.deepEqual(fixture.errors, []);
-  console.log('Five mutation pop-ups: native modal, focus, CRUD save, search, failure retry, nested Escape, return to Settings, accessibility and responsive layout passed.');
+  console.log('Six mutation pop-ups including optional Forbidden words replacements: focus, save, search, toggles, retry, Escape, accessibility and responsive layout passed.');
 } finally { await fixture.close(); }

@@ -1,0 +1,5 @@
+---
+{"id":"image-caption","topic":"image-caption","studio":"image","summary":"Import an image without LLM processing; opt in to captions and extract scene-only Main from full Final."}
+---
+Drop or choose an image in an empty new chat to store it as a message and editing source. No LLM runs and prompts/presets stay unchanged; amplification can be off. Beneath it, “Do you want to create prompts for this image?” offers Create prompts or Not now. Skipping survives reload. The square Caption button immediately left of Upscale remains available on every image.
+Captioning explicitly uses the selected vision-capable LLM. Final keeps the full caption. A second text pass derives Main's subjects, actions, setting, intrinsic appearance and visible text, removing framing, camera details, rendering style, medium and lighting treatment. Selected style/framing presets are not applied. Captioning replaces current prompts, keeps previous versions for Undo, and never queues an image. A failure preserves existing prompts and the stored image.

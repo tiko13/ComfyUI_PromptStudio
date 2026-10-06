@@ -1,0 +1,10 @@
+---
+{"id":"workflow-inputs","topic":"workflow-inputs","studio":"shared","summary":"Add custom inputs with Prompt Studio Input / PromptStudioInput; change, rename, reconnect or reset Additional Inputs in Image and Video Studio; supported types and missing controls."}
+---
+To expose a custom workflow control:
+1. Open the workflow in ComfyUI. Expose the target widget as a connectable input if needed, then add Prompt Studio Input (PromptStudioInput, category Prompt Studio).
+2. Connect its output directly to exactly one executable configurable input, e.g. sampler steps. Supported types: INT, FLOAT, BOOLEAN, STRING and COMBO. MODEL, IMAGE, MASK, LATENT and CONDITIONING are not supported; use typed graph connections and Reference Image nodes for images.
+3. Set the default value and give the Input node a descriptive title, e.g. Refiner steps. Otherwise the target input label is used. Type, bounds and dropdown choices come from the target; renaming the node does not change its type.
+4. Save the compatible [PS] image or [PSV] video workflow, refresh workflows and select it. Additional Inputs appears in Image Studio's sidebar or Video Studio's Shots inspector only when supported connected inputs exist.
+Change values there before generating. Reset restores that control's workflow default. Choices persist per chat/project, workflow and Input node. Queued snapshots retain their submitted values; editing a control does not alter a running job or the saved ComfyUI graph.
+To change the default, type, choices or target, edit the canvas wiring/widget and save, then refresh. Use Reset if a saved Studio override hides a new default. Changed type/bounds/choices invalidate the old schema-matched value; verify the refreshed value. Use a separate Input node per target, including different stages. Nested subgraphs are supported when their executable targets can be resolved. Unconnected nodes are omitted. For a missing control, check the selected workflow, supported type, single direct link, executable target and any workflow refresh error; an invalid update may leave a cached snapshot active.

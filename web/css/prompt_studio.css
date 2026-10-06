@@ -1,3 +1,4 @@
+@import url("./lora-controls.css");
 @import url("./studio-tokens.css");
 @import url("./prompt_studio_setup.css");
 
@@ -743,6 +744,10 @@ body.promptstudio-popout-body .promptstudio-header-actions {
 }
 
 .promptstudio-consult-message-pending {
+  display: grid;
+  grid-template-columns: 7px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
   color: var(--ps-muted);
   border-style: dashed;
 }
@@ -760,7 +765,20 @@ body.promptstudio-popout-body .promptstudio-header-actions {
 }
 
 .promptstudio-consult-message-pending .promptstudio-consult-message-text {
-  display: inline;
+  grid-column: 2 / -1;
+  min-width: 0;
+}
+
+.promptstudio-consult-message-pending .promptstudio-operation-cancel {
+  grid-column: 2;
+  justify-self: start;
+  margin-top: 0;
+}
+
+.promptstudio-consult-message-pending .promptstudio-llm-token-count {
+  position: static;
+  grid-column: 3;
+  justify-self: end;
 }
 
 @keyframes promptstudio-kobold-pulse {
@@ -1635,6 +1653,8 @@ body.promptstudio-popout-body .promptstudio-header-actions {
 
 .promptstudio-backend-settings-list {
   overflow-y: auto;
+  grid-auto-rows: max-content;
+  align-content: start;
 }
 
 .promptstudio-studio-setting {
@@ -1702,6 +1722,50 @@ body.promptstudio-popout-body .promptstudio-header-actions {
 
 #promptstudio-prompt-studio .promptstudio-config-profile-field select {
   min-width: 0;
+}
+
+#promptstudio-manage-llamacpp-configs {
+  grid-column: 1 / -1;
+  justify-self: end;
+}
+
+#promptstudio-prompt-studio .promptstudio-profile-manager {
+  box-sizing: border-box;
+  width: min(960px, calc(100vw - 24px));
+  max-height: calc(100dvh - 32px);
+  padding: 20px;
+  overflow: auto;
+  color: var(--ps-text, #eee);
+  background: #12141d;
+  border: 1px solid var(--ps-border, #454753);
+  border-radius: 14px;
+  font-size: 13px;
+}
+
+.promptstudio-profile-manager::backdrop { background: rgba(5, 6, 10, 0.78); }
+.promptstudio-profile-manager header { display: flex; align-items: center; gap: 10px; }
+.promptstudio-profile-manager h2 { flex: 1; margin: 0; font-size: 18px; }
+.promptstudio-profile-manager p { color: var(--ps-muted, #b5b7c4); line-height: 1.5; }
+.promptstudio-profile-manager-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr) minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 12px;
+  padding: 16px 0;
+  border-top: 1px solid var(--ps-border, #454753);
+  overflow-wrap: anywhere;
+}
+.promptstudio-profile-asset[data-status="present"] { color: #79e3a3; }
+.promptstudio-profile-asset[data-status="missing"], .promptstudio-profile-error { color: #ff8d96; }
+.promptstudio-profile-asset[data-status="unknown"] { color: var(--ps-muted, #b5b7c4); }
+.promptstudio-profile-asset small { display: block; color: var(--ps-muted, #b5b7c4); margin-top: 5px; }
+.promptstudio-profile-error, .promptstudio-profile-delete-confirmation { grid-column: 1 / -1; }
+.promptstudio-profile-delete-confirmation { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.promptstudio-profile-delete-confirmation span { flex: 1 1 100%; }
+@media (max-width: 640px) {
+  .promptstudio-profile-manager-row { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+  .promptstudio-profile-manager-row > strong { grid-column: 1 / -1; }
+  .promptstudio-profile-manager-row > button { grid-column: 1 / -1; justify-self: end; }
 }
 
 #promptstudio-prompt-studio .promptstudio-config-profile-field button {
@@ -2210,7 +2274,7 @@ body.promptstudio-popout-body .promptstudio-header-actions {
 .promptstudio-message.promptstudio-has-images {
   width: var(--ps-image-scale);
   max-width: 100%;
-  padding: 12px;
+  padding: 8px 12px;
 }
 
 .promptstudio-message.promptstudio-has-delete {
@@ -2223,11 +2287,10 @@ body.promptstudio-popout-body .promptstudio-header-actions {
 }
 
 .promptstudio-message.promptstudio-has-generation-provenance {
-  padding-top: 48px;
+  padding-top: 42px;
 }
 
 .promptstudio-message.promptstudio-has-generation-provenance .promptstudio-generation-provenance {
-  min-height: 28px;
   display: flex;
   align-items: center;
 }
@@ -2270,6 +2333,10 @@ body.promptstudio-popout-body .promptstudio-header-actions {
 .promptstudio-prompt-info {
   margin-top: 10px;
   white-space: normal;
+}
+
+.promptstudio-message.promptstudio-has-images .promptstudio-prompt-info:not([open]) {
+  margin-top: 0;
 }
 
 #promptstudio-prompt-studio .promptstudio-prompt-info > summary {
@@ -2464,6 +2531,10 @@ body.promptstudio-popout-body .promptstudio-header-actions {
   margin-top: 10px;
 }
 
+.promptstudio-generation-provenance + .promptstudio-image-grid {
+  margin-top: 6px;
+}
+
 #promptstudio-prompt-studio .promptstudio-image-preview {
   display: grid;
   place-items: center;
@@ -2648,6 +2719,12 @@ body.promptstudio-popout-body .promptstudio-header-actions {
   cursor: pointer;
 }
 
+#promptstudio-prompt-studio .promptstudio-lightbox-actions button[data-copy-to-chat] {
+  width: auto;
+  padding: 0 12px;
+  font-size: 13px;
+}
+
 #promptstudio-prompt-studio .promptstudio-lightbox-actions a:hover,
 #promptstudio-prompt-studio .promptstudio-lightbox-actions button:hover:not(:disabled) {
   background: rgba(49, 43, 74, 0.95);
@@ -2787,6 +2864,44 @@ body.promptstudio-popout-body .promptstudio-header-actions {
 #promptstudio-prompt-studio select {
   min-height: 38px;
   padding: 0 34px 0 11px;
+}
+
+/* Use a scrollable picker instead of the OS menu's hover-to-scroll edges.
+   Keep native select semantics, keyboard navigation and older-browser fallback. */
+@supports (appearance: base-select) {
+  #promptstudio-prompt-studio :is(#promptstudio-style, #promptstudio-framing),
+  #promptstudio-prompt-studio :is(#promptstudio-style, #promptstudio-framing)::picker(select) {
+    appearance: base-select;
+  }
+
+  #promptstudio-prompt-studio :is(#promptstudio-style, #promptstudio-framing) {
+    align-items: center;
+    padding-right: 11px;
+  }
+
+  #promptstudio-prompt-studio :is(#promptstudio-style, #promptstudio-framing)::picker(select) {
+    max-height: min(480px, 65dvh);
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    font: inherit;
+    color: var(--ps-text);
+    background: #171923;
+    border: 1px solid var(--ps-border-strong);
+    border-radius: 10px;
+    box-shadow: 0 12px 30px rgba(0, 0, 0, 0.4);
+  }
+
+  #promptstudio-prompt-studio :is(#promptstudio-style, #promptstudio-framing) option {
+    min-height: 24px;
+    padding: 3px 10px;
+    line-height: 1.3;
+    overflow-wrap: anywhere;
+  }
+
+  #promptstudio-prompt-studio :is(#promptstudio-style, #promptstudio-framing) option:is(:hover, :focus, :checked) {
+    color: var(--ps-text);
+    background: #38304f;
+  }
 }
 
 #promptstudio-prompt-studio textarea:focus,
@@ -3182,52 +3297,6 @@ body.promptstudio-popout-body .promptstudio-header-actions {
   border-radius: 7px;
 }
 
-.promptstudio-lora-groups {
-  display: grid;
-  gap: 7px;
-  padding: 0 8px 8px;
-}
-
-.promptstudio-lora-group {
-  display: grid;
-  gap: 6px;
-  min-width: 0;
-  padding: 8px;
-  background: rgba(10, 12, 18, 0.58);
-  border: 1px solid var(--ps-border);
-  border-radius: 9px;
-}
-
-.promptstudio-lora-group-heading {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 8px;
-  min-width: 0;
-}
-
-.promptstudio-lora-group-heading strong,
-.promptstudio-lora-group-heading small {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.promptstudio-lora-group-heading strong {
-  font-size: 11px;
-}
-
-.promptstudio-lora-group-heading small,
-.promptstudio-lora-empty {
-  color: var(--ps-muted);
-  font-size: 9px;
-}
-
-.promptstudio-lora-empty {
-  margin: 1px 0;
-  line-height: 1.4;
-}
-
 .promptstudio-plot-global-note {
   color: var(--ps-accent-strong);
   font-size: 9px;
@@ -3242,59 +3311,44 @@ body.promptstudio-popout-body .promptstudio-header-actions {
   background: rgba(141, 115, 255, 0.06);
 }
 
-.promptstudio-lora-rows {
-  display: grid;
-  gap: 5px;
-}
-
-.promptstudio-lora-row {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 68px 28px;
-  align-items: center;
-  gap: 5px;
-}
-
-.promptstudio-lora-name {
+.promptstudio-searchable-select {
+  position: relative;
   min-width: 0;
-  overflow: hidden;
-  color: var(--ps-text);
-  font-size: 10px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
-#promptstudio-prompt-studio .promptstudio-lora-row input {
-  min-height: 28px;
-  padding: 4px 6px;
-  border-radius: 7px;
-  font-size: 10px;
-}
-
-#promptstudio-prompt-studio .promptstudio-lora-remove {
-  min-height: 28px;
+.promptstudio-searchable-options {
+  position: fixed;
+  z-index: 10;
+  inset: auto;
+  margin: 0;
   padding: 0;
+  box-sizing: border-box;
+  max-height: min(480px, 65dvh);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  border: 1px solid var(--ps-border);
   border-radius: 7px;
+  background: var(--ps-panel, #171923);
+  color: var(--ps-text);
+  box-shadow: 0 6px 18px #0006;
 }
 
-.promptstudio-lora-add {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 5px;
+.promptstudio-searchable-options > div {
+  min-height: 24px;
+  box-sizing: border-box;
+  padding: 4px 8px;
+  font-size: 11px;
+  line-height: 1.3;
+  overflow-wrap: anywhere;
 }
 
-#promptstudio-prompt-studio .promptstudio-lora-add select,
-#promptstudio-prompt-studio .promptstudio-lora-add button {
-  min-height: 30px;
-  border-radius: 7px;
-  font-size: 10px;
+.promptstudio-searchable-options [role="option"] {
+  cursor: pointer;
 }
 
-#promptstudio-prompt-studio .promptstudio-lora-add select {
-  padding: 0 28px 0 8px;
-}
-
-#promptstudio-prompt-studio .promptstudio-lora-add button {
-  padding: 0 10px;
+.promptstudio-searchable-options [role="option"]:hover,
+.promptstudio-searchable-options [aria-selected="true"] {
+  background: var(--ps-accent-soft, #343957);
 }
 
 #promptstudio-prompt-studio .promptstudio-model-group > select {
@@ -3919,8 +3973,30 @@ body.promptstudio-popout-body #promptstudio-prompt-studio.promptstudio-chats-ope
 
 .promptstudio-workflow-routing-fields {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: minmax(0, 1fr);
   gap: 10px;
+}
+
+.promptstudio-workflow-routing-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 145px;
+  align-items: end;
+  gap: 10px;
+}
+
+.promptstudio-workflow-routing-row label,
+.promptstudio-workflow-routing-row select {
+  min-width: 0;
+  width: 100%;
+}
+
+.promptstudio-workflow-routing-row button {
+  min-height: 36px;
+  white-space: normal;
+}
+
+.promptstudio-workflow-routing option[data-workflow-default] {
+  font-weight: 700;
 }
 
 .promptstudio-workflow-routing label {
@@ -4329,6 +4405,34 @@ body.promptstudio-popout-body #promptstudio-prompt-studio.promptstudio-chats-ope
   display: none;
 }
 
+.promptstudio-replacement-mode {
+  display: flex;
+  gap: 16px;
+  margin: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--ps-border);
+  border-radius: 8px;
+  font-size: 11px;
+}
+
+.promptstudio-replacement-mode[hidden] {
+  display: none;
+}
+
+.promptstudio-replacement-mode label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+}
+
+#promptstudio-prompt-studio .promptstudio-replacement-mode input {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  accent-color: var(--ps-accent);
+}
+
 .promptstudio-mutation-editor-enabled {
   display: flex;
   align-items: center;
@@ -4591,7 +4695,7 @@ body.promptstudio-popout-body #promptstudio-prompt-studio.promptstudio-chats-ope
 
 .promptstudio-image-actions {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 32px;
+  grid-template-columns: minmax(0, 1fr) 32px 32px;
   gap: 5px;
 }
 
@@ -4601,14 +4705,18 @@ body.promptstudio-popout-body #promptstudio-prompt-studio.promptstudio-chats-ope
   font-size: 11px;
 }
 
+#promptstudio-prompt-studio .promptstudio-caption-image,
 #promptstudio-prompt-studio .promptstudio-upscale-image {
   display: grid;
   place-items: center;
   width: 32px;
-  min-height: 28px;
+  height: 32px;
+  min-height: 32px;
+  aspect-ratio: 1;
   padding: 6px;
 }
 
+.promptstudio-caption-image svg,
 .promptstudio-upscale-image svg {
   width: 15px;
   height: 15px;
@@ -4919,19 +5027,17 @@ body.promptstudio-popout-body #promptstudio-prompt-studio.promptstudio-chats-ope
   }
 
   .promptstudio-message.promptstudio-has-generation-provenance {
-    padding-top: 60px;
-  }
-
-  .promptstudio-message.promptstudio-has-generation-provenance .promptstudio-generation-provenance {
-    min-height: 40px;
+    padding-top: 54px;
   }
 
   .promptstudio-image-actions {
-    grid-template-columns: minmax(0, 1fr) 44px;
+    grid-template-columns: minmax(0, 1fr) 44px 44px;
   }
 
+  #promptstudio-prompt-studio .promptstudio-caption-image,
   #promptstudio-prompt-studio .promptstudio-upscale-image {
     width: 44px;
+    height: 44px;
   }
 
   .promptstudio-compose {
@@ -4985,6 +5091,7 @@ body.promptstudio-popout-body #promptstudio-prompt-studio.promptstudio-chats-ope
 
   #promptstudio-prompt-studio .promptstudio-config-profile-field button:not(#promptstudio-refresh-llamacpp-configs) {
     width: 100%;
+    grid-column: 1 / -1;
   }
 
   #promptstudio-prompt-studio .promptstudio-mutation-launchers > button {
@@ -5612,6 +5719,62 @@ body.promptstudio-popout-body #promptstudio-prompt-studio.promptstudio-chats-ope
   border: 1px solid var(--studio-border, #555);
   border-radius: 8px;
   overflow-wrap: anywhere;
+}
+
+.promptstudio-caption-offer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.promptstudio-caption-offer > span {
+  flex-basis: 100%;
+}
+
+.promptstudio-config-editor {
+  width: min(880px, calc(100vw - 24px));
+  max-width: calc(100vw - 24px);
+  max-height: calc(100dvh - 24px);
+  box-sizing: border-box;
+  padding: 0;
+  border: 1px solid var(--ps-border, #444);
+  border-radius: 14px;
+  background: var(--ps-panel, #181c24);
+  color: var(--ps-text, #eee);
+  box-shadow: 0 24px 80px #0009;
+}
+.promptstudio-config-editor::backdrop { background: #0009; }
+.promptstudio-config-editor form { display: flex; flex-direction: column; max-height: calc(100dvh - 28px); }
+.promptstudio-config-editor header, .promptstudio-config-editor footer { padding: 16px 20px; flex-shrink: 0; }
+.promptstudio-config-editor h2 { margin: 0; font-size: 19px; }
+.promptstudio-config-editor footer { display: flex; flex-wrap: wrap; justify-content: flex-end; align-items: center; gap: 10px; border-top: 1px solid var(--ps-border, #444); }
+.promptstudio-config-editor footer p { margin: 0; flex: 1 1 250px; font-size: 12px; overflow-wrap: anywhere; }
+.promptstudio-config-editor-content { padding: 0 20px 16px; overflow-y: auto; min-height: 0; }
+.promptstudio-config-editor details { margin-top: 14px; padding: 12px; border: 1px solid var(--ps-border, #444); border-radius: 8px; }
+.promptstudio-config-editor summary { cursor: pointer; font-weight: 600; }
+.promptstudio-config-editor details p, .promptstudio-config-editor small { color: var(--ps-muted, #aaa); font-size: 12px; }
+.promptstudio-config-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; margin-top: 14px; }
+.promptstudio-config-editor label { display: flex; flex-direction: column; gap: 6px; min-width: 0; font-size: 13px; }
+.promptstudio-config-editor input, .promptstudio-config-editor select, .promptstudio-config-editor textarea { box-sizing: border-box; width: 100%; min-width: 0; padding: 8px; border: 1px solid var(--ps-border, #444); border-radius: 6px; background: #11151c; color: inherit; }
+.promptstudio-config-editor textarea { min-height: 80px; resize: vertical; }
+.promptstudio-config-editor button { min-height: 36px; }
+@media (max-width: 600px) {
+  .promptstudio-config-fields { grid-template-columns: minmax(0, 1fr); }
+  .promptstudio-config-editor-content { padding-inline: 12px; }
+  .promptstudio-config-editor header, .promptstudio-config-editor footer { padding: 12px; }
+}
+
+.promptstudio-forbidden-columns {
+  flex: 1;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  column-gap: 16px;
+}
+
+.promptstudio-forbidden-columns small {
+  color: var(--ps-muted);
+  font-size: 11px;
 }
 .promptstudio-chat-sidebar :is([data-chat-save-failure], [data-chat-load-failure], [data-draft-failure], [data-history-maintenance]) p {
   flex-basis: 100%;

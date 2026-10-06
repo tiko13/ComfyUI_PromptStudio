@@ -1,6 +1,8 @@
+import { createVideoAvailabilityReader, videoAvailabilityMessage } from "./prompt-studio/integrations/video-availability.js";
+
 if (document.querySelector("#promptstudio-popout-mount")) {
 const CHANNEL_NAME = "promptstudio.promptStudio.standalone.v1";
-const VIDEO_CAPABILITIES_ENDPOINT = "/promptstudio-video/capabilities";
+const readVideoAvailability = createVideoAvailabilityReader();
 const VIDEO_REPOSITORY_URL = "https://github.com/tiko13/PromptStudio_Video";
 const VIDEO_INSTALL_ENDPOINT = "/customnode/install/git_url";
 const COMFY_RESTART_ENDPOINTS = ["/v2/manager/reboot", "/manager/reboot"];
@@ -20,7 +22,7 @@ const installButton = document.querySelector("#promptstudio-video-install");
 const restartButton = document.querySelector("#promptstudio-video-restart");
 const cancelButton = document.querySelector("#promptstudio-video-install-cancel");
 const windowName = window.name || `promptstudio-prompt-studio-${requestId}`;
-const requestedMode = new URLSearchParams(window.location.search).get("mode") === "video" ? "video" : "image";
+let requestedMode = new URLSearchParams(window.location.search).get("mode") === "video" ? "video" : "image";
 window.name = windowName;
 
 let connected = false;
@@ -38,6 +40,7 @@ let videoAttached = false;
 let activeMode = "image";
 let videoAvailability = "checking";
 let installBusy = false;
+let availabilityRequest = null;
 
 function setStatus(message) {
   if (status) status.textContent = message;
@@ -48,10 +51,7 @@ function studioModeButtons() {
 }
 
 function availabilityMessage() {
-  if (videoAvailability === "ready") return "Switch to Video Studio";
-  if (videoAvailability === "incompatible") return "Video Studio needs an update before it can share this tab.";
-  if (videoAvailability === "checking") return "Checking whether Video Studio is installed…";
-  return "Video Studio is not installed. Click to install.";
+  return videoAvailabilityMessage(videoAvailability);
 }
 
 function updateModeControls() {
@@ -64,7 +64,8 @@ function updateModeControls() {
     if (mode === "video") {
       button.title = message;
       button.setAttribute("aria-label", message);
-      button.setAttribute("aria-disabled", videoAvailability === "ready" ? "false" : "true");
+      // The status/install dialog remains an available action in every state.
+      button.removeAttribute("aria-disabled");
     }
   }
 }
@@ -90,6 +91,9 @@ function applyMode(mode) {
   if (videoPanel) videoPanel.hidden = activeMode !== "video";
   imageHost?.setStandaloneVisibility?.(activeMode === "image");
   videoHost?.setStandaloneVisibility?.(activeMode === "video");
+  if (!workflowHost) {
+    unifiedChannel?.postMessage({ type: "set-studio-mode", requestId, windowName, mode: activeMode });
+  }
   document.body.dataset.studioMode = activeMode;
   document.title = activeMode === "video" ? "Prompt Studio Video" : "Prompt Studio";
   setFavicon(activeMode === "video" ? VIDEO_ICON_URL : IMAGE_ICON_URL);
@@ -99,11 +103,17 @@ function applyMode(mode) {
 function showVideoDialog(message = availabilityMessage()) {
   installTitle.textContent = videoAvailability === "incompatible"
     ? "Video Studio needs an update"
-    : videoAvailability === "checking" ? "Checking Video Studio" : "Video Studio is not installed";
+    : videoAvailability === "missing" ? "Video Studio is not installed"
+    : videoAvailability === "not_loaded" ? "Video Studio is installed but not loaded"
+    : videoAvailability === "unavailable" ? "Video Studio is temporarily unavailable" : "Connecting Video Studio";
   installMessage.textContent = message;
   installStatus.textContent = "";
   installStatus.dataset.kind = "";
   installButton.hidden = videoAvailability !== "missing";
+  const manualLink = document.querySelector("#promptstudio-video-install-manual");
+  if (manualLink) {
+    manualLink.textContent = videoAvailability === "missing" ? "View manual install" : "View Video Studio repository";
+  }
   restartButton.hidden = true;
   if (!installDialog.open) installDialog.showModal();
 }
@@ -115,10 +125,12 @@ function ensureVideoStylesheet() {
   stylesheet.rel = "stylesheet";
   stylesheet.href = VIDEO_STYLESHEET_URL;
   stylesheet.dataset.promptstudioVideoStyles = "";
-  document.head.append(stylesheet);
   return new Promise(resolve => {
-    stylesheet.addEventListener("load", resolve, { once: true });
-    stylesheet.addEventListener("error", resolve, { once: true });
+    const timer = window.setTimeout(resolve, 4000);
+    const done = () => { window.clearTimeout(timer); resolve(); };
+    stylesheet.addEventListener("load", done, { once: true });
+    stylesheet.addEventListener("error", done, { once: true });
+    document.head.append(stylesheet);
   });
 }
 
@@ -134,7 +146,7 @@ async function attachVideoStudio() {
 }
 
 function requestRemoteVideoAttach() {
-  if (!unifiedChannel) return;
+  if (!unifiedChannel || videoAttached) return;
   unifiedChannel.postMessage({ type: "attach-video", requestId, windowName });
 }
 
@@ -148,9 +160,8 @@ function setupUnifiedChannel() {
     await ensureVideoStylesheet();
     videoAttached = true;
     videoAvailability = "ready";
-    updateModeControls();
+    applyMode(requestedMode);
     if (requestedMode === "video") {
-      applyMode("video");
       if (installDialog.open) installDialog.close();
     }
   });
@@ -158,27 +169,35 @@ function setupUnifiedChannel() {
 }
 
 async function refreshVideoAvailability() {
-  let capabilities = null;
-  try {
-    const response = await fetch(VIDEO_CAPABILITIES_ENDPOINT, { cache: "no-store" });
-    if (response.ok) capabilities = await response.json().catch(() => ({}));
-  } catch (_) {
-    // A missing companion route is the normal not-installed state.
-  }
+  if (availabilityRequest) return availabilityRequest;
+  availabilityRequest = refreshVideoAvailabilityOnce().finally(() => { availabilityRequest = null; });
+  return availabilityRequest;
+}
+
+async function refreshVideoAvailabilityOnce() {
+  // An attached UI is stronger evidence than any network probe.
+  const hostReady = workflowHost?.__promptstudioVideoStudioHost?.setStandaloneVisibility;
+  const discovery = videoAttached || hostReady ? { state: "loaded" } : await readVideoAvailability();
+  const capabilities = discovery.capabilities;
   const directHost = workflowHost?.__promptstudioVideoStudioHost;
   const features = Array.isArray(capabilities?.features) ? capabilities.features : [];
-  if (directHost?.attach && (features.includes("unified_studio_shell") || directHost.setStandaloneVisibility)) {
+  // Broadcast reconnection has no workflowHost reference. Its acknowledged
+  // attachment remains usable when a click probes capabilities again.
+  if (videoAttached) {
     videoAvailability = "ready";
-    await attachVideoStudio();
+  } else if (directHost?.attach && (features.includes("unified_studio_shell") || directHost.setStandaloneVisibility)) {
+    try { videoAvailability = await attachVideoStudio() ? "ready" : "checking"; }
+    catch (_) { videoAvailability = "unavailable"; }
   } else if (features.includes("unified_studio_shell")) {
     videoAvailability = "checking";
     requestRemoteVideoAttach();
   } else if (capabilities) {
     videoAvailability = "incompatible";
   } else {
-    videoAvailability = "missing";
+    videoAvailability = discovery.state;
   }
   updateModeControls();
+  if (installDialog.open && !installBusy && restartButton.hidden) showVideoDialog();
   if (requestedMode === "video" && activeMode === "image" && videoAvailability === "ready") {
     applyMode("video");
     if (installDialog.open) installDialog.close();
@@ -187,11 +206,13 @@ async function refreshVideoAvailability() {
 }
 
 async function selectMode(mode) {
+  requestedMode = mode === "video" ? "video" : "image";
   if (mode !== "video") {
     applyMode("image");
     return;
   }
   await refreshVideoAvailability();
+  if (requestedMode !== "video") return;
   if (videoAvailability !== "ready" || !await attachVideoStudio()) {
     showVideoDialog();
     return;
@@ -202,6 +223,8 @@ async function selectMode(mode) {
 async function installVideoStudio() {
   if (installBusy) return;
   installBusy = true;
+  await refreshVideoAvailability();
+  if (videoAvailability !== "missing") { installBusy = false; showVideoDialog(); return; }
   installButton.disabled = true;
   cancelButton.disabled = true;
   installStatus.dataset.kind = "working";

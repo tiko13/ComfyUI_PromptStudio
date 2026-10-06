@@ -1,16 +1,21 @@
 import { supportsEditReference } from "./edit-reference.js";
 import { referenceInputDescriptors, workflowReferenceValues } from "./reference-inputs.js";
 import { qwenReferenceAdapter, normalizeQwenReferences, REFERENCE_ROLES } from "./qwen-references.js";
+import { structureAdapter, GUIDE_TYPES, isStructureReference } from "./structure-guide.js";
 
 // Derive help from the exact adapters used for rendering and generation.
 export function workflowHelpFacts(profile, owner = {}, mode = "create") {
   const qwen = qwenReferenceAdapter(profile);
+  const structure = structureAdapter(profile);
   const slots = referenceInputDescriptors(profile?.snapshot);
   return {
     mode, workflow: profile?.name || "No workflow selected",
-    reference_mode: !profile ? "unknown" : qwen ? "qwen" : supportsEditReference(profile) ? "single" : slots.length ? "inputs" : "none",
-    reference_limit: qwen?.limit ?? slots.length,
+    structure_guide: structure ? "available" : "inactive",
+    guide_types: Object.values(GUIDE_TYPES).join(", "),
+    reference_mode: !profile ? "unknown" : qwen ? (qwen.mode === "create" ? "qwen-create" : "qwen") : structure ? "structure" : supportsEditReference(profile) ? "single" : slots.length ? "inputs" : "none",
+    reference_limit: qwen?.limit ?? (structure ? 1 : slots.length),
     reference_count: qwen ? normalizeQwenReferences(owner.qwenEditReferences).length
+      : structure ? normalizeQwenReferences(owner.qwenEditReferences).filter(isStructureReference).length
       : supportsEditReference(profile) ? Number(Boolean(owner.editReferenceImage))
       : Object.values(workflowReferenceValues(owner, profile)).filter(Boolean).length,
     reference_roles: qwen ? Object.values(REFERENCE_ROLES).join(", ") : "Not available",

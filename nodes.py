@@ -25,11 +25,19 @@ import folder_paths
 
 from . import provider_transport as _provider_transport
 from . import llm_coordinator as _llm_scheduling
+from . import forbidden_words as _forbidden_words
+from .qwen_turbo import QwenImage21TurboLora, QwenImage21TurboSampler
+from .controlnet import QwenStructureGuide
+from .reference_regions import ReferenceRegionComposite
+from .model_catalog import normalized_folder_type, matches_folder_type
 from .prompt_intent import build_intent_prompt_context as _intent_prompt_context
+from .prompt_intent import normalize_intent as _normalize_image_intent
 
 
 def _apply_image_intent_context(prompt, intent_provenance, *, stage, rebuild=False):
     """Attach validated sidecar constraints without changing native node IO."""
+    if stage == "final":
+        intent_provenance = _known_reference_final_intent(intent_provenance)
     context = _intent_prompt_context(intent_provenance, stage=stage, include_edit_scope=not rebuild)
     return f"{prompt}\n\n{context}" if context else prompt
 
@@ -658,15 +666,64 @@ def _known_reference_final_prompt_lines(references):
         "Known references used by the source text:",
         json.dumps(mappings, ensure_ascii=False, indent=2),
         "Known-reference conversion rules:",
-        "- A reference may describe any reusable concept, including a person, character, item, clothing, pose, gesture, facial expression, location, background, lighting, composition, or visual treatment. Never assume all references are people or subjects.",
+        "- Reference names are lookup keys only, not descriptive words. Their ordinary dictionary meaning contributes no subject category, material, identity, or visual trait. Derive the referenced content exclusively from its definition and explicit user modifiers, even when a key is also an ordinary noun. Do not retain the key as the subject noun or a descriptive adjective in the final prompt.",
+        "- A reference may describe any reusable concept, including a person, character, item, clothing, pose, gesture, facial expression, location, background, lighting, composition, or visual treatment. It may also contain guidance for how you should compose the prompt, or combine description and guidance. Never assume all references are people or subjects.",
         "- Interpret each reference from its definition and from the grammatical role of each occurrence in the source text.",
-        "- Replace every matched reference occurrence with final-prompt content guided by its definition. The definition is an instruction, not text that must be copied verbatim.",
-        "- Do not output a reference name or matched spelling merely because it appears in the source. The final prompt must describe the referenced content instead.",
+        "- Replace every matched reference occurrence with final-prompt content that faithfully realizes its definition. The definition is an instruction, not text that must be copied verbatim. Interpret its meaning and intended role in context rather than mechanically substituting text.",
+        "- Do not output a reference name or matched spelling as a label, identity, alias, parenthetical, or shorthand in the final prompt, even if the definition repeats that name. Describe the referenced content instead; a guidance-only reference may leave only the effect of its instructions, with no corresponding subject or label.",
+        "- Preserve every applicable descriptive quality, qualifier, degree, relationship, and constraint in the definition. Use the same wording or a close semantic equivalent with the same strength and specificity; do not reduce a qualified description to its bare category, weaken it, or replace it with a different quality. Correct obvious spelling errors by meaning without discarding the intended quality.",
+        "- Distinguish described content from instructions addressed to you. Follow the latter when selecting and wording the resulting content, including conditional guidance and exclusions; do not copy directions, explanations, or other meta-instructions into the final prompt. Interpret unfamiliar guidance semantically, without assuming a fixed vocabulary or a subject-only schema.",
+        "- Treat content and constraints supplied by a matched definition as user-provided intent, not as invented embellishment. Generic rules against additions, optional adjectives, or changes to source wording must not erase that intent. When shortening, remove optional additions before sacrificing definition details.",
         "- Apply every mapping independently and simultaneously. Never merge mappings, swap definitions, transfer attributes between references, or assign a pose, expression, item, background, or other concept to the wrong subject or location.",
         "- If a reference appears only in a requested revision, use its definition to identify the corresponding content in the current prompt, apply the requested edit, and still omit the reference name from the result.",
         "- An explicit local modification attached to a reference may refine or override the conflicting part of its definition. Otherwise the definition is the baseline and overrides conflicting generic style, framing, or embellishment guidance. The latest explicit user prompt or revision remains authoritative, and compatible persistent guidance may refine only unspecified details.",
         "- Preserve all compatible surrounding prompt details and combine compatible reference definitions coherently.",
+        "- Before returning the final prompt, silently compare it with each applicable definition: restore missing or weakened meaning, apply any unfulfilled guidance, and remove reference labels and leaked meta-instructions. Return only the requested prompt in the required output format.",
     ]
+
+
+def _known_reference_final_intent(metadata):
+    """Reference identity locks belong to Main; explicit verbatim content stays locked."""
+    metadata = _normalize_image_intent(metadata)
+    if metadata is None or not metadata["locked_literals"]:
+        return metadata
+    names = {item["name"].casefold() for item in _load_known_references()}
+    metadata["locked_literals"] = [
+        item for item in metadata["locked_literals"]
+        if item["kind"] != "name" or item["text"].strip().casefold() not in names
+    ]
+    return metadata
+
+
+class KnownReferenceOutputError(ValueError):
+    pass
+
+
+def _enforce_known_reference_output(text, references, *, rewrite=None):
+    """Detect leaked keys, then let the LLM repair meaning and grammar; never substitute text."""
+    for attempt in range(3 if rewrite else 1):
+        remaining = [reference["name"] for reference in references
+                     if _literal_match_spans(text, reference["name"])]
+        if not remaining:
+            return text
+        if rewrite is None or attempt == 2:
+            raise KnownReferenceOutputError(
+                "The LLM kept Known reference names in the Final Prompt: "
+                + ", ".join(remaining) + ". Existing prompts were kept; retry the rewrite."
+            )
+        correction = "\n".join([
+            "Repair the candidate below: it still contains these Known reference lookup keys:",
+            json.dumps(remaining, ensure_ascii=False),
+            "Interpret the definitions semantically and rewrite the affected phrases without any lookup key. "
+            "Preserve all already-expanded qualities, their strength, user modifiers, actions and unrelated details. "
+            "Do not merely delete the key and leave an incomplete subject; describe what its definition means. "
+            "Return only the complete corrected prompt, with no explanation.",
+            "Candidate to repair:", text,
+            *_known_reference_final_prompt_lines(references),
+        ])
+        text = rewrite(correction)
+        if not str(text or "").strip():
+            raise KnownReferenceOutputError("The Known reference correction returned an empty prompt; existing prompts were kept.")
 
 
 def _expand_additional_instructions(value):
@@ -841,8 +898,27 @@ def _provider_url_validator(url, service_name=""):
 
 
 def _open_provider_response(request, timeout, service_name=""):
+    path = urllib.parse.urlsplit(request.full_url).path
+    generation_path = next((suffix for suffix in ("/v1/chat/completions", "/api/v1/generate", "/api/chat")
+                            if path.endswith(suffix)), None)
+    inference = request.get_method() == "POST" and generation_path is not None
+    activity_check = None
+    if inference:
+        base_url = request.full_url[:-len(generation_path)]
+        if service_name == "Llama.cpp":
+            model = json.loads(request.data).get("model", "")
+            query = urllib.parse.urlencode({"model": model, "autoload": "false"})
+            def activity_check():
+                slots = _get_json(base_url + "/slots?" + query, min(3, timeout / 3), "Llama.cpp")
+                return isinstance(slots, list) and any(
+                    isinstance(slot, dict) and slot.get("is_processing") is True for slot in slots)
+        elif service_name == "KoboldCpp":
+            def activity_check():
+                perf = _get_json(base_url + "/api/extra/perf", min(3, timeout / 3))
+                return isinstance(perf, dict) and perf.get("idle") == 0
     return _provider_transport.open_response(
         request, timeout, lambda url: _provider_url_validator(url, service_name),
+        **({"inference": True, "activity_check": activity_check} if inference else {}),
     )
 
 
@@ -869,7 +945,10 @@ def _post_json(
             if response_hook is not None:
                 response_hook(response)
             try:
+                if service_name == "Ollama" and payload.get("stream") is True:
+                    return _read_ollama_chat_stream(response)
                 body = response.read().decode("utf-8")
+                getattr(response, "note_activity", lambda: None)()
             finally:
                 if response_hook is not None:
                     response_hook(None)
@@ -883,6 +962,24 @@ def _post_json(
         return json.loads(body)
     except json.JSONDecodeError as exc:
         raise RuntimeError(f"{service_name} returned invalid JSON: {body[:500]}") from exc
+
+
+def _read_ollama_chat_stream(response):
+    content, thinking = [], []
+    for line in response:
+        if not line.strip():
+            continue
+        chunk = json.loads(line)
+        if chunk.get("error"):
+            raise RuntimeError(f"Ollama reported an error: {chunk['error']}")
+        message = chunk.get("message") or {}
+        if message.get("content") or message.get("thinking"):
+            getattr(response, "note_activity", lambda: None)()
+        content.append(str(message.get("content") or ""))
+        thinking.append(str(message.get("thinking") or ""))
+        if chunk.get("done") is True:
+            return {**chunk, "message": {**message, "content": "".join(content), "thinking": "".join(thinking)}}
+    raise RuntimeError("Ollama stream ended before completion")
 
 
 def _clean_llamacpp_base_url(url):
@@ -1071,6 +1168,7 @@ def _post_llamacpp_chat(base_url, payload, timeout, response_hook=None, cancella
                     reasoning_parts.append(reasoning)
                     reasoning_received = bool(reasoning)
                 if content_received or reasoning_received:
+                    getattr(response, "note_activity", lambda: None)()
                     with _LLAMACPP_RESPONSE_LOCK:
                         stream = _LLAMACPP_ACTIVE_STREAMS.get(base_url, {}).get(response_id)
                         if stream is not None:
@@ -2125,7 +2223,7 @@ def _generate_ollama(
             "messages": messages,
             "options": options,
             "think": _ollama_thinking_value(request_thinking_mode),
-            "stream": False,
+            "stream": True,
             # Reuse the runner across Prompt Studio's routing and rewrite stages. The
             # frontend explicitly unloads it immediately before queueing ComfyUI.
             "keep_alive": keep_alive,
@@ -2368,7 +2466,7 @@ def _remove_known_profile_wrappers(text, profiles=None):
 
 def _apply_profile_wrappers(text, profile):
     prefix, suffix = _profile_wrappers(profile)
-    return prefix + _remove_profile_wrappers(text, profile) + suffix
+    return _forbidden_words.enforce(prefix + _remove_profile_wrappers(text, profile) + suffix)
 
 
 def _llm_node_change_token(sampler_seed):
@@ -2376,7 +2474,8 @@ def _llm_node_change_token(sampler_seed):
         seed = int(sampler_seed)
     except (TypeError, ValueError):
         return float("nan")
-    return float("nan") if seed < 0 else seed
+    rules = _forbidden_words.load_rules()
+    return float("nan") if seed < 0 else (seed, json.dumps(rules, sort_keys=True)) if rules else seed
 
 
 def _thinking_instruction(thinking_mode):
@@ -2797,8 +2896,6 @@ def _build_expansion_retry_prompt(
     )
     if protected_word_lines:
         prompt_parts.extend(["", *protected_word_lines])
-    prompt_parts.extend(_known_reference_final_prompt_lines(known_references))
-
     prompt_parts.extend(
         [
             "",
@@ -2827,7 +2924,8 @@ def _build_expansion_retry_prompt(
             str(rewritten_text or "").strip(),
         ]
     )
-    return "\n".join(prompt_parts)
+    prompt_parts.extend(_known_reference_final_prompt_lines(known_references))
+    return "\n".join(prompt_parts) + _forbidden_words.instruction()
 
 
 def _append_framing_context(prompt_parts, framing_template, framing_modifier):
@@ -2947,8 +3045,6 @@ def _build_instruction_prompt(profile, style_template, style_modifier, framing_t
     )
     if protected_word_lines:
         prompt_parts.extend(["", *protected_word_lines])
-    prompt_parts.extend(_known_reference_final_prompt_lines(known_references))
-
     prompt_parts.extend(
         [
             "",
@@ -2983,7 +3079,8 @@ def _build_instruction_prompt(profile, style_template, style_modifier, framing_t
             text,
         ]
     )
-    return "\n".join(prompt_parts)
+    prompt_parts.extend(_known_reference_final_prompt_lines(known_references))
+    return "\n".join(prompt_parts) + _forbidden_words.instruction()
 
 
 def _build_revision_prompt(
@@ -3086,8 +3183,6 @@ def _build_revision_prompt(
         prompt_parts.extend(["", *protected_word_lines])
 
     prompt_parts.extend(_additional_instruction_prompt_lines(additional_instructions))
-    prompt_parts.extend(_known_reference_final_prompt_lines(known_references))
-
     prompt_parts.extend(
         [
             "",
@@ -3127,7 +3222,8 @@ def _build_revision_prompt(
             str(revision or "").strip(),
         ]
     )
-    return "\n".join(prompt_parts)
+    prompt_parts.extend(_known_reference_final_prompt_lines(known_references))
+    return "\n".join(prompt_parts) + _forbidden_words.instruction()
 
 
 def _build_main_revision_prompt(
@@ -3188,7 +3284,7 @@ def _build_main_revision_prompt(
             str(revision or "").strip(),
         ]
     )
-    return "\n".join(prompt_parts)
+    return "\n".join(prompt_parts) + _forbidden_words.instruction()
 
 
 def _build_main_creation_prompt(
@@ -3243,7 +3339,7 @@ def _build_main_creation_prompt(
             str(user_request or "").strip(),
         ]
     )
-    return "\n".join(prompt_parts)
+    return "\n".join(prompt_parts) + _forbidden_words.instruction()
 
 
 def _build_fragment_rewrite_prompt(profile, style_template, style_modifier, framing_template, framing_modifier, embellishment_level, thinking_mode, text, additional_instructions):
@@ -3345,8 +3441,6 @@ def _build_fragment_rewrite_prompt(profile, style_template, style_modifier, fram
     )
     if protected_word_lines:
         prompt_parts.extend(["", *protected_word_lines])
-    prompt_parts.extend(_known_reference_final_prompt_lines(known_references))
-
     prompt_parts.extend(
         [
             "",
@@ -3381,7 +3475,8 @@ def _build_fragment_rewrite_prompt(profile, style_template, style_modifier, fram
             text,
         ]
     )
-    return "\n".join(prompt_parts)
+    prompt_parts.extend(_known_reference_final_prompt_lines(known_references))
+    return "\n".join(prompt_parts) + _forbidden_words.instruction()
 
 
 class KCPP_PromptAmplify:
@@ -3554,6 +3649,22 @@ class KCPP_PromptAmplify:
 
         if not amplified:
             raise RuntimeError("KoboldCpp returned an empty prompt")
+        amplified = _forbidden_words.enforce(amplified, rewrite=lambda correction: _strip_response(_generate_kcpp(
+            correction, kobold_url, max_response_tokens, default_max_response_tokens,
+            temperature, top_p, top_k, min_p, rep_pen, rep_pen_range, _retry_seed(sampler_seed),
+            thinking_mode, stop_sequence, request_timeout, include_default_continuation_stops=True,
+        )))
+        amplified = _enforce_known_reference_output(
+            amplified, _matched_known_references(text),
+            rewrite=lambda correction: _forbidden_words.enforce(_strip_response(_generate_kcpp(
+                _build_instruction_prompt(profile, style_template, style_modifier, framing_template,
+                    framing_modifier, embellishment_level, thinking_mode, text, additional_instructions)
+                + "\n\n" + correction,
+                kobold_url, max_response_tokens, default_max_response_tokens,
+                temperature, top_p, top_k, min_p, rep_pen, rep_pen_range, _retry_seed(sampler_seed),
+                thinking_mode, stop_sequence, request_timeout, include_default_continuation_stops=True,
+            ))),
+        )
         width, height = _resolve_prompt_resolution(
             aspect_ratio,
             megapixels,
@@ -3599,6 +3710,10 @@ class KCPP_PromptSlot:
     FUNCTION = "get_prompt"
     CATEGORY = "KoboldCpp"
 
+    @classmethod
+    def IS_CHANGED(cls, **kwargs):
+        return json.dumps(_forbidden_words.load_rules(), sort_keys=True)
+
     def get_prompt(
         self,
         prompt,
@@ -3617,7 +3732,7 @@ class KCPP_PromptSlot:
             resolution_width,
             resolution_height,
         )
-        return (prompt, secondary_instructions, width, height)
+        return (_forbidden_words.enforce(prompt), secondary_instructions, width, height)
 
 
 def _parse_chat_image_reference(image_ref):
@@ -4015,11 +4130,11 @@ class KCPP_PromptStudioUpscale:
         source_width, source_height = _chat_image_dimensions(image_ref)
         width = max(1, round(source_width * factor))
         height = max(1, round(source_height * factor))
-        return (image, width, height, factor, prompt, secondary_instructions)
+        return (image, width, height, factor, _forbidden_words.enforce(prompt), secondary_instructions)
 
     @classmethod
     def IS_CHANGED(cls, image_ref, upscale_factor=2.0, prompt="", secondary_instructions=""):
-        return KCPP_ChatImageInput.IS_CHANGED(image_ref)
+        return (KCPP_ChatImageInput.IS_CHANGED(image_ref), json.dumps(_forbidden_words.load_rules(), sort_keys=True))
 
     @classmethod
     def VALIDATE_INPUTS(cls, image_ref, upscale_factor=2.0, prompt="", secondary_instructions=""):
@@ -4091,10 +4206,7 @@ class KCPP_Apply:
 
 
 def _normalized_lora_type(value):
-    value = str(value or "").strip()
-    if not value or value in {".", ".."} or "/" in value or "\\" in value:
-        return ""
-    return value
+    return normalized_folder_type(value)
 
 
 def _lora_names_for_type(lora_type):
@@ -4104,14 +4216,8 @@ def _lora_names_for_type(lora_type):
     type_key = normalized_type.casefold()
     matches = []
     for name in folder_paths.get_filename_list("loras"):
-        normalized_name = str(name or "").replace("\\", "/").strip("/")
-        parts = normalized_name.split("/")
-        if (
-            len(parts) > 1
-            and parts[0].casefold() == type_key
-            and not parts[-1].startswith("_")
-        ):
-            matches.append(normalized_name)
+        if matches_folder_type(name, type_key):
+            matches.append(name)
     return sorted(set(matches), key=lambda name: (name.casefold(), name))
 
 
@@ -4151,7 +4257,7 @@ class KCPP_PromptStudioLoraLoader:
                     "STRING",
                     {
                         "default": "",
-                        "tooltip": "Only LoRAs inside a top-level folder with this name are offered in Prompt Studio.",
+                        "tooltip": "Top-level LoRA folder to offer in Prompt Studio, or * for all folders. Use adapters matching the workflow model.",
                     },
                 ),
             },
@@ -4188,7 +4294,7 @@ class KCPP_PromptStudioLoraLoader:
         if len(entries) > MAX_PROMPT_STUDIO_LORAS:
             raise ValueError(f"Prompt Studio supports at most {MAX_PROMPT_STUDIO_LORAS} LoRAs per loader")
 
-        available = {name.casefold(): name for name in _lora_names_for_type(normalized_type)}
+        available = {name.replace("\\", "/").casefold(): name for name in _lora_names_for_type(normalized_type)}
         parsed = []
         seen = set()
         for entry in entries:
@@ -4383,11 +4489,32 @@ class KCPP_Ideogram4:
                 include_default_continuation_stops=True,
             )
             rewritten = _strip_response(result)
-            return rewritten if rewritten else value
+            rewritten = _forbidden_words.enforce(rewritten if rewritten else value, rewrite=lambda correction: _strip_response(_generate_kcpp(
+                correction, kobold_url, max_response_tokens,
+                int(profile.get("default_max_response_tokens") or DEFAULT_PROFILE["default_max_response_tokens"]),
+                temperature, top_p, top_k, min_p, rep_pen, rep_pen_range,
+                self._field_seed(sampler_seed, seed_mode, offset), thinking_mode, stop_sequence,
+                request_timeout, include_default_continuation_stops=True,
+            )))
+            return _enforce_known_reference_output(
+                rewritten, _matched_known_references(value),
+                rewrite=lambda correction: _forbidden_words.enforce(_strip_response(_generate_kcpp(
+                    _build_fragment_rewrite_prompt(profile, style_template, style_modifier, framing_template,
+                        framing_modifier, embellishment_level, thinking_mode, value, additional_instructions)
+                    + "\n\n" + correction,
+                    kobold_url, max_response_tokens,
+                    int(profile.get("default_max_response_tokens") or DEFAULT_PROFILE["default_max_response_tokens"]),
+                    temperature, top_p, top_k, min_p, rep_pen, rep_pen_range,
+                    self._field_seed(sampler_seed, seed_mode, offset), thinking_mode, stop_sequence,
+                    request_timeout, include_default_continuation_stops=True,
+                ))),
+            )
+        except (_forbidden_words.ForbiddenWordsError, KnownReferenceOutputError):
+            raise
         except Exception as exc:
             if on_error == "Keep Original":
                 print(f"[ComfyUI_PromptStudio] Keeping original {field_label} after KoboldCpp error: {exc}")
-                return value
+                return _enforce_known_reference_output(_forbidden_words.enforce(value), _matched_known_references(value))
             raise RuntimeError(f"Failed to rewrite {field_label}: {exc}") from exc
 
     @_coordinated_native_llm("koboldcpp")
@@ -4744,6 +4871,10 @@ class KCPP_PromptStudioSampler:
 
 
 NODE_CLASS_MAPPINGS = {
+    "KCPP_QwenStructureGuide": QwenStructureGuide,
+    "KCPP_ReferenceRegionComposite": ReferenceRegionComposite,
+    "KCPP_QwenImage21TurboLora": QwenImage21TurboLora,
+    "KCPP_QwenImage21TurboSampler": QwenImage21TurboSampler,
     "Save_as_webp_cond": Save_as_webp_cond,
     "KCPP_PromptAmplify": KCPP_PromptAmplify,
     "KCPP_PromptSlot": KCPP_PromptSlot,
@@ -4758,6 +4889,10 @@ NODE_CLASS_MAPPINGS = {
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
+    "KCPP_QwenStructureGuide": "Qwen Structure Guide (ControlNet)",
+    "KCPP_ReferenceRegionComposite": "Reference Edit Mask Composite",
+    "KCPP_QwenImage21TurboLora": "Qwen Image 2.1 Turbo v0.3 LoRA",
+    "KCPP_QwenImage21TurboSampler": "Qwen Image 2.1 Turbo v0.3 Sampler",
     "Save_as_webp_cond": "Save as WebP Conditional",
     "KCPP_PromptAmplify": "KoboldCpp Prompt Amplify",
     "KCPP_PromptSlot": "KoboldCpp Prompt Slot",

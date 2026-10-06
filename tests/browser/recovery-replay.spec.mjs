@@ -43,11 +43,15 @@ try {
    try { await page.waitForFunction(()=>window.queuedSnapshots?.length===1,{},{timeout:5000}); }
    catch(error) { console.log('Replay failed',fixture.projects.projects[0].generations,fixture.errors);throw error; }
    const queued=await page.evaluate(()=>window.queuedSnapshots[0]);
+   const submissionId=queued.workflow.extra.promptstudio_submission;
+   assert.ok(submissionId,'Each queue attempt carries a recoverable identity');
+   delete queued.workflow.extra.promptstudio_submission;
    assert.deepEqual(queued.workflow,snapshot.workflow);
    assert.equal(queued.output['2'].inputs.seed,1729);
    assert.equal(queued.output['1'].inputs.document_json,snapshot.output['1'].inputs.document_json);
    await page.waitForFunction(()=>document.querySelector('#psvstudio-save-state')?.textContent==='Saved');
    const stored=fixture.projects.projects[0].generations;
+   assert.equal(submissionId,stored.find(item=>item.prompt_id==='replayed').id);
    assert.deepEqual(stored.find(item=>item.id==='saved').workflow_snapshot,snapshot,'Original saved inputs remain immutable');
    assert.equal(stored.find(item=>item.prompt_id==='replayed').provenance.version,1);
    await page.route('**/promptstudio-video/projects',route=>route.request().method()==='PUT'?route.abort('failed'):route.continue());

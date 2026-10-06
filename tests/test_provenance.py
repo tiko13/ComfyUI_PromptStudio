@@ -13,6 +13,14 @@ spec.loader.exec_module(provenance)
 
 
 class ProvenanceTests(unittest.TestCase):
+    def test_refmod_and_reflora_files_participate_in_replay_identity(self):
+        rows = [{"name":"hero.safetensors","category":"refmods","kind":"refmod"},
+                {"name":"MiniMax3\\actor.safetensors","category":"loras","kind":"reflora"}]
+        refs = provenance.snapshot_asset_references({"output":{"ref":{"inputs":{"reference_stack_json":json.dumps(rows)}}}})
+        self.assertEqual([(row["category"],row["name"]) for row in refs],
+                         [("refmods","hero.safetensors"),("loras","MiniMax3/actor.safetensors")])
+        self.assertTrue(all(not row["invalid"] for row in refs))
+
     def test_same_filename_same_size_replacement_changes_content_identity(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "model.safetensors"

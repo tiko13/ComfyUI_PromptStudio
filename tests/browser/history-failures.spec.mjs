@@ -10,10 +10,10 @@ async function scenario(name, run) {
     await fixture.context.route('**/js/prompt-studio/chat/store-controller.js', async route => {
       const response = await route.fetch();
       const source = await response.text();
-      await route.fulfill({response, body: source.replace('  return {\n    applyChatStoreSnapshot,',
-        '  window.uxStore = {refreshChatsFromServer, persistChats, saveChats, loadChats};\n  return {\n    applyChatStoreSnapshot,')
-        .replace('  return {\r\n    applyChatStoreSnapshot,',
-          '  window.uxStore = {refreshChatsFromServer, persistChats, saveChats, loadChats};\r\n  return {\r\n    applyChatStoreSnapshot,')});
+      const hook = '  window.uxStore = {refreshChatsFromServer, persistChats, saveChats, loadChats};\n';
+      const instrumented = source.replace(/(?=^  return \{\r?\n    async flushChatStore\()/m, hook);
+      assert.notEqual(instrumented, source, 'Persistence test hook must attach to the controller');
+      await route.fulfill({response, body: instrumented});
     });
     await run(fixture);
     assert.deepEqual(fixture.errors, []);

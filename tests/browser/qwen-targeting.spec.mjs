@@ -1,0 +1,140 @@
+import assert from "node:assert/strict";
+import {mkdir} from "node:fs/promises";
+import {resolve} from "node:path";
+import {startFixture, root} from "./fixture.mjs";
+const fixture = await startFixture();
+const requests = []; let clarify = false, routerMode = "mutate_now", triageDecision = "deep", visionCalls = 0;
+const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=", "base64");
+try {
+  await fixture.context.route("**/js/prompt_studio.js", async r => {const response=await r.fetch(); await r.fulfill({response,body:await response.text()+"\nexport {updateComposeMode,refreshWorkflowControls,captureGenerationQueueSettings,queueGeneration,restoreChatState,handleStudioTurn};"});});
+  await fixture.context.route("**/scripts/api.js", async r => {const response=await r.fetch();await r.fulfill({response,body:await response.text()+'\napi.queuePrompt=async(_,snapshot)=>{window.targetQueued=structuredClone(snapshot);return {prompt_id:"target-queue"};};'});});
+  await fixture.context.route("**/view?*", r=>r.fulfill({contentType:"image/png",body:png}));
+  await fixture.context.route("**/promptstudio/controlnet/status", r=>r.fulfill({json:{ready:true,model:"control.safetensors",methods:{pose:{ready:true}}}}));
+  await fixture.context.route("**/promptstudio/prompt-studio/vision-capability", r=>{visionCalls++;return r.fulfill({json:{available:true}});});
+  await fixture.context.route("**/promptstudio/references/triage", r=>r.fulfill({json:{decision:triageDecision,reason:"Local test result"}}));
+  await fixture.context.route("**/promptstudio/references/detect", r=>r.fulfill({json:{available:true,boxes:[{score:.95,region:{x:.1,y:.1,width:.4,height:.8}}]}}));
+  await fixture.context.route("**/promptstudio/references/map",r=>r.fulfill({json:{description:"Left donor to left recipient",clarification:"",targeting:{reference:{x:.1,y:.1,width:.3,height:.8},target:{x:.15,y:.1,width:.3,height:.8}}}}));
+  await fixture.context.route("**/promptstudio/references/objects",r=>r.fulfill({json:{available:true,boxes:[{label:"jacket",score:.68,region:{x:.1,y:.2,width:.3,height:.3}}]}}));
+  await fixture.context.route("**/promptstudio/references/mask",r=>r.fulfill({json:{available:true,mask:{filename:"mask.png",type:"input",subfolder:""},source_digest:"a".repeat(64)}}));
+  await fixture.context.route("**/promptstudio/prompt-studio/route-turn", r=>r.fulfill({json:{route:routerMode,confidence:1}}));
+  await fixture.context.route("**/promptstudio/prompt-studio/qwen-edit-prompt", r=>{
+    requests.push(r.request().postDataJSON());
+    const response=clarify ? {prompt:"",clarification:"Which person should adopt the pose?"} : {prompt:"Follow the supplied pose guide for the selected person in the image. Preserve the other person."};
+    clarify=false; return r.fulfill({json:response});
+  });
+  const page=await fixture.newPage();
+  await page.evaluate(async()=>{
+    const m=await import("/extensions/ComfyUI_PromptStudio/js/prompt_studio.js");
+    const {state}=await import("/extensions/ComfyUI_PromptStudio/js/prompt-studio/core/state.js");
+    const chat=state.chats.find(c=>c.id===state.activeChatId);window.targetTest={m,state,chat};
+    Object.assign(chat,{initialized:true,selectedSource:{filename:"base.png",type:"input",subfolder:"",width:512,height:512},
+      mainPrompt:"Two people",finalPrompt:"Two people",currentPrompt:"Two people",
+      qwenEditReferences:[{id:"guide",image:{filename:"guide.png",type:"input",subfolder:""},role:"custom",use:"structure",guide:{type:"pose",input:"prepared",strength:.8,fit:"fit"}}]});
+    const output={p:{class_type:"KCPP_PromptSlot",inputs:{prompt:""}},base:{class_type:"KCPP_ChatImageInput",inputs:{image_ref:""}},
+      e:{class_type:"TextEncodeQwenImage21",inputs:{prompt:["p",0],"images.image_1":["base",0]}},
+      s:{class_type:"KCPP_QwenImage21TurboSampler",inputs:{model:["model",0],positive:["e",0],latent_image:["e",2],seed:1}},
+      d:{class_type:"VAEDecode",inputs:{samples:["s",0],vae:["vae",0]}},save:{class_type:"SaveImage",inputs:{images:["d",0]}}};
+    state.workflowProfiles=[{id:"qwen-target",path:"qwen-target",name:"[PS] Qwen Edit",kind:"edit",promptNodeId:"p",imageNodeId:"base",resultNodeIds:["save"],loraNodes:[],modelNodes:[],snapshot:{workflow:{nodes:[],links:[]},output}}];
+    state.workflowBusy=true;state.apiConnected=true;m.refreshWorkflowControls();m.restoreChatState(chat);
+    document.querySelector('input[name="promptstudio-generation-action"][value="edit"]').checked=true;
+    document.querySelector("#promptstudio-edit-workflow").value="qwen-target";
+    document.querySelector("#promptstudio-use-llm-amplification").checked=true;
+    document.querySelector("#promptstudio-auto-generate").checked=false;m.updateComposeMode();
+  });
+  await page.locator("#promptstudio-send").click();
+  await page.waitForFunction(()=>targetTest.chat.pendingGeneration?.executionPrompt);
+  assert.equal(requests.length,1); assert.equal(requests[0].user_text,"");
+  assert.equal(requests[0].references[0].use,"structure"); assert.equal(requests[0].references[0].guide.type,"pose");
+  // Fast path does not call either the capability probe or the vision provider.
+  const visionBefore = visionCalls;
+  triageDecision = "simple";
+  await page.evaluate(()=>{targetTest.chat.pendingGeneration=null;targetTest.chat.lastGeneration=null;});
+  await page.locator("#promptstudio-send").click();
+  await page.waitForFunction(()=>targetTest.chat.pendingGeneration?.executionPrompt);
+  assert.equal(requests.length,1); assert.equal(visionCalls,visionBefore);
+  assert.match(await page.evaluate(()=>targetTest.chat.pendingGeneration.executionPrompt),/ControlNet pose guide/);
+  triageDecision = "deep";
+  await page.evaluate(()=>{targetTest.chat.pendingGeneration=null;targetTest.chat.lastGeneration=null;});
+  clarify=true;
+  await page.locator("#promptstudio-send").click();
+  await page.waitForFunction(()=>targetTest.chat.referenceClarification?.question);
+  assert.equal(await page.evaluate(()=>targetTest.chat.referenceClarification.userText),"");
+  await page.locator("#promptstudio-revision").fill("The person on the left");
+  await page.locator("#promptstudio-send").click();
+  await page.waitForFunction(()=>targetTest.chat.pendingGeneration?.executionPrompt && !targetTest.chat.referenceClarification);
+  assert.match(requests.at(-1).user_text,/Which person.*\nYour answer: The person on the left/);
+  assert.equal(await page.locator("#promptstudio-revision").inputValue(),"");
+  await page.evaluate(()=>{targetTest.chat.pendingGeneration=null;targetTest.chat.lastGeneration=null;});
+  clarify=true;
+  await page.locator("#promptstudio-send").click();
+  await page.waitForFunction(()=>targetTest.chat.referenceClarification?.question);
+  const beforeCancel=requests.length; routerMode="cancel_pending";
+  await page.locator("#promptstudio-revision").fill("Cancel this edit");
+  await page.locator("#promptstudio-send").click();
+  await page.waitForFunction(()=>!targetTest.chat.referenceClarification);
+  assert.equal(requests.length,beforeCancel);routerMode="mutate_now";
+  await page.locator("#promptstudio-edit-reference").getByRole("button",{name:"References",exact:true}).click();
+  const dialog=page.getByRole("dialog",{name:"References",exact:true});
+  await dialog.getByLabel("Instruction for reference 1",{exact:true}).fill("Apply only to the left person");
+  await dialog.getByText("Targeting…",{exact:true}).click();
+  await dialog.getByRole("button",{name:"Resolve donor and recipient",exact:true}).click();
+  await dialog.getByRole("button",{name:"Use these selections",exact:true}).click();
+  assert.equal(await page.evaluate(()=>targetTest.chat.qwenEditReferences[0].targeting.target.x),.15);
+  await dialog.getByRole("button",{name:"Clear apply to source for reference 1",exact:true}).click();
+  await dialog.getByRole("button",{name:"Clear use from reference for reference 1",exact:true}).click();
+  await dialog.getByLabel("Object to find in use from reference for reference 1",{exact:true}).fill("jacket");
+  await dialog.getByRole("button",{name:"Find object",exact:true}).first().click();
+  await dialog.getByRole("button",{name:"jacket 1 (score 0.68)",exact:true}).click();
+  assert.equal(await page.evaluate(()=>targetTest.chat.qwenEditReferences[0].targeting.reference.y),.2);
+  await dialog.getByRole("button",{name:"Find people in use from reference for reference 1",exact:true}).click();
+  await dialog.getByRole("button",{name:"Person 1 (score 0.95)",exact:true}).focus();
+  await page.keyboard.press("Enter");
+  assert.equal(await page.evaluate(()=>targetTest.chat.qwenEditReferences[0].targeting.reference.x),.1);
+  await dialog.getByRole("button",{name:"Clear use from reference for reference 1",exact:true}).click();
+  await dialog.getByLabel("Always use deeper analysis for this reference (with amplification)").check();
+  assert.equal(await page.evaluate(()=>targetTest.chat.qwenEditReferences[0].analysis),"deep");
+  const width=dialog.getByLabel("Use from reference width percent for reference 1",{exact:true});
+  await width.fill("50"); await width.press("Tab");
+  const targetWidth=dialog.getByLabel("Apply to source width percent for reference 1",{exact:true});
+  await targetWidth.fill("50");await targetWidth.press("Tab");
+  const targetHeight=dialog.getByLabel("Apply to source height percent for reference 1",{exact:true});
+  await targetHeight.fill("75");await targetHeight.press("Tab");
+  let saved=await page.evaluate(()=>targetTest.chat.qwenEditReferences[0]);
+  assert.equal(saved.targeting.reference.width,.5); assert.equal(saved.targeting.target.width,.5);
+  assert.equal(saved.targeting.targetImage.filename,"base.png");
+  const frame=dialog.locator(".ps-target-image").first();
+  await frame.scrollIntoViewIfNeeded();
+  await page.waitForFunction(()=>document.querySelector(".ps-target-image img")?.naturalWidth>0);
+  const box=await frame.boundingBox();
+  await page.mouse.move(box.x+box.width*.1,box.y+box.height*.1);await page.mouse.down();
+  await page.mouse.move(box.x+box.width*.7,box.y+box.height*.8);await page.mouse.up();
+  saved=await page.evaluate(()=>targetTest.chat.qwenEditReferences[0]);
+  assert.ok(Math.abs(saved.targeting.reference.width-.6)<.02);
+  await dialog.getByRole("button",{name:"Create edit mask",exact:true}).click();
+  await dialog.getByLabel("Preserve source pixels outside this mask",{exact:true}).check();
+  assert.equal(await page.evaluate(()=>targetTest.chat.qwenEditReferences[0].editMask.enabled),true);
+  for (const viewportWidth of [1440,390]) {
+    await page.setViewportSize({width:viewportWidth,height:900});
+    assert.ok(await dialog.evaluate(el=>el.scrollWidth<=el.clientWidth));
+  }
+  await mkdir(resolve(root,"test-results/browser"),{recursive:true});
+  await dialog.screenshot({path:resolve(root,"test-results/browser/qwen-targeting-narrow.png")});
+  await page.keyboard.press("Escape");
+  await page.locator("#promptstudio-send").click();
+  await page.waitForFunction(()=>targetTest.chat.pendingGeneration?.qwenReferences[0].targeting);
+  assert.ok(requests.at(-1).references[0].targeting.target);
+  await page.evaluate(()=>targetTest.m.queueGeneration({...targetTest.m.captureGenerationQueueSettings("edit"),action:"edit",editPromptModel:"qwen_image_2_1",executionPrompt:targetTest.chat.pendingGeneration.executionPrompt,independent:true}));
+  const queued=await page.evaluate(()=>window.targetQueued.output);
+  assert.deepEqual(JSON.parse(queued.ps_structure_guide.inputs.targeting),saved.targeting);
+  assert.equal(queued.e.inputs["images.image_2"],undefined);
+  assert.equal(queued.ps_reference_composite.class_type,"KCPP_ReferenceRegionComposite");
+  assert.deepEqual(queued.save.inputs.images,["ps_reference_composite",0]);
+  // No vision request with amplification off; instructions and guide remain actionable.
+  const count=requests.length;
+  await page.evaluate(()=>{targetTest.chat.pendingGeneration=null;targetTest.chat.lastGeneration=null;document.querySelector("#promptstudio-use-llm-amplification").checked=false;});
+  await page.evaluate(()=>targetTest.m.handleStudioTurn());
+  assert.equal(requests.length,count);
+  assert.match(await page.evaluate(()=>window.targetQueued.output.p.inputs.prompt),/ControlNet pose guide/);
+  assert.deepEqual(fixture.errors,[]);
+  console.log("Qwen empty-text guides, clarification continuation, targeting, narrow layout and direct queue passed.");
+} finally {await fixture.close();}

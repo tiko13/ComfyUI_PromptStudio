@@ -30,6 +30,7 @@ import {
 import { getSettings } from "../settings/storage.js";
 import { normalizePromptStudioInputSelections } from "../generation/prompt-studio-input.js";
 import { normalizeIntentProvenance } from "./intent-provenance.js";
+import { currentWorkflowId } from "../generation/workflow-migrations.js";
 
 export function createChatModel({
   getDefaultLoraSelections,
@@ -44,7 +45,7 @@ function normalizeSessionLoraSelections(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return {};
   return Object.fromEntries(
     Object.entries(value)
-      .map(([key, selections]) => [String(key), normalizeLoraStack(selections)])
+      .map(([key, selections]) => [currentWorkflowId(key), normalizeLoraStack(selections)])
       .filter(([key, selections]) => key && selections.length),
   );
 }
@@ -53,7 +54,7 @@ function normalizeSessionModelSelections(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return {};
   return Object.fromEntries(
     Object.entries(value)
-      .map(([key, modelName]) => [String(key), cleanModelName(modelName)])
+      .map(([key, modelName]) => [currentWorkflowId(key), cleanModelName(modelName)])
       .filter(([key, modelName]) => key && modelName),
   );
 }
@@ -422,6 +423,7 @@ function normalizeChat(chat) {
         canonicalPrompt: String(message?.canonicalPrompt || ""),
         controlsFingerprint: String(message?.controlsFingerprint || ""),
         llmAmplified: Boolean(message?.llmAmplified),
+        captionOffer: ["pending", "dismissed", "completed"].includes(message?.captionOffer) ? message.captionOffer : "",
         executionPrompt: String(message?.executionPrompt || message?.canonicalPrompt || ""),
         generationAction: ["edit", "upscale"].includes(message?.generationAction) ? message.generationAction : "create",
         workflowProfileId: String(message?.workflowProfileId || ""),
@@ -527,8 +529,8 @@ function normalizeChat(chat) {
     versions,
     versionIndex,
     controlsFingerprint,
-    createWorkflowId: String(chat?.createWorkflowId || ""),
-    editWorkflowId: String(chat?.editWorkflowId || ""),
+    createWorkflowId: currentWorkflowId(chat?.createWorkflowId),
+    editWorkflowId: currentWorkflowId(chat?.editWorkflowId),
     upscaleWorkflowId: String(chat?.upscaleWorkflowId || ""),
     editPromptMode: ["edit_instruction", "full_prompt"].includes(chat?.editPromptMode) ? chat.editPromptMode : "",
     selectedSource: normalizeImageReference(chat?.selectedSource),

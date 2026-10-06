@@ -88,12 +88,12 @@
       }
     },
     {
-      "id": "qwen21_create_turbo4",
-      "name": "Qwen 2.1 Create · Turbo 4 steps",
-      "label": "Create · Turbo 4 steps",
+      "id": "qwen21_create_turbo6",
+      "name": "Qwen 2.1 Create · Turbo v0.3 · 6 steps",
+      "label": "Create · Turbo v0.3 · 6 steps",
       "family": "Qwen Image 2.1",
       "role": "create",
-      "file": "[PS] - QwenImage21 Create turbo4.json",
+      "file": "[PS] - QwenImage21 Create turbo6.json",
       "requirements": [
         "qwen21",
         "qwen21_encoder",
@@ -149,12 +149,12 @@
       }
     },
     {
-      "id": "qwen21_edit_turbo4",
-      "name": "Qwen 2.1 Edit · Turbo 4 steps",
-      "label": "Edit · Turbo 4 steps",
+      "id": "qwen21_edit_turbo6",
+      "name": "Qwen 2.1 Edit · Turbo v0.3 · 6 steps",
+      "label": "Edit · Turbo v0.3 · 6 steps",
       "family": "Qwen Image 2.1",
       "role": "edit",
-      "file": "[PS] - QwenImage21 Edit turbo4.json",
+      "file": "[PS] - QwenImage21 Edit turbo6.json",
       "requirements": [
         "qwen21",
         "qwen21_encoder",
@@ -210,12 +210,12 @@
       }
     },
     {
-      "id": "qwen21_rgba_turbo4",
-      "name": "Qwen 2.1 RGBA · Turbo 4 steps",
-      "label": "RGBA · Turbo 4 steps",
+      "id": "qwen21_rgba_turbo6",
+      "name": "Qwen 2.1 RGBA · Turbo v0.3 · 6 steps",
+      "label": "RGBA · Turbo v0.3 · 6 steps",
       "family": "Qwen Image 2.1",
       "role": "create",
-      "file": "[PS] - QwenImage21 RGBA turbo4.json",
+      "file": "[PS] - QwenImage21 RGBA turbo6.json",
       "requirements": [
         "qwen21",
         "qwen21_encoder",
@@ -271,12 +271,12 @@
       }
     },
     {
-      "id": "qwen21_rgba_edit_turbo4",
-      "name": "Qwen 2.1 RGBA Edit · Turbo 4 steps",
-      "label": "RGBA Edit · Turbo 4 steps",
+      "id": "qwen21_rgba_edit_turbo6",
+      "name": "Qwen 2.1 RGBA Edit · Turbo v0.3 · 6 steps",
+      "label": "RGBA Edit · Turbo v0.3 · 6 steps",
       "family": "Qwen Image 2.1",
       "role": "edit",
-      "file": "[PS] - QwenImage21 RGBA Edit turbo4.json",
+      "file": "[PS] - QwenImage21 RGBA Edit turbo6.json",
       "requirements": [
         "qwen21",
         "qwen21_encoder",
@@ -332,12 +332,12 @@
       }
     },
     {
-      "id": "qwen21_background_removal_turbo4",
-      "name": "Qwen 2.1 Background Removal · Turbo 4 steps",
-      "label": "Background Removal · Turbo 4 steps",
+      "id": "qwen21_background_removal_turbo6",
+      "name": "Qwen 2.1 Background Removal · Turbo v0.3 · 6 steps",
+      "label": "Background Removal · Turbo v0.3 · 6 steps",
       "family": "Qwen Image 2.1",
       "role": "edit",
-      "file": "[PS] - QwenImage21 Background Removal turbo4.json",
+      "file": "[PS] - QwenImage21 Background Removal turbo6.json",
       "requirements": [
         "qwen21",
         "qwen21_encoder",
@@ -475,16 +475,52 @@
     },
     {
       "id": "qwen21_turbo",
-      "name": "Qwen 2.1 Turbo 4-step LoRA",
+      "name": "Qwen 2.1 Turbo v0.3 LoRA",
       "category": "loras",
-      "default_asset": "qwen21_viggle_turbo4",
-      "description": "Required only for Turbo 4-step workflows; applied once as a fixed adapter.",
+      "default_asset": "qwen21_viggle_turbo6",
+      "description": "Required for Turbo v0.3 six-step workflows; applied once without merging into diffusion weights.",
       "binding": {
-        "type": "LoraLoaderModelOnly",
+        "type": "KCPP_QwenImage21TurboLora",
         "field": "lora_name",
         "index": 0,
         "asset": "qwen21_turbo"
       }
+    },
+    {
+      "id": "qwen21_controlnet",
+      "name": "Qwen Image 2.1 Fun ControlNet Union",
+      "category": "model_patches",
+      "default_asset": "qwen21_controlnet"
+    },
+    {
+      "id": "controlnet_depth",
+      "name": "Depth Anything V2 Small",
+      "category": "promptstudio_controlnet_aux",
+      "default_asset": "controlnet_depth"
+    },
+    {
+      "id": "controlnet_pose",
+      "name": "DWPose pose estimator",
+      "category": "promptstudio_controlnet_aux",
+      "default_asset": "controlnet_pose"
+    },
+    {
+      "id": "controlnet_person",
+      "name": "DWPose person detector",
+      "category": "promptstudio_controlnet_aux",
+      "default_asset": "controlnet_person"
+    },
+    {
+      "id": "controlnet_sketch",
+      "name": "Lineart sketch extractor",
+      "category": "promptstudio_controlnet_aux",
+      "default_asset": "controlnet_sketch"
+    },
+    {
+      "id": "controlnet_sketch_coarse",
+      "name": "Lineart coarse extractor",
+      "category": "promptstudio_controlnet_aux",
+      "default_asset": "controlnet_sketch_coarse"
     }
   ],
   "node_packs": [
@@ -509,6 +545,17 @@
         "UltimateSDUpscale"
       ],
       "url": "https://github.com/ssitu/ComfyUI_UltimateSDUpscale"
+    },
+    {
+      "id": "controlnet_aux",
+      "name": "ControlNet Auxiliary Preprocessors",
+      "registry_id": "comfyui_controlnet_aux",
+      "url": "https://github.com/Fannovel16/comfyui_controlnet_aux",
+      "classes": [
+        "DWPreprocessor",
+        "DepthAnythingV2Preprocessor",
+        "LineArtPreprocessor"
+      ]
     }
   ],
   "licenses": [
@@ -535,6 +582,72 @@
     {
       "name": "Viggle Turbo model card",
       "url": "https://huggingface.co/Viggle/Qwen-Image-2.1-viggle-turbo"
+    }
+  ],
+  "addons": [
+    {
+      "id": "qwen21_controlnet",
+      "name": "Qwen 2.1 Structure guide (ControlNet)",
+      "description": "Pose, depth, edges or sketch guidance in Qwen Create and Edit. Edges and prepared maps need no extra extractor.",
+      "requirements": [
+        "qwen21_controlnet"
+      ],
+      "nodes": [],
+      "classes": [
+        "ModelPatchLoader",
+        "ZImageFunControlnet",
+        "KCPP_QwenStructureGuide"
+      ],
+      "license": {
+        "id": "qwen-research-2026-09-20",
+        "name": "Qwen Research License",
+        "url": "https://huggingface.co/Qwen/Qwen-Image-2.1/blob/main/LICENSE",
+        "notice": "Qwen Image 2.1 is restricted to strict non-commercial use: research or evaluation only. Commercial use requires a separate license from Qwen. Accept these terms to select this workflow."
+      }
+    },
+    {
+      "id": "controlnet_pose",
+      "name": "Pose extraction",
+      "description": "Detect people, body, hands and face with DWPose.",
+      "requirements": [
+        "controlnet_pose",
+        "controlnet_person"
+      ],
+      "nodes": [
+        "controlnet_aux"
+      ],
+      "classes": [
+        "DWPreprocessor"
+      ]
+    },
+    {
+      "id": "controlnet_depth",
+      "name": "Depth extraction",
+      "description": "Extract scene depth with Depth Anything V2 Small (99 MB).",
+      "requirements": [
+        "controlnet_depth"
+      ],
+      "nodes": [
+        "controlnet_aux"
+      ],
+      "classes": [
+        "DepthAnythingV2Preprocessor"
+      ]
+    },
+    {
+      "id": "controlnet_sketch",
+      "name": "Sketch extraction",
+      "description": "Extract line drawings with Lineart.",
+      "requirements": [
+        "controlnet_sketch",
+        "controlnet_sketch_coarse"
+      ],
+      "nodes": [
+        "controlnet_aux"
+      ],
+      "classes": [
+        "LineArtPreprocessor"
+      ]
     }
   ]
 }

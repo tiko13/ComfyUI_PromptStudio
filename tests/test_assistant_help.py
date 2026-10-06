@@ -1,4 +1,5 @@
 import copy
+import ast
 import asyncio
 import importlib.util
 import itertools
@@ -15,6 +16,38 @@ spec.loader.exec_module(help)
 
 
 class HelpCatalogTests(unittest.TestCase):
+    def test_every_registered_node_has_inventory_and_retrievable_details(self):
+        tree = ast.parse((ROOT / "nodes.py").read_text(encoding="utf-8"))
+        mapping = next(node.value for node in tree.body if isinstance(node, ast.Assign)
+                       and any(isinstance(target, ast.Name) and target.id == "NODE_DISPLAY_NAME_MAPPINGS"
+                               for target in node.targets))
+        names = ast.literal_eval(mapping)
+        # This primitive is registered by the frontend, not NODE_CLASS_MAPPINGS.
+        names["PromptStudioInput"] = "Prompt Studio Input"
+        cards = help.load_catalog()
+        for studio in ("image", "video"):
+            facts = help.normalize_facts({}, studio=studio)
+            inventory = "\n".join(help.render_packet(cards, facts, ["nodes"])["instructions"])
+            index = {item["topic"]: item["summary"] for item in help.topic_index(cards, facts)}
+            for node_id, display_name in names.items():
+                with self.subTest(studio=studio, node=node_id):
+                    self.assertIn(node_id, inventory)
+                    self.assertIn(display_name, inventory)
+                    details = [card for card in help.applicable_cards(cards, facts)
+                               if card["topic"] != "nodes" and node_id in card["body"]]
+                    self.assertTrue(details, f"No details for {node_id}")
+                    self.assertTrue(any(node_id in index[card["topic"]] for card in details),
+                                    f"Node is missing from retrieval summaries: {node_id}")
+
+    def test_custom_inputs_and_multistage_limits_are_available_together(self):
+        packet = help.render_packet(help.load_catalog(), help.normalize_facts({}),
+                                    ["workflow-inputs", "workflow-stages", "node-prompts"])
+        instructions = "\n".join(packet["instructions"])
+        for guidance in ("exactly one executable image-output", "first executable",
+                         "Additional Inputs", "Reset", "INT, FLOAT, BOOLEAN, STRING and COMBO",
+                         "cached snapshot", "separate user actions"):
+            self.assertIn(guidance, instructions)
+
     def test_creation_help_explains_actual_composer_and_generation_toggle(self):
         facts = help.normalize_facts({"send_label": "Send", "auto_generate_label": "Generate after revision",
                                       "auto_generate": False, "llm_amplification": True})
@@ -36,7 +69,7 @@ class HelpCatalogTests(unittest.TestCase):
 
     def test_catalog_variants_and_all_topic_combinations_fit_budget(self):
         cards = help.load_catalog()
-        for mode, expected in [("qwen", "references.qwen"), ("single", "references.single"),
+        for mode, expected in [("qwen", "references.qwen"), ("qwen-create", "references.qwen-create"), ("structure", "references.structure"), ("single", "references.single"),
                                ("inputs", "references.inputs"), ("none", "references.none"), ("unknown", None)]:
             facts = help.normalize_facts({"reference_mode": mode, "reference_limit": 9})
             packet = help.render_packet(cards, facts, ["references"])
@@ -105,6 +138,30 @@ class HelpRouteTests(unittest.TestCase):
         self.assertEqual(consult.call_args.args[0]["messages"], [{"role": "user", "text": "How do I add references?"}])
         self.assertIn("up to 9 additional", consult.call_args.args[1])
         self.assertEqual(request, original)
+
+    def test_node_and_workflow_questions_retrieve_answer_only_docs(self):
+        cases = [
+            ("List all the nodes and what each does.", ["nodes"], []),
+            ("What are its inputs and where do I connect them?", ["node-prompts"],
+             [{"role": "assistant", "text": "KoboldCpp Prompt Amplify rewrites a prompt."}]),
+            ("How do I add custom inputs, then change or reset their values?", ["workflow-inputs"], []),
+            ("How do I give a two-stage base/refiner workflow separate controls?",
+             ["workflow-stages", "workflow-inputs", "node-sampling-output"], []),
+        ]
+        for question, topics, history in cases:
+            with self.subTest(question=question):
+                request = {"help_domain": "app", "messages": [*history, {"role": "user", "text": question}]}
+                original = copy.deepcopy(request)
+                with mock.patch.object(self.routes, "_consult", side_effect=[json.dumps({"topics": topics}),
+                        '{"message":"Node help.","proposal":{"must":"be ignored"}}']) as consult:
+                    result = self.routes._studio_discuss(request)
+                self.assertEqual(set(result["help_documents"]), set(topics))
+                self.assertIsNone(result["proposal"])
+                self.assertEqual(request, original)
+                self.assertIn("Product documentation", consult.call_args.args[1])
+                self.assertNotIn("Product documentation", json.dumps(consult.call_args.args[0]))
+                if history:
+                    self.assertIn("KoboldCpp Prompt Amplify", json.dumps(consult.call_args_list[0].args[0]))
 
     def test_workflow_switch_retrieves_fresh_variant(self):
         for mode, expected in [("qwen", "references.qwen"), ("single", "references.single")]:
