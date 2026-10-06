@@ -5972,6 +5972,9 @@ async function restoreImageComparisonInputs(record, { newSession = false } = {})
   if (!armStoredGenerationReplay(saved, { allowMissingProfile: true })) throw new Error("The saved generation could not be armed for replay.");
   updateComposeMode();
   await saveChats({ immediate: true });
+  if (state.chatPersistenceBlocked || state.panel.querySelector("[data-chat-save-failure]")) {
+    throw new Error("Saved inputs are applied locally, but could not be saved. Keep this tab open and retry saving before reloading.");
+  }
   setStatus("Saved inputs restored. Generate reviews and uses the saved workflow and seed; no generation has started.", "ready");
 }
 

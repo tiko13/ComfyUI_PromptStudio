@@ -123,7 +123,8 @@ try {
  assert.ok(clarificationRequests.at(-1).user_text.includes('Replace her dress'));
  assert.ok(clarificationRequests.at(-1).user_text.includes('The green one.'));
  assert.equal(clarificationRequests.at(-1).clarification_question,'Which dress should I use?');
- assert.ok(!clarificationRequests.at(-1).user_text.includes('Which dress should I use?'));
+ assert.equal(clarificationRequests.at(-1).user_text,
+   'Replace her dress\nClarification question: Which dress should I use?\nYour answer: The green one.');
  assert.equal(await page.evaluate(()=>window.refTest.state.chats.find(c=>c.id===window.refTest.state.activeChatId).referenceClarification),null);
  // Cancel clears an outstanding clarification rather than carrying it into a later request.
  await page.evaluate(()=>{const {state,m}=window.refTest;const chat=state.chats.find(c=>c.id===state.activeChatId);chat.referenceClarification={...m.captureGenerationQueueSettings('edit',chat),userText:'Use this dress',question:'Which dress?',mainPrompt:chat.mainPrompt,finalPrompt:chat.finalPrompt};});

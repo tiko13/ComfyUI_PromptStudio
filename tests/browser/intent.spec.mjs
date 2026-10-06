@@ -86,7 +86,10 @@ try {
  assert.equal(await appPage.evaluate(()=>window.intentQueued),undefined);
  await appPage.getByRole('button',{name:'Replay saved inputs',exact:true}).click();
  await appPage.waitForFunction(()=>Boolean(window.intentQueued));
- assert.deepEqual(await appPage.evaluate(()=>window.intentQueued),saved,'Exact replay preserves saved inputs without any current compatible profile');
+ const queued = await appPage.evaluate(()=>window.intentQueued);
+ assert.ok(queued.workflow.extra.promptstudio_submission,'Exact replay retains durable submission recovery metadata');
+ delete queued.workflow.extra.promptstudio_submission;
+ assert.deepEqual(queued,saved,'Exact replay preserves saved inputs without any current compatible profile');
  assert.deepEqual(fixture.errors,[]);
  console.log('Browser intent: real revision handlers share metadata atomically; manual Final/Undo preserve sidecars; saved replay reviews and queues exact inputs without a current profile. Controlled provider and queue fixture.');
 } finally {await fixture.close();}

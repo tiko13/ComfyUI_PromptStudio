@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import {startFixture,attachVideo,config,videoEnabled} from './fixture.mjs';
 
 const fixture=await startFixture();
+let releaseRestoreSave = () => {};
 const savedSnapshot={workflow:{nodes:[],extra:{comparison:true}},output:{
   '1':{class_type:'PSV_MiniMaxH3Director',inputs:{document_json:JSON.stringify(config.default_document)}},
   '2':{class_type:'Sampler',inputs:{seed:1729}},
@@ -143,8 +144,31 @@ try {
     document.querySelector('[data-message-id="image-2"] details').open=true;
   });
   await page.locator('[data-message-id="image-2"]').getByRole('button',{name:'Compare saved inputs'}).click();
+  const failRestoreSave = route => route.request().method() === 'PUT'
+    ? route.fulfill({status:503,json:{error:'Synthetic restore save failure'}}) : route.continue();
+  await page.route('**/promptstudio/prompt-studio/chats', failRestoreSave);
   await page.getByRole('button',{name:'Restore candidate inputs'}).click();
+  await page.waitForFunction(()=>document.querySelector('.ps-result-comparison [role="status"]')?.textContent.includes('could not be saved'));
+  assert.doesNotMatch(await dialog.locator('[role="status"]').textContent(),/Saved inputs restored/);
+  await page.unroute('**/promptstudio/prompt-studio/chats', failRestoreSave);
+  // Hold server acknowledgement so a fast local server cannot hide an early
+  // restore-success notification that would make immediate reload lose inputs.
+  const restoreSaveGate = new Promise(resolve => { releaseRestoreSave = resolve; });
+  const holdRestoreSave = async route => {
+    if (route.request().method() === 'PUT') await restoreSaveGate;
+    await route.continue();
+  };
+  await page.route('**/promptstudio/prompt-studio/chats', holdRestoreSave);
+  const restoreSaveRequest = page.waitForRequest(request => request.method() === 'PUT'
+    && new URL(request.url()).pathname === '/promptstudio/prompt-studio/chats');
+  await page.getByRole('button',{name:'Restore candidate inputs'}).click();
+  await restoreSaveRequest;
+  assert.equal(await page.getByRole('button',{name:'Restore candidate inputs'}).isDisabled(),true,
+    'Restore stays pending until the saved inputs are persisted');
+  assert.doesNotMatch(await dialog.locator('[role="status"]').textContent(),/restored/);
+  releaseRestoreSave();
   await page.waitForFunction(()=>document.querySelector('.ps-result-comparison [role="status"]')?.textContent.includes('restored'));
+  await page.unroute('**/promptstudio/prompt-studio/chats', holdRestoreSave);
   await page.keyboard.press('Escape');
   assert.equal(await page.locator('#promptstudio-current-prompt').inputValue(),'Exact saved Final 2');
   assert.match(await page.locator('#promptstudio-run-summary').textContent(),/Next generation uses saved inputs/);
@@ -182,4 +206,4 @@ try {
   await page.keyboard.press('Escape');
   assert.deepEqual(fixture.errors,[]);
   console.log('Comparison browser checks passed: exact diffs, immutable saved selection, linked keyboard pan/zoom, accessible fallback, explicit restore, safe export, Video timing/lineage, focus return and narrow layout.');
-} finally {await fixture.close();}
+} finally {releaseRestoreSave();await fixture.close();}

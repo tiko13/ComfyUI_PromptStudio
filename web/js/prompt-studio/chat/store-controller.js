@@ -476,8 +476,11 @@ function saveChats({ immediate = false } = {}) {
       .then(persistChats)
       .catch((error) => showChatFailure(error));
   };
-  if (immediate) persist();
-  else state.chatSaveTimer = setTimeout(persist, 150);
+  if (immediate) {
+    persist();
+    return state.chatSaveChain;
+  }
+  state.chatSaveTimer = setTimeout(persist, 150);
 }
 
 async function refreshChatsFromServer({ force = false } = {}) {
