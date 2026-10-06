@@ -1258,7 +1258,8 @@ class RegressionTests(unittest.TestCase):
 
     def test_reroll_preparation_stays_nonblocking_and_keeps_its_origin(self):
         source = (REPO_ROOT / "web" / "js" / "prompt_studio.js").read_text(encoding="utf-8")
-        self.assertNotIn("setBusy(true)", source)
+        # Only revision/reroll preparation must stay nonblocking; image import
+        # and captioning legitimately use the main compose busy state.
         revision_start = source.index("async function reviseAndMaybeGenerate")
         revision_end = source.index("\nasync function createNewFromCurrentPrompt", revision_start)
         revision = source[revision_start:revision_end]

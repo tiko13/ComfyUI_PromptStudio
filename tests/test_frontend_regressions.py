@@ -791,15 +791,17 @@ class FrontendRegressionTests(unittest.TestCase):
             self.chat_store,
         )
         self.assertIn("const syncMutationVersion = state.chatMutationVersion;", sync)
-        self.assertIn("if (state.chatMutationVersion !== syncMutationVersion) return;", sync)
+        guard = "if (state.chatMutationVersion !== syncMutationVersion || draftReviewInFlight) return;"
+        self.assertIn(guard, sync)
         self.assertLess(
             sync.index("const syncMutationVersion = state.chatMutationVersion;"),
             sync.index("await api.fetchApi"),
         )
         self.assertGreater(
-            sync.index("if (state.chatMutationVersion !== syncMutationVersion) return;"),
+            sync.index(guard),
             sync.index("await response.json"),
         )
+        self.assertLess(sync.index(guard), sync.index("applyChatStoreSnapshot(stored"))
 
     def test_generation_images_update_the_live_message_after_async_enrichment(self):
         append = self.function_source("appendGenerationImages", "updateMainPromptEditor")

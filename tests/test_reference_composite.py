@@ -28,7 +28,9 @@ class CompositeTests(unittest.TestCase):
             digest=hashlib.sha256(source_file.read_bytes()).hexdigest()
             source=torch.from_numpy(pixels.astype(np.float32)/255)[None]
             generated=torch.ones((1,24,24,4),dtype=torch.bfloat16)
-            with patch.dict(sys.modules,{package.__name__:package,nodes.__name__:nodes}):
+            # Other suites install a lightweight torch stub. The compositor imports
+            # torch lazily, so bind it to the same real module as these tensors.
+            with patch.dict(sys.modules,{package.__name__:package,nodes.__name__:nodes,"torch":torch}):
                 compositor=module.ReferenceRegionComposite()
                 result=compositor.composite(generated,source,"mask","source",digest)[0]
                 self.assertEqual(tuple(result.shape),tuple(source.shape))
