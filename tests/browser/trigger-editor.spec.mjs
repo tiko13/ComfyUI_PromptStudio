@@ -26,7 +26,9 @@ try {
     await open();
     const dialog = page.getByRole('dialog', {name:'LoRA details'});
     await dialog.getByRole('button', {name:'Edit trigger words',exact:true}).click();
-    const editor = page.getByRole('dialog', {name:'Edit trigger words',exact:true});
+    // A closed native dialog leaves the accessibility tree before its queued
+    // close handler removes it and restores focus. Wait for actual removal.
+    const editor = page.locator('dialog[aria-label="Edit trigger words"]');
     await editor.waitFor();
     assert.equal(await dialog.locator('input').count(), 0, 'Details remain read-only behind a separate settings dialog');
     assert.equal(await editor.evaluate(node=>node.parentElement===document.body), true);

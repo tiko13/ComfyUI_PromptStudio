@@ -15,6 +15,7 @@ export function openPoseEditor({doc, data, original = data, sourceImage = null, 
   surface.append(canvas);stage.append(surface);
   const hint=el("p","Drag a joint to move it freely. Select a joint and drag its ring to rotate the attached limb. Hold Shift while rotating to snap to 15°.","ps-pose-hint");
   const rotationHint=el("small",null,"ps-pose-rotation-hint");
+  const rotationHelp=el("span"),rotationValue=el("span");rotationHint.append(rotationHelp,rotationValue);
   const status=el("small");status.setAttribute("role","status");
   const footer=el("footer"),applyButton=el("button","Apply pose","ps-pose-apply");footer.append(status,applyButton);
   let person=0,part="pose_keypoints_2d",selected=1,mode="joint",history=[],future=[],drag=null,busy=false,zoom=1,viewReady=false;
@@ -104,14 +105,17 @@ export function openPoseEditor({doc, data, original = data, sourceImage = null, 
     for(const p of points)if(p.visible){ctx.beginPath();ctx.arc(p.x,p.y,(p.index===selected?7:4)*scale,0,Math.PI*2);ctx.strokeStyle=p.index===selected?"#c6baff":"#ffffffaa";ctx.lineWidth=1.5*scale;ctx.stroke();}
     const rotation=mode==="joint"?jointRotation(pose.people[person],part,selected):null;
     const jointName=jointSelect.selectedOptions[0]?.textContent||"Joint";
-    rotationHint.textContent=rotation ? `${jointName} · drag the ring to rotate; drag the center to move.` : "Arrow keys nudge the selected joint; Shift makes larger steps.";
+    rotationHelp.textContent=rotation ? `${jointName} · drag the ring to rotate; drag the center to move.` : "Arrow keys nudge the selected joint; Shift makes larger steps.";
+    // Keep the wrapped instructions in layout while displaying the angle, so
+    // the canvas cannot move beneath the pointer in the middle of a gesture.
+    rotationHelp.style.visibility=drag?.rotation?"hidden":"";rotationValue.textContent="";
     canvas.dataset.rotationJoint=rotation?String(selected):"";
     if(rotation){
       const radius=32*scale;
       ctx.beginPath();ctx.arc(rotation.x,rotation.y,radius,0,Math.PI*2);ctx.strokeStyle="#b3a0ff";ctx.lineWidth=2*scale;ctx.stroke();
       // Four small handles keep the ring distinct from pose bones and joints.
       for(let i=0;i<4;i++){const a=i*Math.PI/2;ctx.beginPath();ctx.arc(rotation.x+Math.cos(a)*radius,rotation.y+Math.sin(a)*radius,3.5*scale,0,Math.PI*2);ctx.fillStyle="#ded6ff";ctx.fill();}
-      if(drag?.rotation){ctx.beginPath();ctx.moveTo(rotation.x,rotation.y);ctx.lineTo(rotation.x+Math.cos(drag.startAngle+drag.angle)*radius,rotation.y+Math.sin(drag.startAngle+drag.angle)*radius);ctx.strokeStyle="#ded6ff99";ctx.lineWidth=scale;ctx.stroke();rotationHint.textContent=`${jointName} · ${Math.round(drag.angle*180/Math.PI)}°${drag.blocked?" · canvas edge reached":""}`;}
+      if(drag?.rotation){ctx.beginPath();ctx.moveTo(rotation.x,rotation.y);ctx.lineTo(rotation.x+Math.cos(drag.startAngle+drag.angle)*radius,rotation.y+Math.sin(drag.startAngle+drag.angle)*radius);ctx.strokeStyle="#ded6ff99";ctx.lineWidth=scale;ctx.stroke();rotationValue.textContent=`${jointName} · ${Math.round(drag.angle*180/Math.PI)}°${drag.blocked?" · canvas edge reached":""}`;}
     }
     undo.disabled=busy||!history.length;redo.disabled=busy||!future.length;removePerson.disabled=busy||pose.people.length===1;addPerson.disabled=busy||pose.people.length>=20;
     hide.disabled=busy||!points[selected]?.visible;place.disabled=busy;addHand.hidden=!part.startsWith("hand_");addHand.disabled=busy||points.some(p=>p.visible)||!pose.people[person].pose_keypoints_2d[(part==="hand_left_keypoints_2d"?7:4)*3+2];

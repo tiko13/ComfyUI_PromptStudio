@@ -95,7 +95,8 @@
 .ps-pose-tools button[aria-pressed="true"] { color: #ded6ff; border-color: #b3a0ff; background: #b3a0ff24; }
 .ps-pose-inspector { display: grid; grid-template-columns: 1fr 1fr 1.5fr; gap: 10px; margin: 10px 0; }
 .ps-pose-inspector label { display: grid; gap: 4px; color: #bdbdcc; font-size: 12px; min-width: 0; }
-.ps-pose-rotation-hint { display: block; min-height: 1.5em; margin: 6px 0; color: #c6baff; font-size: 12px; }
+.ps-pose-rotation-hint { display: grid; min-height: 1.5em; margin: 6px 0; color: #c6baff; font-size: 12px; }
+.ps-pose-rotation-hint > span { grid-area: 1 / 1; }
 .ps-pose-stage { height: min(52dvh, 540px); min-height: 180px; overflow: auto; border: 1px solid #41424e; border-radius: 8px; background: #14151a; overscroll-behavior: contain; }
 .ps-pose-surface { display: flex; align-items: center; justify-content: center; width: max-content; min-width: 100%; min-height: 100%; }
 .ps-pose-stage canvas { display: block; flex: none; touch-action: none; }

@@ -6,7 +6,7 @@ const fixture=await startFixture();
 const png=Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=','base64');
 const reference={filename:'reference.png',subfolder:'imports',type:'promptstudio',width:64,height:64};
 try {
- await fixture.context.route('**/js/prompt_studio.js',async route=>{const response=await route.fetch();await route.fulfill({response,body:await response.text()+'\nexport {updateComposeMode,refreshWorkflowControls,captureGenerationQueueSettings,queueGeneration,restoreChatState,reviseAndMaybeGenerate,createNewFromCurrentPrompt,undoPrompt,handleStudioTurn,queueBackgroundReroll,discussionIsStale,appendGenerationImages,generateDirectPrompt};'});});
+ await fixture.context.route('**/js/prompt_studio.js',async route=>{const response=await route.fetch();await route.fulfill({response,body:await response.text()+'\nexport {flushChatStore,updateComposeMode,refreshWorkflowControls,captureGenerationQueueSettings,queueGeneration,restoreChatState,reviseAndMaybeGenerate,createNewFromCurrentPrompt,undoPrompt,handleStudioTurn,queueBackgroundReroll,discussionIsStale,appendGenerationImages,generateDirectPrompt};'});});
  await fixture.context.route('**/scripts/api.js',async route=>{const response=await route.fetch();await route.fulfill({response,body:await response.text()+'\napi.queuePrompt=async(_,snapshot)=>{window.queuedSnapshots||=[];window.queuedSnapshots.push(structuredClone(snapshot));return {prompt_id:"ref-test-"+window.queuedSnapshots.length};};'});});
  await fixture.context.route('**/promptstudio/prompt-studio/import-image',route=>route.fulfill({json:{image:reference}}));
  await fixture.context.route('**/promptstudio/prompt-studio/image?*',route=>route.fulfill({contentType:'image/png',body:png}));
@@ -60,7 +60,8 @@ try {
  await page.evaluate(()=>window.refTest.m.createNewFromCurrentPrompt({applyControls:false,generationAction:'edit'}));
  assert.equal(await page.evaluate(()=>window.queuedSnapshots?.length||0),0);
  await page.evaluate(()=>{const {state}=window.refTest;state.chats.find(c=>c.id===state.activeChatId).editReferenceImage.filename='reference.png';});
- await page.evaluate(async()=>{await window.refTest.state.chatSaveChain;});
+ // The save chain excludes the pending debounce. Flush it before testing reload.
+ await page.evaluate(async()=>{await window.refTest.m.flushChatStore();});
  await page.reload();await page.waitForFunction(()=>window.studioReady);await activate();
  await page.evaluate(()=>{document.querySelector('#promptstudio-use-llm-amplification').checked=true;window.refTest.m.updateComposeMode();});
  assert.equal(await page.evaluate(()=>window.refTest.state.chats.find(c=>c.id===window.refTest.state.activeChatId).pendingGeneration.referenceGrounding.observations),grounding.observations);
@@ -113,7 +114,7 @@ try {
  await page.evaluate(()=>window.refTest.m.handleStudioTurn());
  assert.equal(await page.locator('#promptstudio-revision').inputValue(),'');
  assert.equal(await page.evaluate(()=>window.refTest.state.chats.find(c=>c.id===window.refTest.state.activeChatId).referenceClarification.question),'Which dress should I use?');
- await page.evaluate(async()=>{await window.refTest.state.chatSaveChain;});
+ await page.evaluate(async()=>{await window.refTest.m.flushChatStore();});
  await page.reload();await page.waitForFunction(()=>window.studioReady);await activate();
  await page.evaluate(()=>{document.querySelector('#promptstudio-use-llm-amplification').checked=true;document.querySelector('#promptstudio-auto-generate').checked=false;window.refTest.m.updateComposeMode();});
  await page.locator('#promptstudio-revision').fill('The green one.');

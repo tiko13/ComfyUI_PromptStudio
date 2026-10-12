@@ -70,7 +70,8 @@ try {
   const strength=group.getByRole('spinbutton');
   await strength.fill('0.65'); await strength.press('Tab');
   await info.click();
-  const dialog=page.getByRole('dialog',{name:'LoRA details'});
+  // Keep matching the closed element until the close handler removes it.
+  const dialog=page.locator('dialog[aria-label="LoRA details"]');
   await dialog.getByRole('button',{name:'exact_TRIGGER',exact:true}).waitFor();
   assert.equal(await info.textContent(),'↑');
   assert.equal(await dialog.locator('img').count(),0,'Author HTML must remain inert text');
