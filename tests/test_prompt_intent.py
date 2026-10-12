@@ -8,7 +8,7 @@ import unittest
 import tempfile
 from unittest import mock
 
-SPEC = importlib.util.spec_from_file_location("image_prompt_intent_test", Path(__file__).resolve().parents[1] / "prompt_intent.py")
+SPEC = importlib.util.spec_from_file_location("image_prompt_intent_test", Path(__file__).resolve().parents[1] / "backend" / "prompt_intent.py")
 intent = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(intent)
 

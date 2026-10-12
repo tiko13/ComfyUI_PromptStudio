@@ -1,5 +1,5 @@
 import unittest
-import reference_mapping as mapping
+import backend.reference_mapping as mapping
 
 class MappingTests(unittest.TestCase):
     def test_only_supplied_candidate_ids_can_be_selected(self):

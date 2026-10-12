@@ -8,8 +8,8 @@ import unittest
 import urllib.request
 from unittest import mock
 
-import provider_transport as transport
-from llm_coordinator import CancellationToken, LlmCoordinator
+import backend.provider_transport as transport
+from backend.llm_coordinator import CancellationToken, LlmCoordinator
 from test_regressions import load_modules
 
 

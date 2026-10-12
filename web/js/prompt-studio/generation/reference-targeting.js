@@ -1,3 +1,4 @@
+import { capabilityNode, declaredReferenceAdapter, dependsOn, poseInpaintAdapter } from "./workflow-capabilities.js";
 // Coordinates are fractions of the original image, independent of preview size.
 export function normalizeRegion(value) {
   if (!value || !["x", "y", "width", "height"].every(k => Number.isFinite(value[k]))) return null;
@@ -12,14 +13,19 @@ export function normalizeTargeting(value) {
     ...(target && normalizeImageReference(value?.targetImage) ? {targetImage: normalizeImageReference(value.targetImage)} : {})} : null;
 }
 
-export function validateTargetSource(entries, source) {
+export function validateTargetSource(entries, source, profile) {
   const key = image => JSON.stringify([image?.filename, image?.subfolder || "", image?.type || "output"]);
   if ((entries || []).some(entry => entry.targeting?.target && entry.targeting.targetImage && key(entry.targeting.targetImage) !== key(source))) {
     throw new Error("The source image changed. Clear or reselect Apply to source in Targeting before editing.");
   }
   for (const entry of entries || []) {
     const mask = normalizeEditMask(entry.editMask);
-    if (mask?.enabled && (key(mask.sourceImage) !== key(source) || JSON.stringify(mask.region) !== JSON.stringify(normalizeRegion(entry.targeting?.target)))) {
+    if (mask?.mode === "painted") {
+      const native = profile === undefined ? null : poseInpaintAdapter(profile);
+      if (!["structure", "both"].includes(entry.use) || entry.guide?.type !== "pose" || entry.guide?.strength === 0
+          || (profile !== undefined && !native) || !(entry.guide?.preserve_background ?? native?.preserveBackground ?? true)) continue;
+    }
+    if (mask?.enabled && (key(mask.sourceImage) !== key(source) || (mask.mode !== "painted" && JSON.stringify(mask.region) !== JSON.stringify(normalizeRegion(entry.targeting?.target))))) {
       throw new Error("The edit mask no longer matches its source or selection. Create a new mask.");
     }
   }
@@ -28,11 +34,17 @@ export function validateTargetSource(entries, source) {
 export function normalizeEditMask(value) {
   const image = normalizeImageReference(value?.image), sourceImage = normalizeImageReference(value?.sourceImage), region = normalizeRegion(value?.region);
   return image && sourceImage && region && /^[a-f0-9]{64}$/.test(value?.sourceDigest || "")
-    ? {image, sourceImage, region, sourceDigest: value.sourceDigest, enabled: value.enabled === true} : null;
+    ? {image, sourceImage, region, sourceDigest: value.sourceDigest, enabled: value.enabled === true, ...(value.mode === "painted" ? {mode: "painted"} : {})} : null;
 }
 
 export function maskAdapter(profile) {
   if (profile?.kind !== "edit" || !profile.imageNodeId) return null;
+  const declared = capabilityNode(profile, "PS_EditMask");
+  if (declared) {
+    if (!dependsOn(profile.snapshot.output, declared.inputs.source, profile.imageNodeId)) throw new Error("Connect Edit Mask to the editing source.");
+    return {nodeId: declared.id, explicit: true};
+  }
+  if (declaredReferenceAdapter(profile)) return null;
   const output = profile.snapshot?.output || {};
   const decoders = Object.entries(output).filter(([,n]) => n.class_type === "VAEDecode");
   if (decoders.length !== 1 || profile.resultNodeIds?.length !== 1) return null;
@@ -43,12 +55,26 @@ export function maskAdapter(profile) {
 }
 
 export function applyReferenceMask(snapshot, profile, entries, source) {
-  const masks = (entries || []).map(e => normalizeEditMask(e.editMask)).filter(m => m?.enabled);
+  const native = poseInpaintAdapter({...profile, snapshot});
+  const nativePose = e => native && ["structure", "both"].includes(e.use) && e.guide?.type === "pose";
+  const masks = (entries || []).filter(e => !nativePose(e)).map(e => normalizeEditMask(e.editMask)).filter(m => m?.enabled && m.mode !== "painted");
+  if (masks.length && (entries || []).some(e => nativePose(e) && e.guide?.strength !== 0 && (e.guide?.preserve_background ?? native.preserveBackground))) {
+    throw new Error("Use one preservation mask: disable other edit masks while pose background preservation is enabled.");
+  }
+  const declared = capabilityNode({...profile, snapshot}, "PS_EditMask");
+  if (declared) snapshot.output[declared.id].inputs.mask_json = "";
   if (!masks.length) return;
-  validateTargetSource(entries, source);
+  validateTargetSource(entries, source, profile);
   if (masks.length !== 1) throw new Error("Use one active edit mask per generation.");
   const adapter = maskAdapter({...profile, snapshot});
   if (!adapter) throw new Error("This workflow does not support preserving pixels outside an edit mask.");
+  if (adapter.explicit) {
+    snapshot.output[adapter.nodeId].inputs.mask_json = JSON.stringify(masks[0]);
+    for (const node of Object.values(snapshot.output)) {
+      if (node.class_type === "Save_as_webp_cond" && dependsOn(snapshot.output, node.inputs.images, adapter.nodeId)) node.inputs.mode = "lossless";
+    }
+    return;
+  }
   if (snapshot.output.ps_reference_composite) throw new Error("Workflow already has a reference mask composite.");
   snapshot.output.ps_reference_composite = {class_type: "KCPP_ReferenceRegionComposite", inputs: {
     generated: [adapter.decoder, 0], source: [String(profile.imageNodeId), 0], mask_ref: JSON.stringify(masks[0].image),

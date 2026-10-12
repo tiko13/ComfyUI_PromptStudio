@@ -4,7 +4,7 @@ import threading
 import unittest
 from unittest import mock
 
-from llm_coordinator import endpoint_identity
+from backend.llm_coordinator import endpoint_identity
 from test_regressions import load_modules
 
 

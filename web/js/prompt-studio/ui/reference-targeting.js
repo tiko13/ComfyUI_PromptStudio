@@ -12,12 +12,14 @@ export function referenceTargeting({doc, entry, index, sourceImage, imageUrl, sa
     deep.addEventListener("change", () => save({analysis: deep.checked ? "deep" : "auto"}));
     label.append(deep, doc.createTextNode(" Always use deeper analysis for this reference (with amplification)")); root.append(label);
   }
-  root.append(el("small", structure
+  root.append(el("small", entry.pose
+    ? "Edit pose adjusts the saved guide. The source region positions and scales it; Show guide previews that placement. This is not an edit mask."
+    : structure
     ? "Select a reference region to crop before extraction. The source region positions and scales the guide. A wide pose fitted into a narrow region can shrink the person. Use Show guide to check placement. This is not an edit mask; other pixels can still change."
     : "Selections identify the reference detail and the subject to edit. They do not mask or lock pixels. You can also describe the people in the instruction."));
   const targeting = normalizeTargeting(entry.targeting) || {reference: null, target: null};
   const current = () => root.isConnected && validContext();
-  if (edit && sourceImage && analysisSettings) {
+  if (edit && sourceImage && analysisSettings && !entry.pose) {
     const map = el("button", "Resolve donor and recipient"), status = el("small"), preview = el("div"); map.type = "button";
     status.setAttribute("role", "status");
     map.addEventListener("click", async () => {
@@ -36,7 +38,7 @@ export function referenceTargeting({doc, entry, index, sourceImage, imageUrl, sa
             frame.append(picture,rectangle);preview.append(el("small",title),frame);
           }
           const apply = el("button","Use these selections");apply.type="button";
-          apply.addEventListener("click",()=>{if(current() && JSON.stringify(entry)===identity) save({targeting:{...regions,targetImage:sourceImage},editMask:null},true);});preview.append(apply);
+          apply.addEventListener("click",()=>{if(current() && JSON.stringify(entry)===identity) save({targeting:{...regions,targetImage:sourceImage},...(entry.editMask?.mode !== "painted" ? {editMask:null} : {})},true);});preview.append(apply);
         }
       } catch(error) {if(current())status.textContent=error.message;}
       finally {map.disabled=false;}
@@ -72,7 +74,7 @@ export function referenceTargeting({doc, entry, index, sourceImage, imageUrl, sa
     let selectionChanged = () => {};
     const commit = () => {
       if (key === "target") targeting.targetImage = targeting.target ? sourceImage : null;
-      save({targeting: normalizeTargeting(targeting), ...(key === "target" ? {editMask:null} : {})});
+      save({targeting: normalizeTargeting(targeting), ...(key === "target" && entry.editMask?.mode !== "painted" ? {editMask:null} : {})});
       selectionChanged();
     };
     const render = () => {
@@ -133,7 +135,7 @@ export function referenceTargeting({doc, entry, index, sourceImage, imageUrl, sa
     if(key==="target" && maskSupported){
       const make=el("button","Create edit mask"), preview=el("img"), enableLabel=el("label"), enable=el("input"), clear=el("button","Remove edit mask");
       make.type=clear.type="button";enable.type="checkbox";preview.alt="Edit mask: white pixels are replaced, black pixels are preserved";preview.className="ps-guide-preview";
-      let mask=normalizeEditMask(entry.editMask);
+      let mask=entry.editMask?.mode === "painted" ? null : normalizeEditMask(entry.editMask);
       const display=()=>{preview.hidden=enableLabel.hidden=clear.hidden=!mask;if(mask){preview.src=imageUrl(mask.image);enable.checked=mask.enabled;}};
       enableLabel.append(enable,doc.createTextNode(" Preserve source pixels outside this mask"));
       enable.addEventListener("change",()=>{if(mask){mask={...mask,enabled:enable.checked};save({editMask:mask});}});
@@ -153,7 +155,7 @@ export function referenceTargeting({doc, entry, index, sourceImage, imageUrl, sa
     }
     root.append(group); render();
   };
-  add("reference", "Use from reference", entry.image);
+  if (!entry.pose || entry.use === "both") add("reference", "Use from reference", entry.image);
   if (edit) add("target", "Apply to source", sourceImage);
   return root;
 }

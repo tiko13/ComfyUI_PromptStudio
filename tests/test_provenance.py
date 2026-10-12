@@ -7,7 +7,7 @@ import threading
 import unittest
 from unittest import mock
 
-spec = importlib.util.spec_from_file_location("shared_provenance_test", Path(__file__).resolve().parents[1] / "provenance.py")
+spec = importlib.util.spec_from_file_location("shared_provenance_test", Path(__file__).resolve().parents[1] / "backend" / "provenance.py")
 provenance = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(provenance)
 
@@ -104,7 +104,7 @@ class ProvenanceTests(unittest.TestCase):
             load_modules(directory)
             route_spec = importlib.util.spec_from_file_location(
                 "ComfyUI_PromptStudio.provenance_routes_test",
-                Path(__file__).resolve().parents[1] / "provenance_routes.py",
+                Path(__file__).resolve().parents[1] / "backend" / "provenance_routes.py",
             )
             routes = importlib.util.module_from_spec(route_spec)
             route_spec.loader.exec_module(routes)

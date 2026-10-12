@@ -113,7 +113,7 @@ export const SETTINGS_DEFAULTS = Object.freeze({
   image_scale: 100,
   resolution_aspect_ratio: "1:1 (Square)",
   resolution_megapixels: 1.0,
-  resolution_multiple: 8,
+  resolution_multiple: 32,
 });
 
 export const LLM_THINKING_MODE_OPTIONS = Object.freeze([

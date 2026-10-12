@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from unittest import mock
 
-import edit_grounding as grounding
+import backend.edit_grounding as grounding
 from test_regressions import load_modules
 
 

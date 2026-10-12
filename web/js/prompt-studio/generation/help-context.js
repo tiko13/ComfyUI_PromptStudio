@@ -12,13 +12,13 @@ export function workflowHelpFacts(profile, owner = {}, mode = "create") {
     mode, workflow: profile?.name || "No workflow selected",
     structure_guide: structure ? "available" : "inactive",
     guide_types: Object.values(GUIDE_TYPES).join(", "),
-    reference_mode: !profile ? "unknown" : qwen ? (qwen.mode === "create" ? "qwen-create" : "qwen") : structure ? "structure" : supportsEditReference(profile) ? "single" : slots.length ? "inputs" : "none",
+    reference_mode: !profile ? "unknown" : qwen ? (qwen.explicit ? "workflow" : qwen.mode === "create" ? "qwen-create" : "qwen") : structure ? "structure" : supportsEditReference(profile) ? "single" : slots.length ? "inputs" : "none",
     reference_limit: qwen?.limit ?? (structure ? 1 : slots.length),
     reference_count: qwen ? normalizeQwenReferences(owner.qwenEditReferences).length
       : structure ? normalizeQwenReferences(owner.qwenEditReferences).filter(isStructureReference).length
       : supportsEditReference(profile) ? Number(Boolean(owner.editReferenceImage))
       : Object.values(workflowReferenceValues(owner, profile)).filter(Boolean).length,
-    reference_roles: qwen ? Object.values(REFERENCE_ROLES).join(", ") : "Not available",
+    reference_roles: qwen ? Object.values(qwen.roles || REFERENCE_ROLES).join(", ") : "Not available",
     reference_inputs: slots.map(slot => slot.label).join(", ") || "None",
     model_selection: profile ? (profile.modelNodes?.length ? "available" : "not exposed") : "unknown",
   };

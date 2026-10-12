@@ -13,7 +13,7 @@ from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-SPEC = importlib.util.spec_from_file_location("setup_service", ROOT / "setup_service.py")
+SPEC = importlib.util.spec_from_file_location("setup_service", ROOT / "backend" / "setup_service.py")
 SETUP = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(SETUP)
 
@@ -93,15 +93,16 @@ class SetupTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'Unknown optional'):
             self.service.plan(self.user, {'packs': [], 'addons': ['unreviewed']})
 
-    def test_setup_turbo_is_v03_six_step_only(self):
+    def test_setup_turbo_is_official_eight_step_only(self):
         packs = [p for p in self.catalog['packs'] if 'turbo' in p['id'] and p['id'].startswith('qwen')]
         self.assertEqual(len(packs), 5)
         for pack in packs:
-            self.assertIn('Turbo v0.3', pack['name'])
-            self.assertTrue(pack['file'].endswith('turbo6.json'))
+            self.assertIn('Official Turbo INT8', pack['name'])
+            self.assertTrue(pack['file'].endswith('turbo8.json'))
             flow = self.service.workflow_source(pack['id'])
             kinds = {n['type'] for n in SETUP.workflow_nodes(flow)}
-            self.assertTrue({'KCPP_QwenImage21TurboLora', 'KCPP_QwenImage21TurboSampler'} <= kinds)
+            self.assertIn('KCPP_QwenImage21OfficialTurboSampler', kinds)
+            self.assertNotIn('KCPP_QwenImage21TurboLora', kinds)
         self.assertNotIn('qwen21_turbo4', self.service.assets)
 
     def add_assets(self, encoder="qwen3vl_4b_fp8"):
@@ -390,7 +391,7 @@ class SetupTests(unittest.TestCase):
         plan = self.service.plan(self.user)
         self.assertEqual([p["id"] for p in plan["packs"]], ["create", "edit", "upscale"])
         self.assertEqual(len(plan["available_packs"]), 18)
-        ids = ["qwen21_create_base25", "qwen21_edit_turbo6"]
+        ids = ["qwen21_create_base25", "qwen21_edit_turbo8"]
         request = self.qwen_request(*ids)
         request["license_acceptances"].pop(ids[1])
         for missing in (None, {}, {ids[1]: True}, {ids[1]: "old-license"}, request["license_acceptances"]):
@@ -412,10 +413,10 @@ class SetupTests(unittest.TestCase):
         self.service.nodes.pop("MarkdownNote", None)
         base = self.service.plan(self.user, self.qwen_request("qwen21_create_base25", "qwen21_edit_base40"))
         self.assertEqual({r["id"] for r in base["requirements"]}, {"qwen21", "qwen21_encoder", "qwen21_vae"})
-        turbo = self.service.plan(self.user, self.qwen_request("qwen21_create_turbo6", "qwen21_edit_turbo6"))
+        turbo = self.service.plan(self.user, self.qwen_request("qwen21_create_turbo8", "qwen21_edit_turbo8"))
         self.assertEqual(turbo["blockers"], [])
-        self.assertEqual(len(turbo["requirements"]), 4)
-        self.assertEqual(turbo["download_bytes"], 28)
+        self.assertEqual({r["id"] for r in turbo["requirements"]}, {"qwen21_turbo", "qwen21_encoder", "qwen21_vae"})
+        self.assertEqual(turbo["download_bytes"], 21)
         self.assertEqual(turbo["node_packs"], [])
         self.service.nodes.pop("TextEncodeQwenImage21")
         self.assertTrue(any("TextEncodeQwenImage21" in b for b in self.service.plan(self.user, self.qwen_request("qwen21_create_base25"))["blockers"]))
@@ -441,12 +442,15 @@ class SetupTests(unittest.TestCase):
                 self.assertEqual(node["widgets_values_named"][binding["field"]], node["widgets_values"][binding["index"]])
             if pack["role"] == "edit":
                 self.assertEqual(nodes["KCPP_ChatImageInput"]["widgets_values_named"]["image_ref"], "")
-                self.assertEqual(nodes["TextEncodeQwenImage21"]["widgets_values_named"]["resolution"], 1056)
-            if "turbo6" in pack["id"]:
-                self.assertIn("KCPP_QwenImage21TurboSampler", nodes)
+                # Setup preserves the source template's edit resolution policy.
+                source = self.service.workflow_source(pack["id"])
+                encoder = next(n for n in source["nodes"] if n["type"] == "TextEncodeQwenImage21")
+                self.assertEqual(nodes["TextEncodeQwenImage21"]["widgets_values_named"]["resolution"], encoder["widgets_values_named"]["resolution"])
+            if "turbo8" in pack["id"]:
+                self.assertIn("KCPP_QwenImage21OfficialTurboSampler", nodes)
                 self.assertNotIn("ModelSamplingFlux", nodes)
                 self.assertNotIn("KCPP_PromptStudioSampler", nodes)
-                self.assertEqual(nodes["KCPP_QwenImage21TurboLora"]["properties"]["promptstudio_asset"], "qwen21_turbo")
+                self.assertNotIn("KCPP_QwenImage21TurboLora", nodes)
         self.service.finish(self.user, job["id"], [{"path": w["path"], "role": w["role"], "error": ""} for w in job["workflows"]])
         self.assertEqual(self.service.status(self.user)["onboarding"], "complete")
 
@@ -455,7 +459,7 @@ class SetupTests(unittest.TestCase):
         for asset_id in ("qwen21_bf16", "qwen21_encoder_bf16"):
             asset = self.service.assets[asset_id]
             self.paths.add(asset["category"], "shared\\" + Path(asset["relative_path"]).name)
-        request = self.qwen_request("qwen21_edit_turbo6")
+        request = self.qwen_request("qwen21_edit_base40")
         request["choices"] = {"qwen21": "shared\\qwen_image_2.1_bf16.safetensors",
                               "qwen21_encoder": "shared\\qwen3vl_8b_bf16.safetensors"}
         entered, release = threading.Event(), threading.Event()

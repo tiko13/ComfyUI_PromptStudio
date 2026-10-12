@@ -8,12 +8,13 @@ export function referenceContextMatches(saved, current) {
   };
   return Boolean(saved && current)
     && key(saved.sourceImage) === key(current.sourceImage)
-    && (saved.editPromptModel !== "qwen_image_2_1" || (saved.workflowProfileId === current.workflowProfileId && referenceInputsMatch(saved, current)))
+    && (!["qwen_image_2_1", "workflow"].includes(saved.editPromptModel) || (saved.workflowProfileId === current.workflowProfileId && referenceInputsMatch(saved, current)
+      && (saved.referenceContractKey || "") === (current.referenceContractKey || "")))
     && key(saved.referenceImage) === key(current.referenceImage);
 }
 
 export function normalizeReferenceClarification(value) {
-  if (value?.editPromptModel === "qwen_image_2_1") {
+  if (["qwen_image_2_1", "workflow"].includes(value?.editPromptModel)) {
     if (!normalizeImageReference(value.sourceImage) || !value.workflowProfileId || !String(value.question || "").trim()) return null;
     return {...normalizeReferenceState(value), workflowProfileId: String(value.workflowProfileId),
       userText: String(value.userText || "").slice(0, 16000), question: String(value.question).slice(0, 4000),

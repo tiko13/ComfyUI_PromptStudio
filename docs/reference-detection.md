@@ -61,7 +61,7 @@ The deeper tools are explicit actions in Targeting:
   from box counts.
 - Find object uses Grounding DINO Tiny only when requested. The current selection
   crops its search region. Setup installs a pinned, verified checkpoint and text
-  processor files into the extension's ignored `reference_models` directory.
+  processor files into the extension's ignored `user-data/reference_models` directory.
   The optional host Transformers runtime must be available. Model files never
   download during inference. A separate CPU process uses two threads, no remote
   code and local-only model loading; it exits after inference. Its timeout is

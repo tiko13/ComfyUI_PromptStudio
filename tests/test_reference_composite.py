@@ -11,8 +11,8 @@ from PIL import Image
 import torch
 
 ROOT=Path(__file__).resolve().parents[1]
-package=types.ModuleType("region_composite_test");package.__path__=[str(ROOT)]
-spec=importlib.util.spec_from_file_location(package.__name__+".reference_regions",ROOT/"reference_regions.py")
+package=types.ModuleType("region_composite_test");package.__path__=[str(ROOT / "backend")]
+spec=importlib.util.spec_from_file_location(package.__name__+".reference_regions",ROOT/"backend" / "reference_regions.py")
 module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
 
 

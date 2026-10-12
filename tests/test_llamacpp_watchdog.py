@@ -6,7 +6,7 @@ from pathlib import Path
 from unittest import mock
 
 
-WATCHDOG_PATH = Path(__file__).resolve().parents[1] / "llamacpp_watchdog.py"
+WATCHDOG_PATH = Path(__file__).resolve().parents[1] / "backend" / "llamacpp_watchdog.py"
 
 
 def load_watchdog():

@@ -10,14 +10,14 @@ import unittest
 from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
-spec = importlib.util.spec_from_file_location("assistant_help_test", ROOT / "assistant_help.py")
+spec = importlib.util.spec_from_file_location("assistant_help_test", ROOT / "backend" / "assistant_help.py")
 help = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(help)
 
 
 class HelpCatalogTests(unittest.TestCase):
     def test_every_registered_node_has_inventory_and_retrievable_details(self):
-        tree = ast.parse((ROOT / "nodes.py").read_text(encoding="utf-8"))
+        tree = ast.parse((ROOT / "backend" / "nodes.py").read_text(encoding="utf-8"))
         mapping = next(node.value for node in tree.body if isinstance(node, ast.Assign)
                        and any(isinstance(target, ast.Name) and target.id == "NODE_DISPLAY_NAME_MAPPINGS"
                                for target in node.targets))
@@ -69,7 +69,7 @@ class HelpCatalogTests(unittest.TestCase):
 
     def test_catalog_variants_and_all_topic_combinations_fit_budget(self):
         cards = help.load_catalog()
-        for mode, expected in [("qwen", "references.qwen"), ("qwen-create", "references.qwen-create"), ("structure", "references.structure"), ("single", "references.single"),
+        for mode, expected in [("workflow", "references.workflow"), ("qwen", "references.qwen"), ("qwen-create", "references.qwen-create"), ("structure", "references.structure"), ("single", "references.single"),
                                ("inputs", "references.inputs"), ("none", "references.none"), ("unknown", None)]:
             facts = help.normalize_facts({"reference_mode": mode, "reference_limit": 9})
             packet = help.render_packet(cards, facts, ["references"])
@@ -141,6 +141,8 @@ class HelpRouteTests(unittest.TestCase):
 
     def test_node_and_workflow_questions_retrieve_answer_only_docs(self):
         cases = [
+            ("Where are my editable configuration files and what is their format?", ["configuration-files"], []),
+            ("How do I add a model profile without editing the bundled JSON?", ["model-profiles"], []),
             ("List all the nodes and what each does.", ["nodes"], []),
             ("What are its inputs and where do I connect them?", ["node-prompts"],
              [{"role": "assistant", "text": "KoboldCpp Prompt Amplify rewrites a prompt."}]),

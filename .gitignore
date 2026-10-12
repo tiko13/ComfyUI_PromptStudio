@@ -83,6 +83,7 @@ Desktop.ini
 /storageState*.json
 
 # Prompt Studio runtime state
+prompt_studio_model_metadata/
 reference_models/
 prompt_studio_chats.json
 prompt_studio_chats.json.tmp
@@ -100,8 +101,15 @@ config/LlamaCPP/*.router.ini
 protected_words.txt
 forbidden_words.json
 
-# User-owned presets (copy the tracked examples from presets/examples/)
+# Shared editable prompt configuration and migration backups
+/config/user/
+/config/migration-backups/
+# Legacy user-owned presets (kept ignored during migration)
+model_profiles.additional.json
 style_templates.additional.json
 framing_templates.additional.json
 additional_instruction_templates.json
 known_references.json
+
+# Private runtime stores and cached assets
+/user-data/

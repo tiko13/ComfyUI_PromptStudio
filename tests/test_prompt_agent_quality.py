@@ -1,5 +1,5 @@
 import unittest
-from prompt_agent_quality import enforce_visual_evidence, combine_reference_assessment, calibration_metrics
+from backend.prompt_agent_quality import enforce_visual_evidence, combine_reference_assessment, calibration_metrics
 
 RUBRIC = {"criteria": [{"id":"face", "hard":True, "weight":2}, {"id":"style", "hard":False, "weight":1}]}
 def evaluation():

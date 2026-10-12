@@ -8,12 +8,11 @@ import unittest
 from unittest.mock import patch
 
 import torch
-import qwen_edit
-
+from backend import qwen_edit
 ROOT = Path(__file__).resolve().parents[1]
 package = types.ModuleType("guide_geometry_test")
-package.__path__ = [str(ROOT)]
-spec = importlib.util.spec_from_file_location("guide_geometry_test.controlnet", ROOT / "controlnet.py")
+package.__path__ = [str(ROOT / "backend")]
+spec = importlib.util.spec_from_file_location("guide_geometry_test.controlnet", ROOT / "backend" / "controlnet.py")
 controlnet = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(controlnet)
 
@@ -40,3 +39,29 @@ class GuideGeometryTests(unittest.TestCase):
 
     def test_tiny_regions_stay_inside_pixel_bounds(self):
         self.assertEqual(controlnet.region_pixels(dict(x=.999, y=.999, width=.001, height=.001), 10, 10), (9, 9, 1, 1))
+
+    def test_editable_extraction_returns_unframed_joints_and_exact_crop(self):
+        utils = types.ModuleType("comfy.utils")
+        utils.common_upscale = lambda pixels, w, h, *args: torch.nn.functional.interpolate(pixels, size=(h, w), mode="bilinear", align_corners=False)
+        comfy = types.ModuleType("comfy")
+        comfy.utils = utils
+        nodes = types.ModuleType("nodes")
+        data = [{"canvas_width": 10, "canvas_height": 20, "people": [{"pose_keypoints_2d": [5, 10, 1]}]}]
+        class Detector:
+            FUNCTION = "detect"
+            def detect(self, image, **kwargs):
+                self_shape = tuple(image.shape)
+                assert self_shape == (1, 20, 10, 3)
+                return {"result": (torch.ones_like(image), data)}
+        nodes.NODE_CLASS_MAPPINGS = {"DWPreprocessor": Detector}
+        modules = {"guide_geometry_test": package, "guide_geometry_test.qwen_edit": qwen_edit,
+                   "comfy": comfy, "comfy.utils": utils, "nodes": nodes, "torch": torch}
+        with patch.dict(sys.modules, modules), patch.object(controlnet, "capabilities", return_value={"methods": {"pose": {"ready": True}}}):
+            result = controlnet.QwenStructureGuide().prepare(torch.ones(1, 20, 40, 3), "pose", "photo", "fit", 80, 40,
+                json.dumps({"reference": dict(x=.25, y=0, width=.25, height=1)}), emit_pose=True)
+            exported = json.loads(result["ui"]["pose_json"][0])
+            self.assertEqual(exported["data"], data)
+            self.assertEqual(exported["sourceRegion"], dict(x=.25, y=0, width=.25, height=1))
+            self.assertEqual(tuple(result["result"][0].shape), (1, 40, 80, 3))
+            with self.assertRaisesRegex(ValueError, "requires a pose photo"):
+                controlnet.QwenStructureGuide().prepare(torch.ones(1, 20, 40, 3), "pose", "prepared", "fit", 80, 40, emit_pose=True)

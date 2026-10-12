@@ -11,6 +11,7 @@ const project=(id,name,generations)=>({id,name,brief:'',workflow_id:'',document:
 fixture.projects={revision:1,projects:[project('a','Project A',[operation]),project('b','Project B',[])],active_project_id:'a'};
 let releaseCompile,compiling=false;
 const gate=new Promise(resolve=>{releaseCompile=resolve;});
+let releaseAcceptedSave = () => {};
 try {
   await fixture.context.route('**/scripts/api.js',async route=>{
     const response=await route.fetch();
@@ -45,9 +46,19 @@ try {
   if (videoEnabled) {
     await attachVideo(page);
     await page.locator('.psvstudio-project').filter({hasText:'Project B'}).click();
-    const queued=page.waitForResponse(response=>response.url().endsWith('/promptstudio-video/projects')
-      &&response.request().method()==='PUT'&&response.request().postData()?.includes('"prompt_id":"video-a"'));
-    releaseCompile();await queued;
+    // ComfyUI can report progress while the accepted prompt ID is being saved.
+    // Hold that acknowledgement to exercise this ordering on every runner.
+    const acceptedSaveGate=new Promise(resolve=>{releaseAcceptedSave=resolve;});
+    let held=false;
+    await page.route('**/promptstudio-video/projects',async route=>{
+      if (!held&&route.request().method()==='PUT'&&route.request().postData()?.includes('"prompt_id":"video-a"')) {
+        held=true;await acceptedSaveGate;
+      }
+      await route.continue();
+    });
+    const acceptedSave=page.waitForRequest(request=>new URL(request.url()).pathname==='/promptstudio-video/projects'
+      &&request.method()==='PUT'&&request.postData()?.includes('"prompt_id":"video-a"'));
+    releaseCompile();await acceptedSave;
     await page.evaluate(async()=>{
       const {api}=await import('/scripts/api.js');
       api.dispatchEvent(new CustomEvent('execution_start',{detail:{prompt_id:'video-a'}}));
@@ -55,6 +66,17 @@ try {
     });
     await page.locator('.psvstudio-project').filter({hasText:'Project A'}).click();
     await page.waitForFunction(()=>document.querySelector('#psvstudio-generation-list .psvstudio-progress span')?.style.getPropertyValue('--progress')==='40%');
+    await page.evaluate(async()=>{
+      const {api}=await import('/scripts/api.js');
+      api.dispatchEvent(new CustomEvent('executing',{detail:{prompt_id:'video-a',node:null}}));
+    });
+    assert.match(await page.locator('#psvstudio-generation-list').textContent(),/Finalizing/);
+    const polling=page.waitForRequest(request=>new URL(request.url()).pathname==='/history/video-a');
+    releaseAcceptedSave();await polling;
+    assert.equal(await page.locator('#psvstudio-generation-list .psvstudio-progress span').evaluate(node=>node.style.getPropertyValue('--progress')),'40%',
+      'Finishing queue acceptance must preserve progress received during its save');
+    assert.match(await page.locator('#psvstudio-generation-list').textContent(),/Finalizing/,
+      'Queue acceptance must not regress the finalizing phase');
     assert.equal(fixture.projects.projects.find(item=>item.id==='b').generations.length,0);
   }
   await page.evaluate(async()=>{
@@ -94,4 +116,4 @@ try {
   assert.equal(fixture.requests.some(request=>request.path==='/interrupt'),false);
   assert.deepEqual(fixture.errors,[]);
   console.log('Lifecycle browser checks passed: preparation/session switching, background progress, popup caret/media identity, docking, unique registration; synthetic transport only.');
-} finally {releaseCompile();await fixture.close();}
+} finally {releaseAcceptedSave();releaseCompile();await fixture.close();}

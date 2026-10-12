@@ -7,12 +7,12 @@ from pathlib import Path
 import threading
 import unittest
 from unittest import mock
-from job_observability import JobLedger
-from llm_coordinator import CancellationToken, LlmCoordinator, LlmOverloadedError, MAX_LLM_OPERATIONS
+from backend.job_observability import JobLedger
+from backend.llm_coordinator import CancellationToken, LlmCoordinator, LlmOverloadedError, MAX_LLM_OPERATIONS
 
 
 def load_queue_functions():
-    source = Path(__file__).resolve().parents[1] / "routes.py"
+    source = Path(__file__).resolve().parents[1] / "backend" / "routes.py"
     names = {
         "_cancel_pending_llm_requests", "_llm_queue_worker", "_run_llm_request",
         "_shutdown_llm_queues", "_cancel_consult_job", "shared_llm_check_admission",

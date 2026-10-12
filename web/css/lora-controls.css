@@ -1,3 +1,5 @@
+@import url("./model-metadata.css");
+
 .promptstudio-lora-groups {
   display: grid;
   gap: 7px;
@@ -51,7 +53,7 @@
 
 .promptstudio-lora-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 68px 28px;
+  grid-template-columns: minmax(0, 1fr) 68px 28px 28px;
   align-items: center;
   gap: 5px;
 }
@@ -72,7 +74,8 @@
   font-size: 10px;
 }
 
-#promptstudio-prompt-studio .promptstudio-lora-remove {
+#promptstudio-prompt-studio .promptstudio-lora-remove,
+#promptstudio-prompt-studio .promptstudio-model-info {
   min-height: 28px;
   padding: 0;
   border-radius: 7px;

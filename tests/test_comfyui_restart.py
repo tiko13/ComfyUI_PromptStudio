@@ -13,9 +13,9 @@ from aiohttp.test_utils import TestClient, TestServer, make_mocked_request
 ROOT = Path(__file__).resolve().parents[1]
 PACKAGE = "studio_restart_test"
 package = types.ModuleType(PACKAGE)
-package.__path__ = [str(ROOT)]
+package.__path__ = [str(ROOT / "backend")]
 sys.modules[PACKAGE] = package
-spec = importlib.util.spec_from_file_location(PACKAGE + ".comfyui_restart", ROOT / "comfyui_restart.py")
+spec = importlib.util.spec_from_file_location(PACKAGE + ".comfyui_restart", ROOT / "backend" / "comfyui_restart.py")
 restart = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(restart)
 security = sys.modules[PACKAGE + ".request_security"]

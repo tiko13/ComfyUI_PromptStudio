@@ -88,17 +88,16 @@
       }
     },
     {
-      "id": "qwen21_create_turbo6",
-      "name": "Qwen 2.1 Create · Turbo v0.3 · 6 steps",
-      "label": "Create · Turbo v0.3 · 6 steps",
+      "id": "qwen21_create_turbo8",
+      "name": "Qwen 2.1 Create · Official Turbo INT8 · 8 steps",
+      "label": "Create · Official Turbo INT8 · 8 steps",
       "family": "Qwen Image 2.1",
       "role": "create",
-      "file": "[PS] - QwenImage21 Create turbo6.json",
+      "file": "[PS] - QwenImage21 Create turbo8.json",
       "requirements": [
-        "qwen21",
+        "qwen21_turbo",
         "qwen21_encoder",
-        "qwen21_vae",
-        "qwen21_turbo"
+        "qwen21_vae"
       ],
       "nodes": [],
       "license": {
@@ -149,17 +148,16 @@
       }
     },
     {
-      "id": "qwen21_edit_turbo6",
-      "name": "Qwen 2.1 Edit · Turbo v0.3 · 6 steps",
-      "label": "Edit · Turbo v0.3 · 6 steps",
+      "id": "qwen21_edit_turbo8",
+      "name": "Qwen 2.1 Edit · Official Turbo INT8 · 8 steps",
+      "label": "Edit · Official Turbo INT8 · 8 steps",
       "family": "Qwen Image 2.1",
       "role": "edit",
-      "file": "[PS] - QwenImage21 Edit turbo6.json",
+      "file": "[PS] - QwenImage21 Edit turbo8.json",
       "requirements": [
-        "qwen21",
+        "qwen21_turbo",
         "qwen21_encoder",
-        "qwen21_vae",
-        "qwen21_turbo"
+        "qwen21_vae"
       ],
       "nodes": [],
       "license": {
@@ -210,17 +208,16 @@
       }
     },
     {
-      "id": "qwen21_rgba_turbo6",
-      "name": "Qwen 2.1 RGBA · Turbo v0.3 · 6 steps",
-      "label": "RGBA · Turbo v0.3 · 6 steps",
+      "id": "qwen21_rgba_turbo8",
+      "name": "Qwen 2.1 RGBA · Official Turbo INT8 · 8 steps",
+      "label": "RGBA · Official Turbo INT8 · 8 steps",
       "family": "Qwen Image 2.1",
       "role": "create",
-      "file": "[PS] - QwenImage21 RGBA turbo6.json",
+      "file": "[PS] - QwenImage21 RGBA turbo8.json",
       "requirements": [
-        "qwen21",
+        "qwen21_turbo",
         "qwen21_encoder",
-        "qwen21_vae",
-        "qwen21_turbo"
+        "qwen21_vae"
       ],
       "nodes": [],
       "license": {
@@ -271,17 +268,16 @@
       }
     },
     {
-      "id": "qwen21_rgba_edit_turbo6",
-      "name": "Qwen 2.1 RGBA Edit · Turbo v0.3 · 6 steps",
-      "label": "RGBA Edit · Turbo v0.3 · 6 steps",
+      "id": "qwen21_rgba_edit_turbo8",
+      "name": "Qwen 2.1 RGBA Edit · Official Turbo INT8 · 8 steps",
+      "label": "RGBA Edit · Official Turbo INT8 · 8 steps",
       "family": "Qwen Image 2.1",
       "role": "edit",
-      "file": "[PS] - QwenImage21 RGBA Edit turbo6.json",
+      "file": "[PS] - QwenImage21 RGBA Edit turbo8.json",
       "requirements": [
-        "qwen21",
+        "qwen21_turbo",
         "qwen21_encoder",
-        "qwen21_vae",
-        "qwen21_turbo"
+        "qwen21_vae"
       ],
       "nodes": [],
       "license": {
@@ -332,17 +328,16 @@
       }
     },
     {
-      "id": "qwen21_background_removal_turbo6",
-      "name": "Qwen 2.1 Background Removal · Turbo v0.3 · 6 steps",
-      "label": "Background Removal · Turbo v0.3 · 6 steps",
+      "id": "qwen21_background_removal_turbo8",
+      "name": "Qwen 2.1 Background Removal · Official Turbo INT8 · 8 steps",
+      "label": "Background Removal · Official Turbo INT8 · 8 steps",
       "family": "Qwen Image 2.1",
       "role": "edit",
-      "file": "[PS] - QwenImage21 Background Removal turbo6.json",
+      "file": "[PS] - QwenImage21 Background Removal turbo8.json",
       "requirements": [
-        "qwen21",
+        "qwen21_turbo",
         "qwen21_encoder",
-        "qwen21_vae",
-        "qwen21_turbo"
+        "qwen21_vae"
       ],
       "nodes": [],
       "license": {
@@ -439,7 +434,7 @@
       "alternatives": [
         "qwen21_bf16"
       ],
-      "description": "Shared by all Qwen 2.1 workflows. INT8 uses less memory; BF16 is also available.",
+      "description": "Base25 and base40 diffusion model. INT8 uses less memory; BF16 is also available.",
       "binding": {
         "type": "KCPP_PromptStudioModelLoader",
         "field": "unet_name",
@@ -475,15 +470,14 @@
     },
     {
       "id": "qwen21_turbo",
-      "name": "Qwen 2.1 Turbo v0.3 LoRA",
-      "category": "loras",
-      "default_asset": "qwen21_viggle_turbo6",
-      "description": "Required for Turbo v0.3 six-step workflows; applied once without merging into diffusion weights.",
+      "name": "Qwen Image 2.1 Official Turbo INT8",
+      "category": "diffusion_models",
+      "default_asset": "qwen21_official_turbo_int8",
+      "description": "Full Turbo checkpoint for the fixed official eight-step Euler schedule. No Turbo LoRA or base diffusion model required.",
       "binding": {
-        "type": "KCPP_QwenImage21TurboLora",
-        "field": "lora_name",
-        "index": 0,
-        "asset": "qwen21_turbo"
+        "type": "KCPP_PromptStudioModelLoader",
+        "field": "unet_name",
+        "index": 1
       }
     },
     {
@@ -580,8 +574,8 @@
       "url": "https://huggingface.co/Qwen/Qwen-Image-2.1/blob/main/LICENSE"
     },
     {
-      "name": "Viggle Turbo model card",
-      "url": "https://huggingface.co/Viggle/Qwen-Image-2.1-viggle-turbo"
+      "name": "Official Qwen Turbo model card",
+      "url": "https://huggingface.co/Qwen/Qwen-Image-2.1-Turbo"
     }
   ],
   "addons": [

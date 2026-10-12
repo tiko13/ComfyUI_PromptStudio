@@ -4,7 +4,7 @@ import { startFixture, videoEnabled } from "./fixture.mjs";
 
 const fixture = await startFixture();
 try {
-  const template = JSON.parse(await readFile(new URL("../../llamacpp_server.example.json", import.meta.url), "utf8"));
+  const template = JSON.parse(await readFile(new URL("../../config/defaults/llamacpp_server.psc", import.meta.url), "utf8"));
   template.model = "/models/original.gguf";
   template.model_gguf = "/models/ignored-alias.gguf";
   template.custom = { keep: "unknown setting" };

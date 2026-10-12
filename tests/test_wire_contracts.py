@@ -3,7 +3,7 @@ from pathlib import Path
 import unittest
 from typing import get_args
 
-import wire_contracts as contracts
+import backend.wire_contracts as contracts
 
 
 class WireContractsTests(unittest.TestCase):

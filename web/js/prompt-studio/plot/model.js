@@ -113,8 +113,10 @@ export function normalizePlotAxis(axis, name, profile) {
     name,
     type,
     label: String(axis?.label || plotAxisType(type).label),
-    targetKey: target?.key || "",
-    targetNodeId: target?.nodeId || "",
+    // Chat drafts can render before the workflow catalog finishes loading.
+    // Keep saved targets until a profile is available to validate them.
+    targetKey: target?.key || (!profile ? String(axis?.targetKey || "") : ""),
+    targetNodeId: target?.nodeId || (!profile ? String(axis?.targetNodeId || "") : ""),
     targetName: String(axis?.targetName || ""),
     values: Array.isArray(axis?.values) ? axis.values.map(normalizePlotValue).filter(Boolean) : [],
   };
@@ -302,7 +304,7 @@ export function snapshotForPlotCell(plot, cell) {
       loraStacks.set(axis.targetNodeId, stack);
       node.inputs.lora_stack_json = JSON.stringify(stack);
     } else {
-      if (!samplerSupportsField(node, axis.type)) throw new Error("Sampling plot target is incompatible; Qwen Turbo v0.3 only supports seed overrides.");
+      if (!samplerSupportsField(node, axis.type)) throw new Error("Sampling plot target is incompatible; Qwen Turbo only supports seed overrides.");
       const field = axis.type === "sampler" ? "sampler_name" : axis.type;
       node.inputs[field] = ["seed", "steps"].includes(axis.type)
         ? Math.trunc(Number(selected.value))

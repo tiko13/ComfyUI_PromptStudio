@@ -10,7 +10,9 @@ export function normalizeReferenceState(value) {
       ? Object.fromEntries(Object.entries(inputs).map(([id, image]) => [id, normalizeImageReference(image)])) : {},
     qwenReferences: normalizeQwenReferences(value?.qwenReferences),
     qwenInstruction: String(value?.qwenInstruction || "").slice(0, 16000),
-    editPromptModel: value?.editPromptModel === "qwen_image_2_1" ? "qwen_image_2_1" : "",
+    editPromptModel: ["qwen_image_2_1", "workflow"].includes(value?.editPromptModel) ? value.editPromptModel : "",
+    ...(typeof value?.referenceContractKey === "string" ? {referenceContractKey: value.referenceContractKey} : {}),
+    ...(Number.isInteger(value?.qwenPosePromptVersion) && value.qwenPosePromptVersion > 0 ? {qwenPosePromptVersion: value.qwenPosePromptVersion} : {}),
   };
 }
 
@@ -27,7 +29,7 @@ export function referenceInputDescriptors(snapshot) {
     const node = snapshot.output[id];
     const title = String(node._meta?.title || "").trim();
     return { id, label: title && !/^Prompt Studio Reference Image(?: \(optional\))?$/.test(title)
-      ? title : String(node.inputs?.source_name || "").trim() || `Reference ${id}` };
+      ? title : String(node.inputs?.source_name || "").trim() || `Reference ${id}`, ...(node.inputs?.required ? {required: true} : {}) };
   });
 }
 
@@ -43,8 +45,9 @@ export function workflowReferenceValues(owner, profile) {
 }
 
 export function applyWorkflowReferences(snapshot, values = {}) {
-  for (const { id } of referenceInputDescriptors(snapshot)) {
+  for (const { id, label, required } of referenceInputDescriptors(snapshot)) {
     const image = normalizeImageReference(values[id]);
+    if (required && !image) throw new Error(`${label} is required.`);
     snapshot.output[id].inputs.image_ref = image ? JSON.stringify(image) : "";
   }
 }

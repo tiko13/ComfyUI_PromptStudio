@@ -1,0 +1,10 @@
+---
+{"id":"structure-guide","topic":"structure-guide","studio":"shared","summary":"Structure guide (ControlNet), guide preview, optional Setup downloads; KCPP_QwenStructureGuide node inputs and wiring."}
+---
+In Image Studio, open References and expand a card. Use for chooses Reference, Structure guide (ControlNet), or both when the workflow supports them. Connect PS_StructureInput to declare guide support; legacy Qwen 2.1 graphs remain supported. One guide can accompany ordinary references. Workflow support: {structure_guide}; types: {guide_types}.
+Choose guide type and strength. More options selects photo extraction or a prepared map, and Fit (whole image) or Crop (fill canvas). Show guide previews generation's extraction/framing. Edit can reuse its source. Saved guides survive workflow switches; the tile hides without reference support and returns on switching back. History retains submitted settings and graph.
+Pose supports Extract & edit pose. Add pose starts without a photo. Apply pose saves editable joints and a prepared guide; see pose-editor.
+More options > Apply guide > Whole guide skips LLM matching for one structure-only reference, including prepared maps. Extra instructions, selections, masks or Always use deeper analysis override it. Auto retains subject analysis.
+An active guide can specify an edit with empty composer text; zero strength is inactive. Instructions can name the person to change. Structure-only images inform analysis without appearance conditioning. Targeting… crops before extraction and places the guide in a selected source region. See reference-targeting. This does not apply an edit mask.
+Settings > Run setup offers ControlNet and separate optional pose, depth and sketch extractors. Edges need no extra extractor. Setup verifies weights and uses ComfyUI Manager for missing preprocessor nodes; restart when requested. Turbo workflows use the v0.3 six-step adapter.
+KCPP_QwenStructureGuide accepts IMAGE, guide_type, input_mode, fit, width and height; returns IMAGE. Feed its map to ZImageFunControlnet with Qwen union MODEL_PATCH and VAE, then MODEL to the sampler. Video uses separate workflows.

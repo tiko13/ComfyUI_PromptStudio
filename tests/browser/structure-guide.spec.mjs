@@ -73,10 +73,28 @@ try {
  assert.match(await dialog.textContent(),/Remove a reference before generating/);
  assert.equal(await page.evaluate(()=>guideTest.chat.qwenEditReferences.length),10,"Switching to Edit must not discard the tenth reference");
  await page.keyboard.press("Escape");
- await page.evaluate(()=>{guideTest.chat.qwenEditReferences=[{id:"one",image:{filename:"guide.png",type:"input"},use:"structure",guide:{type:"depth"}}];});
- await page.evaluate(()=>{guideTest.profile={id:"other",kind:"create",snapshot:{output:{}}};guideTest.controller.render();});
- await page.locator("#test-reference-tile").getByRole("button",{name:"References",exact:true}).click();
- assert.ok(await dialog.getByLabel("Use for reference 1",{exact:true}).isDisabled());
- assert.equal(await page.evaluate(()=>guideTest.chat.qwenEditReferences[0].guide.type),"depth");
- console.log("Structure guides: compact multi-reference accordion, preview queue, strength persistence, one-guide limit, inactive workflows, narrow layout and Escape passed.");
+ const tile=page.locator("#test-reference-tile");
+ for (const use of ["reference","structure","both"]) {
+  await page.evaluate(use=>{
+   const s=guideTest;s.editProfile=s.profile;
+   s.chat.qwenEditReferences=[{id:"one",image:{filename:"guide.png",type:"input"},use,role:"subject",instruction:"Keep the subject",guide:{type:"depth",strength:.6}},
+    {id:"two",image:{filename:"clothing.png",type:"input"},role:"clothing",instruction:"Use this jacket"}];
+   s.controller.render();
+  },use);
+  const saved=await page.evaluate(()=>guideTest.chat.qwenEditReferences);
+  await tile.getByRole("button",{name:"References",exact:true}).click();
+  await page.evaluate(()=>{guideTest.profile={id:"other",kind:"create",snapshot:{output:{}}};guideTest.controller.render();});
+  assert.equal(await tile.isVisible(),false,`${use}: unsupported Create hides saved references`);
+  await dialog.waitFor({state:"detached"});
+  assert.deepEqual(await page.evaluate(()=>guideTest.chat.qwenEditReferences),saved);
+  await page.evaluate(()=>{guideTest.profile=guideTest.editProfile;guideTest.controller.render();});
+  assert.equal(await tile.isVisible(),true);
+  assert.match(await tile.locator("small").textContent(),/References \(2\)/);
+  await tile.getByRole("button",{name:"References",exact:true}).click();
+  assert.equal(await dialog.getByLabel("Use for reference 1",{exact:true}).inputValue(),use);
+  assert.deepEqual(await page.evaluate(()=>guideTest.chat.qwenEditReferences),saved,"Switching back preserves images, roles, instructions and guide settings");
+  await page.keyboard.press("Escape");
+ }
+ assert.deepEqual(fixture.errors,[]);
+ console.log("Structure guides: preview queue, strength persistence, limits, unsupported Create hides references, Edit restores saved inputs, narrow layout and Escape passed.");
 }finally{await fixture.close();}

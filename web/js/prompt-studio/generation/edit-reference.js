@@ -16,6 +16,9 @@ export function supportsEditReference(profile) {
   // Legacy grounded Krea edits have one auxiliary image. Universal inputs do
   // not acquire prompt semantics merely by existing in an editing workflow.
   const ids = editReferenceNodeIds(profile?.snapshot);
+  const reference = profile?.snapshot?.output?.[ids[0]];
+  if (ids.length === 1 && reference?.inputs?.reference_mode === "grounded_edit") return profile?.kind === "edit";
+  if (reference?.inputs?.reference_mode === "workflow") return false;
   return profile?.kind === "edit" && ids.length === 1
     && Object.values(profile.snapshot?.output || {}).some(node => /^Krea2Edit/.test(node.class_type)
       && ["source_image_b", "image_b"].some(key => Array.isArray(node.inputs?.[key]) && String(node.inputs[key][0]) === ids[0]));
@@ -26,6 +29,7 @@ export function applyEditReference(snapshot, reference) {
   const ids = editReferenceNodeIds(snapshot);
   if (image && !ids.length) throw new Error("This edit workflow no longer supports a reference image. Remove the reference or select a compatible workflow.");
   for (const id of ids) {
+    if (!image && snapshot.output[id].inputs?.required) throw new Error(`${snapshot.output[id].inputs.source_name || "Reference image"} is required.`);
     snapshot.output[id].inputs ||= {};
     snapshot.output[id].inputs.image_ref = image ? JSON.stringify(image) : "";
   }

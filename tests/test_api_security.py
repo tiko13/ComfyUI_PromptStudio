@@ -6,7 +6,7 @@ import unittest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
-spec = importlib.util.spec_from_file_location("studio_request_security_test", Path(__file__).resolve().parents[1] / "request_security.py")
+spec = importlib.util.spec_from_file_location("studio_request_security_test", Path(__file__).resolve().parents[1] / "backend" / "request_security.py")
 security = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(security)
 

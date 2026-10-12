@@ -1,5 +1,7 @@
 # Prompt Studio for ComfyUI
 
+Repository folders and local data locations: [repository layout](docs/repository-layout.md).
+
 **Create by describing. Refine by talking.**
 
 Prompt Studio turns your ComfyUI image workflows into a conversation. Describe a scene, ask for changes, bring in reference images, and upscale the result—all in one workspace, powered by your own models.
@@ -239,7 +241,7 @@ Generated images also offer a small **XYZ** button immediately to the right of t
 
 Starting a plot immediately creates the complete labelled grid, then fills each cell as its ComfyUI result arrives. Z values are navigated as separate grid slices, the cell-size control supports both overview and detail inspection, and completed images open in the normal full-size viewer. The run can cancel remaining cells or retry one failed cell or all failures without rebuilding the plot inputs.
 
-Plot state lives under the ignored `prompt_studio_plots/` runtime directory. Its manifest contains one base executable workflow snapshot, axis overrides, prompt IDs, statuses, and references to the original ComfyUI output images; it does not copy each generated image. This lets a refreshed browser resume queued results. When all cells reach a terminal state, Prompt Studio writes a labelled PNG composite to `output/PromptStudio/Plots/` (one PNG per Z slice plus an overview for multi-slice plots) and a portable JSON sidecar. **Rebuild composite** regenerates those artifacts after retries.
+Plot state lives under the ignored `user-data/prompt_studio_plots/` runtime directory. Its manifest contains one base executable workflow snapshot, axis overrides, prompt IDs, statuses, and references to the original ComfyUI output images; it does not copy each generated image. This lets a refreshed browser resume queued results. When all cells reach a terminal state, Prompt Studio writes a labelled PNG composite to `output/PromptStudio/Plots/` (one PNG per Z slice plus an overview for multi-slice plots) and a portable JSON sidecar. **Rebuild composite** regenerates those artifacts after retries.
 
 <details>
 <summary>See how the comparison grid is configured</summary>
@@ -254,7 +256,7 @@ The **Sessions** sidebar creates, switches, and deletes independent prompt conve
 
 ![Saved workflow, output dimensions, models and node inputs for a generated image](docs/images/screenshots/15-saved-generation-inputs.png)
 
-Chats are stored under `prompt_studio_chats/`, with an `index.json` for ordering and compressed, content-addressed JSON records. The directory is excluded from Git and is shared by browsers connected to the same ComfyUI installation. Saves use revision checks so an older browser cannot silently overwrite a newer save. A conflicting client merges with the latest store before retrying. At backend startup, both complete Image and Video libraries are automatically migrated and verified. Current sessions are preserved; recovery keeps three recent saves, daily checkpoints for seven days, and weekly checkpoints for four weeks. A 256 MiB compressed recovery budget retires oldest checkpoints first, while always preserving current data and the newest verified fallback. Cleanup runs separately from saving, at most every 30 minutes of access. Legacy migration backups are compressed and expire after seven days. Settings → General → History storage shows usage, dates, and individual-session recovery. Recovery does not recreate separately deleted media. See [storage recovery](docs/history-storage.md) for maintenance and CLI commands.
+Chats are stored under `user-data/prompt_studio_chats/`, with an `index.json` for ordering and compressed, content-addressed JSON records. The directory is excluded from Git and is shared by browsers connected to the same ComfyUI installation. Saves use revision checks so an older browser cannot silently overwrite a newer save. A conflicting client merges with the latest store before retrying. At backend startup, both complete Image and Video libraries are automatically migrated and verified. Current sessions are preserved; recovery keeps three recent saves, daily checkpoints for seven days, and weekly checkpoints for four weeks. A 256 MiB compressed recovery budget retires oldest checkpoints first, while always preserving current data and the newest verified fallback. Cleanup runs separately from saving, at most every 30 minutes of access. Legacy migration backups are compressed and expire after seven days. Settings → General → History storage shows usage, dates, and individual-session recovery. Recovery does not recreate separately deleted media. See [storage recovery](docs/history-storage.md) for maintenance and CLI commands.
 
 The standalone page is available at the short URL:
 
@@ -505,7 +507,7 @@ With Llama.cpp selected, Prompt Studio uses llama-server's streaming OpenAI-comp
 
 Llama.cpp treats model-native `reasoning_effort` and its server-side token cutoff as separate controls. With the selected config's **Reasoning token cap** set to `0`, Prompt Studio passes the selected qualitative effort to the model's Jinja template and allows thinking to use the available server context window. This matters for Qwen 3.8: Low, Medium, and XHigh change the template's reasoning instructions rather than imposing three arbitrary token budgets. A positive cap opts into llama-server's `thinking_budget_tokens` cutoff; Prompt Studio then requests the cap plus the final-answer allowance, bounded by the available context. Reaching that cap forcibly ends thinking, which can reduce answer quality, so the shipped config example leaves it at `0`. Prompt Studio does not retain or resend private reasoning from earlier turns.
 
-Prompt Studio can also start, stop, and restart Llama.cpp itself. In **Settings → Backend settings**, use **Browse…** to select `llama.exe` or `llama-server.exe`. Launcher profiles always live in `config/LlamaCPP`; Prompt Studio creates that folder automatically. Pick any discovered profile and press **Restart** in System status to apply its model and server settings immediately. Enable **Start with ComfyUI** to launch that validated executable and profile automatically during future ComfyUI startups. **Edit…** opens the selected profile in the native in-app config window; **New…** opens a new profile in the same window. Save config validates and writes the named JSON profile in the fixed folder, refreshes the shared Image/Video settings, and queues managed-server changes until LLM work is idle. Cancel or Escape discards unsaved edits. The editor detects conflicting saves from another window. [`llamacpp_server.example.json`](llamacpp_server.example.json) includes every setting shown by the builder: model GGUF, MMProj GGUF, context size, GPU layers, parallel slots, CUDA devices (`--device`), CUDA-visible devices, split mode, main GPU, tensor split, auto-fit, flash attention, K/V cache types, MTP speculative decoding, host, port, optional extra arguments, and the complete thinking/non-thinking LLM sampler configuration. MTP controls its draft-token range and probability cutoff plus the draft context's GPU layers, device, and K/V cache types; it requires an MTP-capable GGUF and a recent llama.cpp build. `llama.exe` is started with the `serve` subcommand; `llama-server.exe` is started directly. The executable picker, profile discovery, config builder, autostart preference, and process actions are accepted only from a loopback browser connection. Prompt Studio records the exact managed process identity and recovers control after a ComfyUI restart; PID, executable path, and OS creation marker must all still match before it will stop that process. A detached watchdog stops that exact managed process 120 seconds after ComfyUI exits, including an abrupt termination. Restarting ComfyUI during the grace period renews ownership and cancels the pending shutdown. An already-running server at the configured endpoint remains externally managed and is never replaced by autostart, while processing monitoring and stream cancellation still work.
+Prompt Studio can also start, stop, and restart Llama.cpp itself. In **Settings → Backend settings**, use **Browse…** to select `llama.exe` or `llama-server.exe`. Launcher profiles always live in `config/LlamaCPP`; Prompt Studio creates that folder automatically. Pick any discovered profile and press **Restart** in System status to apply its model and server settings immediately. Enable **Start with ComfyUI** to launch that validated executable and profile automatically during future ComfyUI startups. **Edit…** opens the selected profile in the native in-app config window; **New…** opens a new profile in the same window. Save config validates and writes the named JSON profile in the fixed folder, refreshes the shared Image/Video settings, and queues managed-server changes until LLM work is idle. Cancel or Escape discards unsaved edits. The editor detects conflicting saves from another window. [bundled server example](config/defaults/llamacpp_server.psc) includes every setting shown by the builder: model GGUF, MMProj GGUF, context size, GPU layers, parallel slots, CUDA devices (`--device`), CUDA-visible devices, split mode, main GPU, tensor split, auto-fit, flash attention, K/V cache types, MTP speculative decoding, host, port, optional extra arguments, and the complete thinking/non-thinking LLM sampler configuration. MTP controls its draft-token range and probability cutoff plus the draft context's GPU layers, device, and K/V cache types; it requires an MTP-capable GGUF and a recent llama.cpp build. `llama.exe` is started with the `serve` subcommand; `llama-server.exe` is started directly. The executable picker, profile discovery, config builder, autostart preference, and process actions are accepted only from a loopback browser connection. Prompt Studio records the exact managed process identity and recovers control after a ComfyUI restart; PID, executable path, and OS creation marker must all still match before it will stop that process. A detached watchdog stops that exact managed process 120 seconds after ComfyUI exits, including an abrupt termination. Restarting ComfyUI during the grace period renews ownership and cancels the pending shutdown. An already-running server at the configured endpoint remains externally managed and is never replaced by autostart, while processing monitoring and stream cancellation still work.
 
 Shared-GPU Llama.cpp handoff requires llama-server router mode (`--models-dir`) because only router mode exposes `/models/unload`; normal chat requests autoload the selected model again. For a single-model llama-server process, use separate GPUs and enable **Keep models loaded**, or let the external launcher own the GPU transition.
 
@@ -607,7 +609,7 @@ When **Edit** is selected, a second switch controls the workflow prompt payload.
 
 The interface can automatically advance the editing source to the newest result, while still allowing any earlier image to be selected at any time. **Reroll** repeats the previous execution prompt and source image while both the Create/Edit action and selected workflow are unchanged. Switching either control before rerolling routes through the newly selected workflow instead. Workflow seeds change only when seed randomization is enabled.
 
-The ignored runtime file `prompt_studio_workflows.json` is now only a last-known-good cache. If a changed `[PS]` workflow becomes invalid or cannot be converted, Prompt Studio marks it as **cached**, reports why the live update was rejected, and continues using the previous working snapshot. Correct and save the ComfyUI workflow, then refresh or generate again to replace the cache. Cache writes keep the existing revision checks and `.bak` recovery copy.
+The ignored runtime file `user-data/prompt_studio_workflows.json` is now only a last-known-good cache. If a changed `[PS]` workflow becomes invalid or cannot be converted, Prompt Studio marks it as **cached**, reports why the live update was rejected, and continues using the previous working snapshot. Correct and save the ComfyUI workflow, then refresh or generate again to replace the cache. Cache writes keep the existing revision checks and `.bak` recovery copy.
 
 <details>
 <summary>See the Upscale node on the canvas</summary>
@@ -695,7 +697,7 @@ primitive text → KoboldCpp Prompt Amplify → positive text encoder → sample
 
 Its prompt controls are:
 
-- `model_profile`: selects the target prompt grammar, examples, token default, and optional exact prefix or suffix from `model_profiles.json`.
+- `model_profile`: selects the target prompt grammar, examples, token default, and optional exact prefix or suffix from bundled and additional model profiles.
 - `style_preset`: selects reusable aesthetic guidance from the built-in and additional style presets.
 - `style_modifier`: supplements the selected style preset with freeform guidance. Select **None** to use the modifier by itself.
 - `framing_preset`: selects composition, viewpoint, shot type, angle, and placement guidance from the built-in and additional framing presets.
@@ -786,9 +788,29 @@ Use `*` only in a trusted environment when arbitrary remote hosts are intentiona
 
 ## Profiles and presets
 
+All editable prompt configuration lives in the Git-ignored **`config/user/`** folder.
+Every file uses UTF-8 JSON: `{"version": 1, "items": [...]}`. This includes model
+profiles, styles, framing, instruction presets, known references, protected words,
+and forbidden words. See [configuration layout](config/README.md) for filenames.
+Bundled defaults and starter examples are application-owned `.psc` resources in
+`config/defaults/`; edit the user files or use Settings instead.
+
+Existing root-level user files migrate automatically on first use. Their original
+bytes are backed up in ignored `config/migration-backups/` before removal. Existing
+new files take precedence; older copies are archived without overwriting them.
+
 ### Model profiles
 
-Edit `model_profiles.json` to add prompt formats for different image models:
+Open **Settings → Model profiles** to add, duplicate, or edit image prompt profiles.
+Save writes to `config/user/model_profiles.json`; the tracked
+`config/defaults/model_profiles.psc` remains the bundled catalog. Editing a bundled profile creates
+a local override. **Restore bundled default** removes that override; **Delete profile**
+removes a local addition. Duplicate a bundled profile to give it another name.
+
+You can also edit `config/user/model_profiles.json` directly, using the versioned
+`items` array. Names are unique ignoring case; a name matching a bundled profile
+overrides it while preserving its original name and position. For example, add this
+object to that array:
 
 ```json
 {
@@ -808,11 +830,19 @@ Edit `model_profiles.json` to add prompt formats for different image models:
 
 `default_max_response_tokens` is the final-answer allowance used when the node or Prompt Studio sends `0`; reasoning allowance is added automatically. `example_prompts` teach format only; their subjects should not be copied into the result. Older profiles containing one `example_prompt` string remain supported. `notes` may be an empty string, a string, or a list of strings. Exact `final_prompt_prefix` and `final_prompt_suffix` values are applied after rewriting.
 
+Saved changes are read on subsequent requests without restarting ComfyUI. The Settings
+editor refreshes Generation controls immediately; use **Reload profiles** after external
+edits. Refresh the ComfyUI canvas to refresh node dropdowns. Concurrent edits are rejected
+until reloaded. If you previously edited bundled data, copy your custom entries into
+the user file before restoring the tracked resource. These image prompt profiles do
+not configure the shared assistant LLM or Video Studio's structured Director prompts.
+
 ### Protected words
 
 Manage protected literals under **Settings → Prompt Mutation Configuration → Protected words** or
-edit `protected_words.txt` directly. Put one word or phrase on each line. Matching ignores case and
-uses token boundaries for word-like entries; comment lines start with `# `. Prompt Studio preserves
+edit `config/user/protected_words.json` directly. Put strings in its `items` array,
+for example `{"version": 1, "items": ["C++", "New York"]}`. Matching ignores case and
+uses token boundaries for word-like entries. Prompt Studio preserves
 matching source literals exactly during rewrites unless the requested edit explicitly removes their
 content.
 
@@ -827,15 +857,16 @@ content.
 
 ### Style presets
 
-Built-in styles live in `presets/default/style_templates.json`. That file is maintained by the
+Built-in styles live in `config/defaults/styles.psc`. That file is maintained by the
 repository and should not be edited for personal presets.
 
 Manage personal or private styles under **Settings → Prompt Mutation Configuration → Additional
-style presets**. The same entries remain directly editable in `style_templates.additional.json`:
+style presets**. The same entries remain directly editable in `config/user/styles.json`:
 
 ```json
 {
-  "style_templates": [
+  "version": 1,
+  "items": [
     {
       "name": "My custom style",
       "instruction": "Describe the reusable aesthetic guidance for this custom style.",
@@ -856,13 +887,14 @@ style presets**. The same entries remain directly editable in `style_templates.a
 
 ### Framing presets
 
-Built-in framings live in `presets/default/framing_templates.json`. Manage personal framings under
+Built-in framings live in `config/defaults/framing.psc`. Manage personal framings under
 **Settings → Prompt Mutation Configuration → Additional framing presets** or edit
-`framing_templates.additional.json` directly:
+`config/user/framing.json` directly:
 
 ```json
 {
-  "framing_templates": [
+  "version": 1,
+  "items": [
     {
       "name": "My custom framing",
       "instruction": "Describe the reusable composition and viewpoint guidance.",
@@ -872,17 +904,15 @@ Built-in framings live in `presets/default/framing_templates.json`. Manage perso
 }
 ```
 
-The two `.additional.json` files use the same top-level list format as their built-in
-counterparts. Entries with `"enabled": false` are ignored, which keeps the included example out
+All user files use the versioned `items` format. Entries with `"enabled": false`
+are ignored, which keeps the included example out
 of Prompt Studio. Additional presets are appended to the built-ins, and names must remain unique
 without regard to letter case.
 
-The `.additional.json` files are intentionally ignored by Git, so private content and local edits
-cannot make a normal pull fail. Their `.example.json` counterparts are tracked and distributed by
-the repository. Prompt Studio automatically creates each missing local file from its tracked
-example when ComfyUI starts or first loads the preset list. Creation is best-effort, so a read-only
-installation still loads the built-in presets. Do not manually add the local files to GitHub: once
-tracked, `.gitignore` can no longer provide this protection. Manager changes take effect
+The entire `config/user/` folder is ignored by Git. Bundled `.psc` starter resources
+seed missing files on first use, after checking for legacy files to migrate. Do not
+manually add user files to Git: once tracked, `.gitignore` cannot protect them.
+Manager changes take effect
 immediately. While Settings is open, valid direct file changes refresh the manager and active
 controls automatically within a few seconds.
 
@@ -897,8 +927,8 @@ controls automatically within a few seconds.
 
 ### Additional instruction templates
 
-The tracked `presets/examples/additional_instruction_templates.example.json` file seeds the ignored
-local `additional_instruction_templates.json` file. Each enabled entry maps an exact,
+The bundled `config/defaults/instructions.user.psc` resource seeds the ignored
+`config/user/instructions.json` file. Each enabled entry maps an exact,
 case-insensitive `name` entered as the complete Additional instructions value to the reusable
 `instruction` sent to the LLM:
 
@@ -907,7 +937,8 @@ templates** or edited directly in the JSON file.
 
 ```json
 {
-  "additional_instruction_templates": [
+  "version": 1,
+  "items": [
     {
       "name": "My instruction phrase",
       "instruction": "Reusable highest-priority guidance for the LLM.",
@@ -934,8 +965,8 @@ open.
 
 ### Known references
 
-The tracked `presets/examples/known_references.example.json` file seeds the ignored local
-`known_references.json` file. Known references are case-insensitive reusable names for any concept,
+The bundled `config/defaults/references.user.psc` resource seeds the ignored
+`config/user/references.json` file. Known references are case-insensitive reusable names for any concept,
 including people, characters, items, clothing, poses, expressions, locations, backgrounds,
 lighting, composition, or visual treatments:
 
@@ -944,7 +975,8 @@ edited directly in the JSON file.
 
 ```json
 {
-  "known_references": [
+  "version": 1,
+  "items": [
     {
       "name": "Jane",
       "definition": "A blonde 25-year-old woman wearing a black shirt, white sneakers, and denim pants.",
@@ -1088,7 +1120,7 @@ setup wizard checks the bundled workflows' required node capabilities directly.
 Run these checks from the repository root after making changes:
 
 ```powershell
-python -c "from pathlib import Path; [compile(Path(p).read_text(encoding='utf-8'), p, 'exec') for p in ('nodes.py', 'routes.py')]"
+python -c "from pathlib import Path; [compile(Path(p).read_text(encoding='utf-8'), p, 'exec') for p in ('backend/nodes.py', 'backend/routes.py')]"
 node --check web/js/prompt_studio.js
 node --check web/js/prompt_studio_shell.js
 python -m unittest discover -s tests -v

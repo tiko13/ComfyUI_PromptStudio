@@ -11,7 +11,7 @@ import time
 import unittest
 from unittest import mock
 
-import transactional_store as store
+import backend.transactional_store as store
 
 
 class StorageRetentionTests(unittest.TestCase):
@@ -230,7 +230,7 @@ class StorageRetentionTests(unittest.TestCase):
         self.assertEqual(schedule.call_count, 2)
         self.assertEqual(schedule.call_args_list[0].args[1:3], ("chatFiles", "chat"))
         video = schedule.call_args_list[1].args
-        self.assertEqual(video[0], Path(routes.BASE_DIR).parent / "PromptStudio_Video" / "promptstudio_video_projects")
+        self.assertEqual(video[0], Path(routes.BASE_DIR).parent / "PromptStudio_Video" / "user-data" / "promptstudio_video_projects")
         self.assertEqual(video[1:3], ("projectFiles", "project"))
         self.assertIn(routes._optimize_history_on_startup, routes.PromptServer.instance.app.on_startup)
 

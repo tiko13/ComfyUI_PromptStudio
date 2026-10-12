@@ -1,0 +1,7 @@
+---
+{"id":"prompts","topic":"prompts","studio":"image","summary":"Main and Final editors, style, framing, embellishment and literal text controls."}
+---
+Open the right sidebar with bottom Settings (Controls on mobile); the header gear opens application settings. Main and Final editors are separate from the bottom chat box. Main is the user's model-neutral scene; Final is sent to the workflow. Both are editable. Style, Framing, modifiers and Embellishment shape rebuilt Final text, not Main content.
+Additional instructions steers the LLM; Unmodified part preserves literal text. Expand Unmodified part to reach Add trigger words above its editor: one selected LoRA/one trigger inserts directly; otherwise pick comma-separated words from LoRA groups. Click away/Escape closes. Removing a LoRA with × cleans its triggers and stray commas/whitespace from Unmodified part, keeping shared triggers. Missing metadata leaves text unchanged.
+Explanations do not apply changes. Review discussion suggestions before Apply; never claim a help answer edited a prompt. Browse Style/Framing with wheel, scrollbar or arrows; choose a preset. Escape closes without selecting.
+Discussion banners: App help for controls, Prompting advice for prompt questions, Discussing generated image for image discussions. Mixed help and discussions without a target image have separate labels. End closes discussion without changing the prompt.

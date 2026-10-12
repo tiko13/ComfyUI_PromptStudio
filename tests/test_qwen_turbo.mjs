@@ -3,16 +3,37 @@ import {test} from 'node:test';
 import {currentWorkflowId} from '../web/js/prompt-studio/generation/workflow-migrations.js';
 import {normalizeWorkflowProfile} from '../web/js/prompt-studio/generation/workflow-profile.js';
 import {plotAxisTargets} from '../web/js/prompt-studio/plot/model.js';
+import {createChatModel} from '../web/js/prompt-studio/chat/model.js';
 
 test('managed workflow selection migration preserves directories, selection keys and unrelated names', () => {
   for (const role of ['Create','Edit','RGBA','RGBA Edit','Background Removal']) {
     for (const prefix of ['', 'workflows/', 'nested\\']) {
       for (const suffix of ['', '\0' + '5']) {
-        assert.equal(currentWorkflowId(`${prefix}[PS] - QwenImage21 ${role} turbo4.json${suffix}`), `${prefix}[PS] - QwenImage21 ${role} turbo6.json${suffix}`);
+        assert.equal(currentWorkflowId(`${prefix}[PS] - QwenImage21 ${role} turbo4.json${suffix}`), `${prefix}[PS] - QwenImage21 ${role} turbo8.json${suffix}`);
+        assert.equal(currentWorkflowId(`${prefix}[PS] - QwenImage21 ${role} turbo6.json${suffix}`), `${prefix}[PS] - QwenImage21 ${role} turbo8.json${suffix}`);
       }
     }
   }
   for (const id of ['my turbo4.json', '[PS] - QwenImage21 Create base40.json', '[PS] - QwenImage21 Create turbo4.json.backup']) assert.equal(currentWorkflowId(id), id);
+});
+
+test('official Turbo exposes eight fixed steps while keeping seed plots', () => {
+  const profile = normalizeWorkflowProfile({snapshot: {output: {'10': {class_type: 'KCPP_QwenImage21OfficialTurboSampler', inputs: {seed: 42}}}}});
+  assert.deepEqual(profile.samplingNodes[0].controls, {seed:42, steps:8, cfg:1, sampler:'euler', scheduler:'Qwen official Turbo', denoise:1});
+  assert.equal(plotAxisTargets(profile, 'seed').length, 1);
+  for (const field of ['steps', 'cfg', 'sampler', 'scheduler', 'denoise']) assert.equal(plotAxisTargets(profile, field).length, 0);
+});
+
+test('migration retains user LoRAs but does not carry a base checkpoint into official Turbo', () => {
+  const model = createChatModel({});
+  const old = '[PS] - QwenImage21 Create turbo6.json';
+  const next = currentWorkflowId(old);
+  const overrides = model.normalizeSessionModelSelections({[old+'\0'+'1']:'QwenImage21/base.safetensors'});
+  assert.equal(overrides[next+'\0'+'1'], undefined);
+  assert.equal(overrides[old+'\0'+'1'], 'QwenImage21/base.safetensors');
+  const selection = [{name:'style.safetensors',strength:0.7}];
+  const loras = model.normalizeSessionLoraSelections({[old+'\0'+'5']:selection});
+  assert.equal(loras[next+'\0'+'5'][0].name, 'style.safetensors');
 });
 
 test('Turbo profile exposes its actual six steps and only allows sampling plots over seeds', () => {

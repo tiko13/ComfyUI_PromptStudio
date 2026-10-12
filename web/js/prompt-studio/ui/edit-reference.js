@@ -4,10 +4,14 @@ import { referenceInputDescriptors, workflowReferenceValues } from "../generatio
 import { qwenReferenceAdapter, normalizeQwenReferences, REFERENCE_ROLES } from "../generation/qwen-references.js";
 import { structureAdapter, isStructureReference } from "../generation/structure-guide.js";
 import { structureControls } from "./structure-controls.js";
+import { poseInpaintAdapter } from "../generation/workflow-capabilities.js";
 import { referenceTargeting } from "./reference-targeting.js";
 import { maskAdapter } from "../generation/reference-targeting.js";
 import { installDialogFocus } from "./dialog-focus.js";
 import { referenceImageEditor } from "./reference-image-editor.js";
+import { defaultPose, normalizePose } from "../generation/pose.js";
+import { openPoseEditor } from "./pose-editor.js";
+import { previewStructureGuide } from "../generation/structure-guide.js";
 
 export function createEditReferenceController({panel, tile: suppliedTile, activeChat, findChat, selectedProfile,
   upload, imageUrl, changed, refresh, report, fetchApi = (...args) => fetch(...args), sourceImage = () => null, analysisSettings = null, guideDimensions = () => ({}), clearChatDropState = () => {}}) {
@@ -27,7 +31,8 @@ export function createEditReferenceController({panel, tile: suppliedTile, active
   const pending = new Map();
   let pickerTarget = null, dialog = null, dialogContext = "", expanded = null, previewAbort = null;
   const managed = profile => Boolean(qwenReferenceAdapter(profile) || structureAdapter(profile));
-  const referenceLimit = profile => qwenReferenceAdapter(profile)?.limit ?? 9;
+  const referenceLimit = profile => qwenReferenceAdapter(profile)?.limit ?? (structureAdapter(profile) ? 1 : 0);
+  const roleLabels = profile => qwenReferenceAdapter(profile)?.roles || REFERENCE_ROLES;
   const limitMessage = profile => `This workflow accepts up to ${referenceLimit(profile)} references${profile?.kind === "edit" ? " in addition to the edited image" : ""}.`;
   const el = (tag, text, className) => { const item = doc.createElement(tag); if (text) item.textContent = text; if (className) item.className = className; return item; };
   const context = () => {const source=sourceImage();return JSON.stringify([activeChat()?.id, selectedProfile()?.id,source?.filename,source?.subfolder,source?.type]);};
@@ -47,7 +52,7 @@ export function createEditReferenceController({panel, tile: suppliedTile, active
   function render() {
     if (doc !== panel.ownerDocument) { dialog?.close(); doc = panel.ownerDocument; ensureStyle(); }
     const chat = activeChat(), profile = selectedProfile();
-    const descriptors = referenceInputDescriptors(profile?.snapshot), qwen = managed(profile) || normalizeQwenReferences(chat?.qwenEditReferences).some(isStructureReference);
+    const descriptors = referenceInputDescriptors(profile?.snapshot), qwen = managed(profile);
     const popup = Boolean(qwen || descriptors.length > 1);
     const references = [...(qwen ? normalizeQwenReferences(chat?.qwenEditReferences).map(entry => entry.image) : []), ...Object.values(values(chat, profile)).filter(Boolean)];
     const reference = references[0], busy = loading(chat?.id);
@@ -96,12 +101,14 @@ export function createEditReferenceController({panel, tile: suppliedTile, active
           const entry = entries.find(item => item.id === destination.slot);
           if (!entry) return; // Removed during the upload; never resurrect it.
           entry.image = uploaded[0];
+          if (entry.pose) entry.guide = {...entry.guide, input: "photo"};
+          delete entry.pose;
           if (expected) entry.targeting = entry.targeting?.target ? {...entry.targeting, reference: null} : null;
           else {entry.targeting = null; entry.editMask = null;}
           current.qwenEditReferences = entries;
         } else {
           if (entries.length + uploaded.length > referenceLimit(destination.profile)) throw new Error(limitMessage(destination.profile));
-          current.qwenEditReferences = [...entries, ...uploaded.map(image => ({id: crypto.randomUUID(), image, role: "custom", instruction: "", ...(!qwenReferenceAdapter(destination.profile) && !entries.some(isStructureReference) && image === uploaded[0] ? {use: "structure"} : {})}))];
+          current.qwenEditReferences = [...entries, ...uploaded.map(image => ({id: crypto.randomUUID(), image, role: Object.keys(roleLabels(destination.profile))[0] || "custom", instruction: "", ...((!qwenReferenceAdapter(destination.profile) || qwenReferenceAdapter(destination.profile)?.guideOnly) && !entries.some(isStructureReference) && image === uploaded[0] ? {use: "structure"} : {})}))];
         }
       } else storeInput(current, destination.profile, destination.slot, uploaded[0]);
       if (destination.qwen) expanded = current.qwenEditReferences.at(-1)?.id;
@@ -110,28 +117,64 @@ export function createEditReferenceController({panel, tile: suppliedTile, active
     finally { if (pending.get(key) === job) pending.delete(key); render(); refresh(); if (dialog?.open) renderDialog(); }
   }
   function selectFiles(destination) { pickerTarget = destination; picker.multiple = destination.qwen && !destination.slot; picker.click(); }
+  async function editPose(entry = null) {
+    const chat = activeChat(), profile = selectedProfile(), atOpen = context(), abort = previewAbort?.signal;
+    const expected = entry ? JSON.stringify(normalizeQwenReferences(chat.qwenEditReferences).find(e => e.id === entry.id)) : null;
+    const valid = () => dialog?.open && !abort?.aborted && context() === atOpen && findChat(chat.id) === chat
+      && (!entry || JSON.stringify(normalizeQwenReferences(chat.qwenEditReferences).find(e => e.id === entry.id)) === expected);
+    let data, original, source = entry?.pose?.sourceImage || null, region = entry?.pose?.sourceRegion || null;
+    if (entry?.pose) {data = entry.pose.data; original = entry.pose.original;}
+    else if (entry) {
+      const extracted = await previewStructureGuide(entry, fetchApi, {width: 768, height: 1024}, abort, true);
+      data = normalizePose(extracted.data); original = data; source = entry.image; region = extracted.sourceRegion;
+      if (!data || !data.people.length) throw Error("No editable pose was detected. Try a clearer photo or Add pose.");
+    } else {
+      const size = await guideDimensions(), resolution = size?.resolution || {};
+      const aspect = String(resolution.aspect_ratio || "3:4").match(/(\d+)\s*:\s*(\d+)/);
+      const width = Number(size?.width || resolution.resolution_width || aspect?.[1] || 3), height = Number(size?.height || resolution.resolution_height || aspect?.[2] || 4);
+      const ratio = Math.max(.125, Math.min(8, width / height));
+      data = defaultPose(Math.round(ratio >= 1 ? 1024 : 1024*ratio), Math.round(ratio >= 1 ? 1024/ratio : 1024)); original = data;
+    }
+    if (!valid()) return;
+    openPoseEditor({doc, data, original, sourceImage: source, sourceRegion: region, imageUrl, valid, signal: abort,
+      apply: async ({file, ...pose}) => {
+        if (!valid()) throw Error("The reference changed. Close the editor and reopen it.");
+        const image = normalizeImageReference(await upload(file));
+        if (!image) throw Error("Pose upload returned an invalid image. Try applying again.");
+        if (!valid()) throw Error("The reference changed while saving. Your newer reference was kept.");
+        const entries = normalizeQwenReferences(chat.qwenEditReferences);
+        if (!entry && (entries.length >= referenceLimit(profile) || entries.some(isStructureReference))) throw Error("Only one structure guide can be active. Change the existing guide to Reference first.");
+        const saved = entry ? entries.find(e => e.id === entry.id) : {id: crypto.randomUUID(), role: "pose", instruction: "", use: "structure", guide: {type: "pose", input: "prepared", strength: .8, fit: "fit", scope: "whole"}};
+        saved.pose = {version: 1, ...pose, image};
+        saved.image = saved.use === "both" && source ? source : image;
+        saved.guide = {...saved.guide, type: "pose", input: "prepared"};
+        if (saved.use === "structure" && saved.targeting) saved.targeting = {...saved.targeting, reference: null};
+        if (!entry) entries.push(saved);
+        chat.qwenEditReferences = entries; expanded = saved.id; notify(chat); renderDialog();
+      }});
+  }
   function renderDialog() {
     if (!dialog?.open) return;
     const chat = activeChat(), profile = selectedProfile(), body = dialog.querySelector(".ps-reference-body");
     const focusLabel = body.contains(doc.activeElement) ? doc.activeElement.getAttribute("aria-label") : null;
     const openOptions = new Set([...body.querySelectorAll("details[open][data-guide-options]")].map(node => node.dataset.guideOptions));
     body.replaceChildren();
-    function row(label, reference, destination, inputLabel) {
+    function row(label, reference, destination, inputLabel, poseEntry = null) {
       const item = el("div", "", "ps-reference-row"), preview = el("img"), fields = el("div", "", "ps-reference-fields");
       const imageTile = el("button", "", "ps-reference-image"), heading = el("div", "", "ps-reference-heading");
-      imageTile.type = "button"; imageTile.setAttribute("aria-label", inputLabel);
-      imageTile.title = "Click to choose, drop an image, or focus here and press Ctrl+V";
+      imageTile.type = "button"; imageTile.setAttribute("aria-label", poseEntry ? "Edit pose " + label.toLowerCase() : inputLabel);
+      imageTile.title = poseEntry ? "Edit the saved pose" : "Click to choose, drop an image, or focus here and press Ctrl+V";
       imageTile.disabled = loading(chat.id);
       preview.alt = label; preview.hidden = !reference; if (reference) preview.src = imageUrl(reference);
-      imageTile.append(preview, el("span", reference ? "Replace · Drop / Ctrl+V" : "Drop image\nor Ctrl+V", "ps-reference-image-hint"));
+      imageTile.append(preview, el("span", poseEntry ? "Edit pose" : reference ? "Replace · Drop / Ctrl+V" : "Drop image\nor Ctrl+V", "ps-reference-image-hint"));
       imageTile.dataset.filled = String(Boolean(reference));
-      imageTile.addEventListener("click", () => selectFiles(destination));
+      imageTile.addEventListener("click", () => {if (poseEntry) void editPose(poseEntry).catch(error => report(error.message, "error")); else selectFiles(destination);});
       for (const name of ["dragenter", "dragover", "dragleave", "drop"]) imageTile.addEventListener(name, event => {
         event.preventDefault(); event.stopPropagation(); imageTile.dataset.dragActive = String(name === "dragenter" || name === "dragover");
         if (event.dataTransfer) event.dataTransfer.dropEffect = "copy";
-        if (name === "drop") attach(event.dataTransfer?.files, destination);
+        if (name === "drop" && !poseEntry) attach(event.dataTransfer?.files, destination);
       });
-      item.addEventListener("paste", event => {if (event.clipboardData?.files.length) {event.preventDefault(); event.stopPropagation(); attach(event.clipboardData.files, destination);}});
+      item.addEventListener("paste", event => {if (event.clipboardData?.files.length) {event.preventDefault(); event.stopPropagation(); if(!poseEntry)attach(event.clipboardData.files, destination);}});
       heading.append(el("strong", label)); fields.append(heading); item.append(imageTile, fields); body.append(item);
       if (reference) {
         const editor = referenceImageEditor({doc, image: reference, imageUrl, label,
@@ -143,18 +186,18 @@ export function createEditReferenceController({panel, tile: suppliedTile, active
       }
       return {item, fields, heading};
     }
-    if (managed(profile) || normalizeQwenReferences(chat.qwenEditReferences).some(isStructureReference)) {
+    if (managed(profile)) {
       const entries = normalizeQwenReferences(chat.qwenEditReferences);
       body.append(el("h3", "References · " + entries.length + "/" + referenceLimit(profile)));
       if (managed(profile) && entries.length > referenceLimit(profile)) body.append(el("small", limitMessage(profile) + " Remove a reference before generating."));
       entries.forEach((entry, index) => {
-        const {item, fields, heading, editor} = row("Reference " + (index + 1), entry.image, target(entry.id, true), "Replace reference " + (index + 1));
+        const {item, fields, heading, editor} = row("Reference " + (index + 1), entry.image, target(entry.id, true), "Replace reference " + (index + 1), entry.pose ? entry : null);
         item.classList.add("ps-reference-compact");
         const detail = el("div", "", "ps-reference-detail"); detail.hidden = expanded !== entry.id;
         const toggle = el("button", "Reference " + (index + 1), "ps-reference-toggle"); toggle.type = "button";
         toggle.setAttribute("aria-expanded", String(!detail.hidden)); toggle.setAttribute("aria-label", "Expand reference " + (index + 1));
         toggle.addEventListener("click", () => {expanded = expanded === entry.id ? null : entry.id; renderDialog();});
-        const summary = el("small", isStructureReference(entry) ? "Structure guide (ControlNet)" + (entry.use === "both" ? " + " + REFERENCE_ROLES[entry.role] : "") : REFERENCE_ROLES[entry.role] + (entry.instruction ? " · " + entry.instruction : ""));
+        const summary = el("small", isStructureReference(entry) ? "Structure guide (ControlNet)" + (entry.use === "both" ? " + " + (roleLabels(profile)[entry.role] || entry.role) : "") : (roleLabels(profile)[entry.role] || entry.role) + (entry.instruction ? " · " + entry.instruction : ""));
         summary.className = "ps-reference-summary";
         heading.replaceChildren(toggle);
         fields.append(summary); item.append(detail);
@@ -162,23 +205,29 @@ export function createEditReferenceController({panel, tile: suppliedTile, active
           const saved = chat.qwenEditReferences?.find(e => e.id === entry.id);
           if (saved) {Object.assign(saved, patch); Object.assign(entry, patch); notify(chat); if (redraw) renderDialog();}
         };
-        detail.append(structureControls({doc, entry, index, profile, entries, save, fetchApi, imageUrl, report,
+        const sourceAtOpen = sourceImage();
+        detail.append(structureControls({doc, entry, index, profile, entries, save, fetchApi, imageUrl, report, editPose: () => editPose(entry),
+          sourceImage: sourceAtOpen, validContext: () => JSON.stringify(sourceAtOpen) === JSON.stringify(sourceImage()),
           dimensions: guideDimensions, signal: previewAbort?.signal}));
         if (entry.use !== "structure") {
           const role = el("select"); role.setAttribute("aria-label", "Role for reference " + (index + 1));
-          for (const [value, label] of Object.entries(REFERENCE_ROLES)) {const option = el("option", label); option.value = value; role.append(option);}
+          for (const [value, label] of Object.entries(roleLabels(profile))) {const option = el("option", label); option.value = value; role.append(option);}
           role.value = entry.role;
           role.addEventListener("change", () => save({role: role.value}, true));
           detail.append(role);
-          if (!qwenReferenceAdapter(profile)) {role.disabled = true; detail.append(el("small", "Reference instructions are inactive here. Select a compatible Qwen 2.1 Create or Edit workflow to use them."));}
+          if (!qwenReferenceAdapter(profile)) {role.disabled = true; detail.append(el("small", "Reference instructions are inactive here. Select a workflow with Reference Prompt Settings to use them."));}
         }
         const instruction = el("textarea"); instruction.rows = 1; instruction.maxLength = 4000;
         instruction.setAttribute("aria-label", "Instruction for reference " + (index + 1)); instruction.value = entry.instruction;
         instruction.placeholder = entry.use === "structure" ? "Optional: apply this pose to the person on the left" : entry.role === "custom" ? "Describe what to use from this reference" : "Optional: take the left person's jacket for the dark-haired person in the source";
         instruction.addEventListener("input", () => save({instruction: instruction.value}));
-        const sourceAtOpen = sourceImage();
-        detail.append(editor, instruction, referenceTargeting({doc, entry, index, sourceImage: sourceAtOpen, imageUrl, save, fetchApi,
-          analysisSettings, maskSupported: Boolean(maskAdapter(profile)), validContext: () => JSON.stringify(sourceAtOpen) === JSON.stringify(sourceImage()),
+        if (!entry.pose) detail.append(editor);
+        else if (entry.pose.sourceImage) {
+          const replace = el("button", "Replace reference photo"); replace.type = "button";
+          replace.addEventListener("click", () => selectFiles(target(entry.id, true))); detail.append(replace);
+        }
+        detail.append(instruction, referenceTargeting({doc, entry, index, sourceImage: sourceAtOpen, imageUrl, save, fetchApi,
+          analysisSettings, maskSupported: Boolean(maskAdapter(profile)) && !(entry.guide?.type === "pose" && isStructureReference(entry) && poseInpaintAdapter(profile)), validContext: () => JSON.stringify(sourceAtOpen) === JSON.stringify(sourceImage()),
           signal: previewAbort?.signal,
           structure: isStructureReference(entry), edit: profile?.kind === "edit"}));
         const clear = el("button", "×", "ps-reference-remove"); clear.type = "button"; clear.setAttribute("aria-label", "Remove reference " + (index + 1));
@@ -187,7 +236,13 @@ export function createEditReferenceController({panel, tile: suppliedTile, active
       if (managed(profile)) {
         const add = el("button", loading(chat.id) ? "Uploading…" : "+ Add references · Drop / Ctrl+V", "ps-reference-add"); add.type = "button"; add.disabled = entries.length >= referenceLimit(profile) || loading(chat.id);
         add.setAttribute("aria-label", "Add reference images"); add.addEventListener("click", () => selectFiles(target(null, true))); body.append(add);
-        if (profile.kind === "edit" && sourceImage() && !entries.some(isStructureReference) && entries.length < referenceLimit(profile)) {
+        if (structureAdapter(profile)) {
+          const pose = el("button", "+ Add pose", "ps-reference-add"); pose.type = "button";
+          pose.disabled = entries.length >= referenceLimit(profile) || loading(chat.id) || entries.some(isStructureReference);
+          pose.title = entries.some(isStructureReference) ? "One structure guide can be active. Change the existing guide to Reference first." : "Start with an editable standing pose. No photo needed.";
+          pose.addEventListener("click", () => {void editPose().catch(error => report(error.message, "error"));}); body.append(pose);
+        }
+        if (profile.kind === "edit" && structureAdapter(profile) && sourceImage() && !entries.some(isStructureReference) && entries.length < referenceLimit(profile)) {
           const reuse = el("button", "Use edit source as structure guide", "ps-reference-add"); reuse.type = "button";
           reuse.addEventListener("click", () => {const entry = {id: crypto.randomUUID(), image: normalizeImageReference(sourceImage()), use: "structure", role: "custom", instruction: ""};
             chat.qwenEditReferences = [...entries, entry]; expanded = entry.id; notify(chat); renderDialog();}); body.append(reuse);
@@ -225,7 +280,7 @@ export function createEditReferenceController({panel, tile: suppliedTile, active
     });
     current.showModal(); renderDialog();
   }
-  choose.addEventListener("click", () => {const profile = selectedProfile(), descriptors = referenceInputDescriptors(profile?.snapshot); if (managed(profile) || normalizeQwenReferences(activeChat()?.qwenEditReferences).some(isStructureReference) || descriptors.length > 1) openDialog(); else if (descriptors.length) selectFiles(target(descriptors[0].id));});
+  choose.addEventListener("click", () => {const profile = selectedProfile(), descriptors = referenceInputDescriptors(profile?.snapshot); if (managed(profile) || descriptors.length > 1) openDialog(); else if (descriptors.length) selectFiles(target(descriptors[0].id));});
   picker.addEventListener("change", () => {attach(picker.files, pickerTarget); picker.value = "";});
   remove.addEventListener("click", () => {
     const chat = activeChat(), profile = selectedProfile(), slot = referenceInputDescriptors(profile?.snapshot)[0]?.id;

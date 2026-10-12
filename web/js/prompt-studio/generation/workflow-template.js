@@ -18,6 +18,7 @@ import {
 } from "./prompt-studio-input.js";
 
 import { createWorkflowAdapter } from "./workflow-adapter.js";
+import { validateDeclaredCapabilities, REFERENCE_CAPABILITY_VERSION } from "./workflow-capabilities.js";
 
 export function createWorkflowTemplateBuilder({ app, nodeClassName }) {
   function imageOutputNode(node) {
@@ -31,7 +32,7 @@ export function createWorkflowTemplateBuilder({ app, nodeClassName }) {
   }
 
   const buildWorkflowTemplate = createWorkflowAdapter({
-    app, adapterId: "image", capabilities: { resultFields: ["images", "gifs"], outputRuleVersion: 1 },
+    app, adapterId: "image", capabilities: { resultFields: ["images", "gifs"], outputRuleVersion: 1, referenceVersion: REFERENCE_CAPABILITY_VERSION },
     build: async ({ file, workflowData, snapshot, nodes, additionalInputs }) => {
       const firstExecutableNode = (types) => nodes.find(record => types.includes(record.type));
       const serialized = serializedWorkflowNodes(workflowData);
@@ -71,7 +72,7 @@ export function createWorkflowTemplateBuilder({ app, nodeClassName }) {
         throw new Error(`Workflow must have exactly one image output; found ${imageOutputs.length}.`);
       }
 
-      return normalizeWorkflowProfile({
+      const profile = normalizeWorkflowProfile({
         id: file.path,
         path: file.path,
         name: workflowNameFromPath(file.path),
@@ -89,6 +90,8 @@ export function createWorkflowTemplateBuilder({ app, nodeClassName }) {
         updatedAt: Date.now(),
         sourceModified: Number(file.modified || 0),
       });
+      validateDeclaredCapabilities(profile);
+      return profile;
     },
   });
 

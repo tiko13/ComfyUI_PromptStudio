@@ -8,12 +8,12 @@ import types
 import unittest
 
 from aiohttp import web
-from model_catalog import normalized_folder_type, matches_folder_type
+from backend.model_catalog import normalized_folder_type, matches_folder_type
 
 
 class SharedLoRACatalogTests(unittest.TestCase):
     def setUp(self):
-        tree = ast.parse((Path(__file__).resolve().parents[1] / "nodes.py").read_text(encoding="utf-8"))
+        tree = ast.parse((Path(__file__).resolve().parents[1] / "backend" / "nodes.py").read_text(encoding="utf-8"))
         selected = [node for node in tree.body if getattr(node, "name", "") in {
             "_normalized_lora_type", "_lora_names_for_type", "KCPP_PromptStudioLoraLoader"}]
         self.names = ["MiniMax3\\character.safetensors", "MiniMax3/style.safetensors", "root.safetensors", "Image/style.safetensors", "MiniMax3/_hidden.safetensors"]
@@ -37,10 +37,10 @@ class SharedLoRACatalogTests(unittest.TestCase):
         self.assertEqual(loader.load_loras("original","*","[]"),("original",))
 
     def lora_response(self, lora_type):
-        tree = ast.parse((Path(__file__).resolve().parents[1] / "routes.py").read_text(encoding="utf-8"))
+        tree = ast.parse((Path(__file__).resolve().parents[1] / "backend" / "routes.py").read_text(encoding="utf-8"))
         route = next(node for node in tree.body if getattr(node, "name", "") == "prompt_studio_loras")
         route.decorator_list = []
-        self.namespace.update(asyncio=asyncio, web=web)
+        self.namespace.update(asyncio=asyncio, web=web, _civitai_library_started=False)
         exec(compile(ast.Module(body=[route], type_ignores=[]), "routes.py", "exec"), self.namespace)
         response = asyncio.run(self.namespace["prompt_studio_loras"](types.SimpleNamespace(query={"type": lora_type})))
         self.assertEqual(response.status, 200)

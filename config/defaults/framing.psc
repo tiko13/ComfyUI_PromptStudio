@@ -1,0 +1,133 @@
+{
+  "version": 1,
+  "items": [
+    {
+      "name": "None",
+      "instruction": ""
+    },
+    {
+      "name": "Selfie",
+      "instruction": "Show the selfie from the subject's front-facing phone-camera viewpoint, as the captured image itself. The subject is close to the lens and looks into it, with natural self-shot perspective and casual arm's-length framing. The viewer occupies the phone camera's position: do not show the subject from an outside observer's viewpoint, and do not add a visible phone, camera, selfie stick, mirror, or a separate photographer."
+    },
+    {
+      "name": "Mirror Selfie",
+      "instruction": "Frame the subject as a mirror selfie, with the subject visible through a mirror and the phone or camera plausibly part of the composition."
+    },
+    {
+      "name": "Candid Unaware",
+      "instruction": "Frame the scene as if the subject is not posing and is unaware of being photographed. Choose one of the following: 1. Subject might be doing an activity normal to the prompt environment; do not use 'normal activity', invent an activity that is natural for the environment subject is in 2. Subject is moving somewhere 3. Subject is captured in a random moment in time. - Prefer natural body language and an off-center composition. Subject does not look at the camera. This framing changes only pose, viewpoint, and composition; do not add props, events, extra subjects, landmarks, or new actions."
+    },
+    {
+      "name": "Close-Up Portrait",
+      "instruction": "Frame the subject as a close-up of the face, expression, and nearby details. Ignore things that are not visible from this angle, such as clothes on lower body etc"
+    },
+    {
+      "name": "Medium Shot",
+      "instruction": "Frame the subject from roughly the waist or torso up, balancing the subject with some surrounding context."
+    },
+    {
+      "name": "Full Body",
+      "instruction": "Frame the whole subject from head to toe, keeping the body clearly visible within the scene."
+    },
+    {
+      "name": "Wide Shot",
+      "instruction": "Use a wide composition that shows the subject within a larger environment, with the setting clearly visible."
+    },
+    {
+      "name": "Extreme Wide Shot",
+      "instruction": "Use a very wide composition where the environment dominates and the subject appears small within the scene."
+    },
+    {
+      "name": "Overhead View",
+      "instruction": "Frame the scene from above, looking down at the subject and environment."
+    },
+    {
+      "name": "Low Angle",
+      "instruction": "Frame the subject from a low angle viewpoint, viewed from below."
+    },
+    {
+      "name": "High Angle",
+      "instruction": "Frame the subject from a high viewpoint looking downward, making the scene feel observed from above."
+    },
+    {
+      "name": "Three-Quarter View",
+      "instruction": "Frame the subject from a three-quarter angle rather than directly front-on, showing depth and side detail."
+    },
+    {
+      "name": "Side View",
+      "instruction": "Frame the subject primarily from the side, emphasizing profile, direction, and lateral movement."
+    },
+    {
+      "name": "Rear Three-Quarter View",
+      "instruction": "Frame the subject from behind at an angle, showing the back and one side while preserving scene context."
+    },
+    {
+      "name": "Point Of View",
+      "instruction": "Frame the scene from a first-person point of view, as if seen through someone's eyes."
+    },
+    {
+      "name": "Over The Shoulder",
+      "instruction": "Frame the scene over one subject's shoulder, looking toward another subject or point of interest."
+    },
+    {
+      "name": "Product Centered",
+      "instruction": "Place the main object clearly centered and readable, with composition organized around presenting it cleanly."
+    },
+    {
+      "name": "Symmetrical Composition",
+      "instruction": "Use a balanced symmetrical composition with the main subject or layout centered and evenly arranged."
+    },
+    {
+      "name": "Rule Of Thirds",
+      "instruction": "Place the main subject along a rule-of-thirds composition, with natural negative space and balanced visual weight."
+    },
+    {
+      "name": "Dynamic Action Shot",
+      "instruction": "Frame the subject in motion with a dynamic composition that emphasizes action, direction, and energy."
+    },
+    {
+      "name": "Character Sheet",
+      "instruction": "Present the existing focal subject as a clean character-design sheet with front, side, and rear views on a plain background, standing upright in a relaxed neutral pose. Preserve the subject's established identity, anatomy, clothing, accessories, and requested attributes. Omit scene-specific background content from the sheet without inventing new props, characters, wardrobe, or physical traits."
+    },
+    {
+      "name": "First-Person Downward View",
+      "instruction": "Use the existing viewpoint character's first-person perspective while looking downward. Show only body parts, clothing, held objects, and surroundings that are naturally visible from that viewpoint and already supported by the prompt. Disregard any parts of the main prompt that should not be possible to see: anything pertaining to face, makeup etc"
+    },
+    {
+      "name": "CCTV Footage",
+      "instruction": "Frame the scene as generic full-color CCTV footage from a high angle and far from the subject. Show broad coverage of the room or location, keep subjects relatively small and usually off-center, and make them unaware of the camera. Change the viewpoint and composition rather than merely adding a CCTV tag; do not invent suspicious behavior or new events."
+    },
+    {
+      "name": "Fixed Ceiling CCTV",
+      "instruction": "Frame the scene from a fixed ceiling-mounted security camera in a high corner. Use a very wide lens with mild barrel distortion, deep room coverage, and distant off-center subjects when compatible. Add flat automatic exposure, muted color, modest sensor noise, low-bitrate compression blocks, slight oversharpening, and subtle timestamp-like interface residue without readable text. Preserve the actual subjects and event; do not invent suspicious behavior."
+    },
+    {
+      "name": "Hidden Camera",
+      "instruction": "Frame the scene as if captured secretly by a concealed camera. Use an awkward off-center or low placement, a narrow partially obstructed view, and strong edge vignetting. Add soft miniature optics, uneven focus, dim available light, poor dynamic range, muted color, digital noise, and compressed detail. Preserve the requested scene and do not add a voyeur, camera device, or new activity."
+    },
+    {
+      "name": "Doorbell Camera",
+      "instruction": "Frame the scene from a fixed chest-height smart doorbell camera with strong fisheye distortion, broad near-field coverage, sharp central detail, and compressed peripheral forms. Add aggressive automatic HDR, slightly cool color, video sharpening, motion artifacts, and minimal interface-like residue without readable labels. Do not add a doorway, visitor, package, or homeowner unless present in the prompt."
+    },
+    {
+      "name": "Body-Worn Camera",
+      "instruction": "Frame the scene from a chest-height first-person body-worn camera. Favor an ultra-wide rectilinear view, urgent imperfect framing, natural body movement, and partial foreground occlusion only when supported by the action. Add rolling-shutter skew, mixed exposure, hard practical light, and compressed video texture. Do not invent an officer, uniform, confrontation, or crime."
+    },
+    {
+      "name": "Dashcam Footage",
+      "instruction": "Frame the scene from a fixed forward-facing dashcam with a low centered viewpoint and very wide road-oriented coverage when compatible. Include windshield reflections and subtle dashboard-edge occlusion only if a vehicle is already implied. Add automatic exposure, headlight or streetlight bloom, motion compression, sensor noise, and timestamp-like marks without readable text. Preserve the requested event and setting."
+    },
+    {
+      "name": "Elevator Security Camera",
+      "instruction": "Frame the scene from an elevator security camera at an extreme upper-corner angle, using a compact enclosed composition, wide-lens distortion, and a blind area directly beneath the camera. Add flat overhead illumination, desaturated color, and compressed low-frame-rate video texture. Use reflective surfaces and repeating panel geometry only when compatible with the setting; do not invent an elevator or additional occupants."
+    },
+    {
+      "name": "Trail Camera",
+      "instruction": "Frame the scene from a fixed waist-height unattended trail camera with rough utilitarian composition and deep outdoor focus when compatible. Use foreground vegetation occlusion only when supported by the scene. Add harsh white flash or monochrome infrared illumination, abrupt falloff into darkness, high ISO noise, limited resolution, and a stark frozen instant. Do not add wildlife or a forest unless requested."
+    },
+    {
+      "name": "Aerial Surveillance Camera",
+      "instruction": "Frame the scene as stabilized aerial surveillance imagery from directly overhead or a steep oblique angle. Favor distant compressed perspective and broad environmental coverage. Add restrained color, atmospheric haze, high digital sharpening, slight transmission artifacts, and tracking-box-like geometry without targeting claims or readable text. Do not add a drone, aircraft, pursuit, or military context."
+    }
+  ]
+}

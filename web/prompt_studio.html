@@ -7,14 +7,63 @@
   <base href="/extensions/ComfyUI_PromptStudio/">
   <link rel="icon" href="./prompt-studio-icon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="./css/prompt_studio.css">
+  <!-- Keep startup usable when the browser restores HTML without server assets. -->
+  <style>
+    html { background: #08090d; }
+    body.promptstudio-popout-body { margin: 0; color: #f3f4f8; }
+    #promptstudio-standalone-host { position: fixed; width: 1px; height: 1px; border: 0; opacity: 0; pointer-events: none; }
+    #promptstudio-video-mount[hidden] { display: none; }
+    #promptstudio-startup {
+      position: fixed; inset: 0; z-index: 1; box-sizing: border-box;
+      display: flex; flex-direction: column; align-items: center; justify-content: center;
+      gap: 12px; padding: 24px; overflow: auto; text-align: center;
+      background: radial-gradient(ellipse at center, #1c1730 0, #08090d 70%);
+      color: #f3f4f8; font: 14px/1.6 system-ui, -apple-system, "Segoe UI", sans-serif;
+    }
+    #promptstudio-startup svg { flex: none; width: 72px; height: 72px; margin-bottom: 8px; }
+    #promptstudio-startup strong { font-size: 22px; font-weight: 650; letter-spacing: -.4px; }
+    #promptstudio-startup p { max-width: 360px; margin: 0; color: #a5a2b5; }
+    #promptstudio-startup #promptstudio-standalone-status { color: #d1c7f4; }
+    #promptstudio-startup button {
+      margin-top: 8px; padding: 9px 20px; border: 1px solid #69568e; border-radius: 10px;
+      background: #302343; color: #f3eaff; font: inherit; cursor: pointer;
+    }
+    #promptstudio-startup button:hover { background: #42305c; }
+    #promptstudio-startup button:focus-visible { outline: 2px solid #b29aff; outline-offset: 4px; }
+    #promptstudio-startup small { color: #8e889f; font-size: 12px; }
+    #promptstudio-startup .promptstudio-startup-spinner {
+      flex: none; box-sizing: border-box; width: 30px; height: 30px; margin-top: 8px;
+      border: 3px solid #b29aff30; border-top-color: #b29aff; border-radius: 50%;
+      animation: promptstudio-startup-spin .9s linear infinite;
+    }
+    #promptstudio-startup:not([data-state="offline"]) p,
+    #promptstudio-startup:not([data-state="offline"]) small,
+    #promptstudio-startup[data-state="connecting"] button,
+    #promptstudio-startup:not([data-state="connecting"]) .promptstudio-startup-spinner { display: none; }
+    @keyframes promptstudio-startup-spin { to { transform: rotate(360deg); } }
+    @media (prefers-reduced-motion: reduce) {
+      #promptstudio-startup .promptstudio-startup-spinner { animation: none; }
+    }
+  </style>
 </head>
 <body class="promptstudio-popout-body">
   <main id="promptstudio-popout-mount" class="promptstudio-popout-mount">
     <section id="promptstudio-image-mount" class="promptstudio-studio-view" data-studio-mode="image">
-      <div class="promptstudio-popout-loading">
-      <img src="./prompt-studio-icon.svg" alt="" aria-hidden="true">
+      <div id="promptstudio-startup" class="promptstudio-popout-loading" data-state="connecting">
+      <svg viewBox="0 0 256 256" width="72" height="72" aria-hidden="true">
+        <defs><linearGradient id="startup-mark" x2=".7" y2="1"><stop stop-color="#795cff"/><stop offset="1" stop-color="#c1afff"/></linearGradient></defs>
+        <rect x="4" y="4" width="248" height="248" rx="52" fill="#191923" stroke="#ffffff" stroke-opacity=".1"/>
+        <g fill="none" stroke="url(#startup-mark)" stroke-width="26" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M58 219V42h84c37 0 61 21 61 53 0 29-20 47-55 47h-39"/>
+          <path d="M178 139h-65c-22 0-35 11-35 28s13 28 35 28h40c19 0 30 9 30 22s-12 21-30 21H88"/>
+        </g><path d="m163 132 23 35-8-37Z" fill="url(#startup-mark)"/>
+      </svg>
       <strong>Prompt Studio</strong>
-      <span id="promptstudio-standalone-status">Connecting to ComfyUI…</span>
+      <span id="promptstudio-standalone-status" role="status" aria-live="polite">Connecting to ComfyUI…</span>
+      <span class="promptstudio-startup-spinner" aria-hidden="true"></span>
+      <p>Start ComfyUI to open your studio. This page will reconnect when it’s ready.</p>
+      <button id="promptstudio-startup-retry" type="button">Try again</button>
+      <small>Checking automatically</small>
       </div>
     </section>
     <section id="promptstudio-video-mount" class="promptstudio-studio-view" data-studio-mode="video" hidden></section>
@@ -36,6 +85,65 @@
     </div>
   </dialog>
   <iframe id="promptstudio-standalone-host" class="promptstudio-standalone-host" title="ComfyUI workflow host" aria-hidden="true" tabindex="-1"></iframe>
+  <script>
+    // This must stay inline: restored tabs may have neither CSS nor JS cached.
+    (() => {
+      const startup = document.getElementById("promptstudio-startup");
+      const status = document.getElementById("promptstudio-standalone-status");
+      const retry = document.getElementById("promptstudio-startup-retry");
+      let unavailable = false;
+      let checking = false;
+      let timer;
+      let stopped = false;
+      if (new URLSearchParams(location.search).get("mode") === "video") {
+        startup.querySelector("strong").textContent = "Prompt Studio Video";
+        document.title = "Prompt Studio Video";
+      }
+      async function checkConnection(manual = false) {
+        if (stopped || checking) return;
+        clearTimeout(timer);
+        if (!startup.isConnected) return;
+        checking = true;
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 4000);
+        try {
+          const response = await fetch("/promptstudio/prompt-studio/runtime-health", {
+            cache: "no-store", signal: controller.signal,
+          });
+          if (!response.ok) throw new Error("ComfyUI is unavailable");
+          const health = await response.json();
+          if (stopped || !startup.isConnected) return;
+          if (startup.dataset.state === "offline" || health.prompt_worker_alive === false) {
+            startup.dataset.state = "connecting";
+            status.textContent = "Connecting to ComfyUI…";
+          }
+          if (health.prompt_worker_alive === false) {
+            unavailable = true;
+            return;
+          }
+          if (!stopped && startup.isConnected && (unavailable || manual)) {
+            status.textContent = "ComfyUI is ready. Opening your studio…";
+            location.reload();
+            return;
+          }
+        } catch (_) {
+          unavailable = true;
+          startup.dataset.state = "offline";
+          status.textContent = "Waiting for ComfyUI";
+        } finally {
+          clearTimeout(timeout);
+          checking = false;
+          if (!stopped && startup.isConnected) timer = setTimeout(checkConnection, 5000);
+        }
+      }
+      retry.addEventListener("click", () => checkConnection(true));
+      window.addEventListener("pagehide", () => { stopped = true; clearTimeout(timer); });
+      window.addEventListener("pageshow", (event) => {
+        if (event.persisted) { stopped = false; checkConnection(); }
+      });
+      checkConnection();
+    })();
+  </script>
   <script type="module" src="./js/prompt_studio_shell.js?v=2"></script>
 </body>
 </html>

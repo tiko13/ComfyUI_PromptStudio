@@ -122,7 +122,7 @@ class ForbiddenWordsTests(unittest.TestCase):
             self.assertEqual(saved["forbidden_words"][1]["replacement"], " filmic ")
             self.assertFalse(saved["forbidden_words"][1]["enabled"])
             self.assertEqual(saved, self.routes._read_mutation_config())
-            self.assertEqual(json.loads(self.path.read_text())["forbidden_words"], saved["forbidden_words"])
+            self.assertEqual(json.loads(self.path.read_text()), {"version": 1, "items": saved["forbidden_words"]})
             with self.assertRaises(self.routes.StoreConflictError):
                 self.routes._update_mutation_config({"revision": initial["revision"], "category": "forbidden_words", "items": []})
 

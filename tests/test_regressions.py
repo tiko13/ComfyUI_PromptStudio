@@ -97,16 +97,16 @@ def install_runtime_stubs(storage_root):
 def load_modules(storage_root):
     install_runtime_stubs(storage_root)
     package = types.ModuleType("ComfyUI_PromptStudio")
-    package.__path__ = [str(REPO_ROOT)]
+    package.__path__ = [str(REPO_ROOT / "backend")]
     sys.modules["ComfyUI_PromptStudio"] = package
 
-    nodes_spec = importlib.util.spec_from_file_location("ComfyUI_PromptStudio.nodes", REPO_ROOT / "nodes.py")
+    nodes_spec = importlib.util.spec_from_file_location("ComfyUI_PromptStudio.nodes", REPO_ROOT / "backend" / "nodes.py")
     nodes = importlib.util.module_from_spec(nodes_spec)
     sys.modules[nodes_spec.name] = nodes
     nodes_spec.loader.exec_module(nodes)
     nodes._llm_scheduling.SHARED_COORDINATOR = nodes._llm_scheduling.LlmCoordinator()
 
-    routes_spec = importlib.util.spec_from_file_location("ComfyUI_PromptStudio.routes", REPO_ROOT / "routes.py")
+    routes_spec = importlib.util.spec_from_file_location("ComfyUI_PromptStudio.routes", REPO_ROOT / "backend" / "routes.py")
     routes = importlib.util.module_from_spec(routes_spec)
     sys.modules[routes_spec.name] = routes
     routes_spec.loader.exec_module(routes)
@@ -1483,6 +1483,8 @@ class RegressionTests(unittest.TestCase):
         self.assertEqual(rejected.status, 401)
 
     def test_prompt_nodes_match_comfyui_resolution_selector(self):
+        self.assertEqual(self.nodes._calculate_resolution("16:9 (Widescreen)", 1.0), (1376, 768))
+        self.assertEqual(self.nodes._calculate_resolution("16:9 (Widescreen)", 4.0), (2720, 1536))
         self.assertEqual(self.nodes._calculate_resolution("1:1 (Square)", 1.0, 8), (1024, 1024))
         self.assertEqual(self.nodes._calculate_resolution("16:9 (Widescreen)", 1.0, 64), (1344, 768))
         self.assertEqual(self.nodes._calculate_resolution("2:3 (Portrait Photo)", 2.0, 8), (1184, 1776))
@@ -1674,7 +1676,7 @@ class RegressionTests(unittest.TestCase):
         for resolution_inputs in (slot_inputs["hidden"], amplify_inputs["optional"]):
             self.assertEqual(resolution_inputs["aspect_ratio"][1]["default"], "1:1 (Square)")
             self.assertEqual(resolution_inputs["megapixels"][1]["default"], 1.0)
-            self.assertEqual(resolution_inputs["multiple"][1]["default"], 8)
+            self.assertEqual(resolution_inputs["multiple"][1]["default"], 32)
 
         for node_class in (self.nodes.KCPP_PromptSlot, self.nodes.KCPP_PromptAmplify):
             hidden = node_class.INPUT_TYPES()["hidden"]
@@ -3986,7 +3988,7 @@ class RegressionTests(unittest.TestCase):
                 "items": ["Yennefer"],
             })
             self.assertEqual(protected_saved["protected_words"], ["Yennefer"])
-            self.assertIn("# comment", protected.read_text(encoding="utf-8"))
+            self.assertEqual(json.loads(protected.read_text(encoding="utf-8")), {"version": 1, "items": ["Yennefer"]})
             with self.assertRaises(self.routes.StoreConflictError):
                 self.routes._update_mutation_config({
                     "revision": initial["revision"],

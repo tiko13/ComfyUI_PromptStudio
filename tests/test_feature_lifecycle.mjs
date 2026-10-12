@@ -76,8 +76,14 @@ test('Video progress and observer ownership do not dispose jobs belonging to ano
   api.emit('progress',{prompt_id:'a',value:7,max:10});api.emit('progress',{prompt_id:'unknown',value:1,max:10});
   assert.equal(renders,1);assert.equal(state.generationProgress.get('a').value,7);
   assert.equal(state.pendingGenerationProgress.get('unknown').value,1);
+  api.emit('executing',{prompt_id:'a',node:null});
+  assert.equal(state.generationProgress.get('a').phase,'finalizing','A null node marks finalization before sampler max is reached');
+  api.emit('progress',{prompt_id:'a',value:8,max:10});
+  assert.equal(state.generationProgress.get('a').value,7,'Late sampler events cannot replace finalizing progress');
+  api.emit('executing',{prompt_id:'unknown',node:null});
+  assert.equal(state.pendingGenerationProgress.get('unknown').phase,'finalizing');
   feature.dispose();assert.equal(disconnected,1);assert.equal(job.signal.aborted,false);
-  api.emit('progress',{prompt_id:'a',value:8,max:10});assert.equal(renders,1);
+  api.emit('progress',{prompt_id:'a',value:8,max:10});assert.equal(renders,3);
 });
 
 test('Image focus controller detaches old documents and never double-registers', () => {

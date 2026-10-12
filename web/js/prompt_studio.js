@@ -2,10 +2,13 @@ import { structureAdapter, semanticReferences, applyStructureGuide, isStructureR
 import { validateTargetSource, applyReferenceMask } from "./prompt-studio/generation/reference-targeting.js";
 import { supportsEditReference, applyEditReference } from "./prompt-studio/generation/edit-reference.js";
 import { applyWorkflowReferences, workflowReferenceValues, normalizeReferenceState, referenceInputsMatch } from "./prompt-studio/generation/reference-inputs.js";
-import { qwenReferenceAdapter, normalizeQwenReferences, validateQwenReferences, applyQwenReferences, directQwenInstruction, requestQwenEdit, qwenCreateInstruction } from "./prompt-studio/generation/qwen-references.js";
+import { qwenReferenceAdapter, referenceEditAdapter, referenceContractKey, normalizeQwenReferences, validateQwenReferences, applyQwenReferences, directQwenInstruction, requestQwenEdit, qwenCreateInstruction, canReuseQwenPosePrompt, QWEN_POSE_PROMPT_VERSION } from "./prompt-studio/generation/qwen-references.js";
 import { referenceDetection } from "./prompt-studio/generation/reference-detection.js";
 import { createEditReferenceController } from "./prompt-studio/ui/edit-reference.js";
 import { createSearchableSelect } from "./prompt-studio/ui/searchable-select.js";
+import { createModelDetailsButton } from "./prompt-studio/ui/model-metadata.js";
+import { installTriggerWordPicker, removeLoraTriggerWords } from "./prompt-studio/ui/trigger-words.js";
+import { mountBackgroundTasks } from "./prompt-studio/ui/background-tasks.js";
 import { openLlamacppConfigEditor } from "./prompt-studio/ui/llamacpp-config-editor.js";
 import { openLlamacppProfileManager } from "./prompt-studio/ui/llamacpp-profile-manager.js";
 let editReferenceController = null;
@@ -112,6 +115,9 @@ import {
 } from "./prompt-studio/generation/workflow-profile.js";
 import { createWorkflowTemplateBuilder } from "./prompt-studio/generation/workflow-template.js";
 import { workflowDefaults, setWorkflowDefault, newChatWorkflowSelections, markDefaultWorkflowOptions } from "./prompt-studio/settings/workflow-defaults.js";
+import { applyImageOutputSettings, syncImageOutputWorkflow } from "./prompt-studio/settings/image-output.js";
+import { mountImageOutputSettings, updateImageOutputWorkflowNotice } from "./prompt-studio/ui/image-output-settings.js";
+import { mountModelProfileSettings } from "./prompt-studio/ui/model-profile-settings.js";
 import {
   PROMPT_STUDIO_INPUT_PROFILE_VERSION,
   applyPromptStudioInputValues,
@@ -625,7 +631,7 @@ function saveSettings() {
       image_scale: Number(value("promptstudio-image-scale") || 100),
       resolution_aspect_ratio: value("promptstudio-resolution-aspect-ratio"),
       resolution_megapixels: Number(value("promptstudio-resolution-megapixels") || 1),
-      resolution_multiple: Number(value("promptstudio-resolution-multiple") || 8),
+      resolution_multiple: Number(value("promptstudio-resolution-multiple") || 32),
       }),
     );
   } catch (error) {
@@ -652,7 +658,7 @@ function resolutionSettings() {
   return {
     aspect_ratio: RESOLUTION_ASPECT_RATIOS.includes(aspectRatio) ? aspectRatio : RESOLUTION_ASPECT_RATIOS[0],
     megapixels: Number.isFinite(megapixels) ? Math.max(0.1, Math.min(16, megapixels)) : 1,
-    multiple: Number.isFinite(multiple) ? Math.max(8, Math.min(128, Math.round(multiple / 4) * 4)) : 8,
+    multiple: Number.isFinite(multiple) ? Math.max(8, Math.min(128, Math.round(multiple / 4) * 4)) : 32,
   };
 }
 
@@ -1089,6 +1095,15 @@ function toggleStudioSettings(force) {
   popover.hidden = !show;
   button.setAttribute("aria-expanded", show ? "true" : "false");
   if (show) {
+    mountModelProfileSettings(popover.querySelector("[data-model-profile-settings]"), (catalog) => {
+      const selected = state.panel.querySelector("#promptstudio-profile")?.value;
+      state.config.profiles = catalog.profiles.map(entry => entry.profile.name);
+      state.config.output_length_profiles = catalog.output_length_profiles;
+      setBackendOptions("promptstudio-profile", state.config.profiles, selected, "No model profiles");
+      syncOutputLengthControl();
+    });
+    mountImageOutputSettings(popover.querySelector("[data-image-output-settings]"),
+      ["create", "edit", "upscale"].map(kind => selectedWorkflowProfile(kind)));
     closeSystemStatus();
     startMutationConfigMonitor();
     popover.ownerDocument.defaultView?.setTimeout(() => {
@@ -1670,6 +1685,9 @@ function restoreChatState(chat) {
 function captureStudioSettings(chat = activeChat()) {
   const fallback = normalizeStudioSettings(chat?.studioSettings || getSettings());
   if (!state.panel) return fallback;
+  // History may be loaded while draft recovery still awaits IndexedDB. Backend
+  // discovery must not save the previous/default controls into that session.
+  if (chat && state.panel.dataset.studioSettingsChatId !== chat.id) return fallback;
   const value = (key, id) => {
     const control = state.panel.querySelector(`#${id}`);
     if (!control || (control.tagName === "SELECT" && !control.options.length)) return fallback[key];
@@ -1817,6 +1835,7 @@ function applyStudioSettings(chat) {
   updateAmplificationMode({ announce: false, persist: false });
   renderAdditionalInstructionTemplateHighlights();
   refreshAdditionalInputsSection();
+  state.panel.dataset.studioSettingsChatId = chat.id;
 }
 
 function syncActiveChatSettings({ persist = true } = {}) {
@@ -2502,10 +2521,6 @@ function syncPlotInspectorControls() {
   if (resolutionSummary) {
     resolutionSummary.textContent = plotMode ? "Applied to every plot generation" : "Create size; Edit preserves source";
   }
-  const secondarySummary = panel.querySelector("#promptstudio-secondary-summary");
-  if (secondarySummary) {
-    secondarySummary.textContent = plotMode ? "Passed unchanged to every plot generation" : "Text passed through unchanged";
-  }
   for (const [key, id] of Object.entries(PLOT_LLM_CONTROL_IDS)) {
     const axis = llmMode ? activePlotAxisForTarget(`llm:${key}`, chat) : null;
     setPlotAxisOverride(panel.querySelector(`#${id}`), axis);
@@ -2561,6 +2576,57 @@ function leavePlotSession() {
   renderChatList();
   syncPlotInspectorControls();
   renderChatHistory({ forceEnd: true });
+}
+
+async function copyPlotToNewChat(plot) {
+  if (state.busy || state.studioTurnBusyChatIds.has(state.activeChatId)) {
+    return setStatus("Wait for the current operation to finish.", "warning");
+  }
+  const profile = workflowProfileById(plot.workflowProfileId);
+  if (profile?.kind !== "create" || !profile.promptNodeId) {
+    return setStatus("Restore this plot's creation workflow before copying it.", "warning");
+  }
+  const sourceChat = state.chats.find((chat) => chat.plotId === plot.id);
+  const sourceDraft = sourceChat?.plotDraft;
+  const snapshot = (plot.base?.promptNodeId && normalizeGenerationSnapshot(plot.base?.workflowSnapshot))
+    || normalizeGenerationSnapshot(sourceDraft?.sourceSnapshot);
+  const settings = structuredClone(plot.controlSettings || sourceChat?.studioSettings || {});
+  const draft = normalizePlotDraft({
+    ...structuredClone(sourceDraft || {}),
+    title: plot.title,
+    action: plot.action,
+    workflowProfileId: plot.workflowProfileId,
+    prompt: sourceDraft?.prompt ?? plot.base?.mainPrompt ?? "",
+    llmEnabled: plot.llmEnabled,
+    zEnabled: plot.axes.length === 3,
+    axes: structuredClone(plot.axes),
+    sourceSnapshot: snapshot,
+  }, profile);
+  if (plot.axes.some((axis, index) => axis.targetKey !== draft.axes[index].targetKey)) {
+    return setStatus("This plot's workflow targets have changed. Restore the original workflow before copying it.", "warning");
+  }
+  const chat = normalizeChat({
+    sessionMode: "plot", initialized: true,
+    mainPrompt: draft.prompt, finalPrompt: draft.llmEnabled ? "" : draft.prompt,
+    createWorkflowId: profile.id,
+    studioSettings: storedGenerationSettings({
+      workflowProfileId: profile.id,
+      generationSnapshot: snapshot ? { ...snapshot, promptStudioSettings: settings } : null,
+      llmAmplified: draft.llmEnabled,
+      loraState: plot.base?.loraState,
+      modelState: plot.base?.modelState,
+    }, settings),
+    intentProvenance: plot.base?.intentProvenance || sourceChat?.intentProvenance,
+    plotDraft: draft,
+  });
+  state.chats.push(chat);
+  activateChat(chat.id);
+  await saveChats({ immediate: true });
+  await state.chatSaveChain;
+  if (activeChat()?.id !== chat.id) return;
+  state.panel.querySelector(".promptstudio-plot-basics textarea")?.focus({ preventScroll: true });
+  if (state.chatPersistenceBlocked || state.panel.querySelector("[data-chat-save-failure]")) return;
+  setStatus("Plot copied to a new chat. Adjust the controls, then start the plot when ready.", "ready");
 }
 
 function plotButton(label, onClick, className = "") {
@@ -3252,6 +3318,9 @@ function renderPlotRun(history, plot, { gridScroller = null } = {}) {
   }
   const manifest = artifactLink(plot.artifacts?.manifest, "Open plot data");
   if (manifest) artifactLinks.appendChild(manifest);
+  artifactLinks.appendChild(plotButton("Copy plot", () => {
+    copyPlotToNewChat(plot).catch((error) => setStatus(error.message || String(error), "error"));
+  }));
   toolbar.appendChild(artifactLinks);
   shell.appendChild(toolbar);
   renderPlotGrid(shell, plot, gridScroller);
@@ -3413,6 +3482,7 @@ async function preparePlotBase(draft, mainPrompt, finalPrompt, controlSettings =
     context.profile,
     frozenSettings.additional_input_selections,
   );
+  applyImageOutputSettings(context.snapshot);
   return {
     // ComfyUI's queue client needs both the executable output and the serialized
     // workflow. The latter carries widget metadata used while queueing subgraphs.
@@ -3919,7 +3989,7 @@ function updateComposeMode() {
   if (reroll) reroll.disabled = state.busy || turnBusy || referenceUploading;
   const hasRevision = Boolean(input?.value.trim());
   const editPromptAction = state.panel.querySelector("#promptstudio-edit-prompt-action");
-  const qwenEdit = action === "edit" && Boolean(qwenReferenceAdapter(selectedWorkflowProfile(action)));
+  const qwenEdit = action === "edit" && Boolean(referenceEditAdapter(selectedWorkflowProfile(action)));
   const qwenHasReferences = qwenEdit && normalizeQwenReferences(activeChat()?.qwenEditReferences).length > 0;
   const assistedReference = amplificationEnabled && action === "edit" && (qwenEdit
     || (supportsEditReference(selectedWorkflowProfile(action)) && Boolean(activeChat()?.editReferenceImage)));
@@ -4151,6 +4221,8 @@ function refreshSecondaryInstructionsControl() {
   if (editor) {
     editor.disabled = state.busy;
   }
+  const triggerButton = state.panel?.querySelector("#promptstudio-add-trigger-words");
+  if (triggerButton) triggerButton.disabled = state.busy;
 }
 
 function selectedAction() {
@@ -4384,6 +4456,7 @@ function generationUiFingerprint() {
     sourceImage: action === "create" ? null : storedImageReference(editingSource()),
     referenceImage: action === "edit" && supportsEditReference(profile) ? storedImageReference(activeChat()?.editReferenceImage) : null,
     workflowReferenceInputs: workflowReferenceValues(activeChat(), profile),
+    referenceContractKey: referenceContractKey(profile),
     qwenReferences: (qwenReferenceAdapter(profile) || structureAdapter(profile)) ? normalizeQwenReferences(activeChat()?.qwenEditReferences) : [],
     loraState: generationLoraState(profile),
     modelState: generationModelState(profile),
@@ -4466,8 +4539,16 @@ function buildModelNodeControls(profile, descriptor, catalog) {
   }
   select.addEventListener("change", () => {
     setSelectionForModelNode(profile.id, descriptor.id, select.value);
+    updateDetails();
   });
-  group.appendChild(select);
+  const modelRow = document.createElement("div");
+  modelRow.className = "promptstudio-model-selection";
+  function updateDetails() {
+    modelRow.replaceChildren(select);
+    if (catalog.length && select.value) modelRow.append(createModelDetailsButton({ category: "diffusion_models", name: select.value }));
+  }
+  updateDetails();
+  group.appendChild(modelRow);
   const plotAxis = activePlotAxisForTarget(`model:${descriptor.id}`);
   if (plotAxis) {
     select.disabled = true;
@@ -4548,6 +4629,15 @@ async function loadLoraCatalog(loraType, { refresh = false } = {}) {
   return state.loraCatalogs.get(key);
 }
 
+function triggerWordContext() {
+  const profile = isPlotChat(activeChat()) ? plotProfile() : selectedWorkflowProfile();
+  return {
+    chatId: state.activeChatId,
+    profileId: profile?.id,
+    names: generationLoraState(profile).flatMap(loader => loader.selections.map(selection => selection.name)),
+  };
+}
+
 function buildLoraNodeControls(profile, descriptor, catalog) {
   const group = document.createElement("div");
   group.className = "promptstudio-lora-group";
@@ -4624,9 +4714,16 @@ function buildLoraNodeControls(profile, descriptor, catalog) {
     remove.addEventListener("click", () => {
       selections.splice(index, 1);
       setSelectionsForLoraNode(profile.id, descriptor.id, selections);
+      if (triggerWordContext().profileId === profile.id) {
+        void removeLoraTriggerWords({
+          editor: state.panel?.querySelector("#promptstudio-secondary-instructions"),
+          name: selection.name,
+          getContext: triggerWordContext,
+        }).catch(error => console.warn("LoRA trigger words could not be cleaned up:", error));
+      }
       refreshLoraSection();
     });
-    row.append(name, strength, remove);
+    row.append(name, strength, createModelDetailsButton({ category: "loras", name: selection.name }), remove);
     rows.appendChild(row);
   });
   group.appendChild(rows);
@@ -4783,6 +4880,8 @@ function refreshWorkflowControls() {
 }
 
 function refreshWorkflowDefaultButtons() {
+  updateImageOutputWorkflowNotice(state.panel,
+    ["create", "edit", "upscale"].map(kind => selectedWorkflowProfile(kind)));
   const defaults = workflowDefaults();
   for (const kind of ["create", "edit", "upscale"]) {
     const select = state.panel?.querySelector(`#promptstudio-${kind}-workflow`);
@@ -5313,7 +5412,7 @@ function armStoredGenerationReplay(data, { allowMissingProfile = false } = {}) {
   }
   chat.workflowReferences ||= {};
   chat.workflowReferences[workflowProfileId] = chat.pendingGeneration.workflowReferenceInputs;
-  if (chat.pendingGeneration.qwenReferences?.length || chat.pendingGeneration.editPromptModel === "qwen_image_2_1") chat.qwenEditReferences = chat.pendingGeneration.qwenReferences;
+  if (chat.pendingGeneration.qwenReferences?.length || ["qwen_image_2_1", "workflow"].includes(chat.pendingGeneration.editPromptModel)) chat.qwenEditReferences = chat.pendingGeneration.qwenReferences;
   chat.pendingGeneration.replayFingerprint = generationUiFingerprint();
   chat.updatedAt = Date.now();
   saveChats();
@@ -7209,6 +7308,7 @@ function captureGenerationQueueSettings(action, chat = activeChat()) {
     sourceImage: action === "create" ? null : editingSource(null, chat),
     referenceImage: action === "edit" && supportsEditReference(profile) ? normalizeImageReference(chat?.editReferenceImage) : null,
     workflowReferenceInputs: workflowReferenceValues(chat, profile),
+    referenceContractKey: referenceContractKey(profile),
     qwenReferences: (qwenReferenceAdapter(profile) || structureAdapter(profile)) ? normalizeQwenReferences(chat?.qwenEditReferences) : [],
     randomizeSeed: state.panel?.querySelector("#promptstudio-randomize-seed")?.checked === true,
     secondaryInstructionsOverride: state.panel?.querySelector("#promptstudio-secondary-instructions")?.value || "",
@@ -8161,9 +8261,11 @@ async function queueGeneration({
   referenceImage = undefined,
   referenceGrounding = null,
   workflowReferenceInputs = undefined,
+  referenceContractKey: submittedReferenceContractKey,
   qwenReferences = undefined,
   qwenInstruction = "",
   editPromptModel = "",
+  qwenPosePromptVersion = undefined,
   upscaleFactor = null,
   resultNodeIds = null,
   resultFields = null,
@@ -8217,7 +8319,8 @@ async function queueGeneration({
   const referenceState = normalizeReferenceState({
     workflowReferenceInputs: workflowReferenceInputs === undefined ? workflowReferenceValues(chat, submittedProfile) : workflowReferenceInputs,
     qwenReferences: qwenReferences === undefined && (qwenReferenceAdapter(submittedProfile) || structureAdapter(submittedProfile)) ? chat?.qwenEditReferences : qwenReferences,
-    qwenInstruction, editPromptModel,
+    qwenInstruction, editPromptModel, qwenPosePromptVersion,
+    referenceContractKey: submittedReferenceContractKey ?? referenceContractKey(submittedProfile),
   });
   if (!replayExactGeneration && (editReferenceController?.uploading(chat?.id) || upscaleReferenceController?.uploading(chat?.id))) {
     throw new Error("Wait for the reference image to finish uploading.");
@@ -8244,6 +8347,7 @@ async function queueGeneration({
     context.snapshot.workflow ||= {nodes: [], links: []};
     delete context.snapshot.provenance;
   }
+  if (!replayExactGeneration && referenceState.referenceContractKey !== referenceContractKey(context.profile)) throw new Error("Workflow reference settings changed. Prepare the prompt again before generating.");
   if (!replayExactGeneration && action === "edit") {
     try {
       source = await imageReferenceWithDimensions(source);
@@ -8269,9 +8373,9 @@ async function queueGeneration({
   const secondaryInstructions = effectiveSecondaryInstructions(generationIntent, secondaryInstructionsOverride == null
     ? state.panel.querySelector("#promptstudio-secondary-instructions")?.value || ""
     : String(secondaryInstructionsOverride));
-  if (!replayExactGeneration && action === "create" && qwenReferenceAdapter(context.profile)) {
+  if (!replayExactGeneration && (action === "create" || qwenReferenceAdapter(context.profile)?.promptMode === "full_prompt") && qwenReferenceAdapter(context.profile)) {
     // Rebuild from the canonical scene on repeats or after references change.
-    executionPrompt = qwenCreateInstruction(finalPrompt || executionPrompt, referenceState.qwenReferences);
+    executionPrompt = qwenCreateInstruction(finalPrompt || executionPrompt, referenceState.qwenReferences, qwenReferenceAdapter(context.profile));
   }
   if (!replayExactGeneration && action !== "upscale") {
     const apiNode = context.snapshot.output?.[String(context.promptNodeId)];
@@ -8319,10 +8423,11 @@ async function queueGeneration({
   }
 
   if (!replayExactGeneration) {
-    if (action === "edit") validateTargetSource(referenceState.qwenReferences, source);
+    applyImageOutputSettings(context.snapshot);
+    if (action === "edit") validateTargetSource(referenceState.qwenReferences, source, context.profile);
     if (!supportsEditReference(context.profile)) applyWorkflowReferences(context.snapshot, referenceState.workflowReferenceInputs);
-    if (action === "edit" && semanticReferences(referenceState.qwenReferences).length && referenceState.editPromptModel !== "qwen_image_2_1") {
-      throw new Error("Prepare the Qwen reference edit instruction before generating.");
+    if (action === "edit" && semanticReferences(referenceState.qwenReferences).length && referenceEditAdapter(context.profile) && !["qwen_image_2_1", "workflow"].includes(referenceState.editPromptModel)) {
+      throw new Error("Prepare the reference edit instruction before generating.");
     }
     if (action === "edit" || (action === "create" && qwenReferenceAdapter(context.profile))) applyQwenReferences(context.snapshot, context.profile, referenceState.qwenReferences);
     await applyStructureGuide(context.snapshot, context.profile, referenceState.qwenReferences, api.fetchApi.bind(api));
@@ -8394,6 +8499,7 @@ async function queueGeneration({
       context.profile,
       state.additionalInputSelections,
     );
+    syncImageOutputWorkflow(context.snapshot);
   }
 
   if (operationCancelled()) return false;
@@ -8705,7 +8811,7 @@ async function generateDirectPrompt(action = selectedAction(), {repeat = false} 
       && (!restoredComposer || restoredComposer === restoredUpscale.canonicalPrompt)) {
     return createNewFromCurrentPrompt({ applyControls: false, generationAction: "upscale" });
   }
-  if (action === "edit" && qwenReferenceAdapter(selectedWorkflowProfile(action))
+  if (action === "edit" && referenceEditAdapter(selectedWorkflowProfile(action))
       && !(activeChat()?.pendingGeneration?.generationSnapshot && activeChat().pendingGeneration.replayFingerprint === generationUiFingerprint())) return prepareQwenReferenceEdit({forceGenerate: true, repeat});
   if (!state.apiConnected) return setStatus("ComfyUI is disconnected. Prompt Studio is frozen.", "error");
   if (state.busy) return;
@@ -12916,7 +13022,7 @@ async function handleStudioTurn() {
   const text = input.value.trim();
   const reference = normalizeImageReference(state.mainPastedImage);
   // Bind the answer to the submitted edit. The router can still discuss or cancel it.
-  if (text && selectedAction() === "edit" && chat.referenceClarification?.editPromptModel === "qwen_image_2_1") {
+  if (text && selectedAction() === "edit" && ["qwen_image_2_1", "workflow"].includes(chat.referenceClarification?.editPromptModel)) {
     const pending = chat.referenceClarification, settings = captureRepeatQueueSettings("edit", chat);
     if (!referenceContextMatches(pending, settings) || pending.mainPrompt !== chat.mainPrompt || pending.finalPrompt !== chat.finalPrompt) {
       chat.referenceClarification = null; saveChats();
@@ -12940,7 +13046,7 @@ async function handleStudioTurn() {
   // Routes enrich this same message instead of appending a second copy.
   const messageId = makeId();
   const submittedAction = selectedAction();
-  const submittedSettings = chat.referenceClarification?.editPromptModel === "qwen_image_2_1"
+  const submittedSettings = ["qwen_image_2_1", "workflow"].includes(chat.referenceClarification?.editPromptModel)
     ? captureRepeatQueueSettings(submittedAction, chat) : captureGenerationQueueSettings(submittedAction, chat);
   const submittedHelpContext = currentStudioHelpContext(chat);
   const clarification = chat.referenceClarification && referenceContextMatches(chat.referenceClarification, submittedSettings)
@@ -13041,9 +13147,9 @@ async function handleStudioTurn() {
         studioDiscussionId: active.id,
       });
       const question = !unsafeLowConfidence && routed.reason ? routed.reason : "Please clarify the change you want to make.";
-      if (submittedSettings.referenceImage || (submittedAction === "edit" && qwenReferenceAdapter(selectedWorkflowProfile("edit")))) {
+      if (submittedSettings.referenceImage || (submittedAction === "edit" && referenceEditAdapter(selectedWorkflowProfile("edit")))) {
         chat.referenceClarification = normalizeReferenceClarification({...submittedSettings,
-          ...(!submittedSettings.referenceImage ? {editPromptModel: "qwen_image_2_1"} : {}),
+          ...(!submittedSettings.referenceImage ? {editPromptModel: referenceEditAdapter(selectedWorkflowProfile("edit"))?.model || "qwen_image_2_1"} : {}),
           userText: submittedUserText, question, mainPrompt: chat.mainPrompt, finalPrompt: chat.finalPrompt});
       }
       appendMessage("assistant", question, {
@@ -13077,23 +13183,26 @@ async function prepareQwenReferenceEdit({revisionOverride = null, userTextOverri
   const settings = structuredClone(queueSettingsOverride || (text ? captureGenerationQueueSettings("edit", chat) : captureRepeatQueueSettings("edit", chat)));
   if (!settings.sourceImage) return setStatus("Select an image to edit.", "warning");
   const previous = [chat.pendingGeneration, chat.lastGeneration].find(saved =>
-    saved?.editPromptModel === "qwen_image_2_1" && saved.workflowProfileId === settings.workflowProfileId
+    ["qwen_image_2_1", "workflow"].includes(saved?.editPromptModel) && saved.workflowProfileId === settings.workflowProfileId
+    && (saved.referenceContractKey || "") === (settings.referenceContractKey || "")
     && referenceInputsMatch(saved, settings) && imageReferenceKey(saved.sourceImage) === imageReferenceKey(settings.sourceImage));
   const instruction = text || previous?.qwenInstruction || "";
   const amplified = useLlmAmplification();
   const autoGenerate = forceGenerate || !amplified || state.panel.querySelector("#promptstudio-auto-generate")?.checked !== false;
   const mainPrompt = chat.mainPrompt, finalPrompt = chat.finalPrompt;
-  settings.qwenInstruction = instruction; settings.editPromptModel = "qwen_image_2_1";
+  const referenceProfile = state.workflowProfiles.find(item => item.id === settings.workflowProfileId);
+  const referenceAdapter = qwenReferenceAdapter(referenceProfile);
+  settings.qwenInstruction = instruction; settings.editPromptModel = referenceAdapter?.model || "qwen_image_2_1";
   if (text && recordRevision) appendMessage("user", text, {chatId: chat.id, ...normalizeReferenceState(settings)});
   if (input.value.trim() === text) input.value = "";
-  const operation = createStudioOperation(chat, "edit", "Preparing Qwen edit instruction…");
+  const operation = createStudioOperation(chat, "edit", "Preparing reference edit instruction…");
   const controller = state.operationControllers.get(operation.operationId);
   state.studioPreparations.set(operation.operationId, {chatId: chat.id, kind: "reference_edit"});
   state.latestStudioPreparationByChat.set(chat.id, operation.operationId);
   updateComposeMode(); syncBackgroundActivityIndicator();
   try {
-    settings.qwenReferences = validateQwenReferences(settings.qwenReferences);
-    validateTargetSource(settings.qwenReferences, settings.sourceImage);
+    settings.qwenReferences = validateQwenReferences(settings.qwenReferences, "edit", referenceAdapter);
+    validateTargetSource(settings.qwenReferences, settings.sourceImage, referenceProfile);
     const activeGuides = settings.qwenReferences.filter(entry => isStructureReference(entry) && Number(entry.guide?.strength ?? .8) > 0);
     if (!instruction && !semanticReferences(settings.qwenReferences).length && !activeGuides.length) throw new Error("Describe the requested edit or enable a structure guide.");
     // Preflight the exact graph before spending a vision request on unusable guides.
@@ -13104,23 +13213,24 @@ async function prepareQwenReferenceEdit({revisionOverride = null, userTextOverri
     }
     const payload = collectRevisionPayload("", "render", "", "", null);
     let prompt, referenceTriage = null;
-    if (!text && previous?.executionPrompt) prompt = previous.executionPrompt;
+    if (!text && previous?.executionPrompt && canReuseQwenPosePrompt(previous, settings.qwenReferences)) prompt = previous.executionPrompt;
     else if (amplified) {
       updateStudioOperation(operation.id, {operationPhase: "checking_vision", operationStatus: "Checking reference complexity locally…"});
-      const editPayload = {model: "qwen_image_2_1", source_image: settings.sourceImage, references: settings.qwenReferences, user_text: instruction};
+      const editPayload = {model: referenceAdapter?.model || "qwen_image_2_1", ...(referenceAdapter?.explicit ? {reference_contract: referenceAdapter} : {}), source_image: settings.sourceImage, references: settings.qwenReferences, user_text: instruction};
       const triage = await referenceDetection(api.fetchApi.bind(api), "triage", editPayload, controller?.signal);
       referenceTriage = triage;
       if (controller?.signal.aborted) return false;
-      if (triage.decision === "simple") {
-        prompt = directQwenInstruction(instruction, settings.qwenReferences);
+      if (triage.decision === "simple" && !referenceAdapter?.instructions) {
+        prompt = directQwenInstruction(instruction, settings.qwenReferences, referenceAdapter);
         updateStudioOperation(operation.id, {operationStatus: "Simple pose transfer — no LLM needed", referenceTriage: triage});
       } else {
         updateStudioOperation(operation.id, {operationPhase: "checking_vision", operationStatus: "Checking image support…"});
         await requireVisionCapability(payload, controller?.signal);
-        updateStudioOperation(operation.id, {operationPhase: "llm_processing", operationStatus: "Building the Qwen reference edit instruction…", referenceTriage: triage});
+        updateStudioOperation(operation.id, {operationPhase: "llm_processing", operationStatus: "Building the reference edit instruction…", referenceTriage: triage});
         prompt = await requestQwenEdit(api.fetchApi.bind(api), {...payload, ...editPayload}, controller?.signal);
       }
-    } else prompt = directQwenInstruction(instruction, settings.qwenReferences);
+    } else prompt = directQwenInstruction(instruction, settings.qwenReferences, referenceAdapter);
+    settings.qwenPosePromptVersion = QWEN_POSE_PROMPT_VERSION;
     if (controller?.signal.aborted || !state.chats.some(item => item.id === chat.id)) return false;
     if (state.latestStudioPreparationByChat.get(chat.id) === operation.operationId) chat.referenceClarification = null;
     const generation = {action: "edit", mainPrompt, canonicalPrompt: finalPrompt,
@@ -13178,7 +13288,7 @@ async function reviseAndMaybeGenerate({
   queueSettingsOverride = null,
   clarificationQuestion = "",
 } = {}) {
-  if (generationAction === "edit" && qwenReferenceAdapter(selectedWorkflowProfile(generationAction))) {
+  if (generationAction === "edit" && referenceEditAdapter(selectedWorkflowProfile(generationAction))) {
     return prepareQwenReferenceEdit({revisionOverride: clarificationQuestion ? `${userTextOverride}\nResolved edit: ${revisionOverride}` : revisionOverride,
       userTextOverride, queueSettingsOverride, forceGenerate, recordRevision});
   }
@@ -13466,7 +13576,7 @@ async function createNewFromCurrentPrompt({ applyControls = true, generationActi
   const restored = activeChat()?.pendingGeneration;
   if (restored?.action === "upscale" && restored.generationSnapshot
       && restored.replayFingerprint === generationUiFingerprint()) generationAction = "upscale";
-  if (generationAction === "edit" && qwenReferenceAdapter(selectedWorkflowProfile(generationAction))
+  if (generationAction === "edit" && referenceEditAdapter(selectedWorkflowProfile(generationAction))
       && !(activeChat()?.pendingGeneration?.generationSnapshot && activeChat().pendingGeneration.replayFingerprint === generationUiFingerprint())) return prepareQwenReferenceEdit({forceGenerate: true, repeat: true});
   if (state.busy) return;
   const chat = activeChat();
@@ -13619,7 +13729,7 @@ function applyPreparedPromptToChat(
 }
 
 async function queueBackgroundReroll(generationAction = selectedAction()) {
-  if (generationAction === "edit" && qwenReferenceAdapter(selectedWorkflowProfile(generationAction))) {
+  if (generationAction === "edit" && referenceEditAdapter(selectedWorkflowProfile(generationAction))) {
     return prepareQwenReferenceEdit({forceGenerate: true, repeat: true});
   }
   if (!state.apiConnected) return setStatus("ComfyUI is disconnected. Prompt Studio is frozen.", "error");
@@ -13989,6 +14099,7 @@ function buildPanel() {
                 </div>
                 <small>Requires ComfyUI Manager. Update runs Manager's Update All for ComfyUI and installed custom nodes.</small>
               </section>
+              <section class="promptstudio-system-status-section" id="promptstudio-background-tasks"></section>
               <section class="promptstudio-system-status-section">
                 <strong>Recent activity</strong>
                 <div class="promptstudio-system-status-actions">
@@ -14074,7 +14185,7 @@ function buildPanel() {
           <div class="promptstudio-resolution-grid">
             <label>Aspect ratio<select id="promptstudio-resolution-aspect-ratio">${RESOLUTION_ASPECT_RATIOS.map((value) => `<option value="${value}">${value}</option>`).join("")}</select></label>
             <label>Megapixels<input id="promptstudio-resolution-megapixels" type="number" min="0.1" max="16" step="0.1" value="1" /></label>
-            <label>Multiple<input id="promptstudio-resolution-multiple" type="number" min="8" max="128" step="4" value="8" /></label>
+            <label>Multiple<input id="promptstudio-resolution-multiple" type="number" min="8" max="128" step="4" value="32" /></label>
           </div>
         </details>
         <details id="promptstudio-additional-inputs-details" class="promptstudio-additional-inputs-details" data-promptstudio-sidebar-group="additional-inputs" open hidden>
@@ -14089,7 +14200,8 @@ function buildPanel() {
           </div>
         </details>
         <details id="promptstudio-secondary-details" class="promptstudio-secondary-details" data-promptstudio-sidebar-group="secondary-instructions" open>
-          <summary><span>Unmodified part</span><small id="promptstudio-secondary-summary">Text passed through unchanged</small></summary>
+          <summary><span>Unmodified part</span></summary>
+          <div class="promptstudio-secondary-actions"><button type="button" id="promptstudio-add-trigger-words">Add trigger words</button></div>
           <textarea id="promptstudio-secondary-instructions" rows="3" aria-label="Unmodified part" placeholder="Phrases that must remain unchanged, such as LoRA trigger words"></textarea>
         </details>
       </section>
@@ -14101,6 +14213,7 @@ function buildPanel() {
         <div class="promptstudio-studio-settings-header-actions"><span class="promptstudio-studio-settings-context">Prompt Studio</span><button id="promptstudio-close-studio-settings" type="button">Done</button></div>
       </header>
       <div class="promptstudio-studio-settings-layout">
+        <div class="promptstudio-studio-settings-column">
         <section class="promptstudio-studio-settings-card" aria-labelledby="promptstudio-general-settings-title">
           <header class="promptstudio-studio-settings-card-header">
             <div><strong id="promptstudio-general-settings-title">General</strong><span>Backend selection, chat display, and editing behavior</span></div>
@@ -14207,6 +14320,10 @@ function buildPanel() {
             </label>
           </div>
         </section>
+        <div data-image-output-settings></div>
+        <div data-model-profile-settings></div>
+        </div>
+        <div class="promptstudio-studio-settings-column">
         <section class="promptstudio-studio-settings-card" aria-labelledby="promptstudio-workflow-settings-title">
           <header class="promptstudio-studio-settings-card-header promptstudio-workflow-settings-header">
             <div>
@@ -14228,17 +14345,18 @@ function buildPanel() {
               <span class="promptstudio-studio-setting-copy"><strong>Use prompt when upscaling</strong><small>Inject the image's prompt into the Prompt Studio Upscale node.</small></span>
               <input id="promptstudio-use-prompt-upscaling" type="checkbox" role="switch" ${settings.use_prompt_upscaling ? "checked" : ""} />
             </label>
-            <div class="promptstudio-studio-settings-note">
+            <details class="promptstudio-studio-settings-note">
+              <summary>Workflow requirements</summary>
               <p>Name saved ComfyUI workflows with a <strong>[PS]</strong> prefix. Each needs exactly one image output. Create and Edit need a Prompt Slot or Prompt Amplify node; Edit also needs Prompt Studio Image Source. Upscale requires Prompt Studio Upscale.</p>
               <p>Saved workflows refresh here immediately and are checked before generation. Invalid updates keep the last working copy marked <strong>cached</strong>.</p>
-            </div>
+            </details>
           </div>
         </section>
         <section class="promptstudio-studio-settings-card promptstudio-mutation-config-card" aria-labelledby="promptstudio-mutation-settings-title">
           <header class="promptstudio-studio-settings-card-header">
             <div>
               <strong id="promptstudio-mutation-settings-title">Prompt Mutation Configuration</strong>
-              <span>Manage the local language rules and personal presets used when Prompt Studio rewrites prompts.</span>
+              <span>Words, reusable instructions and personal presets.</span>
             </div>
           </header>
           <div class="promptstudio-mutation-launchers">
@@ -14269,6 +14387,7 @@ function buildPanel() {
           </div>
         </section>
       </div>
+      </div>
       <dialog id="promptstudio-mutation-manager" class="promptstudio-mutation-manager" aria-labelledby="promptstudio-mutation-manager-title" aria-describedby="promptstudio-mutation-manager-description" hidden>
         <div class="promptstudio-mutation-manager-content">
         <header class="promptstudio-mutation-manager-header">
@@ -14287,7 +14406,7 @@ function buildPanel() {
         </div>
         <div id="promptstudio-mutation-editor" class="promptstudio-mutation-editor" role="dialog" aria-labelledby="promptstudio-mutation-editor-title" hidden>
           <form class="promptstudio-mutation-editor-card">
-            <header><div><strong id="promptstudio-mutation-editor-title"></strong><span>Changes are saved to the corresponding local configuration file.</span></div><button id="promptstudio-mutation-editor-close" type="button" aria-label="Close editor">×</button></header>
+            <header><div><strong id="promptstudio-mutation-editor-title"></strong><span>Changes save to JSON files in config/user/.</span></div><button id="promptstudio-mutation-editor-close" type="button" aria-label="Close editor">×</button></header>
             <div class="promptstudio-mutation-editor-fields">
               <p id="promptstudio-mutation-editor-help" class="promptstudio-mutation-editor-help"></p>
               <label id="promptstudio-mutation-editor-name-row"><span id="promptstudio-mutation-editor-name-label">Name</span><input id="promptstudio-mutation-editor-name" type="text" autocomplete="off" required /></label>
@@ -14671,7 +14790,7 @@ function buildPanel() {
     ? settings.resolution_aspect_ratio
     : RESOLUTION_ASPECT_RATIOS[0];
   panel.querySelector("#promptstudio-resolution-megapixels").value = String(Math.max(0.1, Math.min(16, Number(settings.resolution_megapixels) || 1)));
-  panel.querySelector("#promptstudio-resolution-multiple").value = String(Math.max(8, Math.min(128, Math.round((Number(settings.resolution_multiple) || 8) / 4) * 4)));
+  panel.querySelector("#promptstudio-resolution-multiple").value = String(Math.max(8, Math.min(128, Math.round((Number(settings.resolution_multiple) || 32) / 4) * 4)));
   applyImageScale(settings.image_scale);
   syncOutputLengthControl({ storedSettings: settings });
   syncLlmProviderControls();
@@ -14916,6 +15035,9 @@ function buildPanel() {
   panel.querySelector("#promptstudio-llamacpp-restart").addEventListener("click", () => controlLlamacppServer("restart"));
   panel.querySelector("#promptstudio-comfy-update").addEventListener("click", updateComfyUIFromStatus);
   panel.querySelector("#promptstudio-comfy-restart").addEventListener("click", restartComfyUIFromStatus);
+  mountBackgroundTasks(panel.querySelector("#promptstudio-background-tasks"), {
+    scope: studioPollingScope(), fetchApi: (...args) => api.fetchApi(...args),
+  });
   panel.querySelector("#promptstudio-job-refresh").addEventListener("click", async () => {
     const target = panel.querySelector("#promptstudio-job-activity");
     try {
@@ -15018,6 +15140,11 @@ function buildPanel() {
     });
   });
   panel.querySelector("#promptstudio-secondary-instructions").addEventListener("change", saveSettings);
+  installTriggerWordPicker({
+    button: panel.querySelector("#promptstudio-add-trigger-words"),
+    editor: panel.querySelector("#promptstudio-secondary-instructions"),
+    getContext: triggerWordContext,
+  });
   panel.querySelector("#promptstudio-additional-instructions").addEventListener("input", renderAdditionalInstructionTemplateHighlights);
   panel.querySelector("#promptstudio-additional-instructions").addEventListener("scroll", renderAdditionalInstructionTemplateHighlights);
   panel.querySelector("#promptstudio-additional-instructions").addEventListener("change", markControlsChanged);

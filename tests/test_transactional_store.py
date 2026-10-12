@@ -10,7 +10,7 @@ import threading
 import unittest
 from unittest import mock
 
-import transactional_store as store
+import backend.transactional_store as store
 from test_regressions import load_modules
 
 

@@ -9,8 +9,8 @@ receive documentation. Pure app help does not need vision or create a proposal.
 
 ## Add or change a feature
 
-1. Add/edit a short Markdown file under `assistant-help/`. Video-only documents
-   belong in `PromptStudio_Video/assistant-help/`. Discovery is automatic.
+1. Add/edit a short Markdown file under `docs/assistant-help/`. Video-only documents
+   belong in `PromptStudio_Video/docs/assistant-help/`. Discovery is automatic.
 2. Begin with `---`, a JSON metadata object, and another `---` on their own lines:
 
    ```json

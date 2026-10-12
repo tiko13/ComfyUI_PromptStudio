@@ -6,7 +6,42 @@ from torch import nn
 from torch.nn import functional as F
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from qwen_turbo import shifted_sigmas, _run_with_adapter
+from backend.qwen_turbo import shifted_sigmas, _run_with_adapter
+from backend.qwen_turbo import QwenImage21OfficialTurboSampler
+from types import SimpleNamespace, ModuleType
+from unittest.mock import patch
+
+# Verify the schedule actually passed to ComfyUI, independent of resolution.
+calls = []
+class CaptureSampler:
+    def sample(self, *args):
+        calls.append(args)
+        return args[-1], None
+
+samplers = ModuleType('comfy.samplers')
+samplers.sampler_object = lambda name: name
+comfy = ModuleType('comfy')
+comfy.samplers = samplers
+custom = ModuleType('comfy_extras.nodes_custom_sampler')
+custom.SamplerCustom = CaptureSampler
+# Load PyTorch's lazy comparison dependencies before the temporary module map;
+# restoring sys.modules must not cause native operators to register twice.
+torch.testing.assert_close(torch.zeros(1), torch.zeros(1))
+with patch.dict(sys.modules, {'comfy':comfy, 'comfy.samplers':samplers,
+                             'comfy_extras.nodes_custom_sampler':custom}):
+    model, positive = SimpleNamespace(model_options={}), object()
+    for height, width in [(64,64), (128,128), (66,96)]:
+        latent = {'samples':torch.zeros(1,4,height,width)}
+        assert QwenImage21OfficialTurboSampler().sample(model, 123, positive, latent)[0] is latent
+        args = calls[-1]
+        assert args[:7] == (model, True, 123, 1.0, positive, positive, 'euler')
+        torch.testing.assert_close(args[7], torch.tensor([1., .978453, .95418, .926626, .89508, .845148, .704534, .414568, 0.]), rtol=0, atol=0)
+    try:
+        QwenImage21OfficialTurboSampler().sample(SimpleNamespace(model_options={'promptstudio_qwen_turbo':'viggle-v0.3'}), 123, positive, latent)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError('Official sampling must reject a stacked Viggle adapter')
 
 torch.manual_seed(123)
 for height, width in [(64, 64), (66, 96), (32, 48)]:

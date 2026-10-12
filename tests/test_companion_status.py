@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from unittest import mock
 
-spec = importlib.util.spec_from_file_location("companion_status", Path(__file__).resolve().parents[1] / "companion_status.py")
+spec = importlib.util.spec_from_file_location("companion_status", Path(__file__).resolve().parents[1] / "backend" / "companion_status.py")
 module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module)
 

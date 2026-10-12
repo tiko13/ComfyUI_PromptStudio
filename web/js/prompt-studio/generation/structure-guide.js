@@ -1,3 +1,5 @@
+import { capabilityNode, declaredReferenceAdapter, poseInpaintAdapter } from "./workflow-capabilities.js";
+import { isStudioSampler } from "./sampling.js";
 export const GUIDE_TYPES = Object.freeze({pose: "Pose", depth: "Depth", edges: "Edges", sketch: "Sketch"});
 export const isStructureReference = entry => entry?.use === "structure" || entry?.use === "both";
 export const semanticReferences = entries => (entries || []).filter(entry => entry.use !== "structure");
@@ -13,15 +15,19 @@ export function normalizeGuide(value) {
   return {type: Object.hasOwn(GUIDE_TYPES, value?.type) ? value.type : "edges",
     strength: Number.isFinite(Number(value?.strength)) ? Math.min(1, Math.max(0, Number(value.strength))) : 0.8,
     input: value?.input === "prepared" ? "prepared" : "photo", fit: value?.fit === "crop" ? "crop" : "fit",
-    ...(value?.scope === "whole" ? {scope: "whole"} : {})};
+    ...(value?.scope === "whole" ? {scope: "whole"} : {}),
+    ...(typeof value?.preserve_background === "boolean" ? {preserve_background: value.preserve_background} : {})};
 }
 
 // Require an unambiguous Qwen 2.1 encoder/sampler/VAE contract, not a filename.
 export function structureAdapter(profile) {
   if (!["create", "edit"].includes(profile?.kind)) return null;
+  const input = capabilityNode(profile, "PS_StructureInput");
+  if (input) return {inputId: input.id, prompt: String(profile.promptNodeId), explicit: true};
+  if (declaredReferenceAdapter(profile)) return null;
   const output = profile.snapshot?.output || {};
   const encoders = Object.entries(output).filter(([, n]) => n.class_type === "TextEncodeQwenImage21");
-  const samplers = Object.entries(output).filter(([, n]) => ["KCPP_PromptStudioSampler", "KCPP_QwenImage21TurboSampler"].includes(n.class_type));
+  const samplers = Object.entries(output).filter(([, n]) => isStudioSampler(n.class_type));
   const decoders = Object.values(output).filter(n => n.class_type === "VAEDecode");
   if (encoders.length !== 1 || samplers.length !== 1 || decoders.length !== 1 || !profile.promptNodeId
       || !Array.isArray(decoders[0].inputs.vae) || !Array.isArray(samplers[0][1].inputs.model)
@@ -33,11 +39,13 @@ export function structureAdapter(profile) {
 
 export function guideGraph(entry, {width = 1024, height = 1024} = {}) {
   const guide = normalizeGuide(entry.guide);
+  const edited = guide.type === "pose" && entry.pose?.image;
+  const targeting = normalizeTargeting(edited ? {...entry.targeting, reference: null} : entry.targeting);
   return {
-    ps_structure_source: {class_type: "KCPP_ChatImageReference", inputs: {image_ref: JSON.stringify(entry.image), source_name: "Structure guide"}},
+    ps_structure_source: {class_type: "KCPP_ChatImageReference", inputs: {image_ref: JSON.stringify(edited || entry.image), source_name: "Structure guide"}},
     ps_structure_guide: {class_type: "KCPP_QwenStructureGuide", inputs: {image: ["ps_structure_source", 0], guide_type: guide.type,
-      input_mode: guide.input, fit: guide.fit, width, height,
-      ...(normalizeTargeting(entry.targeting) ? {targeting: JSON.stringify(normalizeTargeting(entry.targeting))} : {})}},
+      input_mode: edited ? "prepared" : guide.input, fit: guide.fit, width, height,
+      ...(targeting ? {targeting: JSON.stringify(targeting)} : {})}},
   };
 }
 
@@ -49,6 +57,8 @@ export async function controlnetStatus(fetchApi) {
 
 export async function applyStructureGuide(snapshot, profile, references, fetchApi) {
   const entries = (references || []).filter(isStructureReference);
+  const declared = capabilityNode({...profile, snapshot}, "PS_StructureInput");
+  if (declared) snapshot.output[declared.id].inputs.reference_json = "";
   if (!entries.length) return;
   const adapter = structureAdapter({...profile, snapshot});
   if (!adapter) return; // Saved guide stays inactive on incompatible workflows.
@@ -56,9 +66,25 @@ export async function applyStructureGuide(snapshot, profile, references, fetchAp
   const entry = profile.kind === "create" ? {...entries[0], targeting: {...entries[0].targeting, target: null}} : entries[0];
   const guide = normalizeGuide(entry.guide);
   if (guide.strength === 0) return;
+  const inpaint = poseInpaintAdapter({...profile, snapshot});
+  if (inpaint && guide.type === "pose" && (guide.preserve_background ?? inpaint.preserveBackground) && !entry.editMask?.enabled) {
+    throw new Error("Preserve background needs a reviewed mask. Open References → Edit background mask to estimate both body positions, review it and Apply mask, or turn Preserve background off.");
+  }
+  if (adapter.explicit) {
+    const qwenApply = capabilityNode({...profile, snapshot}, "PS_ApplyQwenStructure");
+    const defaultQwen = qwenApply?.inputs.control_model === "Qwen-Image-2.1-Fun-Controlnet-Union.safetensors";
+    const needsExtraction = !(guide.type === "pose" && entry.pose) && guide.input === "photo";
+    if (defaultQwen || needsExtraction) {
+      const status = await controlnetStatus(fetchApi);
+      if (defaultQwen && !status.ready) throw new Error("Install Qwen Structure guide (ControlNet) in Settings > Setup.");
+      if (needsExtraction && !status.methods?.[guide.type]?.ready) throw new Error(`Install ${GUIDE_TYPES[guide.type]} extraction in Settings > Setup, or use a prepared guide.`);
+    }
+    snapshot.output[adapter.inputId].inputs.reference_json = JSON.stringify(entry);
+    return;
+  }
   const status = await controlnetStatus(fetchApi);
   if (!status.ready) throw new Error("Install Qwen Structure guide (ControlNet) in Settings > Setup.");
-  if (guide.input === "photo" && !status.methods?.[guide.type]?.ready) throw new Error(`Install ${GUIDE_TYPES[guide.type]} extraction in Settings > Setup, or use a prepared guide.`);
+  if (!(guide.type === "pose" && entry.pose) && guide.input === "photo" && !status.methods?.[guide.type]?.ready) throw new Error(`Install ${GUIDE_TYPES[guide.type]} extraction in Settings > Setup, or use a prepared guide.`);
   const nodes = guideGraph(entry, {width: [adapter.prompt, 2], height: [adapter.prompt, 3]});
   nodes.ps_structure_model = {class_type: "ModelPatchLoader", inputs: {name: status.model}};
   nodes.ps_structure_apply = {class_type: "ZImageFunControlnet", inputs: {model: snapshot.output[adapter.sampler].inputs.model,
@@ -68,10 +94,11 @@ export async function applyStructureGuide(snapshot, profile, references, fetchAp
   snapshot.output[adapter.sampler].inputs.model = ["ps_structure_apply", 0];
 }
 
-export async function previewStructureGuide(entry, fetchApi, dimensions, signal) {
+export async function previewStructureGuide(entry, fetchApi, dimensions, signal, editable = false) {
   const prompt = guideGraph(entry, dimensions?.resolution ? {width: ["ps_structure_size", 2], height: ["ps_structure_size", 3]} : dimensions);
   if (dimensions?.resolution) prompt.ps_structure_size = {class_type: "KCPP_PromptSlot", inputs: {prompt: "", slot_name: "Guide preview", secondary_instructions: "", ...dimensions.resolution}};
   prompt.ps_structure_preview = {class_type: "PreviewImage", inputs: {images: ["ps_structure_guide", 0]}};
+  if (editable) prompt.ps_structure_guide.inputs.emit_pose = true;
   const response = await fetchApi("/prompt", {method: "POST", headers: {"Content-Type": "application/json"},
     body: JSON.stringify({prompt}), signal});
   const queued = await response.json();
@@ -83,7 +110,12 @@ export async function previewStructureGuide(entry, fetchApi, dimensions, signal)
     const history = (await result.json())[queued.prompt_id];
     if (history?.status?.status_str === "error") throw new Error(history.status.messages?.find(([type]) => type === "execution_error")?.[1]?.exception_message || "Guide extraction failed.");
     const image = history?.outputs?.ps_structure_preview?.images?.[0];
-    if (image) return image;
+    if (image) {
+      if (!editable) return image;
+      const json = history.outputs?.ps_structure_guide?.pose_json?.[0];
+      if (!json) throw new Error("Editable pose data is unavailable. Restart ComfyUI to load the pose editor support.");
+      return JSON.parse(json);
+    }
     await new Promise(resolve => setTimeout(resolve, 500));
   }
   throw new Error(signal?.aborted ? "Preview closed" : "Guide preview is still queued. Check ComfyUI's queue.");

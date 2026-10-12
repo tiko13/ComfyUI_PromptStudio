@@ -1,0 +1,11 @@
+---
+{"id":"workflows","topic":"workflows","studio":"image","summary":"Select, refresh or set up Create, Edit and Upscale workflows."}
+---
+Open the sidebar gear labelled Prompt Studio settings, then ComfyUI workflow templates. Choose Create template, Edit template or Upscale template. Current selector: {workflow_label}; mode: {mode}; workflow: {workflow}. Use Create/Edit in the composer; upscale through an image's Upscale action. Workflow changes immediately refresh input guidance, edit prompt controls, references, models and additional controls, preserving unsent text and saved references.
+For installation/setup, open that same gear Settings dialog, then General, and use Run setup in the Setup wizard row. The wizard checks prerequisites and bundled workflows. Refresh workflows after saving a compatible [PS] workflow in ComfyUI. Do not promise arbitrary ComfyUI graphs work without the required Prompt Studio nodes.
+Selections are saved per chat. Each template has its own row: choose a workflow and click Make default workflow to use it in new chats. Defaults are marked Default in the dropdown and remembered in this browser. Existing chats keep their choices; without a default, new chats inherit the current choice. Unavailable selections stay remembered.
+Bundled workflow prompt and image-reference fields start empty. Supply your own prompt and any required images, including the requested operation for a background-removal workflow. Model settings and setup notes are retained.
+In the standalone page, use Image/Video in the header to switch studios, including after refreshing. Video requires the companion to be installed and connected.
+Settings uses compact sections. Expand Workflow requirements for graph-authoring rules; Image output controls PNG/WebP defaults and identifies forced output nodes.
+
+Qwen Turbo templates use the official INT8 Turbo model with eight fixed Euler steps and CFG 1. Base25/base40 retain adjustable sampling. Older Turbo template selections move to the official variants; saved generation snapshots retain their original execution.

@@ -4,6 +4,7 @@ import {readFileSync} from 'node:fs';
 import {createWorkflowTemplateBuilder} from '../web/js/prompt-studio/generation/workflow-template.js';
 import {qwenReferenceAdapter} from '../web/js/prompt-studio/generation/qwen-references.js';
 import {structureAdapter} from '../web/js/prompt-studio/generation/structure-guide.js';
+import {applyImageOutputSettings} from '../web/js/prompt-studio/settings/image-output.js';
 
 const catalog = JSON.parse(readFileSync(new URL('../setup/catalog.json', import.meta.url)));
 
@@ -47,11 +48,21 @@ test('bundled Qwen workflows retain executable links, Studio roles and model con
       assert.equal(profile.resultNodeIds.length, 1);
       assert.equal(profile.modelNodes[0].modelType, 'QwenImage21');
       assert.equal(profile.loraNodes.length, 1, 'Turbo keeps the separate user LoRA stack');
-      const steps = pack.id.endsWith('turbo6') ? 6 : pack.id.endsWith('base40') ? 40 : 25;
+      const steps = pack.id.endsWith('turbo8') ? 8 : pack.id.endsWith('base40') ? 40 : 25;
       assert.equal(profile.samplingNodes[0].controls.steps, steps);
       assert.equal(Boolean(profile.imageNodeId), pack.role === 'edit');
       assert.equal(qwenReferenceAdapter(profile)?.limit, pack.role === 'edit' ? 9 : 10, pack.file);
       assert.ok(structureAdapter(profile), pack.file);
+      if (pack.role === 'edit') {
+        const encoder = Object.values(profile.snapshot.output).find(n => n.class_type === 'TextEncodeQwenImage21');
+        assert.equal(encoder.inputs.resolution, 0, pack.file);
+        // A user's lossy global preference must respect the workflow's nodes.
+        applyImageOutputSettings(profile.snapshot, {format: 'webp', mode: 'lossy', quality: 50});
+        const saver = Object.values(profile.snapshot.output).find(n => n.class_type === 'Save_as_webp_cond');
+        assert.equal(saver.inputs.format, 'png', pack.file);
+        assert.equal(saver.inputs.mode, 'lossless', pack.file);
+        assert.equal(saver.inputs.force, true, pack.file);
+      }
     }
   } finally { globalThis.LiteGraph = originalRegistry; }
 });

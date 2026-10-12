@@ -2,6 +2,17 @@
 @import url("./studio-tokens.css");
 @import url("./prompt_studio_setup.css");
 
+.promptstudio-image-output-fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(104px, 1fr)); gap: 8px; margin: 10px 12px; }
+.promptstudio-image-output-fields label { display: flex; flex-direction: column; gap: 4px; min-width: 0; font-size: 11px; }
+.promptstudio-image-output-fields label[hidden], .promptstudio-image-output-settings [hidden] { display: none !important; }
+.promptstudio-image-output-fields input:not([type="checkbox"]), .promptstudio-image-output-fields select { width: 100%; box-sizing: border-box; }
+.promptstudio-image-output-fields .promptstudio-image-output-check { flex-direction: row; align-items: center; }
+.promptstudio-image-output-settings p { font-size: 11px; line-height: 1.4; opacity: .85; margin: 8px 12px; }
+.promptstudio-image-output-settings [data-output-workflow-notice] { white-space: pre-line; opacity: 1; border-left: 3px solid var(--ps-accent, #82b4ff); padding-left: 10px; }
+.promptstudio-image-output-about { margin: 8px 12px; font-size: 11px; }
+.promptstudio-image-output-about summary { cursor: pointer; color: var(--ps-muted, #b0b0c0); }
+.promptstudio-image-output-about p { margin: 6px 0 0; }
+
 #promptstudio-prompt-studio,
 body.promptstudio-popout-body {
   color-scheme: dark;
@@ -495,7 +506,8 @@ body.promptstudio-popout-body {
   font-size: 9px;
 }
 
-#promptstudio-prompt-studio button {
+#promptstudio-prompt-studio button,
+#promptstudio-prompt-studio .promptstudio-plot-artifacts a {
   min-height: var(--studio-control-height);
   padding: 0 var(--studio-space-3);
   color: var(--ps-text);
@@ -508,12 +520,14 @@ body.promptstudio-popout-body {
   transition: background var(--studio-motion-control) ease, border-color var(--studio-motion-control) ease, transform var(--studio-motion-control) ease, opacity var(--studio-motion-control) ease;
 }
 
-#promptstudio-prompt-studio button:hover:not(:disabled) {
+#promptstudio-prompt-studio button:hover:not(:disabled),
+#promptstudio-prompt-studio .promptstudio-plot-artifacts a:hover {
   background: rgba(255, 255, 255, 0.1);
   border-color: rgba(255, 255, 255, 0.17);
 }
 
-#promptstudio-prompt-studio button:active:not(:disabled) {
+#promptstudio-prompt-studio button:active:not(:disabled),
+#promptstudio-prompt-studio .promptstudio-plot-artifacts a:active {
   transform: translateY(1px);
 }
 
@@ -1485,9 +1499,9 @@ body.promptstudio-popout-body .promptstudio-header-actions {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 20px;
-  min-height: 78px;
-  padding: 16px 22px;
+  gap: 12px;
+  min-height: 56px;
+  padding: 10px 14px;
   background: rgba(20, 22, 31, 0.94);
   border-bottom: 1px solid var(--ps-border);
   backdrop-filter: blur(18px);
@@ -1541,12 +1555,15 @@ body.promptstudio-popout-body .promptstudio-header-actions {
 .promptstudio-studio-settings-layout {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: start;
   align-content: start;
-  gap: 16px;
+  gap: 10px;
   width: min(1120px, 100%);
   margin: 0 auto;
-  padding: 22px;
+  padding: 12px;
 }
+
+.promptstudio-studio-settings-column { display: grid; gap: 10px; min-width: 0; align-content: start; }
 
 .promptstudio-studio-settings-card {
   min-width: 0;
@@ -1558,7 +1575,7 @@ body.promptstudio-popout-body .promptstudio-header-actions {
 }
 
 .promptstudio-studio-settings-card-header {
-  padding: 15px 17px 13px;
+  padding: 9px 12px;
   background: rgba(255, 255, 255, 0.018);
   border-bottom: 1px solid var(--ps-border);
 }
@@ -1662,8 +1679,8 @@ body.promptstudio-popout-body .promptstudio-header-actions {
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  min-height: 78px;
-  padding: 14px 17px;
+  min-height: 52px;
+  padding: 8px 12px;
 }
 
 .promptstudio-studio-setting + .promptstudio-studio-setting {
@@ -2831,6 +2848,39 @@ body.promptstudio-popout-body .promptstudio-header-actions {
   font-weight: 700;
 }
 
+.promptstudio-secondary-actions {
+  display: flex;
+  justify-content: flex-end;
+  padding: 0 10px 6px;
+}
+
+#promptstudio-prompt-studio #promptstudio-add-trigger-words {
+  padding: 3px 7px;
+  font-size: 10px;
+  white-space: nowrap;
+  min-height: 24px;
+}
+
+.promptstudio-trigger-menu {
+  position: fixed;
+  inset: auto;
+  margin: 0;
+  box-sizing: border-box;
+  overflow: auto;
+  padding: 10px;
+  border: 1px solid var(--ps-border, #45495a);
+  border-radius: 9px;
+  color: var(--ps-text, #e7eaf2);
+  background: var(--ps-panel, #171b25);
+  box-shadow: 0 6px 24px #0008;
+  font: 12px/1.5 system-ui, sans-serif;
+}
+
+.promptstudio-trigger-menu section + section { border-top: 1px solid var(--ps-border, #45495a); margin-top: 8px; padding-top: 8px; }
+.promptstudio-trigger-menu h4 { margin: 0 0 6px; font-size: 12px; overflow-wrap: anywhere; }
+.promptstudio-trigger-menu p { margin: 0; color: var(--ps-muted, #aeb7c9); }
+#promptstudio-prompt-studio .promptstudio-trigger-menu button { margin: 0 5px 5px 0; padding: 4px 8px; max-width: 100%; white-space: normal; overflow-wrap: anywhere; }
+
 .promptstudio-current-details summary small,
 .promptstudio-settings summary small,
 .promptstudio-lora-details summary small,
@@ -3120,7 +3170,7 @@ body.promptstudio-popout-body .promptstudio-header-actions {
 }
 
 #promptstudio-prompt-studio [data-promptstudio-plot-axis]:disabled,
-#promptstudio-prompt-studio .promptstudio-model-group[data-plot-axis-controlled="true"] > select:disabled {
+#promptstudio-prompt-studio .promptstudio-model-group[data-plot-axis-controlled="true"] select:disabled {
   color: var(--ps-muted);
   background: rgba(21, 23, 31, 0.82);
   opacity: 0.62;
@@ -3351,7 +3401,7 @@ body.promptstudio-popout-body .promptstudio-header-actions {
   background: var(--ps-accent-soft, #343957);
 }
 
-#promptstudio-prompt-studio .promptstudio-model-group > select {
+#promptstudio-prompt-studio .promptstudio-model-group select {
   min-height: 30px;
   padding: 0 28px 0 8px;
   border-radius: 7px;
@@ -3967,8 +4017,8 @@ body.promptstudio-popout-body #promptstudio-prompt-studio.promptstudio-chats-ope
 }
 
 .promptstudio-studio-settings-card > .promptstudio-workflow-routing {
-  gap: 14px;
-  padding: 15px 17px 17px;
+  gap: 8px;
+  padding: 10px 12px;
 }
 
 .promptstudio-workflow-routing-fields {
@@ -4007,6 +4057,10 @@ body.promptstudio-popout-body #promptstudio-prompt-studio.promptstudio-chats-ope
   font-weight: 700;
 }
 
+.promptstudio-workflow-routing > .promptstudio-studio-setting { display: flex; min-height: 0; padding: 4px 0; }
+.promptstudio-studio-settings-note summary { cursor: pointer; font-weight: 600; }
+.promptstudio-studio-settings-note[open] summary { margin-bottom: 6px; }
+
 .promptstudio-workflow-routing > small {
   color: var(--ps-muted);
   font-size: 10px;
@@ -4015,8 +4069,8 @@ body.promptstudio-popout-body #promptstudio-prompt-studio.promptstudio-chats-ope
 
 .promptstudio-studio-settings-note {
   display: grid;
-  gap: 7px;
-  padding: 11px 12px;
+  gap: 4px;
+  padding: 8px;
   color: var(--ps-muted);
   background: rgba(141, 115, 255, 0.055);
   border: 1px solid rgba(141, 115, 255, 0.13);
@@ -4045,10 +4099,6 @@ body.promptstudio-popout-body #promptstudio-prompt-studio.promptstudio-chats-ope
   border: 0 !important;
 }
 
-.promptstudio-mutation-config-card {
-  grid-column: 1 / -1;
-}
-
 .promptstudio-mutation-launchers {
   display: grid;
 }
@@ -4057,10 +4107,10 @@ body.promptstudio-popout-body #promptstudio-prompt-studio.promptstudio-chats-ope
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 20px;
+  gap: 10px;
   width: 100%;
-  min-height: 72px;
-  padding: 14px 17px;
+  min-height: 52px;
+  padding: 8px 12px;
   color: var(--ps-text);
   text-align: left;
   background: transparent;
@@ -4760,13 +4810,13 @@ body.promptstudio-popout-body #promptstudio-prompt-studio.promptstudio-chats-ope
   }
 
   .promptstudio-studio-settings-header {
-    min-height: 68px;
-    padding: 13px 15px;
+    min-height: 52px;
+    padding: 9px 12px;
   }
 
   .promptstudio-studio-settings-layout {
     grid-template-columns: minmax(0, 1fr);
-    padding: 14px;
+    padding: 10px;
   }
 
   body.promptstudio-popout-body .promptstudio-popout-mount {
@@ -4945,6 +4995,7 @@ body.promptstudio-popout-body #promptstudio-prompt-studio.promptstudio-chats-ope
   }
 
   #promptstudio-prompt-studio button:not(.promptstudio-image-preview),
+  #promptstudio-prompt-studio .promptstudio-plot-artifacts a,
   #promptstudio-prompt-studio .promptstudio-lightbox-actions a {
     min-height: 44px;
   }
@@ -5610,7 +5661,7 @@ body.promptstudio-popout-body #promptstudio-prompt-studio.promptstudio-chats-ope
 }
 
 .promptstudio-plot-toolbar { justify-content: space-between; margin: 16px 0 10px; color: var(--ps-muted); font-size: 12px; }
-.promptstudio-plot-artifacts a { color: var(--ps-accent-strong); }
+.promptstudio-plot-artifacts a { display: inline-flex; align-items: center; justify-content: center; text-decoration: none; }
 .promptstudio-plot-z-tabs { margin: 10px 0; padding-bottom: 3px; overflow-x: auto; flex-wrap: nowrap; }
 .promptstudio-plot-z-tabs button[aria-pressed="true"] { border-color: var(--ps-accent-strong); color: var(--ps-accent-strong); }
 
@@ -5784,3 +5835,11 @@ body.promptstudio-popout-body #promptstudio-prompt-studio.promptstudio-chats-ope
   min-height: 36px;
   white-space: normal;
 }
+.promptstudio-model-profile-body { padding: 0 12px 12px; min-width: 0; }
+.promptstudio-model-profile-body p { font-size: 12px; overflow-wrap: anywhere; }
+.promptstudio-model-profile-body label { display: flex; flex-direction: column; gap: 5px; margin: 10px 0; min-width: 0; font-size: 12px; }
+.promptstudio-model-profile-body input, .promptstudio-model-profile-body select, .promptstudio-model-profile-body textarea { width: 100%; min-width: 0; box-sizing: border-box; }
+.promptstudio-model-profile-body textarea { resize: vertical; }
+.promptstudio-model-profile-actions { display: flex; flex-wrap: wrap; gap: 8px; margin: 10px 0; }
+.promptstudio-model-profile-body summary { cursor: pointer; margin-top: 12px; }
+.promptstudio-model-profile-settings [hidden] { display: none !important; }

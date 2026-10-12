@@ -1,0 +1,7 @@
+---
+{"id":"qwen-edit-quality","topic":"qwen-edit-quality","studio":"image","summary":"Qwen edit sharpness, source resolution, lossless intermediate images and repeated-edit detail preservation."}
+---
+Bundled Qwen Edit, RGBA Edit and Background Removal keep source dimensions, rounded to multiples of 32, and force lossless PNG. Native TextEncodeQwenImage21 uses resolution=0 and supplies the sampler's latent. Edit dimensions come from the source, not Create's megapixel selector. Larger sources require more memory and time.
+The save node's force setting retains lossless output even if global Image output preferences use lossy WebP. Existing saved history replays retain their original workflow settings.
+Use a different sampler seed when editing a generated image, including between successive edits. Reusing its generation seed at the same dimensions can cause Qwen 2.1 noise replay: strong grain, halos and over-sharpening. Fixed seeds remain available for reproducibility; the workflow does not secretly replace them.
+Lossless saving prevents another compression loss, not model reconstruction changes. Full-image edits still regenerate details. Qwen Edit pose guides offer Preserve background with a reviewed edit mask: paint both old and new body positions. Native inpainting plus output compositing preserves unpainted pixels. Pure pose control does not preserve the background by itself. Returning to an earlier clean source avoids accumulating changes from intermediate generations.

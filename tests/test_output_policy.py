@@ -6,7 +6,7 @@ import unittest
 
 
 def load_policy():
-    tree = ast.parse((Path(__file__).resolve().parents[1] / "nodes.py").read_text(encoding="utf-8"))
+    tree = ast.parse((Path(__file__).resolve().parents[1] / "backend" / "nodes.py").read_text(encoding="utf-8"))
     names = {"_output_length_spec", "_target_output_length", "_output_policy",
              "_target_length_response_tokens", "_word_count", "_tag_count", "_sentence_count",
              "_density_count", "_needs_expansion_retry", "_select_expansion_candidate", "_output_policy_warning"}

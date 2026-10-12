@@ -9,9 +9,9 @@ from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 package = types.ModuleType("reference_detection_test")
-package.__path__ = [str(ROOT)]
+package.__path__ = [str(ROOT / "backend")]
 sys.modules[package.__name__] = package
-spec = importlib.util.spec_from_file_location(package.__name__ + ".reference_detection", ROOT / "reference_detection.py")
+spec = importlib.util.spec_from_file_location(package.__name__ + ".reference_detection", ROOT / "backend" / "reference_detection.py")
 detection = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(detection)
 

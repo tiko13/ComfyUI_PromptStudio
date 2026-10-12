@@ -137,17 +137,15 @@
     "source_url": "https://huggingface.co/Comfy-Org/Qwen-Image-2.1"
   },
   {
-    "id": "qwen21_viggle_turbo6",
-    "name": "Qwen Image 2.1 Viggle Turbo v0.3 6-step LoRA",
-    "category": "loras",
-    "relative_path": "QwenImage21/_Qwen-Image-2.1-viggle-turbo-v0.3-6step-lora-r128.safetensors",
-    "aliases": [
-      "Qwen-Image-2.1-viggle-turbo-v0.3-6step-lora-r128.safetensors"
-    ],
-    "size": 679604800,
-    "sha256": "0c98591700346f9777051d4e6fa29aa94519abec0d85b1f1f672a2a3db8c94b3",
-    "url": "https://huggingface.co/Viggle/Qwen-Image-2.1-viggle-turbo/resolve/009a44a895ef85f7e643c80fdca9543795248867/Qwen-Image-2.1-viggle-turbo-v0.3-6step-lora-r128.safetensors?download=true",
-    "source_url": "https://huggingface.co/Viggle/Qwen-Image-2.1-viggle-turbo"
+    "id": "qwen21_official_turbo_int8",
+    "name": "Qwen Image 2.1 Official Turbo INT8",
+    "category": "diffusion_models",
+    "relative_path": "QwenImage21/qwen_image_2.1_turbo_int8_convrot.safetensors",
+    "aliases": [],
+    "size": 7256787829,
+    "sha256": "8144a0182964aa8403ad6dbc011db837304167d235161b9aabaa8532e967314c",
+    "url": "https://huggingface.co/Comfy-Org/Qwen-Image-2.1/resolve/df94239739eef7205973a145ffa6f441f7b64e84/diffusion_models/qwen_image_2.1_turbo_int8_convrot.safetensors?download=true",
+    "source_url": "https://huggingface.co/Comfy-Org/Qwen-Image-2.1"
   },
   {
     "id": "qwen21_controlnet",

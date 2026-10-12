@@ -110,9 +110,9 @@ try {
  await qwen.click(); await popup.waitFor({state:'visible'}); assert.equal(await qwen.isChecked(),false);
  await popup.getByRole('button',{name:'Accept',exact:true}).click();
  await wizard.getByLabel('Qwen Image 2.1 diffusion model',{exact:true}).waitFor();
- await wizard.getByRole('checkbox',{name:'Qwen 2.1 Edit · Turbo v0.3 · 6 steps',exact:true}).click();
+ await wizard.getByRole('checkbox',{name:'Qwen 2.1 Edit · Official Turbo INT8 · 8 steps',exact:true}).click();
  await popup.waitFor({state:'visible'}); await popup.getByRole('button',{name:'Accept',exact:true}).click();
- await wizard.getByLabel('Qwen 2.1 Turbo v0.3 LoRA',{exact:true}).waitFor();
+ await wizard.getByLabel('Qwen Image 2.1 Official Turbo INT8',{exact:true}).waitFor();
  // Keep only Qwen: the last Krea selection removes all Krea models immediately,
  // even while the server's next model scan is held open.
  for(const name of ['Edit','Upscale']) { await wizard.getByRole('checkbox',{name,exact:true}).uncheck(); await waitForModels(); }
@@ -124,9 +124,9 @@ try {
  assert.equal(await wizard.getByRole('button',{name:'Set up selections',exact:true}).isDisabled(),true);
  releasePlan(); await waitForModels();
  assert.deepEqual(await modelIds(),['qwen21','qwen21_encoder','qwen21_turbo','qwen21_vae']);
- await wizard.getByRole('checkbox',{name:'Qwen 2.1 Edit · Turbo v0.3 · 6 steps',exact:true}).uncheck(); await waitForModels();
+ await wizard.getByRole('checkbox',{name:'Qwen 2.1 Edit · Official Turbo INT8 · 8 steps',exact:true}).uncheck(); await waitForModels();
  assert.deepEqual(await modelIds(),['qwen21','qwen21_encoder','qwen21_vae']);
- await wizard.getByRole('checkbox',{name:'Qwen 2.1 Edit · Turbo v0.3 · 6 steps',exact:true}).click();
+ await wizard.getByRole('checkbox',{name:'Qwen 2.1 Edit · Official Turbo INT8 · 8 steps',exact:true}).click();
  await popup.getByRole('button',{name:'Accept',exact:true}).click(); await waitForModels();
  for(const name of ['Create','Edit','Upscale']) { await wizard.getByRole('checkbox',{name,exact:true}).check(); await waitForModels(); }
  await wizard.getByLabel(encoder.name).selectOption('__download__:bf16');
@@ -152,7 +152,7 @@ try {
  await wizard.getByRole('button',{name:'Set up selections',exact:true}).click();
  await wizard.getByText('Downloading selected encoder',{exact:true}).first().waitFor();
  assert.equal(calls.filter(c=>c.action==='start').length,1);
- assert.deepEqual(Object.keys(calls.find(c=>c.action==='start').input.license_acceptances).sort(),['qwen21_create_base25','qwen21_edit_turbo6']);
+ assert.deepEqual(Object.keys(calls.find(c=>c.action==='start').input.license_acceptances).sort(),['qwen21_create_base25','qwen21_edit_turbo8']);
  assert.match(await wizard.locator('[data-metric="metrics"]').textContent(),/50.0 MB\/s/);
  assert.equal(await wizard.getByRole('progressbar',{name:'Current operation'}).count(),1);
  await wizard.getByRole('button',{name:'Pause',exact:true}).click();

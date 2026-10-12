@@ -290,7 +290,7 @@ class FrontendRegressionTests(unittest.TestCase):
         self.assertIn("generation.hidden = plotMode && !llmMode", inspector)
         self.assertIn("additional.hidden = plotMode && !llmMode", inspector)
         self.assertIn("Applied to every plot generation", inspector)
-        self.assertIn("Passed unchanged to every plot generation", inspector)
+        self.assertIn('details.hidden = plotMode', inspector)
         self.assertIn("Set by ${axis.name.toUpperCase()} plot axis", self.source)
         self.assertIn("label.insertBefore(note, control)", self.source)
         self.assertIn('display: inline;\n  margin-left: 5px;', self.styles)
@@ -948,8 +948,8 @@ class FrontendRegressionTests(unittest.TestCase):
         ):
             self.assertIn(f'data-mutation-category="{category}"', self.source)
             self.assertIn(f'data-mutation-count="{category}"', self.source)
-        self.assertIn(".promptstudio-mutation-config-card", self.styles)
-        self.assertIn("grid-column: 1 / -1", self.styles)
+        self.assertIn("promptstudio-mutation-config-card", self.source)
+        self.assertIn(".promptstudio-studio-settings-column", self.styles)
 
     def test_mutation_manager_preserves_drafts_during_external_file_edits(self):
         load = self.source[

@@ -86,3 +86,34 @@
 .ps-reference-preparation .ps-target-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
 #promptstudio-prompt-studio .ps-reference-prepare-open, .ps-reference-prepare-open { position: absolute; bottom: 3px; left: 3px; z-index: 2; width: calc(100% - 6px); min-height: 0; padding: 3px; font-size: 11px; line-height: 1.2; border-radius: 5px; background: #202129; color: #eee; }
 .ps-reference-prepare-open[hidden] { display: none; }
+.ps-pose-dialog { width: min(1000px, calc(100vw - 24px)); }
+.ps-pose-dialog [hidden] { display: none; }
+.ps-pose-dialog header small, .ps-pose-dialog footer small { color: #bdbdcc; }
+.ps-pose-dialog .ps-pose-hint { margin: 12px 0; font-size: 12px; }
+.ps-pose-tools { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 8px 0; }
+.ps-pose-dialog .ps-pose-tools button { font-size: 12px; padding: 6px 10px; }
+.ps-pose-tools button[aria-pressed="true"] { color: #ded6ff; border-color: #b3a0ff; background: #b3a0ff24; }
+.ps-pose-inspector { display: grid; grid-template-columns: 1fr 1fr 1.5fr; gap: 10px; margin: 10px 0; }
+.ps-pose-inspector label { display: grid; gap: 4px; color: #bdbdcc; font-size: 12px; min-width: 0; }
+.ps-pose-rotation-hint { display: block; min-height: 1.5em; margin: 6px 0; color: #c6baff; font-size: 12px; }
+.ps-pose-stage { height: min(52dvh, 540px); min-height: 180px; overflow: auto; border: 1px solid #41424e; border-radius: 8px; background: #14151a; overscroll-behavior: contain; }
+.ps-pose-surface { display: flex; align-items: center; justify-content: center; width: max-content; min-width: 100%; min-height: 100%; }
+.ps-pose-stage canvas { display: block; flex: none; touch-action: none; }
+.ps-pose-view label { display: flex; gap: 8px; align-items: center; color: #bdbdcc; font-size: 12px; }
+.ps-pose-view input { width: 100px; accent-color: #b3a0ff; }
+.ps-pose-view output { min-width: 4em; font-variant-numeric: tabular-nums; }
+.ps-pose-view small { color: #bdbdcc; font-size: 12px; }
+.ps-pose-dialog footer { display: flex; gap: 12px; justify-content: space-between; align-items: center; border-top: 1px solid #41424e; padding-top: 12px; margin-top: 12px; }
+.ps-pose-dialog .ps-pose-apply { flex: none; border-color: #b3a0ff; background: #b3a0ff; color: #191622; font-weight: 600; }
+@media (max-width: 480px) {
+  .ps-pose-inspector { grid-template-columns: 1fr 1fr; }
+  .ps-pose-inspector label:last-child { grid-column: 1 / -1; }
+  .ps-pose-stage { height: 36dvh; }
+}
+.ps-inpaint-dialog { box-sizing: border-box; width: min(1050px, 94vw); max-height: 92vh; overflow: auto; padding: 20px; color: #eee; background: var(--comfy-menu-bg, #202126); border: 1px solid #777; border-radius: 12px; font: 14px/1.45 system-ui, sans-serif; }
+.ps-inpaint-dialog::backdrop { background: #0009; }
+.ps-inpaint-dialog > div { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; margin: 12px 0; }
+.ps-inpaint-dialog canvas { display: block; max-width: 100%; max-height: 60vh; width: auto; height: auto; margin: auto; cursor: none; }
+.ps-mask-brush-cursor { position: fixed; box-sizing: border-box; transform: translate(-50%, -50%); border: 2px solid white; box-shadow: 0 0 0 1px black, inset 0 0 0 1px black; border-radius: 50%; pointer-events: none; z-index: 1; }
+.ps-mask-brush-cursor[hidden] { display: none; }
+.ps-inpaint-dialog > div:last-child { justify-content: flex-end; }

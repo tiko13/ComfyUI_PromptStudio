@@ -6,7 +6,7 @@ import unittest
 from unittest import mock
 from types import SimpleNamespace
 
-import job_observability as jobs
+import backend.job_observability as jobs
 
 
 class JobObservabilityTests(unittest.TestCase):

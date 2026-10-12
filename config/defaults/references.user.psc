@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "items": [
+    {
+      "name": "Jane",
+      "definition": "A blonde 25-year-old woman wearing a black shirt, white sneakers, and denim pants.",
+      "enabled": false
+    }
+  ]
+}

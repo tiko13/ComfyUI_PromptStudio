@@ -1715,11 +1715,15 @@
       },
       "widgets_values": [
         "",
-        "Reference image"
+        "Reference image",
+        false,
+        "grounded_edit"
       ],
       "widgets_values_named": {
         "image_ref": "",
-        "source_name": "Reference image"
+        "source_name": "Reference image",
+        "required": false,
+        "reference_mode": "grounded_edit"
       },
       "title": "Optional reference image"
     }

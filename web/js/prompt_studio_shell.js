@@ -43,7 +43,7 @@ let installBusy = false;
 let availabilityRequest = null;
 
 function setStatus(message) {
-  if (status) status.textContent = message;
+  if (status && !document.querySelector('#promptstudio-startup[data-state="offline"]')) status.textContent = message;
 }
 
 function studioModeButtons() {
@@ -313,7 +313,7 @@ async function connectEmbeddedHost() {
 
 function startEmbeddedHost() {
   if (connected || !embeddedHost || embeddedHost.hasAttribute("src")) return;
-  setStatus("Starting a private ComfyUI workflow host…");
+  setStatus("Opening your studio…");
   embeddedHost.src = "/";
   hostPoll = window.setInterval(connectEmbeddedHost, 500);
 }
@@ -361,6 +361,8 @@ failureTimer = window.setTimeout(() => {
   if (hostPoll) window.clearInterval(hostPoll);
   hostPoll = null;
   setStatus("Prompt Studio could not start its ComfyUI workflow host. Refresh after ComfyUI has finished loading.");
+  const startup = document.querySelector('#promptstudio-startup[data-state="connecting"]');
+  if (startup) startup.dataset.state = "error";
 }, 30000);
 capabilityPoll = window.setInterval(() => {
   if (connected && videoAvailability !== "ready") refreshVideoAvailability();

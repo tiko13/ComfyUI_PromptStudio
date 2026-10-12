@@ -10,7 +10,7 @@ from pathlib import Path
 from unittest import mock
 
 
-SPEC = importlib.util.spec_from_file_location("acquisition_under_test", Path(__file__).resolve().parents[1] / "asset_acquisition.py")
+SPEC = importlib.util.spec_from_file_location("acquisition_under_test", Path(__file__).resolve().parents[1] / "backend" / "asset_acquisition.py")
 ACQUISITION = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(ACQUISITION)
 

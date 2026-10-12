@@ -61,6 +61,11 @@ try {
   await dialog.getByRole('button',{name:'Retry full extension',exact:true}).click();
   await dialog.getByRole('button',{name:'Cancel planning',exact:true}).waitFor();
   assert.equal(jobs.size,uniqueBeforeRetry,'Lost POST acknowledgement must reuse its job');
+  // The cancel button is visible while reconnecting too. Reload only after the
+  // running state is durable; an interrupted request intentionally needs Retry.
+  await page.waitForFunction(() => Object.values(JSON.parse(
+    localStorage.getItem('promptstudio.video.continuation.plans.v1') || '{}',
+  )).some(record => record.status === 'running'));
   await page.reload();
   await page.waitForFunction(()=>window.studioReady||window.bootError);
   assert.equal(await page.evaluate(()=>window.bootError),undefined);

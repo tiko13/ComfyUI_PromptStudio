@@ -540,7 +540,7 @@
         "",
         "1:1 (Square)",
         1,
-        8
+        32
       ],
       "widgets_values_named": {
         "text": "",
@@ -566,7 +566,7 @@
         "secondary_instructions": "",
         "aspect_ratio": "1:1 (Square)",
         "megapixels": 1,
-        "multiple": 8
+        "multiple": 32
       }
     }
   ],

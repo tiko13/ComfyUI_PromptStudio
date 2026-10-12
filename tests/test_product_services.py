@@ -4,7 +4,7 @@ import sys
 import unittest
 
 def load(name):
-    spec=importlib.util.spec_from_file_location(name,Path(__file__).resolve().parents[1]/"product_services.py")
+    spec=importlib.util.spec_from_file_location(name,Path(__file__).resolve().parents[1]/"backend" / "product_services.py")
     module=importlib.util.module_from_spec(spec);sys.modules[name]=module;spec.loader.exec_module(module);return module
 
 services=load("studio_product_services_test")

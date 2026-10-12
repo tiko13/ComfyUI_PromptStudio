@@ -23,7 +23,7 @@ class SetupRouteTests(unittest.IsolatedAsyncioTestCase):
         user_manager = types.SimpleNamespace(get_request_user_filepath=lambda request, file, create_dir=False:
             str(self.root / "users" / request.headers.get("comfy-user", "default")))
         self.server = types.SimpleNamespace(app=web.Application(), routes=web.RouteTableDef(), user_manager=user_manager)
-        spec = importlib.util.spec_from_file_location("setup_route_fixture.setup_routes", Path(__file__).resolve().parents[1] / "setup_routes.py")
+        spec = importlib.util.spec_from_file_location("setup_route_fixture.setup_routes", Path(__file__).resolve().parents[1] / "backend" / "setup_routes.py")
         module = importlib.util.module_from_spec(spec)
         with mock.patch.dict(sys.modules, {"setup_route_fixture": package, "setup_route_fixture.setup_service": SETUP,
                                           "setup_route_fixture.controlnet": types.SimpleNamespace(register_aux_path=lambda paths: None),

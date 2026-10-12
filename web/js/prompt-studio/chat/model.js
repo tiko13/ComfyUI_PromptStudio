@@ -54,7 +54,9 @@ function normalizeSessionModelSelections(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return {};
   return Object.fromEntries(
     Object.entries(value)
-      .map(([key, modelName]) => [currentWorkflowId(key), cleanModelName(modelName)])
+      // Model overrides belong to the original graph. In particular, carrying
+      // a base-model override into official Turbo would undo its model upgrade.
+      .map(([key, modelName]) => [key, cleanModelName(modelName)])
       .filter(([key, modelName]) => key && modelName),
   );
 }

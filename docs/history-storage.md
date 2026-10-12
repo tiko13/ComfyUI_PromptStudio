@@ -43,15 +43,15 @@ recovery checkpoint, and leaves unrelated sessions intact. Media and external
 plot data are referenced, not backed up here. A checkpoint cannot recreate
 separately deleted images, videos, or plot files.
 
-For diagnostics, run the shared `transactional_store.py` with the ComfyUI VENV
+For diagnostics, run the shared `backend/transactional_store.py` with the ComfyUI VENV
 interpreter (never a different Python installation):
 
 ```text
-transactional_store.py storage DIRECTORY --kind chat
-transactional_store.py inspect DIRECTORY --kind chat
-transactional_store.py export DIRECTORY OUTPUT.json --kind project
-transactional_store.py optimize DIRECTORY --kind chat
-transactional_store.py recover DIRECTORY --kind project
+backend/transactional_store.py storage DIRECTORY --kind chat
+backend/transactional_store.py inspect DIRECTORY --kind chat
+backend/transactional_store.py export DIRECTORY OUTPUT.json --kind project
+backend/transactional_store.py optimize DIRECTORY --kind chat
+backend/transactional_store.py recover DIRECTORY --kind project
 ```
 
 `inspect`, `storage`, and `export` do not prune history. Export produces portable

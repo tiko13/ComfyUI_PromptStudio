@@ -1,0 +1,45 @@
+.promptstudio-model-info {
+  position: relative; width: 28px; height: 28px; min-width: 28px; min-height: 28px; padding: 0;
+  box-sizing: border-box; display: inline-grid; place-items: center; line-height: 1;
+  border: 1px solid var(--ps-border, #45495a); border-radius: 7px;
+  color: var(--ps-text, #e7eaf2); background: var(--ps-surface, #222735); cursor: pointer;
+}
+.promptstudio-model-info[data-update-available="true"] { color: #ffd780; border-color: #a97c31; }
+.promptstudio-model-selection { display: grid; grid-template-columns: minmax(0, 1fr) 28px; align-items: center; gap: 5px; min-width: 0; }
+.promptstudio-model-selection > select { width: 100%; min-width: 0; }
+.promptstudio-model-metadata {
+  width: min(640px, calc(100vw - 32px)); max-height: calc(100dvh - 32px);
+  box-sizing: border-box; overflow: auto; padding: 20px; border-radius: 14px;
+  border: 1px solid #45495a; color: #e7eaf2; background: #171b25;
+  font: 13px/1.5 system-ui, sans-serif; color-scheme: dark;
+}
+.promptstudio-model-metadata::backdrop { background: #0009; }
+.promptstudio-model-metadata header { display: flex; gap: 16px; align-items: center; justify-content: space-between; }
+.promptstudio-model-metadata h2 { font-size: 18px; margin: 0; overflow-wrap: anywhere; }
+.promptstudio-model-metadata h3 { font-size: 13px; margin: 10px 0 6px; }
+.promptstudio-model-metadata button, .promptstudio-model-metadata select {
+  font: inherit; color: inherit; background: #282f40; border: 1px solid #495269;
+  border-radius: 7px; padding: 6px 10px; cursor: pointer;
+}
+.promptstudio-model-metadata button:disabled { opacity: .5; cursor: wait; }
+.promptstudio-model-metadata :focus-visible { outline: 2px solid #95bdff; outline-offset: 2px; }
+.promptstudio-model-metadata a { display: block; color: #a9caff; margin: 6px 0; }
+.promptstudio-metadata-filename, .promptstudio-metadata-field span { overflow-wrap: anywhere; user-select: text; }
+.promptstudio-metadata-filename, .promptstudio-model-metadata small { color: #aeb7c9; }
+.promptstudio-metadata-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.promptstudio-metadata-field { display: grid; grid-template-columns: 120px minmax(0, 1fr); gap: 12px; margin: 5px 0; }
+.promptstudio-metadata-status { color: #c2cde0; }
+.promptstudio-metadata-triggers button { margin: 0 6px 6px 0; user-select: text; overflow-wrap: anywhere; max-width: 100%; }
+.promptstudio-trigger-rows { display: grid; gap: 8px; margin-bottom: 10px; }
+.promptstudio-trigger-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; align-items: center; }
+.promptstudio-trigger-row input { min-width: 0; width: 100%; box-sizing: border-box; font: inherit; color: inherit; background: #222735; border: 1px solid #495269; border-radius: 7px; padding: 7px; }
+.promptstudio-trigger-row button { margin: 0; }
+.promptstudio-trigger-settings { width: min(540px, calc(100vw - 32px)); }
+.promptstudio-trigger-footer { justify-content: flex-end; margin: 18px 0 12px; padding-top: 14px; border-top: 1px solid #45495a; }
+.promptstudio-trigger-footer button[type="submit"] { background: #345482; border-color: #779dd5; }
+.promptstudio-metadata-description { white-space: pre-wrap; overflow-wrap: anywhere; }
+.promptstudio-metadata-update[data-available="true"] { color: #ffd780; border-left: 3px solid #a97c31; padding-left: 10px; }
+@media (max-width: 420px) {
+  .promptstudio-model-metadata { padding: 12px; }
+  .promptstudio-metadata-field { grid-template-columns: 90px minmax(0, 1fr); gap: 6px; }
+}
