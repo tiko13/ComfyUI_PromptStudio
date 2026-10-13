@@ -304,7 +304,8 @@ class MetadataTests(unittest.TestCase):
             nonlocal count
             count += 1
             return real_signature(path) if count == 1 else [999]
-        with mock.patch.object(metadata, "_signature", side_effect=changing):
+        with mock.patch.object(metadata, "_signature", side_effect=changing), \
+                mock.patch.object(self.service, "local_details"):
             with self.assertRaisesRegex(ValueError, "changed while hashing"):
                 self.details(lookup=True)
         self.fetch.assert_not_called()

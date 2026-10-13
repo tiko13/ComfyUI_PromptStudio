@@ -21,6 +21,9 @@ register_setup_routes(routes.PromptServer.instance)
 from .backend.controlnet import register_controlnet_routes
 register_controlnet_routes(routes.PromptServer.instance)
 
+from .backend.lora_studio_bridge import register as register_lora_studio_bridge
+register_lora_studio_bridge(routes.PromptServer.instance, NODE_CLASS_MAPPINGS, NODE_DISPLAY_NAME_MAPPINGS)
+
 WEB_DIRECTORY = "./web"
 
 __all__ = ["NODE_CLASS_MAPPINGS", "NODE_DISPLAY_NAME_MAPPINGS", "WEB_DIRECTORY"]

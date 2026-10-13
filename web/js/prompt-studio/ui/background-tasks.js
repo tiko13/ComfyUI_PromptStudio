@@ -43,7 +43,7 @@ export function mountBackgroundTasks(section, { scope, fetchApi }) {
       if (data.state === 'indexing' || !total) progress.removeAttribute('value');
       else { progress.max = total; progress.value = processed; }
       const saved = data.records || {};
-      records.textContent = `Database: ${count(saved.found)} matched · ${count(saved.not_found)} unmatched · ${count(saved.unchecked)} unchecked`;
+      records.textContent = `Database: ${count(saved.found)} matched${count(saved.local) ? ` · ${count(saved.local)} embedded` : ''} · ${count(saved.not_found)} unmatched · ${count(saved.unchecked)} unchecked`;
       message.textContent = data.error || (data.state === 'deferred' ? 'Population resumes automatically after a cooldown.' : '');
     } catch (_) {
       status.textContent = 'Background task status unavailable';

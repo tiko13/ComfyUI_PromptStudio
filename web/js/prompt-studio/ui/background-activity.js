@@ -22,6 +22,7 @@ export async function refreshBackgroundActivity(fetchApi = fetch) {
 }
 
 function backgroundActivityLabel() {
+  if (state.loraStudioGeneration?.reserved) return state.loraStudioGeneration.label;
   const active = observedJobs.filter(isActiveJob);
   if (active.length) return `${active.length > 1 ? `${active.length} jobs · ` : ""}${jobActivityText(active[0], { chats: state.chats })}`;
   const selector = state.consultBusy ? "#promptstudio-consult-status" : "#promptstudio-status";
@@ -35,7 +36,7 @@ export function pendingStudioGenerationCount() {
 }
 
 export function hasPendingStudioGenerations() {
-  return pendingStudioGenerationCount() > 0
+  return state.loraStudioGeneration?.reserved || pendingStudioGenerationCount() > 0
     || state.studioPreparations.size > 0
     || state.chats.some((chat) => chat.messages.some((message) => (
       message.operationId && !["complete", "error", "cancelled"].includes(message.operationPhase)

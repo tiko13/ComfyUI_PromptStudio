@@ -1,4 +1,4 @@
-"""Hash-based, read-only Civitai metadata shared by both studios.
+"""Embedded LoRA and hash-based Civitai metadata shared by both studios.
 
 Only registered model files can be inspected. Network requests contain a hash or
 public model ID, never local names, paths, prompts, or model bytes.
@@ -9,6 +9,7 @@ import asyncio
 import hashlib
 from html.parser import HTMLParser
 import json
+import math
 import os
 import sqlite3
 from pathlib import Path
@@ -23,6 +24,160 @@ RETRY_TTL = 5 * 60
 MISSING_GRACE = 3 * 24 * 60 * 60
 MAX_RESPONSE = 8 * 1024 * 1024
 SITES = {"auto", "civitai.com", "civitai.green", "civitai.red"}
+
+# Read only bounded header bytes, without importing torch or loading tensors.
+MAX_HEADER = 8 * 1024 * 1024
+MAX_STUDIO_METADATA = 262_144
+LOCAL_READER_VERSION = 2
+TRAINING_FIELDS = {
+    "model": {"id": str, "arch": str, "base_model": str, "quantize": bool,
+              "quantize_te": bool, "qtype": str, "qtype_te": str, "weight_source": str},
+    "network": {"type": str, "linear": int, "linear_alpha": float},
+    "train": {"batch_size": int, "steps": int, "gradient_accumulation": int,
+              "train_unet": bool, "train_text_encoder": bool, "gradient_checkpointing": bool,
+              "cache_text_embeddings": bool, "noise_scheduler": str, "optimizer": str,
+              "lr": float, "dtype": str, "disable_sampling": bool, "timestep_type": str,
+              "optimizer_params": {"weight_decay": float}},
+    "seed": int,
+    "dataset": {"resolution": list, "caption_dropout_rate": float, "shuffle_tokens": bool,
+                "cache_latents_to_disk": bool, "buckets": bool, "square_crop": bool,
+                "random_crop": bool, "random_scale": bool, "flip_x": bool, "flip_y": bool},
+    "save": {"dtype": str, "save_every": int, "max_step_saves_to_keep": int},
+    "sample": {"sampler": str, "sample_every": int, "width": int, "height": int,
+               "seed": int, "walk_seed": bool, "guidance_scale": float, "sample_steps": int},
+}
+
+
+def _training_fields(value, schema=TRAINING_FIELDS):
+    if not isinstance(value, dict):
+        raise ValueError("Invalid training settings")
+    result = {}
+    for key, kind in schema.items():
+        if key not in value:
+            continue
+        item = value[key]
+        if isinstance(kind, dict):
+            result[key] = _training_fields(item, kind)
+            continue
+        if kind is float:
+            valid = type(item) in (int, float) and math.isfinite(item) and abs(item) <= 1e15
+        elif kind is list:
+            # AI Toolkit accepts one resolution or a list of area targets.
+            valid = (type(item) is int and 0 < item <= 65536) or (
+                isinstance(item, list) and len(item) <= 32
+                and all(type(n) is int and 0 < n <= 65536 for n in item))
+        else:
+            valid = type(item) is kind
+            if kind is str:
+                valid = valid and len(item) <= 2048
+            elif kind is int:
+                valid = valid and abs(item) <= 1e15
+        if not valid:
+            raise ValueError("Invalid training field")
+        result[key] = item
+    return result
+
+
+def _embedded_json(raw):
+    if not isinstance(raw, str) or len(raw) > MAX_STUDIO_METADATA:
+        raise ValueError("Invalid embedded JSON")
+    return json.loads(raw)
+
+
+def read_local_metadata(path):
+    """Untrusted public LoRA metadata only; never persist the raw header."""
+    if path.suffix.lower() != ".safetensors":
+        return {"status": "not_supported"}
+    try:
+        with path.open("rb") as stream:
+            prefix = stream.read(8)
+            size = int.from_bytes(prefix, "little")
+            if len(prefix) != 8 or not 2 <= size <= MAX_HEADER:
+                raise ValueError("Invalid header length")
+            raw = stream.read(size)
+            if len(raw) != size:
+                raise ValueError("Incomplete header")
+        header = json.loads(raw)
+        if not isinstance(header, dict) or not isinstance(header.get("__metadata__", {}), dict):
+            raise ValueError("Invalid metadata header")
+        fields = header.get("__metadata__", {})
+    except (ValueError, UnicodeError, RecursionError):
+        return {"status": "malformed", "warning": "The local Safetensors metadata header is malformed or too large."}
+
+    result = {"status": "missing"}
+    if "lora_studio" in fields:
+        try:
+            studio = _embedded_json(fields["lora_studio"])
+            if not isinstance(studio, dict) or type(studio.get("schema_version")) is not int:
+                raise ValueError("Invalid schema")
+            if studio["schema_version"] != 1:
+                result = {"status": "unsupported", "warning": "This LoRA Studio metadata version is not supported."}
+            else:
+                public = {}
+                for key, limit in (("name", 1024), ("studio_version", 100), ("description", 4000),
+                                   ("author", 200), ("license", 500)):
+                    if key in studio:
+                        if not isinstance(studio[key], str) or len(studio[key]) > limit:
+                            raise ValueError("Invalid text field")
+                        public[key] = studio[key]
+                if "trigger_words" in studio:
+                    words = studio["trigger_words"]
+                    if not isinstance(words, list) or len(words) > 128 or any(
+                            not isinstance(w, str) or not w.strip() or len(w) > 200 for w in words):
+                        raise ValueError("Invalid triggers")
+                    public["trigger_words"] = list(dict.fromkeys(words))
+                if "recommended_strength" in studio:
+                    strength = studio["recommended_strength"]
+                    if strength is not None and (type(strength) not in (int, float)
+                            or not math.isfinite(strength) or not -10 <= strength <= 10):
+                        raise ValueError("Invalid strength")
+                    public["recommended_strength"] = strength
+                if "training" in studio:
+                    public["training"] = _training_fields(studio["training"])
+                result = {"status": "found", "source": "LoRA Studio", **public}
+        except (ValueError, UnicodeError, RecursionError, OverflowError):
+            result = {"status": "malformed", "warning": "The embedded LoRA Studio metadata is malformed or exceeds supported limits."}
+
+    legacy = {}
+    for key in ("ss_base_model_version", "ss_output_name", "software"):
+        if isinstance(fields.get(key), str) and len(fields[key]) <= 2048:
+            legacy[key] = fields[key]
+    try:
+        info = _embedded_json(fields.get("training_info"))
+        if isinstance(info, dict):
+            legacy["training_info"] = {key: info[key] for key in ("step", "epoch")
+                                      if type(info.get(key)) is int and 0 <= info[key] <= 1e15}
+    except (ValueError, RecursionError):
+        pass
+    # Generic trainers store caption vocabulary here, not necessarily triggers.
+    # AI Toolkit identifies its trigger in this field; require its producer ID.
+    software = fields.get("software")
+    try:
+        software = _embedded_json(software)
+    except (ValueError, RecursionError):
+        pass
+    producer = software.get("name") if isinstance(software, dict) else software
+    toolkit = isinstance(producer, str) and producer.strip().lower() in {"ai-toolkit", "ai toolkit"}
+    try:
+        tags = _embedded_json(fields.get("ss_tag_frequency")) if toolkit else None
+        if isinstance(tags, dict) and len(tags) <= 128:
+            words = []
+            for group in tags.values():
+                if not isinstance(group, dict) or len(group) > 128:
+                    raise ValueError("Invalid tag group")
+                for word, count in group.items():
+                    if not isinstance(word, str) or not word.strip() or len(word) > 1024 or type(count) not in (int, float) or not math.isfinite(count) or count < 0:
+                        raise ValueError("Invalid tag")
+                    if word not in words:
+                        words.append(word)
+                if len(words) > 128:
+                    raise ValueError("Too many tags")
+            legacy["trigger_words"] = words
+    except (ValueError, RecursionError, OverflowError):
+        pass
+    if legacy:
+        result["legacy"] = legacy
+    return result
 
 
 class MetadataError(RuntimeError):
@@ -240,9 +395,12 @@ class MetadataService:
     @staticmethod
     def _put_record(connection, key, data, *, replace=True):
         verb = "REPLACE" if replace else "IGNORE"
+        status = (data.get("result") or {}).get("status", "unchecked")
+        if status != "found" and (data.get("local_metadata") or {}).get("status") == "found":
+            status = "local"
         connection.execute(f"INSERT OR {verb} INTO files VALUES (?, ?, ?, ?, ?, ?)",
                            (key, data.get("category", ""), data.get("file_name", ""), data.get("sha256", ""),
-                            (data.get("result") or {}).get("status", "unchecked"), json.dumps(data, ensure_ascii=False)))
+                            status, json.dumps(data, ensure_ascii=False)))
 
     def _read(self, path):
         with self._database() as connection:
@@ -282,6 +440,9 @@ class MetadataService:
 
     def register(self, category, name):
         """Inventory every installed file before slow hashing/network work."""
+        if category == "loras":
+            self.local_details(category, name)
+            return
         normalized = validate_file(category, name)
         key = hashlib.sha256((category + ":" + normalized).encode("utf-8")).hexdigest()
         record_path = self.cache_dir / (key + ".json")
@@ -343,6 +504,8 @@ class MetadataService:
         if not isinstance(site, str) or site not in SITES:
             raise ValueError("Unsupported Civitai site.")
         if lookup:
+            if category == "loras":
+                self.local_details(category, name)
             with self.lookup_lock:
                 self.cleanup()
                 return self._details(category, name, lookup=True, refresh=refresh, site=site)
@@ -357,9 +520,49 @@ class MetadataService:
 
     @staticmethod
     def _trigger_words(cached, result):
+        local = cached.get("local_metadata") or {}
+        result = {**result, "local_metadata": local or None}
+        if local.get("status") == "found" and "trigger_words" in local:
+            result.update(trigger_words=local["trigger_words"], trigger_words_source="LoRA Studio")
+        elif not result.get("trigger_words") and local.get("legacy", {}).get("trigger_words"):
+            result.update(trigger_words=local["legacy"]["trigger_words"], trigger_words_source="Legacy tag frequency")
+        elif result.get("trigger_words"):
+            result["trigger_words_source"] = "Civitai"
         edited = "trigger_words_override" in cached
-        return {**result, **({"trigger_words": list(cached["trigger_words_override"])} if edited else {}),
+        return {**result, **({"trigger_words": list(cached["trigger_words_override"]), "trigger_words_source": "Your local edits"} if edited else {}),
                 "trigger_words_edited": edited}
+
+    def local_details(self, category, name):
+        """Read a header independently of the remote queue and hashing lock."""
+        normalized = validate_file(category, name)
+        if category != "loras":
+            return self.saved_details(category, name)
+        key = hashlib.sha256((category + ":" + normalized).encode("utf-8")).hexdigest()
+        cache_path = self.cache_dir / (key + ".json")
+        try:
+            path = self.resolve(category, name)
+            signature = _signature(path)
+        except (MissingModelError, FileNotFoundError):
+            return self._details(category, name)
+        cached = self._read(cache_path)
+        same_file = cached.get("signature") == signature and cached.get("local_path") == str(path)
+        if same_file and cached.get("local_reader_version") == LOCAL_READER_VERSION:
+            return self._cached_details(cached, category, name, signature)
+        local = read_local_metadata(path)
+        if _signature(path) != signature:
+            raise ValueError("The file changed while reading metadata. Try again when it has finished saving.")
+        with self.database_lock:
+            # Re-read after IO so a concurrent local edit or remote result wins.
+            cached = self._read(cache_path)
+            if cached.get("signature") != signature or cached.get("local_path") != str(path):
+                previous = cached.get("previous_identity") or cached
+                cached = {"previous_identity": {key: previous[key] for key in
+                          ("sha256", "result", "trigger_words_override") if key in previous}}
+            cached.update(signature=signature, local_path=str(path), category=category, file_name=name,
+                          local_metadata=local, local_reader_version=LOCAL_READER_VERSION)
+            cached.pop("missing_since", None)
+            self._write(cache_path, cached)
+        return self._cached_details(cached, category, name, signature)
 
     def saved_details(self, category, name):
         """Read the saved snapshot without catalog scans, file stats or cleanup."""
@@ -398,10 +601,12 @@ class MetadataService:
         return self._cached_details(cached, category, name, signature)
 
     def _cached_details(self, cached, category, name, signature, site="auto"):
+        local_found = (cached.get("local_metadata") or {}).get("status") == "found"
+        remote_found = (cached.get("result") or {}).get("status") == "found"
         return {**self._trigger_words(cached, cached.get("result") or {"status": "unchecked"}),
                 "file_name": name, "category": category, "size_bytes": signature[0],
                 "sha256": cached.get("sha256", ""), "error": cached.get("error", ""),
-                "refresh_due": self.clock() >= cached.get("next_check", 0),
+                "refresh_due": self.clock() >= cached.get("next_check", 0) and (not local_found or remote_found),
                 "site": cached.get("site", site), "stale": bool(cached.get("error"))}
 
     def _details(self, category, name, *, lookup=False, refresh=False, site="auto"):
@@ -409,14 +614,14 @@ class MetadataService:
         key = hashlib.sha256((category + ":" + normalized).encode("utf-8")).hexdigest()
         cache_path = self.cache_dir / (key + ".json")
         cached = self._read(cache_path)
-        previous = cached
+        previous = cached.get("previous_identity") or cached
         try:
             path = self.resolve(category, name)
             signature = _signature(path)
         except (MissingModelError, FileNotFoundError):
-            if not cached.get("result"):
+            if not cached.get("result") and not cached.get("local_metadata"):
                 raise MissingModelError("The local file is missing and has no saved Civitai details.") from None
-            return {**self._trigger_words(cached, cached["result"]), "file_name": name, "category": category,
+            return {**self._trigger_words(cached, cached.get("result") or {"status": "unchecked"}), "file_name": name, "category": category,
                     "size_bytes": cached.get("signature", [0])[0], "sha256": cached.get("sha256", ""),
                     "missing_file": True, "missing_since": cached.get("missing_since"),
                     "warning": "The local file is missing or no longer registered. Saved details are retained for three days after the file is first observed missing.",
@@ -475,6 +680,7 @@ class MetadataService:
             if _signature(path) != signature:
                 raise ValueError("The file changed during lookup. Please try again.")
             cached["result"] = result
+            cached.pop("previous_identity", None)
             cached["site"] = site
             self._write(cache_path, cached)
         return self._cached_details(cached, category, name, signature, site)

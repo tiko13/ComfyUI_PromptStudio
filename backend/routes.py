@@ -6764,6 +6764,8 @@ async def prompt_studio_model_metadata(request):
                                            data.get("category"), data.get("name"), data.get("trigger_words"))
         elif request.method == "GET":
             result = await asyncio.to_thread(_civitai_metadata.saved_details, data.get("category"), data.get("name"))
+        elif data.get("local_only") is True:
+            result = await asyncio.to_thread(_civitai_metadata.local_details, data.get("category"), data.get("name"))
         else:
             # Queue remote work before taking a worker thread, so waiting
             # lookups cannot exhaust the pool used by local reads and saves.

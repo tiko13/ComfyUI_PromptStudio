@@ -17,16 +17,16 @@ function stylesheet(doc) {
   doc.head.append(link);
 }
 
-async function request(file, { lookup = false, refresh = false, site = "auto" } = {}) {
+async function request(file, { lookup = false, local = false, refresh = false, site = "auto" } = {}) {
   const key = keyFor(file);
-  if (!lookup && recent.get(key)?.until > Date.now()) return recent.get(key).data;
-  const requestKey = JSON.stringify([key, lookup, refresh, site]);
+  if (!lookup && !local && recent.get(key)?.until > Date.now()) return recent.get(key).data;
+  const requestKey = JSON.stringify([key, lookup, local, refresh, site]);
   if (!pending.has(requestKey)) {
     const work = (async () => {
       const revision = revisions.get(key);
-      const response = await api.fetchApi(lookup ? endpoint : `${endpoint}?${new URLSearchParams(file)}`, lookup ? {
+      const response = await api.fetchApi(lookup || local ? endpoint : `${endpoint}?${new URLSearchParams(file)}`, lookup || local ? {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ...file, refresh, site }),
+        body: JSON.stringify({ ...file, refresh, site, ...(local ? { local_only: true } : {}) }),
       } : undefined);
       const data = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(data.error || "Model details could not be loaded. A ComfyUI restart may be needed after updating Studio.");
@@ -65,7 +65,16 @@ function paintButtons(doc, file, data) {
 export async function loadLoraTriggerWords(name) {
   const file = { category: "loras", name };
   let data = await request(file);
-  if (!data.trigger_words_edited && (data.status === "unchecked" || data.refresh_due) && !data.missing_file) {
+  if (!data.trigger_words_edited && !data.missing_file) {
+    try { data = await request(file, { local: true }); }
+    catch (error) {
+      if (!Array.isArray(data.trigger_words)) throw error;
+      return [...data.trigger_words];
+    }
+  }
+  const localTriggers = data.local_metadata?.status === "found" && Array.isArray(data.local_metadata.trigger_words)
+    || data.trigger_words_source === "Legacy tag frequency";
+  if (!data.trigger_words_edited && !localTriggers && (data.status === "unchecked" || data.refresh_due) && !data.missing_file) {
     data = await request(file, { lookup: true, site: data.site || "auto" });
   }
   return [...new Set((Array.isArray(data.trigger_words) ? data.trigger_words : [])
@@ -90,6 +99,10 @@ export function createModelDetailsButton({ category = "loras", name, document: d
   request(file).then(async data => {
     if (!button.isConnected) return;
     paintButtons(button.ownerDocument, file, data);
+    if (file.category === "loras" && !data.missing_file) {
+      data = await request(file, { local: true });
+      paintButtons(button.ownerDocument, file, data);
+    }
     if (data.refresh_due && !data.missing_file) {
       const updated = await request(file, { lookup: true, site: data.site || "auto" });
       paintButtons(button.ownerDocument, file, updated);
@@ -133,7 +146,7 @@ export function openModelDetails(doc, file) {
   refresh.type = "button";
   actions.append(siteLabel, refresh);
   dialog.append(header, make("p", file.name, "promptstudio-metadata-filename"), actions, status, content,
-    make("small", "Identifies the file by SHA-256. Only the hash is sent to Civitai; model files and prompts stay local. Metadata is cached. Trigger words are copied only when you choose; prompts and installed files are unchanged."));
+    make("small", "Embedded LoRA metadata is read locally. Civitai checks send only the SHA-256 hash; files and prompts stay local. Trigger words are copied only when you choose. Recommended strength is a suggestion; your strength stays unchanged."));
   const field = (label, value) => {
     if (value === undefined || value === null || value === "") return;
     const row = make("div", "", "promptstudio-metadata-field");
@@ -156,6 +169,7 @@ export function openModelDetails(doc, file) {
   function renderTriggers(data) {
     const triggers = make("section", "", "promptstudio-metadata-triggers");
     triggers.append(make("h3", "Trigger words"));
+    if (data.trigger_words_source) triggers.append(make("small", `Source: ${data.trigger_words_source}`));
     const words = Array.isArray(data.trigger_words) ? data.trigger_words : [];
     if (!words.length) triggers.append(make("p", data.trigger_words_edited ? "No trigger words in your local list." : "No saved trigger words. Check the author's notes or add your own."));
     for (const word of words) {
@@ -258,8 +272,31 @@ export function openModelDetails(doc, file) {
     content.replaceChildren();
     field("File size", `${(Number(data.size_bytes || 0) / 1024 ** 2).toFixed(1)} MiB`);
     field("SHA-256", data.sha256);
+    const local = data.local_metadata;
+    if (local?.status === "found" || local?.legacy) {
+      content.append(make("h3", local.status === "found" ? "Embedded LoRA Studio metadata" : "Embedded training metadata"));
+      if (local.status === "found" && local.name) title.textContent = local.name;
+      field("Local name", local.name || local.legacy?.ss_output_name);
+      field("Author", local.author);
+      field("License", local.license);
+      field("Recommended strength", local.recommended_strength);
+      field("Studio version", local.studio_version);
+      field("Base model", local.training?.model?.base_model || local.legacy?.ss_base_model_version);
+      field("Checkpoint step", local.legacy?.training_info?.step);
+      field("Checkpoint epoch", local.legacy?.training_info?.epoch);
+      if (local.description) content.append(make("p", local.description, "promptstudio-metadata-description"));
+      if (local.training) {
+        const training = make("details");
+        training.append(make("summary", "Training settings"),
+          make("p", "Steps are planned; checkpoint progress is listed separately. Resolution values are pixel-area targets. Sample dimensions are defaults. Learning rate is the initial value."));
+        training.append(make("pre", JSON.stringify(local.training, null, 2), "promptstudio-metadata-description"));
+        content.append(training);
+      }
+    }
+    if (local?.warning) content.append(make("p", local.warning));
     if (data.status === "found") {
-      title.textContent = data.name;
+      if (!local?.name) title.textContent = data.name;
+      content.append(make("h3", "Civitai details"));
       field("Author", data.creator);
       field("Type", data.type);
       field("Installed version", data.version?.name);
@@ -286,7 +323,8 @@ export function openModelDetails(doc, file) {
     status.textContent = data.error ? `${data.status === "found" ? "Showing cached details. " : ""}${data.error}`
       : data.warning || (data.status === "not_found" ? "No accessible Civitai match was found for this exact file. It may be unpublished, restricted, or modified. You can try another Civitai site."
         : data.status === "found" ? "Matched by file hash. Newer versions must share the published base-model label; check the author's compatibility notes before installing."
-          : "Details have not been fetched yet.");
+          : local?.status === "found" ? "Loaded from the local LoRA file. No Civitai listing is required. Check again also checks Civitai."
+            : "Details have not been fetched yet.");
   }
   let busy = false;
   async function load(force = false) {
@@ -298,7 +336,14 @@ export function openModelDetails(doc, file) {
       : "Checking for metadata in the background… You can edit local trigger words now.";
     const revision = revisions.get(keyFor(file));
     try {
-      const data = await request(file, { lookup: true, refresh: force, site: site.value });
+      let data;
+      if (file.category === "loras") {
+        data = await request(file, { local: true });
+        if (dialog.isConnected && revisions.get(keyFor(file)) === revision) render(data);
+      }
+      if (force || !data || data.refresh_due || (data.status === "unchecked" && data.local_metadata?.status !== "found")) {
+        data = await request(file, { lookup: true, refresh: force, site: site.value });
+      }
       paintButtons(doc, file, data);
       if (dialog.isConnected && revisions.get(keyFor(file)) === revision) render(data);
     } catch (error) {
@@ -322,7 +367,7 @@ export function openModelDetails(doc, file) {
     if (!dialog.isConnected) return;
     site.value = data.site || "auto";
     render(data);
-    if (!data.missing_file && (data.status === "unchecked" || data.refresh_due)) load();
+    if (!data.missing_file && (file.category === "loras" || data.status === "unchecked" || data.refresh_due)) load();
   }).catch(() => { if (dialog.isConnected) load(); });
   return dialog;
 }

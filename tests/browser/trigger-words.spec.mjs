@@ -21,7 +21,7 @@ try {
   await fixture.context.route('**/prompt-studio/model-metadata**', async route => {
     const request = route.request();
     const data = request.method() === 'POST' ? request.postDataJSON() : Object.fromEntries(new URL(request.url()).searchParams);
-    if (data.name === 'Style/slow.safetensors') await new Promise(resolve => { releaseSlow = resolve; });
+    if (data.name === 'Style/slow.safetensors' && !data.local_only) await new Promise(resolve => { releaseSlow = resolve; });
     await route.fulfill({ json: { status: 'found', trigger_words: words[data.name] || [], refresh_due: false } });
   });
   const page = await fixture.newPage();

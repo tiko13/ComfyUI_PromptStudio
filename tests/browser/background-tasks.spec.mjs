@@ -35,10 +35,11 @@ try {
       await monitor.locator('summary').click();
       await monitor.locator('summary').click();
     };
-    snapshot = {...snapshot, state:'complete', processed:328, errors:0, error:''};
+    snapshot = {...snapshot, state:'complete', processed:328, errors:0, error:'', records:{...snapshot.records,local:3}};
     await reopen();
     await page.waitForFunction(id => document.getElementById(id).textContent.includes('Scan complete · 328 / 328'), `${prefix}-background-tasks`);
     assert.equal(await section.locator('progress').isVisible(), false);
+    assert.ok((await section.textContent()).includes('3 embedded'));
     snapshot = {...snapshot, state:'failed', error:'The library could not be indexed.'};
     await reopen();
     await page.waitForFunction(id => document.getElementById(id).textContent.includes('Scan failed'), `${prefix}-background-tasks`);

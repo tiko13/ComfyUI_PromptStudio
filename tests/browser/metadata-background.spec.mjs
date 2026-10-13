@@ -9,18 +9,21 @@ let fail = false;
 let reached = Promise.withResolvers();
 const snapshot = {status:'found',name:'Saved LoRA',trigger_words:['saved trigger'],
   description:'Saved author notes',refresh_due:true,update_status:'current',version:{name:'Saved version'}};
+let currentSnapshot = snapshot;
 try {
   await fixture.context.route('**/prompt-studio/model-metadata**', async route => {
-    if (route.request().method() === 'POST') {
+    if (route.request().method() === 'POST' && !route.request().postDataJSON().local_only) {
       requests++;
       await new Promise(resolve => { releases.push(resolve); reached.resolve(); });
       completed++;
-      return route.fulfill({status:fail ? 503 : 200,json:fail ? {error:'Civitai unavailable'} : {...snapshot,trigger_words:['updated trigger'],refresh_due:false}});
+      if (!fail) currentSnapshot = {...snapshot,trigger_words:['updated trigger'],refresh_due:false};
+      return route.fulfill({status:fail ? 503 : 200,json:fail ? {error:'Civitai unavailable'} : currentSnapshot});
     }
-    await route.fulfill({json:snapshot});
+    await route.fulfill({json:currentSnapshot});
   });
   const page = await fixture.newPage();
   const check = async name => {
+    currentSnapshot = snapshot;
     const before = requests;
     reached = Promise.withResolvers();
     await page.evaluate(async name => {

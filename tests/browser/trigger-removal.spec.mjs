@@ -11,9 +11,11 @@ try {
   await fixture.context.route('**/prompt-studio/loras?*', route => route.fulfill({ json: {
     loras: Object.keys(words).map(name => ({ name, label: name })),
   } }));
-  await fixture.context.route('**/prompt-studio/model-metadata**', route => route.fulfill({ json: {
-    status: 'found', trigger_words: words[new URL(route.request().url()).searchParams.get('name')] || [], refresh_due: false,
-  } }));
+  await fixture.context.route('**/prompt-studio/model-metadata**', route => {
+    const req = route.request();
+    const name = req.method() === 'POST' ? req.postDataJSON().name : new URL(req.url()).searchParams.get('name');
+    return route.fulfill({json:{status:'found',trigger_words:words[name] || [],refresh_due:false}});
+  });
   const page = await fixture.newPage();
   await page.evaluate(async () => {
     const { state } = await import('/extensions/ComfyUI_PromptStudio/js/prompt-studio/core/state.js');

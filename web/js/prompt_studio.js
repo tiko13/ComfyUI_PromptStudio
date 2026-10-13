@@ -1,3 +1,4 @@
+import { watchExternalGeneration } from "./prompt-studio/ui/external-generation.js";
 import { structureAdapter, semanticReferences, applyStructureGuide, isStructureReference } from "./prompt-studio/generation/structure-guide.js";
 import { validateTargetSource, applyReferenceMask } from "./prompt-studio/generation/reference-targeting.js";
 import { supportsEditReference, applyEditReference } from "./prompt-studio/generation/edit-reference.js";
@@ -8966,7 +8967,7 @@ function llamacppLauncherConfigured(payload = llmConnectionPayload()) {
 }
 
 function comfyUiIsProcessing() {
-  return state.comfyQueueRemaining > 0
+  return state.loraStudioGeneration?.reserved || state.comfyQueueRemaining > 0
     || state.generating
     || state.queueing
     || state.generationJobs.size > 0
@@ -9008,7 +9009,7 @@ function renderSystemStatusSummary() {
     || state.comfyUpdateBusy
     || state.comfyUpdateNeedsRestart;
   const unhealthy = !state.apiConnected || llmUnhealthy || state.comfyUpdateError;
-  const stateName = unhealthy ? "offline" : (processing ? "busy" : "idle");
+  const stateName = state.apiConnected && state.loraStudioGeneration?.reserved ? "busy" : (unhealthy ? "offline" : (processing ? "busy" : "idle"));
   control.dataset.state = stateName;
   control.dataset.updateActive = state.comfyUpdateBusy ? "true" : "false";
   control.querySelector("summary").title = stateName === "offline"
@@ -9024,6 +9025,8 @@ function renderSystemStatusSummary() {
           ? state.comfyUpdateMessage
           : (stateName === "offline" ? "Status: attention needed" : (stateName === "busy" ? "Status: processing" : "Status: ready")))));
 
+  if (state.apiConnected && state.loraStudioGeneration?.reserved) label.textContent = state.loraStudioGeneration.label;
+
   if (!state.apiConnected) {
     comfyDetail.textContent = "Not responding";
     comfyDetail.dataset.state = "offline";
@@ -9035,6 +9038,9 @@ function renderSystemStatusSummary() {
     comfyDetail.dataset.state = state.comfyUpdateError
       ? "offline"
       : (state.comfyUpdateBusy || state.comfyUpdateNeedsRestart ? "busy" : "idle");
+  } else if (state.loraStudioGeneration?.reserved) {
+    comfyDetail.textContent = state.loraStudioGeneration.label;
+    comfyDetail.dataset.state = "busy";
   } else if (comfyProcessing) {
     const queued = Math.max(0, Number(state.comfyQueueRemaining) || 0);
     comfyDetail.textContent = queued ? `Processing · ${queued} queued` : "Processing";
@@ -15494,6 +15500,12 @@ app.registerExtension({
     loadCss();
     buildPanel();
     startLlmStatusMonitor();
+    watchExternalGeneration((status) => {
+      state.loraStudioGeneration = status;
+      updateComposeMode();
+      syncBackgroundActivityIndicator();
+      renderSystemStatusSummary();
+    }, api.fetchApi.bind(api));
     api.addEventListener("cm-queue-status", handleManagerQueueStatus);
     api.addEventListener("cm-task-started", handleManagerTaskStarted);
     api.addEventListener("cm-task-completed", handleManagerTaskCompleted);

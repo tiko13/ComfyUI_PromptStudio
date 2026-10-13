@@ -21,6 +21,7 @@ try {
   await fixture.context.route('**/prompt-studio/model-metadata**', async route => {
     const request = route.request();
     const data = request.method() === 'POST' ? request.postDataJSON() : Object.fromEntries(new URL(request.url()).searchParams);
+    if (data.local_only) return route.fulfill({json:{...(records.get(data.name) || {status:'unchecked',refresh_due:true}),local_metadata:{status:'missing'}}});
     calls.push({method:request.method(),...data});
     if (request.method() === 'POST') {
       const result = found(data.name);
