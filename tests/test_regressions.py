@@ -95,6 +95,20 @@ def install_runtime_stubs(storage_root):
 
 
 def load_modules(storage_root):
+    # Routes retain their fake web API, but later real HTTP tests must import
+    # the original aiohttp (including its middleware decorator).
+    missing = object()
+    previous_aiohttp = sys.modules.get("aiohttp", missing)
+    try:
+        return _load_modules_with_stubs(storage_root)
+    finally:
+        if previous_aiohttp is missing:
+            sys.modules.pop("aiohttp", None)
+        else:
+            sys.modules["aiohttp"] = previous_aiohttp
+
+
+def _load_modules_with_stubs(storage_root):
     install_runtime_stubs(storage_root)
     package = types.ModuleType("ComfyUI_PromptStudio")
     package.__path__ = [str(REPO_ROOT / "backend")]
