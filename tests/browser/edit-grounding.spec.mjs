@@ -65,7 +65,13 @@ try {
  await page.reload();await page.waitForFunction(()=>window.studioReady);await activate();
  await page.evaluate(()=>{document.querySelector('#promptstudio-use-llm-amplification').checked=true;window.refTest.m.updateComposeMode();});
  assert.equal(await page.evaluate(()=>window.refTest.state.chats.find(c=>c.id===window.refTest.state.activeChatId).pendingGeneration.referenceGrounding.observations),grounding.observations);
- await page.evaluate(()=>window.refTest.m.createNewFromCurrentPrompt({applyControls:false,generationAction:'edit'}));
+ const queued = await page.evaluate(async()=>{
+   const {m,state}=window.refTest;
+   const ok=await m.createNewFromCurrentPrompt({applyControls:false,generationAction:'edit'});
+   return {ok,status:document.querySelector('#promptstudio-status')?.textContent,
+     last:state.chats.find(c=>c.id===state.activeChatId).messages.at(-1)};
+ });
+ assert.equal(queued.ok,true,JSON.stringify(queued));
  const edit=await page.evaluate(()=>window.queuedSnapshots.at(-1));
  assert.equal(edit.output['1'].inputs.prompt,grounding.edit_instruction);
  assert.deepEqual(JSON.parse(edit.output['3'].inputs.image_ref),reference);

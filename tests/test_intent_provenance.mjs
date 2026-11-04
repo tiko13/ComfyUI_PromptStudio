@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import {test} from 'node:test';
-import {normalizeIntentProvenance,promptIntentVersion,restorePromptIntentVersion,recordManualMain,recordManualFinal,intentReplayRecord,createIntentSession,effectiveSecondaryInstructions} from '../web/js/prompt-studio/chat/intent-provenance.js';
+import {normalizeIntentProvenance,promptIntentVersion,restorePromptIntentVersion,recordManualMain,recordManualFinal,addPromptConstraint,deletePromptConstraint,intentReplayRecord,createIntentSession,effectiveSecondaryInstructions} from '../web/js/prompt-studio/chat/intent-provenance.js';
 import {createChatModel} from '../web/js/prompt-studio/chat/model.js';
 import {snapshotForPlotCell} from '../web/js/prompt-studio/plot/model.js';
 
@@ -27,6 +27,28 @@ test('suppressed secondary passthrough stays omitted after persisted metadata re
   assert.equal(effectiveSecondaryInstructions(JSON.parse(JSON.stringify(suppressed)),'Add a lamp'),'');
   assert.equal(effectiveSecondaryInstructions(metadata,'Warm daylight'),'Warm daylight');
   assert.equal(effectiveSecondaryInstructions(null,'Legacy detail'),'Legacy detail');
+});
+
+test('individual constraint edits preserve other constraints and saved history',()=>{
+  const source=recordManualFinal(metadata,'My exact Final.');
+  source.suppressed_sources=[{source:'style',source_id:'style_preset',constraint_id:'lamp'}];
+  const saved=promptIntentVersion('User Main','My exact Final.',source);
+  const edited=deletePromptConstraint(JSON.parse(JSON.stringify(source)),{type:'exclude',id:'lamp'});
+  assert.deepEqual(edited.exclusions,[]);
+  assert.deepEqual(edited.locked_literals,source.locked_literals);
+  assert.deepEqual(edited.suppressed_sources,[]);
+  assert.equal(edited.edit_scope,null);
+  assert.equal(edited.last_turn_id,'');
+  assert.equal(edited.revision,source.revision+1);
+  assert.deepEqual(edited.manual_final,source.manual_final);
+  assert.deepEqual(restorePromptIntentVersion(saved).intentProvenance,source);
+  const added=addPromptConstraint(edited,{type:'exclude',value:'mirror',id:'manual-mirror'});
+  assert.equal(added.exclusions[0].evidence.quote,'mirror');
+  assert.equal(added.exclusions[0].evidence.source,'user');
+  assert.deepEqual(added.locked_literals,source.locked_literals);
+  assert.throws(()=>addPromptConstraint(added,{type:'literal',value:'mirror',id:'duplicate'}),/already/);
+  assert.throws(()=>addPromptConstraint(added,{type:'exclude',value:' ',id:'empty'}),/Enter/);
+  assert.equal(addPromptConstraint(null,{type:'literal',value:'OPEN',id:'sign'}).locked_literals[0].text,'OPEN');
 });
 
 test('plot cell exclusions suppress only that cell secondary input without mutating the shared base',()=>{

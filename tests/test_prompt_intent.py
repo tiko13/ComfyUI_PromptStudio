@@ -145,26 +145,81 @@ class PromptIntentProductionTests(unittest.TestCase):
         _, metadata = PromptIntentTests().removal()
         data = {"mode": "render", "revision": "A cat beside a window.", "intent_provenance": metadata,
                 "style_modifier": "Ornate brass lamp decor", "secondary_instructions": "brass lamp", "embellishment_level": "None"}
-        with mock.patch.object(self.routes, "_generate_kcpp", return_value="A cat beside a window.") as generate, mock.patch.object(self.routes, "_needs_expansion_retry", return_value=False), mock.patch.object(self.routes, "_consult_json_object") as classify:
+        review = {"conflicts": [{"source_id": "style_modifier", "constraint_ids": ["prop-lamp"]}]}
+        with mock.patch.object(self.routes, "_generate_kcpp", return_value="A cat beside a window.") as generate, mock.patch.object(self.routes, "_needs_expansion_retry", return_value=False), mock.patch.object(self.routes, "_consult_json_object", return_value=("{}", review)) as classify:
             self.assertEqual(self.routes._revise(data), "A cat beside a window.")
         classify.assert_not_called()
-        self.assertNotIn("Ornate brass lamp decor", generate.call_args.args[0])
+        self.assertIn("Ornate brass lamp decor", generate.call_args.args[0])
         self.assertIn("Omit excluded content", generate.call_args.args[0])
         result = data["_promptstudio_intent_result"]
-        self.assertEqual(set(result["suppressed_controls"]), {"style_modifier", "secondary_instructions"})
-        self.assertEqual(len(result["intent_provenance"]["suppressed_sources"]), 2)
-        with mock.patch.object(self.routes, "_generate_kcpp", return_value="A cat beside a brass lamp."), mock.patch.object(self.routes, "_needs_expansion_retry", return_value=False):
+        self.assertEqual(result["suppressed_controls"], ["secondary_instructions"])
+        self.assertEqual(len(result["intent_provenance"]["suppressed_sources"]), 1)
+        with mock.patch.object(self.routes, "_consult_json_object", return_value=("{}", review)), mock.patch.object(self.routes, "_generate_kcpp", return_value="A cat beside a brass lamp."), mock.patch.object(self.routes, "_needs_expansion_retry", return_value=False):
             with self.assertRaisesRegex(ValueError, "existing prompts were kept"):
                 self.routes._revise(data)
 
-    def test_semantic_control_conflict_suppresses_indirect_literal_override(self):
+    def test_style_and_framing_recover_after_saved_suppression(self):
+        _, metadata = PromptIntentTests().removal()
+        blocked = [{"id": key, "source": source, "text": "Add a brass lamp"}
+                   for key, source in (("style_modifier", "style"), ("framing_modifier", "framing"))]
+        metadata = intent.resolve_final_sources(metadata, blocked)["intent"]
+        self.assertEqual(len(metadata["suppressed_sources"]), 2)
+        metadata = json.loads(json.dumps(metadata))  # An already-affected saved chat.
+        data = {"mode": "render", "revision": "A cat beside a window.", "intent_provenance": metadata,
+                "style_modifier": "Use natural light; do not add a lamp.",
+                "framing_modifier": "Use a close-up without lamps.", "embellishment_level": "None"}
+        for _ in range(2):
+            with mock.patch.object(self.routes, "_consult_json_object", return_value=("{}", {"conflicts": []})) as review, mock.patch.object(self.routes, "_generate_kcpp", return_value="A cat beside a window, in natural light, close-up.") as generate, mock.patch.object(self.routes, "_needs_expansion_retry", return_value=False):
+                self.routes._revise(data)
+            review.assert_not_called()
+            for key in ("style_modifier", "framing_modifier"):
+                self.assertIn(data[key], generate.call_args.args[0])
+            result = data.pop("_promptstudio_intent_result")
+            self.assertEqual(result["suppressed_controls"], [])
+            self.assertEqual(result["intent_provenance"]["suppressed_sources"], [])
+            self.assertEqual(result["intent_provenance"]["exclusions"], metadata["exclusions"])
+            data["intent_provenance"] = json.loads(json.dumps(result["intent_provenance"]))
+
+        # Semantic acceptance does not weaken validation of the actual output.
+        with mock.patch.object(self.routes, "_consult_json_object", return_value=("{}", {"conflicts": []})), mock.patch.object(self.routes, "_generate_kcpp", return_value="A cat with a lamp."), mock.patch.object(self.routes, "_needs_expansion_retry", return_value=False):
+            with self.assertRaisesRegex(ValueError, "existing prompts were kept"):
+                self.routes._revise(data)
+
+    def test_style_is_adapted_to_literal_constraints_without_disabling_the_source(self):
         metadata = intent.apply_user_intent_delta(None, {"version": 1, "base_revision": 0, "operations": [{"op": "lock", "id": "sign", "kind": "visible_text", "text": "OPEN", "evidence": "OPEN"}]}, user_text='A sign reads "OPEN"', turn_id="u1")
         data = {"mode": "render", "revision": 'A sign reads "OPEN".', "intent_provenance": metadata, "style_modifier": 'Make signage say CLOSED', "embellishment_level": "None"}
         review = {"conflicts": [{"source_id": "style_modifier", "constraint_ids": ["sign"]}]}
         with mock.patch.object(self.routes, "_consult_json_object", return_value=("{}", review)), mock.patch.object(self.routes, "_generate_kcpp", return_value='A sign reads "OPEN".') as generate, mock.patch.object(self.routes, "_needs_expansion_retry", return_value=False):
             self.routes._revise(data)
-        self.assertNotIn("Make signage say CLOSED", generate.call_args.args[0])
-        self.assertEqual(data["_promptstudio_intent_result"]["suppressed_controls"], ["style_modifier"])
+        self.assertIn("Make signage say CLOSED", generate.call_args.args[0])
+        self.assertIn("Adapt only the conflicting details", generate.call_args.args[0])
+        self.assertEqual(data["_promptstudio_intent_result"]["suppressed_controls"], [])
+        self.assertEqual(data["_promptstudio_intent_result"]["intent_provenance"]["locked_literals"], metadata["locked_literals"])
+
+    def test_rebuild_repairs_conflicting_output_without_removing_controls_or_constraints(self):
+        _, metadata = PromptIntentTests().removal()
+        data = {"mode": "render", "revision": "A cat beside a window.", "intent_provenance": metadata,
+                "style_modifier": "Watercolor with a decorative lamp", "framing_modifier": "Close-up", "embellishment_level": "None"}
+        with mock.patch.object(self.routes, "_consult_json_object") as review, mock.patch.object(self.routes, "_generate_kcpp", side_effect=["A watercolor cat with a lamp.", "A close-up watercolor cat beside a window."]) as generate, mock.patch.object(self.routes, "_needs_expansion_retry", return_value=False):
+            self.assertEqual(self.routes._revise(data), "A close-up watercolor cat beside a window.")
+        review.assert_not_called()
+        self.assertEqual(generate.call_count, 2)
+        self.assertIn("excluded_content: lamp", generate.call_args.args[0])
+        self.assertIn("Watercolor with a decorative lamp", generate.call_args.args[0])
+        self.assertIn("Close-up", generate.call_args.args[0])
+        self.assertEqual(data["_promptstudio_intent_result"]["intent_provenance"]["exclusions"], metadata["exclusions"])
+        self.assertEqual(data["_promptstudio_intent_result"]["suppressed_controls"], [])
+
+    def test_secondary_review_cannot_suppress_style_or_framing(self):
+        _, metadata = PromptIntentTests().removal()
+        additions = [{"id":"style_preset", "source":"style", "text":"Watercolor"},
+                     {"id":"framing_preset", "source":"framing", "text":"Close-up"},
+                     {"id":"additional_instructions", "source":"secondary", "text":"Add a lighting fixture"}]
+        review = {"conflicts":[{"source_id":"additional_instructions", "constraint_ids":["prop-lamp"]}]}
+        with mock.patch.object(self.routes, "_consult_json_object", return_value=("{}",review)):
+            result = self.routes._resolve_image_intent_controls({},metadata,additions)
+        self.assertEqual([item["id"] for item in result["additions"]],["style_preset","framing_preset"])
+        self.assertEqual([item["source_id"] for item in result["warnings"]],["additional_instructions"])
 
     def test_local_response_edits_only_the_authorized_span(self):
         before = "A blue mug on a wooden table."
@@ -285,7 +340,7 @@ class PromptIntentProductionTests(unittest.TestCase):
         bad = {"conflicts": [{"source_id": "decor", "constraint_ids": ["invented"]}]}
         valid = {"conflicts": [{"source_id": "decor", "constraint_ids": ["prop-lamp"]}]}
         with mock.patch.object(self.routes, "_consult", side_effect=[json.dumps(bad), json.dumps(valid)]) as consult:
-            result = self.routes._resolve_image_intent_controls({}, metadata, [{"id": "decor", "source": "style", "text": "Decorative lighting fixture"}])
+            result = self.routes._resolve_image_intent_controls({}, metadata, [{"id": "decor", "source": "secondary", "text": "Decorative lighting fixture"}])
         self.assertEqual(result["additions"], [])
         self.assertEqual(consult.call_count, 2)
 

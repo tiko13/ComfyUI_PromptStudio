@@ -315,7 +315,7 @@ def _mentions(text, phrase):
     return False
 
 
-def resolve_final_sources(intent, additions):
+def resolve_final_sources(intent, additions, *, instruction_ids=()):
     """Return accepted control additions and specific suppression warnings."""
     intent = normalize_intent(intent) or empty_intent()
     accepted, warnings = [], []
@@ -329,7 +329,10 @@ def resolve_final_sources(intent, additions):
         if not isinstance(declared, list) or any(identifier not in {item["id"] for item in constraints} for identifier in declared):
             raise IntentValidationError("Control conflict references an unknown constraint")
         conflict = next((item for item in constraints if item["id"] in declared), None)
-        conflict = conflict or next((item for item in intent["exclusions"] if any(_mentions(text, alias) for alias in [item["text"], *item.get("aliases", [])])), None)
+        # Instructions can mention excluded content to forbid it. Their meaning
+        # is reviewed by the caller; only literal passthrough gets a lexical veto.
+        if addition["id"] not in instruction_ids:
+            conflict = conflict or next((item for item in intent["exclusions"] if any(_mentions(text, alias) for alias in [item["text"], *item.get("aliases", [])])), None)
         if conflict:
             warnings.append({"code": "control_suppressed", "source": addition["source"], "source_id": addition["id"],
                              "constraint_id": conflict["id"], "message": f"{addition['source']} addition was skipped to preserve your constraint for '{conflict['text']}'."})
@@ -351,7 +354,7 @@ def build_intent_prompt_context(intent, *, stage, include_edit_scope=True):
         policy = "Use only user chat and prior Main as content. Controls, Final-only exclusions and source tags are never Main content. A final_only scope leaves Main byte-for-byte unchanged."
     else:
         payload = {key: intent[key] for key in ("locked_literals", "exclusions", "edit_scope", "source_tags")}
-        policy = "Latest explicit user constraints override known-reference expansion, style/framing, secondary instructions and embellishment. Omit excluded content; render affirmative content only, without adding negative prose. Preserve locked literal text exactly."
+        policy = "Latest explicit user constraints override known-reference expansion, style/framing, secondary instructions and embellishment. Omit excluded content; render affirmative content only, without adding negative prose. Preserve locked literal text exactly. Apply the current style and framing wherever compatible with these constraints on every rebuild. Adapt only the conflicting details; do not discard an entire style or framing instruction because one detail conflicts."
     if not include_edit_scope:
         payload.pop("edit_scope", None)
     elif payload.get("edit_scope"):

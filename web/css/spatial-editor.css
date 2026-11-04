@@ -1,0 +1,22 @@
+.ps-spatial-editor { box-sizing: border-box; width: min(1100px, 94vw); max-height: 92vh; overflow: auto; font: 14px/1.45 system-ui, sans-serif; color: var(--input-text, #ddd); background: var(--comfy-menu-bg, #222); border: 1px solid #666; border-radius: 12px; padding: 20px; }
+.ps-spatial-editor h2 { margin: 0 0 12px; font-size: 20px; }
+.ps-spatial-editor::backdrop { background: #000a; }
+.ps-spatial-editor label { display: grid; gap: 5px; margin: 10px 0; }
+.ps-spatial-editor label:has(input[type=checkbox]) { display: flex; align-items: center; }
+.ps-spatial-editor input, .ps-spatial-editor textarea, .ps-spatial-editor select { min-width: 0; max-width: 100%; box-sizing: border-box; color: inherit; background: #17191d; border: 1px solid #656975; border-radius: 5px; padding: 7px; }
+.ps-spatial-editor textarea { min-height: 68px; resize: vertical; }
+.ps-spatial-editor button { padding: 7px 10px; border: 1px solid #707580; border-radius: 5px; color: inherit; background: #30343c; cursor: pointer; }
+.ps-spatial-editor button:disabled { opacity: .45; cursor: default; }
+.ps-spatial-editor :focus-visible { outline: 2px solid #9fd4ff; outline-offset: 2px; }
+.ps-spatial-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 7px; margin: 10px 0; }
+.ps-spatial-footer { position: sticky; bottom: -20px; z-index: 2; padding: 12px 0; margin-bottom: 0; border-top: 1px solid #535c6c; background: var(--comfy-menu-bg, #222); justify-content: flex-end; }
+.ps-spatial-inspector label:has(input[type=number]) { display: inline-grid; width: calc(50% - 8px); margin-right: 8px; }
+.ps-spatial-grid { display: grid; grid-template-columns: minmax(0, 2fr) minmax(230px, 1fr); gap: 18px; align-items: start; }
+.ps-spatial-canvas { position: relative; width: 100%; background-color: #151b23; background-image: linear-gradient(#ffffff0c 1px, transparent 1px), linear-gradient(90deg, #ffffff0c 1px, transparent 1px); background-size: 10% 10%; border: 1px solid #757e8e; overflow: hidden; touch-action: none; }
+.ps-spatial-box { position: absolute; box-sizing: border-box; border: 2px solid #95a5ba; background: #5d91bc28; overflow: hidden; padding: 4px; font-size: 12px; cursor: move; user-select: none; white-space: pre-wrap; }
+.ps-spatial-box.selected { border-color: #b2e0ff; background: #77bded44; }
+.ps-spatial-background { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+.ps-spatial-resize { position: absolute; bottom: 0; right: 0; padding: 3px; cursor: nwse-resize; background: #18232c; }
+.ps-spatial-map-preview { max-width: 240px; max-height: 180px; object-fit: contain; }
+.ps-spatial-editor fieldset { border: 1px solid #535c6c; border-radius: 6px; margin: 12px 0; }
+@media(max-width: 700px) { .ps-spatial-grid { grid-template-columns: 1fr; } }

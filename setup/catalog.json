@@ -346,6 +346,129 @@
         "url": "https://huggingface.co/Qwen/Qwen-Image-2.1/blob/main/LICENSE",
         "notice": "Qwen Image 2.1 is restricted to strict non-commercial use: research or evaluation only. Commercial use requires a separate license from Qwen. Accept these terms to select this workflow."
       }
+    },
+    {
+      "id": "fibo2_dev_create",
+      "name": "FIBO 2 Dev Create",
+      "label": "Dev Create",
+      "family": "FIBO 2",
+      "role": "create",
+      "file": "[PS] - FIBO2 Dev Create.json",
+      "requirements": [
+        "fibo2_dev",
+        "encoder",
+        "fibo2_vae"
+      ],
+      "nodes": [],
+      "license": {
+        "id": "bria-fibo2-noncommercial-2026-10-24",
+        "name": "FIBO 2 model terms",
+        "url": "https://huggingface.co/Comfy-Org/Fibo-2.0#license",
+        "notice": "FIBO 2 weights are for non-commercial use under the published model terms. Commercial use requires a separate agreement with Bria. Review and accept these terms to select this workflow."
+      }
+    },
+    {
+      "id": "fibo2_dev_edit",
+      "name": "FIBO 2 Dev Edit",
+      "label": "Dev Edit",
+      "family": "FIBO 2",
+      "role": "edit",
+      "file": "[PS] - FIBO2 Dev Edit.json",
+      "requirements": [
+        "fibo2_dev",
+        "encoder",
+        "fibo2_vae"
+      ],
+      "nodes": [],
+      "license": {
+        "id": "bria-fibo2-noncommercial-2026-10-24",
+        "name": "FIBO 2 model terms",
+        "url": "https://huggingface.co/Comfy-Org/Fibo-2.0#license",
+        "notice": "FIBO 2 weights are for non-commercial use under the published model terms. Commercial use requires a separate agreement with Bria. Review and accept these terms to select this workflow."
+      }
+    },
+    {
+      "id": "fibo2_turbo_edit",
+      "name": "FIBO 2 Turbo Edit",
+      "label": "Turbo Edit",
+      "family": "FIBO 2",
+      "role": "edit",
+      "file": "[PS] - FIBO2 Turbo Edit.json",
+      "requirements": [
+        "fibo2_turbo",
+        "encoder",
+        "fibo2_vae"
+      ],
+      "nodes": [],
+      "license": {
+        "id": "bria-fibo2-noncommercial-2026-10-24",
+        "name": "FIBO 2 model terms",
+        "url": "https://huggingface.co/Comfy-Org/Fibo-2.0#license",
+        "notice": "FIBO 2 weights are for non-commercial use under the published model terms. Commercial use requires a separate agreement with Bria. Review and accept these terms to select this workflow."
+      }
+    },
+    {
+      "id": "moss_sft_create",
+      "name": "MOSS SFT Create",
+      "label": "MOSS SFT Create",
+      "family": "MOSS Image",
+      "role": "create",
+      "file": "[PS] - MOSS SFT Create.json",
+      "requirements": [
+        "moss_sft",
+        "moss_encoder",
+        "fibo2_vae",
+        "moss_destripe"
+      ],
+      "nodes": []
+    },
+    {
+      "id": "moss_sft_controlled",
+      "name": "MOSS SFT Controlled",
+      "label": "MOSS SFT Controlled",
+      "family": "MOSS Image",
+      "role": "create",
+      "file": "[PS] - MOSS SFT Controlled.json",
+      "requirements": [
+        "moss_sft",
+        "moss_encoder",
+        "fibo2_vae",
+        "moss_destripe",
+        "moss_control"
+      ],
+      "nodes": []
+    },
+    {
+      "id": "kromoss_dmd2_create",
+      "name": "Kromoss DMD2 Create",
+      "label": "Kromoss DMD2 Create",
+      "family": "MOSS Image",
+      "role": "create",
+      "file": "[PS] - Kromoss DMD2 Create.json",
+      "requirements": [
+        "kromoss",
+        "moss_encoder",
+        "fibo2_vae",
+        "kromoss_dmd2"
+      ],
+      "nodes": []
+    },
+    {
+      "id": "kromoss_realism_create",
+      "name": "Kromoss Realism Create",
+      "label": "Kromoss Realism Create",
+      "family": "MOSS Image",
+      "role": "create",
+      "file": "[PS] - Kromoss Realism Create.json",
+      "requirements": [
+        "kromoss",
+        "moss_encoder",
+        "fibo2_vae",
+        "kromoss_dmd2",
+        "kromoss_dmd",
+        "moss_snapshot"
+      ],
+      "nodes": []
     }
   ],
   "requirements": [
@@ -369,7 +492,7 @@
       "alternatives": [
         "qwen3vl_4b_fp8"
       ],
-      "description": "Reads prompts and edit reference images. Reuses either supported BF16 or FP8 weights across all three workflows.",
+      "description": "Reads prompts and reference images. Shared Qwen3-VL 4B BF16 or FP8 weights for Krea2 and FIBO 2; Setup reuses an installed compatible encoder.",
       "binding": {
         "type": "CLIPLoader",
         "field": "clip_name",
@@ -515,6 +638,138 @@
       "name": "Lineart coarse extractor",
       "category": "promptstudio_controlnet_aux",
       "default_asset": "controlnet_sketch_coarse"
+    },
+    {
+      "id": "fibo2_dev",
+      "name": "FIBO 2 Dev BF16",
+      "category": "diffusion_models",
+      "default_asset": "fibo2_dev_bf16",
+      "description": "Full Dev checkpoint shared by Create and Edit. Defaults: 50 steps and CFG 5.",
+      "binding": {
+        "type": "KCPP_PromptStudioModelLoader",
+        "field": "unet_name",
+        "index": 1
+      }
+    },
+    {
+      "id": "fibo2_turbo",
+      "name": "FIBO 2 Edit Turbo BF16",
+      "category": "diffusion_models",
+      "default_asset": "fibo2_edit_turbo_bf16",
+      "description": "Full distilled editing checkpoint. Defaults: four steps and CFG 1; no Turbo LoRA required.",
+      "binding": {
+        "type": "KCPP_PromptStudioModelLoader",
+        "field": "unet_name",
+        "index": 1
+      }
+    },
+    {
+      "id": "fibo2_vae",
+      "name": "Flux2 VAE",
+      "category": "vae",
+      "default_asset": "flux2_vae",
+      "description": "Shared FIBO image/latent encoder and decoder. Reuses an existing matching Flux2 VAE.",
+      "binding": {
+        "type": "VAELoader",
+        "field": "vae_name",
+        "index": 0
+      },
+      "alternatives": [
+        "flux2_vae_diffusers"
+      ]
+    },
+    {
+      "id": "moss_sft",
+      "name": "MOSS Image SFT BF16",
+      "category": "diffusion_models",
+      "default_asset": "moss_sft_bf16",
+      "binding": {
+        "type": "KCPP_PromptStudioModelLoader",
+        "field": "unet_name",
+        "index": 1
+      }
+    },
+    {
+      "id": "kromoss",
+      "name": "Kromoss BF16",
+      "category": "diffusion_models",
+      "default_asset": "kromoss_bf16",
+      "binding": {
+        "type": "KCPP_PromptStudioModelLoader",
+        "field": "unet_name",
+        "index": 1
+      }
+    },
+    {
+      "id": "moss_encoder",
+      "name": "Qwen3.5 9B BF16 encoder",
+      "category": "text_encoders",
+      "default_asset": "moss_encoder_bf16",
+      "binding": {
+        "type": "CLIPLoader",
+        "field": "clip_name",
+        "index": 0
+      }
+    },
+    {
+      "id": "moss_control",
+      "name": "MOSS color/depth control",
+      "category": "loras",
+      "default_asset": "moss_control",
+      "binding": {
+        "type": "LoraLoaderModelOnly",
+        "field": "lora_name",
+        "index": 0,
+        "asset": "moss_control"
+      }
+    },
+    {
+      "id": "moss_destripe",
+      "name": "MOSS SFT Destripe",
+      "category": "loras",
+      "default_asset": "moss_destripe",
+      "binding": {
+        "type": "LoraLoaderModelOnly",
+        "field": "lora_name",
+        "index": 0,
+        "asset": "moss_destripe"
+      }
+    },
+    {
+      "id": "kromoss_dmd2",
+      "name": "Kromoss 8-step DMD2",
+      "category": "loras",
+      "default_asset": "kromoss_dmd2",
+      "binding": {
+        "type": "LoraLoaderModelOnly",
+        "field": "lora_name",
+        "index": 0,
+        "asset": "kromoss_dmd2"
+      }
+    },
+    {
+      "id": "kromoss_dmd",
+      "name": "MOSS 8-step DMD (older adapter)",
+      "category": "loras",
+      "default_asset": "kromoss_dmd",
+      "binding": {
+        "type": "LoraLoaderModelOnly",
+        "field": "lora_name",
+        "index": 0,
+        "asset": "kromoss_dmd"
+      }
+    },
+    {
+      "id": "moss_snapshot",
+      "name": "MOSS Smartphone Snapshot Photo Reality v14",
+      "category": "loras",
+      "default_asset": "moss_snapshot",
+      "binding": {
+        "type": "LoraLoaderModelOnly",
+        "field": "lora_name",
+        "index": 0,
+        "asset": "moss_snapshot"
+      }
     }
   ],
   "node_packs": [
@@ -576,6 +831,26 @@
     {
       "name": "Official Qwen Turbo model card",
       "url": "https://huggingface.co/Qwen/Qwen-Image-2.1-Turbo"
+    },
+    {
+      "name": "FIBO 2 model terms",
+      "url": "https://huggingface.co/Comfy-Org/Fibo-2.0#license"
+    },
+    {
+      "name": "Comfy-Org/MOSS-Image model card and terms",
+      "url": "https://huggingface.co/Comfy-Org/MOSS-Image"
+    },
+    {
+      "name": "lodestones/Kromoss model card and terms",
+      "url": "https://huggingface.co/lodestones/Kromoss"
+    },
+    {
+      "name": "nynxz/MOSS-Image model card and terms",
+      "url": "https://huggingface.co/nynxz/MOSS-Image"
+    },
+    {
+      "name": "darask0/MOSS-Image-color-depth-control model card and terms",
+      "url": "https://huggingface.co/darask0/MOSS-Image-color-depth-control"
     }
   ],
   "addons": [

@@ -62,7 +62,7 @@ class SetupRouteTests(unittest.IsolatedAsyncioTestCase):
         result = await self.client.post("/promptstudio/setup/plan", json=payload)
         plan = await result.json()
         self.assertTrue(any("non-commercial" in message for message in plan["blockers"]))
-        self.assertEqual(len(plan["available_packs"]), 18)
+        self.assertEqual({p["id"] for p in plan["available_packs"]}, {p["id"] for p in SETUP.load_catalog()["packs"]})
         result = await self.client.post("/promptstudio/setup/start", json=payload)
         self.assertEqual(result.status, 400)
         self.assertIn("non-commercial", (await result.json())["error"])

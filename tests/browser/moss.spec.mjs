@@ -1,0 +1,61 @@
+import assert from 'node:assert/strict';
+import AxeBuilder from '@axe-core/playwright';
+import {startFixture} from './fixture.mjs';
+import {mossCatalog,mossProfile} from '../moss-fixture.mjs';
+
+const profile=await mossProfile(mossCatalog.find(p=>p.id==='moss_sft_controlled'));
+const fixture=await startFixture();
+try {
+ await fixture.context.route('**/extensions/ComfyUI_PromptStudio/js/prompt_studio.js',async route=>{
+  const response=await route.fetch();await route.fulfill({response,body:await response.text()+'\nwindow.mossActions={refreshAdditionalInputsSection,flushChatStore,captureGenerationQueueSettings};'});
+ });
+ const page=await fixture.newPage();
+ const install=()=>page.evaluate(async profile=>{
+  const {state}=await import('/extensions/ComfyUI_PromptStudio/js/prompt-studio/core/state.js');state.workflowProfiles=[profile];
+  const select=document.querySelector('#promptstudio-create-workflow');select.replaceChildren(new Option(profile.name,profile.id));select.value=profile.id;
+  window.mossActions.refreshAdditionalInputsSection();
+  document.querySelector('#promptstudio-additional-inputs')?.setAttribute('open','');
+ },profile);
+ await install();
+ const button=page.getByRole('button',{name:'Layout and control maps',exact:true});
+ await button.evaluate(b=>b.closest('details').open=true);await button.click();
+ const dialog=page.getByRole('dialog',{name:'Layout and control maps',exact:true});
+ await dialog.getByRole('button',{name:'Add character',exact:true}).click();
+ await dialog.getByLabel('Description',{exact:true}).fill('A person in a blue coat');await dialog.getByLabel('Description',{exact:true}).press('Tab');
+ await dialog.getByRole('button',{name:'Add text',exact:true}).click();
+ await dialog.getByLabel('Exact text',{exact:true}).fill('OPEN');await dialog.getByLabel('Exact text',{exact:true}).press('Tab');
+ await dialog.getByRole('button',{name:'Move earlier',exact:true}).click();
+ await dialog.getByRole('button',{name:'Undo',exact:true}).click();await dialog.getByRole('button',{name:'Redo',exact:true}).click();
+ await dialog.getByRole('button',{name:'Apply',exact:true}).click();await dialog.waitFor({state:'detached'});
+ const saved=()=>page.evaluate(async id=>{const {state}=await import('/extensions/ComfyUI_PromptStudio/js/prompt-studio/core/state.js');return structuredClone(state.chats.find(c=>c.id===state.activeChatId).spatialInputs?.[id]);},profile.id);
+ let value=await saved();assert.deepEqual(value.elements.map(e=>e.type),['text','character']);assert.equal(value.elements[0].text,'OPEN');
+ await page.evaluate(()=>{window.capturedMoss=window.mossActions.captureGenerationQueueSettings('create');});
+ await button.click();await dialog.getByRole('button',{name:'Delete',exact:true}).click();await page.keyboard.press('Escape');await dialog.waitFor({state:'detached'});assert.deepEqual(await saved(),value);
+ await button.click();await dialog.getByRole('button',{name:'Delete',exact:true}).click();await dialog.getByRole('button',{name:'Apply',exact:true}).click();await dialog.waitFor({state:'detached'});
+ assert.equal((await saved()).elements.length,1);assert.equal(await page.evaluate(()=>window.capturedMoss.spatialInputs.elements.length),2,'Queued draft remains immutable');
+ await page.evaluate(()=>window.mossActions.flushChatStore());await page.reload();await page.waitForFunction(()=>window.studioReady||window.bootError);await install();
+ assert.equal((await saved()).elements.length,1,'Durable chat reload retains layout');
+ await button.evaluate(b=>b.closest('details').open=true);await button.click();
+ const canvas=dialog.locator('.ps-spatial-canvas');await canvas.scrollIntoViewIfNeeded();const rect=await canvas.boundingBox();
+ await page.mouse.move(rect.x+rect.width*.02,rect.y+rect.height*.7);await page.mouse.down();await page.mouse.move(rect.x+rect.width*.25,rect.y+rect.height*.9);await page.mouse.up();
+ assert.equal(await dialog.locator('.ps-spatial-box').count(),2);
+ const boxWidth=await dialog.locator('.ps-spatial-box.selected').evaluate(el=>el.style.width);
+ await canvas.focus();for(let i=0;i<22;i++)await page.keyboard.press('Shift+ArrowRight');
+ assert.equal(await dialog.locator('.ps-spatial-box.selected').evaluate(el=>el.style.width),boxWidth,'Keyboard movement stops at the edge without shrinking the box');
+ await dialog.getByLabel('Map alignment',{exact:true}).selectOption('crop');
+ const png=Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jhgsAAAAASUVORK5CYII=','base64');
+ await fixture.context.route('**/promptstudio/prompt-studio/import-image',route=>route.fulfill({json:{image:{filename:'depth.png',type:'input',subfolder:'',width:64,height:64}}}));
+ await fixture.context.route('**/view?*',route=>route.fulfill({contentType:'image/png',body:png}));
+ await dialog.getByLabel('Upload depth map',{exact:true}).setInputFiles({name:'depth.png',mimeType:'image/png',buffer:png});
+ await dialog.getByLabel('Use depth map',{exact:true}).waitFor();await dialog.getByLabel('Invert depth',{exact:true}).check();
+ await dialog.getByRole('button',{name:'Create color map from layout',exact:true}).click();
+ await dialog.getByLabel('Use color map',{exact:true}).waitFor();
+ await dialog.getByLabel('Canvas background',{exact:true}).selectOption('color');
+ assert.equal(await dialog.locator('.ps-spatial-background').evaluate(img=>img.style.objectFit),'cover');
+ const audit=await new AxeBuilder({page}).include('.ps-spatial-editor').analyze();assert.deepEqual(audit.violations.map(v=>({id:v.id,help:v.help})),[]);
+ await page.setViewportSize({width:390,height:844});const bounds=await dialog.boundingBox();assert.ok(bounds.x>=0&&bounds.x+bounds.width<=391);
+ await dialog.getByRole('button',{name:'Apply',exact:true}).click();await dialog.waitFor({state:'detached'});value=await saved();
+ assert.equal(value.alignment,'crop');assert.equal(value.guides.depth.invert,true);assert.equal(value.guides.color.kind,'color');
+ assert.deepEqual(fixture.errors,[]);
+ console.log('MOSS browser: applied/cancelled drafts, character/text ordering, undo/redo, drawing, upload, map controls, queue isolation, reload, accessibility and mobile passed.');
+} finally {await fixture.close();}

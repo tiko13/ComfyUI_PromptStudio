@@ -1,12 +1,12 @@
 import {api} from '/scripts/api.js';
-import {captureProvenance,compareReplayProvenance} from '../generation/provenance.js';
+import {backgroundData} from '../core/background-data.js';
 import {installDialogFocus} from './dialog-focus.js';
 
 async function runtimeMetadata(snapshot,product) {
   try {
     const response=await api.fetchApi('/promptstudio/prompt-studio/provenance',{
       method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({snapshot,product}),signal:AbortSignal.timeout(5000),
+      body:await backgroundData('encode',{snapshot,product}),signal:AbortSignal.timeout(5000),
     });
     if(!response.ok)return null;
     const result=await response.json();return result.version===1?result:null;
@@ -14,11 +14,11 @@ async function runtimeMetadata(snapshot,product) {
 }
 
 export async function captureRuntimeProvenance(snapshot,product,lineage={}) {
-  return captureProvenance(snapshot,{runtime:await runtimeMetadata(snapshot,product),lineage});
+  return backgroundData('provenance',{snapshot,options:{runtime:await runtimeMetadata(snapshot,product),lineage}});
 }
 
 export async function reviewReplay(container,snapshot,provenance,product) {
-  const comparison=await compareReplayProvenance(provenance,snapshot,{runtime:await runtimeMetadata(snapshot,product)});
+  const comparison=await backgroundData('compare-provenance',{saved:provenance,snapshot,options:{runtime:await runtimeMetadata(snapshot,product)}});
   if(comparison.status==='unchanged')return true;
   const doc=container.ownerDocument;
   const dialog=doc.createElement('dialog');

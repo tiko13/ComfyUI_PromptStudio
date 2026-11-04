@@ -16,6 +16,7 @@ export function capabilityNode(profile, type) {
   const connected = new Set(Object.values(output).flatMap(node => Object.values(node.inputs || {})
     .filter(value => Array.isArray(value) && value.length === 2 && Number.isInteger(value[1])).map(value => String(value[0]))));
   const entries = Object.entries(output).filter(([id, node]) => node.class_type === type && connected.has(id)
+    && !(type === "PS_StructureInput" && node.inputs?.control_key)
     && (!profile?.resultNodeIds?.length || profile.resultNodeIds.some(result => dependsOn(output, [String(result), 0], id))));
   if (entries.length > 1) throw new Error(`Use one connected ${type} node per workflow.`);
   return entries[0] ? {id: entries[0][0], inputs: entries[0][1].inputs || {}} : null;
@@ -71,9 +72,10 @@ export function poseInpaintAdapter(profile) {
 
 export function validateDeclaredCapabilities(profile) {
   const output = profile.snapshot.output;
+  namedStructureInputs(profile);
   for (const input of profile.additionalInputs || []) {
     if (["PS_ReferenceCollection", "PS_ReferenceItem", "PS_ReferencePrompt", "PS_EditMask"].includes(output[input.targetNodeId]?.class_type)
-        || (output[input.targetNodeId]?.class_type === "PS_StructureInput" && input.targetInputName === "reference_json")) {
+        || (output[input.targetNodeId]?.class_type === "PS_StructureInput" && ["reference_json", "control_key", "guide_types"].includes(input.targetInputName))) {
       throw new Error("Configure reference capability settings on their workflow nodes; they cannot be overridden by Additional Inputs.");
     }
   }
@@ -91,4 +93,19 @@ export function validateDeclaredCapabilities(profile) {
   if (!customConsumer && Array.from({length: adapter.limit}, (_, i) => i + 1).some(index => !connectedItems.some(([, node]) => node.inputs.index === index))) {
     throw new Error("Connect a Reference Item for every advertised reference slot, or connect the collection to a compatible custom node.");
   }
+}
+
+// Named slots are independent from the legacy single structure-reference contract.
+export function namedStructureInputs(profile) {
+  const output = profile?.snapshot?.output || {};
+  const keys = new Set();
+  return Object.entries(output).filter(([id, node]) => node.class_type === "PS_StructureInput" && node.inputs?.control_key
+    && (profile.resultNodeIds || []).some(result => dependsOn(output, [result, 0], id))).map(([id, node]) => {
+    const key = node.inputs.control_key;
+    if (!/^[a-z][a-z0-9_]{0,63}$/.test(key) || keys.has(key)) throw new Error("Named structure inputs need unique lowercase keys.");
+    keys.add(key);
+    const kinds = String(node.inputs.guide_types || "").split(",").map(s => s.trim()).filter(Boolean);
+    if (!kinds.length || kinds.some(k => !["color", "depth"].includes(k))) throw new Error("Named map inputs currently support color and depth.");
+    return {id, key, kinds};
+  });
 }

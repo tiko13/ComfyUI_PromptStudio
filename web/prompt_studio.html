@@ -95,42 +95,86 @@
       let checking = false;
       let timer;
       let stopped = false;
-      if (new URLSearchParams(location.search).get("mode") === "video") {
+      let shellStarted = false;
+      const videoMode = new URLSearchParams(location.search).get("mode") === "video";
+      if (videoMode) {
         startup.querySelector("strong").textContent = "Prompt Studio Video";
         document.title = "Prompt Studio Video";
+      }
+      async function readJson(path, signal) {
+        const response = await fetch(path, { cache: "no-store", signal });
+        if (!response.ok) throw new Error("ComfyUI is not ready");
+        return response.json();
+      }
+      async function checkServices(signal) {
+        // A listening HTTP port or live worker alone cannot prove that the
+        // workflow host's extension discovery and Studio services are usable.
+        const [queue, extensions, config] = await Promise.all([
+          readJson("/queue", signal),
+          readJson("/extensions", signal),
+          readJson("/promptstudio/prompt-studio/config", signal),
+        ]);
+        if (!Array.isArray(queue?.queue_running) || !Array.isArray(queue?.queue_pending)
+            || !Array.isArray(extensions) || !extensions.some(path =>
+              typeof path === "string" && path.split("?")[0] === "/extensions/ComfyUI_PromptStudio/js/prompt_studio.js")
+            || !Array.isArray(config?.profiles)) throw new Error("Studio services are starting");
+        if (videoMode) {
+          const video = await readJson("/promptstudio/prompt-studio/video-status", signal);
+          // Missing/disabled companions must still reach the shell's recovery UI.
+          if (video.loaded) {
+            const [capabilities, videoConfig] = await Promise.all([
+              readJson("/promptstudio-video/capabilities", signal),
+              readJson("/promptstudio-video/config", signal),
+            ]);
+            if (!Array.isArray(capabilities?.features) || !videoConfig?.default_document) {
+              throw new Error("Video services are starting");
+            }
+          }
+        }
       }
       async function checkConnection(manual = false) {
         if (stopped || checking) return;
         clearTimeout(timer);
         if (!startup.isConnected) return;
         checking = true;
+        let responding = false;
         const controller = new AbortController();
         const timeout = setTimeout(() => controller.abort(), 4000);
         try {
-          const response = await fetch("/promptstudio/prompt-studio/runtime-health", {
-            cache: "no-store", signal: controller.signal,
-          });
-          if (!response.ok) throw new Error("ComfyUI is unavailable");
-          const health = await response.json();
+          const health = await readJson("/promptstudio/prompt-studio/runtime-health", controller.signal);
+          responding = true;
           if (stopped || !startup.isConnected) return;
-          if (startup.dataset.state === "offline" || health.prompt_worker_alive === false) {
+          if (startup.dataset.state === "offline" || health.prompt_worker_alive !== true) {
             startup.dataset.state = "connecting";
             status.textContent = "Connecting to ComfyUI…";
           }
-          if (health.prompt_worker_alive === false) {
+          if (health.prompt_worker_alive !== true) {
             unavailable = true;
             return;
           }
+          await checkServices(controller.signal);
+          if (stopped || !startup.isConnected) return;
           if (!stopped && startup.isConnected && (unavailable || manual)) {
             status.textContent = "ComfyUI is ready. Opening your studio…";
             location.reload();
             return;
           }
+          if (!shellStarted) {
+            shellStarted = true;
+            // Do not load the shell (or start its host/failure timers) until
+            // readiness passes. Inline recovery also works without cached JS.
+            const shell = document.createElement("script");
+            shell.type = "module";
+            shell.src = "./js/prompt_studio_shell.js?v=3";
+            shell.addEventListener("error", () => { unavailable = true; });
+            document.body.append(shell);
+          }
         } catch (_) {
           unavailable = true;
-          startup.dataset.state = "offline";
-          status.textContent = "Waiting for ComfyUI";
+          startup.dataset.state = responding ? "connecting" : "offline";
+          status.textContent = responding ? "Waiting for ComfyUI to finish starting…" : "Waiting for ComfyUI";
         } finally {
+          controller.abort();
           clearTimeout(timeout);
           checking = false;
           if (!stopped && startup.isConnected) timer = setTimeout(checkConnection, 5000);
@@ -144,6 +188,5 @@
       checkConnection();
     })();
   </script>
-  <script type="module" src="./js/prompt_studio_shell.js?v=2"></script>
 </body>
 </html>

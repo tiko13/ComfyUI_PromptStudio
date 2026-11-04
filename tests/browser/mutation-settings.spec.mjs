@@ -82,6 +82,7 @@ try {
     assert.equal(await editor.isHidden(), true);
     assert.equal(await manager.isVisible(), true, 'Escape must close only the editor');
     await page.locator('#promptstudio-mutation-search').fill('no matching entry');
+    await page.waitForFunction(() => document.querySelectorAll('#promptstudio-mutation-manager .promptstudio-mutation-row').length === 0);
     assert.equal(await manager.locator('.promptstudio-mutation-row').count(), 0);
     await page.locator('#promptstudio-mutation-search').fill('');
     await manager.getByRole('button', {name: 'Close', exact: true}).click();

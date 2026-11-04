@@ -50,6 +50,7 @@ try {
   assert.equal(requests[0].previous.keep_models_loaded, true);
   pending();
   await page.waitForFunction(() => document.querySelector("#promptstudio-llm-provider").value === "ollama");
+  await page.waitForFunction(() => JSON.parse(localStorage.getItem("promptstudio.promptStudio.settings.v1")).llm_provider === "ollama");
   assert.deepEqual(await snapshot(), {selected: "ollama", disabled: false, saved: "ollama", video: videoEnabled ? "ollama" : null});
   fail = true;
   await choose("koboldcpp");
@@ -62,6 +63,7 @@ try {
   assert.equal(requests.at(-1).previous.llm_provider, "ollama");
   pending();
   await page.waitForFunction(() => document.querySelector("#promptstudio-llm-provider").value === "llamacpp");
+  await page.waitForFunction(() => JSON.parse(localStorage.getItem("promptstudio.promptStudio.settings.v1")).llm_provider === "llamacpp");
   assert.equal((await snapshot()).saved, "llamacpp");
   for (const status of [404, 405]) {
     missingRouteStatus = status;

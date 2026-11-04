@@ -88,6 +88,11 @@ try {
     inputs.forEach(input => { input.checked = modes.includes(input.value); });
   }, modes);
   await form.evaluate(el => el.requestSubmit());
+  await page.waitForFunction(async () => {
+    const {LLM_PROFILE_STORAGE_KEY} = await import('/extensions/ComfyUI_PromptStudio/js/prompt-studio/core/constants.js');
+    return JSON.parse(localStorage.getItem(LLM_PROFILE_STORAGE_KEY) || '{}').profiles
+      ?.some(profile => profile.name === 'Separate mode definitions');
+  });
   const saved = await page.evaluate(async () => {
     const {loadLlmProfiles} = await import('/extensions/ComfyUI_PromptStudio/js/prompt-studio/settings/llm-profile-store.js');
     return loadLlmProfiles().find(profile => profile.name === 'Separate mode definitions');

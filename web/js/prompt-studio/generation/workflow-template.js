@@ -1,4 +1,5 @@
 import { isStudioSampler, samplingControls } from "./sampling.js";
+import { layoutBinding } from "./spatial-inputs.js";
 import {
   AMPLIFY_TYPE,
   IMAGE_SOURCE_TYPE,
@@ -22,6 +23,7 @@ import { validateDeclaredCapabilities, REFERENCE_CAPABILITY_VERSION } from "./wo
 
 export function createWorkflowTemplateBuilder({ app, nodeClassName }) {
   function imageOutputNode(node) {
+    if (nodeClassName(node) === "CreateBoundingBoxes" || node?.type === "CreateBoundingBoxes") return false;
     const data = node?.constructor?.nodeData;
     if (!data?.output_node) return false;
     if (Object.values({ ...data.input?.required, ...data.input?.optional }).some(schema => Array.isArray(schema) && schema[0] === "IMAGE")) return true;
@@ -32,7 +34,7 @@ export function createWorkflowTemplateBuilder({ app, nodeClassName }) {
   }
 
   const buildWorkflowTemplate = createWorkflowAdapter({
-    app, adapterId: "image", capabilities: { resultFields: ["images", "gifs"], outputRuleVersion: 1, referenceVersion: REFERENCE_CAPABILITY_VERSION },
+    app, adapterId: "image", capabilities: { resultFields: ["images", "gifs"], outputRuleVersion: 2, referenceVersion: REFERENCE_CAPABILITY_VERSION },
     build: async ({ file, workflowData, snapshot, nodes, additionalInputs }) => {
       const firstExecutableNode = (types) => nodes.find(record => types.includes(record.type));
       const serialized = serializedWorkflowNodes(workflowData);
@@ -91,6 +93,7 @@ export function createWorkflowTemplateBuilder({ app, nodeClassName }) {
         sourceModified: Number(file.modified || 0),
       });
       validateDeclaredCapabilities(profile);
+      layoutBinding(profile);
       return profile;
     },
   });

@@ -201,10 +201,10 @@ class SetupTests(unittest.TestCase):
         plan = self.service.plan(self.user)
         self.assertTrue(any("does not offer type = krea2" in b for b in plan["blockers"]))
 
-    def test_reuse_verifies_and_binds_same_encoder_to_all_workflows(self):
+    def test_reuse_verifies_and_binds_same_encoder_to_all_krea_workflows(self):
         self.add_assets()
         with mock.patch.object(SETUP, "acquire_asset", side_effect=AssertionError("Unexpected download")):
-            self.service.start(self.user, {})
+            self.service.start(self.user, {"packs": ["create", "edit", "upscale"]})
             job = self.wait_job()
         self.assertEqual(job["status"], "awaiting_validation", job.get("error"))
         for installed in job["workflows"]:
@@ -374,23 +374,105 @@ class SetupTests(unittest.TestCase):
             "CLIPTextEncode": {"text": 0},
             "Krea2EditGroundedEncode": {"prompt": 0, "system_prompt": 2},
             "TextEncodeQwenImage21": {"prompt": 0, "negative_prompt": 1},
+            "TextEncodeFibo2": {"prompt": 0, "negative_prompt": 1},
             "StringConcatenate": {"string_a": 0, "string_b": 1},
         }
         for pack in self.catalog["packs"]:
             for node in SETUP.workflow_nodes(self.service.workflow_source(pack["id"])):
                 for key, index in fields.get(node["type"], {}).items():
                     with self.subTest(pack=pack["id"], node=node["id"], field=key):
-                        self.assertEqual(node["widgets_values"][index], "")
-                        self.assertFalse(node.get("widgets_values_named", {}).get(key))
+                        # Recipe trigger words are conditioning, not sample scene prompts.
+                        trigger = (pack["id"] == "kromoss_realism_create" and node["type"] == "StringConcatenate"
+                                   and node.get("properties", {}).get("promptstudio_trigger") == "moss_snapshot"
+                                   and key == "string_a")
+                        expected = "photo" if trigger else ""
+                        self.assertEqual(node["widgets_values"][index], expected)
+                        self.assertEqual(node.get("widgets_values_named", {}).get(key, ""), expected)
 
     def qwen_request(self, *ids):
         return {"packs": list(ids), "license_acceptances": {
             p["id"]: p["license"]["id"] for p in self.catalog["packs"] if p["id"] in ids}}
 
+    def test_fibo_shares_encoder_and_vae_and_checks_native_capabilities(self):
+        ids = ["fibo2_dev_create", "fibo2_dev_edit", "fibo2_turbo_edit"]
+        request = self.qwen_request(*ids)
+        self.assertTrue(self.service.plan(self.user, {"packs": ids})["blockers"])
+        self.paths.add("text_encoders", "qwen3vl_4b_fp8_scaled.safetensors")
+        self.paths.add("vae", "flux2-vae.safetensors")
+        plan = self.service.plan(self.user, request)
+        self.assertEqual(plan["blockers"], [])
+        self.assertEqual(plan["node_packs"], [])
+        self.assertEqual({r["id"] for r in plan["requirements"]}, {"fibo2_dev", "fibo2_turbo", "encoder", "fibo2_vae"})
+        self.assertEqual(plan["download_bytes"], 14, "Only the two missing checkpoint fixtures")
+        self.assertEqual(self.row(plan, "encoder")["choice"], "qwen3vl_4b_fp8_scaled.safetensors")
+        self.assertEqual(self.row(plan, "fibo2_vae")["download_bytes"], 0)
+        self.service.nodes.pop("TextEncodeFibo2")
+        self.assertTrue(any("TextEncodeFibo2" in b for b in self.service.plan(self.user, request)["blockers"]))
+        self.assertFalse(self.service.plan(self.user, {"packs": ["create"]})["blockers"])
+        self.service.nodes["TextEncodeFibo2"] = object()
+        self.service.nodes["CLIPLoader"] = type("OldCLIPLoader", (), {
+            "INPUT_TYPES": classmethod(lambda cls: {"required": {"type": (["krea2", "qwen_image"],)}})})
+        self.assertTrue(any("fibo2" in b and "Update ComfyUI" in b for b in self.service.plan(self.user, request)["blockers"]))
+
+    def test_fibo_setup_preserves_existing_names_and_installs_all_three_roles(self):
+        # Registered names may come from Windows even when this test runs on Linux.
+        choices = {"fibo2_dev": "Fibo2Dev\\fibo2_dev_bf16.safetensors",
+                   "fibo2_turbo": "Fibo2EditTurbo/fibo2_edit_turbo_bf16.safetensors",
+                   "encoder": "shared/qwen3vl_4b_fp8_scaled.safetensors",
+                   "fibo2_vae": "shared\\flux2-vae.safetensors"}
+        for req in self.catalog["requirements"]:
+            if req["id"] in choices:
+                self.paths.add(req["category"], choices[req["id"]])
+        packs = [p for p in self.catalog["packs"] if p.get("family") == "FIBO 2"]
+        request = {**self.qwen_request(*(p["id"] for p in packs)), "choices": choices}
+        self.assertEqual(self.service.plan(self.user, request)["download_bytes"], 0)
+        with mock.patch.object(SETUP, "acquire_asset", side_effect=AssertionError("Existing weights must be reused")):
+            self.service.start(self.user, request)
+            job = self.wait_job()
+        self.assertEqual(job["status"], "awaiting_validation", job.get("error"))
+        self.assertEqual([w["role"] for w in job["workflows"]], ["create", "edit", "edit"])
+        for pack, installed in zip(packs, job["workflows"]):
+            flow = json.loads((self.user / "workflows" / installed["path"]).read_text(encoding="utf-8"))
+            nodes = {n["type"]: n for n in flow["nodes"]}
+            for req in self.catalog["requirements"]:
+                if req["id"] not in pack["requirements"]:
+                    continue
+                binding = req["binding"]
+                node = nodes[binding["type"]]
+                self.assertEqual(node["widgets_values_named"][binding["field"]], choices[req["id"]])
+                self.assertEqual(node["widgets_values"][binding["index"]], choices[req["id"]])
+            self.assertEqual(nodes["CLIPLoader"]["widgets_values_named"]["type"], "fibo2")
+        self.service.finish(self.user, job["id"], [{"path": w["path"], "role": w["role"], "error": ""} for w in job["workflows"]])
+        self.assertEqual(self.service.status(self.user)["onboarding"], "complete")
+
+    def test_same_named_official_vae_variant_is_reused_with_its_own_checksum(self):
+        self.add_assets()
+        variant = self.service.assets["flux2_vae_diffusers"]
+        variant["size"] = len(b"variant!")
+        variant["sha256"] = hashlib.sha256(b"variant!").hexdigest()
+        self.paths.add("vae", "flux2-vae.safetensors", b"variant!")
+        request = self.qwen_request("fibo2_dev_edit")
+        plan = self.service.plan(self.user, request)
+        row = self.row(plan, "fibo2_vae")
+        self.assertEqual(row["candidates"][0]["asset_id"], "flux2_vae_diffusers")
+        self.assertEqual(row["download_bytes"], 0)
+        self.assertEqual(row["rejected"], [])
+        with mock.patch.object(SETUP, "acquire_asset", side_effect=AssertionError("Do not download a duplicate VAE")):
+            self.service.start(self.user, request)
+            job = self.wait_job()
+        self.assertEqual(job["status"], "awaiting_validation", job.get("error"))
+        # Matching size alone must still fail checksum verification at setup.
+        self.service.finish(self.user, job["id"], [{"path": w["path"], "role": w["role"], "error": ""} for w in job["workflows"]])
+        self.paths.add("vae", "flux2-vae.safetensors", b"tampered")
+        self.service.start(self.user, request)
+        self.assertEqual(self.wait_job()["status"], "failed")
+
     def test_qwen_is_opt_in_and_acceptance_is_required_for_each_workflow(self):
         plan = self.service.plan(self.user)
-        self.assertEqual([p["id"] for p in plan["packs"]], ["create", "edit", "upscale"])
-        self.assertEqual(len(plan["available_packs"]), 18)
+        default_ids = {p["id"] for p in plan["packs"]}
+        self.assertTrue({"create", "edit", "upscale"}.issubset(default_ids))
+        self.assertTrue(default_ids.isdisjoint(p["id"] for p in self.catalog["packs"] if p.get("license")))
+        self.assertEqual({p["id"] for p in plan["available_packs"]}, {p["id"] for p in self.catalog["packs"]})
         ids = ["qwen21_create_base25", "qwen21_edit_turbo8"]
         request = self.qwen_request(*ids)
         request["license_acceptances"].pop(ids[1])
@@ -424,7 +506,7 @@ class SetupTests(unittest.TestCase):
 
     def test_all_qwen_workflows_install_with_correct_roles_and_clean_inputs(self):
         self.add_assets()
-        packs = [p for p in self.catalog["packs"] if p.get("license")]
+        packs = [p for p in self.catalog["packs"] if p.get("family") == "Qwen Image 2.1"]
         self.service.start(self.user, self.qwen_request(*(p["id"] for p in packs)))
         job = self.wait_job()
         self.assertEqual(job["status"], "awaiting_validation", job.get("error"))

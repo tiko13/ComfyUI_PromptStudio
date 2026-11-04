@@ -26,17 +26,19 @@ try {
  assert.equal(result.request.intent_provenance.exclusions[0].text,'lamp');
  assert.deepEqual(result.replay,result.historical);
  await fixture.context.route('**/extensions/ComfyUI_PromptStudio/js/prompt_studio.js',async route=>{
-  const response=await route.fetch();await route.fulfill({response,body:(await response.text())+'\nwindow.intentActions={handleStudioTurn,reviseAndMaybeGenerate,queueGeneration,undoPrompt,syncCanonicalEditor,commitPromptEditorVersion,restoreChatState,controlsFingerprint};'});
+  const response=await route.fetch();await route.fulfill({response,body:(await response.text())+'\nwindow.intentActions={handleStudioTurn,reviseAndMaybeGenerate,queueGeneration,undoPrompt,syncCanonicalEditor,commitPromptEditorVersion,restoreChatState,controlsFingerprint,flushChatStore};'});
  });
  await fixture.context.route('**/scripts/api.js',async route=>{
   const response=await route.fetch();await route.fulfill({response,body:(await response.text())+'\napi.queuePrompt=async(_,snapshot)=>{window.intentQueued=structuredClone(snapshot);return {prompt_id:"intent-replay"};};'});
  });
  const calls=[];
  let failFinal=false;
+ let recovering=false;
  const sidecar=result.restored.intentProvenance;
  await fixture.context.route('**/promptstudio/prompt-studio/revise',async route=>{
   const request=route.request().postDataJSON();calls.push(request);
   if(failFinal&&request.mode!=='revise_main')return route.fulfill({status:400,json:{error:'Synthetic preservation rejection'}});
+  if(recovering)return route.fulfill({json:{prompt:'A watercolor cat by a window, in a wide shot.',intent_provenance:{...request.intent_provenance,suppressed_sources:[]}}});
   await route.fulfill({json:{prompt:'A cat by a window.',intent_provenance:{...sidecar,last_turn_id:request.intent_turn_id},warning:'secondary addition was skipped to preserve your exclusion for lamp.'}});
  });
  const appPage=await fixture.newPage();
@@ -72,6 +74,7 @@ try {
  await appPage.evaluate(()=>window.intentActions.undoPrompt());
  assert.equal((await current()).finalPrompt,'A cat by a window.');
  assert.equal((await current()).intentProvenance.manual_final,null);
+ await appPage.evaluate(()=>window.intentActions.flushChatStore());
  await appPage.waitForFunction(async()=>{
   const store=await (await fetch('/promptstudio/prompt-studio/chats')).json();
   return store.chats.some(chat=>chat.finalPrompt==='A cat by a window.'&&chat.intentProvenance?.exclusions?.[0]?.text==='lamp'&&chat.intentProvenance?.manual_final===null);
@@ -80,6 +83,29 @@ try {
  assert.equal(await appPage.evaluate(()=>window.bootError),undefined);
  assert.equal((await current()).intentProvenance.exclusions[0].text,'lamp','The application reload retains the committed exclusion');
  assert.equal((await current()).mainPrompt,'A cat by a window.');
+ // A control rebuild recovers without clearing any constraint or opening a manager.
+ assert.equal(await appPage.locator('#promptstudio-reset-constraints').count(),0);
+ failFinal=false;recovering=true;
+ await appPage.evaluate(async()=>{
+  const {state}=await import('/extensions/ComfyUI_PromptStudio/js/prompt-studio/core/state.js');
+  state.workflowProfiles=[{id:'synthetic',name:'[PS] Synthetic',kind:'create',promptNodeId:'1',loraNodes:[],modelNodes:[]}];
+  for(const [id,label] of [['promptstudio-create-workflow','synthetic'],['promptstudio-style','Watercolor'],['promptstudio-framing','Wide Shot']]) {
+   const select=document.getElementById(id);select.replaceChildren(new Option(label,label));select.value=label;
+  }
+  document.querySelector('#promptstudio-auto-generate').checked=false;
+  document.querySelector('#promptstudio-use-llm-amplification').checked=true;
+ });
+ const callsBeforeRecovery=calls.length;
+ assert.equal(await appPage.evaluate(()=>window.intentActions.reviseAndMaybeGenerate({controlsOnly:true,revisionOverride:'',recordRevision:false})),true);
+ assert.equal(calls.length,callsBeforeRecovery+1);
+ assert.equal(calls.at(-1).mode,'render');
+ assert.equal(calls.at(-1).style_preset,'Watercolor');
+ assert.equal(calls.at(-1).framing_preset,'Wide Shot');
+ assert.deepEqual(calls.at(-1).intent_provenance.exclusions,sidecar.exclusions);
+ assert.deepEqual((await current()).intentProvenance.exclusions,sidecar.exclusions);
+ assert.deepEqual((await current()).intentProvenance.suppressed_sources,[]);
+ assert.equal((await current()).mainPrompt,'A cat by a window.');
+ assert.equal((await current()).finalPrompt,'A watercolor cat by a window, in a wide shot.');
  const saved={workflow:{nodes:[],links:[],extra:{original:true}},output:{'3':{class_type:'Sampler',inputs:{seed:39,prompt:'Historical lamp stays in exact replay'}}}};
  await appPage.evaluate(snapshot=>{window.intentReplayPromise=window.intentActions.queueGeneration({generationSnapshot:snapshot,workflowProfileId:'removed-profile',resultNodeIds:['3'],resultFields:['images'],preserveSeed:true,independent:true});},saved);
  await appPage.getByRole('dialog',{name:'Review saved replay'}).waitFor();

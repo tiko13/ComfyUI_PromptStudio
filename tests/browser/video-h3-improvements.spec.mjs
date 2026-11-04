@@ -32,7 +32,9 @@ try {
   assert.equal(await installer.count(),0);
   await page.evaluate(()=>{
     const project=window.h3Test.activeProject();
-    project.document.references=[{id:'timed',kind:'audio',name:'Guide tone',path:'fixture.wav',roles:['timeline_guide'],guide_frame:48}];
+    // Keep the guide short enough for both moves; asynchronous media metadata
+    // must not change the valid position range halfway through this keyboard test.
+    project.document.references=[{id:'timed',kind:'audio',name:'Guide tone',path:'fixture.wav',duration_seconds:1,roles:['timeline_guide'],guide_frame:48}];
     window.h3Test.markProjectChanged(); window.h3Test.renderAll();
   });
   assert.equal(await page.evaluate(()=>window.h3Test.localResolvedMode(window.h3Test.activeProject().document)),'t2va');
@@ -40,7 +42,7 @@ try {
   await marker.press('ArrowRight');
   await marker.press('Shift+ArrowRight');
   assert.equal(await page.evaluate(()=>window.h3Test.activeProject().document.references[0].guide_frame),73);
-  await page.evaluate(()=>{window.h3Test.activeProject().document.references[0].kind='video'; window.h3Test.renderAll();});
+  await page.evaluate(()=>{Object.assign(window.h3Test.activeProject().document.references[0],{kind:'video',duration_seconds:2}); window.h3Test.renderAll();});
   await page.getByRole('checkbox',{name:'Use guide soundtrack',exact:true}).check();
   await page.getByRole('spinbutton',{name:'Guide source start (seconds) for Guide 1',exact:true}).fill('0.5');
   await page.getByRole('spinbutton',{name:'Guide source start (seconds) for Guide 1',exact:true}).press('Tab');

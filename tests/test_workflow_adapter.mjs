@@ -63,6 +63,17 @@ test('Image nested IDs, renamed nodes and model/LoRA descriptors preserve the fu
   assert.equal(result.snapshot.output['30:10:1'].inputs.prompt,'saved prompt');assert.equal(env.conversions,1);
 });
 
+test('native reactive widget arrays cross the JSON queue boundary before immutable capture',async()=>{
+  const env=setup(),workflow=nested(),boxes=new Proxy([{x:10,y:20,width:30,height:40}],{});
+  const convert=env.app.graphToPrompt;
+  env.app.graphToPrompt=async graph=>{const result=await convert(graph);result.output['30:10:1'].inputs.boxes=boxes;return result;};
+  const build=createWorkflowTemplateBuilder({app:env.app,nodeClassName:n=>n.type}).buildWorkflowTemplate;
+  const p=await build(file,workflow);
+  assert.equal(p.snapshot.output['30:10:1'].inputs.boxes[0].x,10);
+  boxes[0].x=900;
+  assert.equal(p.snapshot.output['30:10:1'].inputs.boxes[0].x,10);
+});
+
 test('cache invalidates same-mtime content, schema and adapter capabilities; stale caches rebuild',async()=>{
   const env=setup(),workflow=nested();
   const make=version=>createWorkflowAdapter({app:env.app,adapterId:'image',adapterVersion:version,capabilities:{outputRule:version},build:({snapshot})=>({snapshot})});

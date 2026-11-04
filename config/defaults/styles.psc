@@ -19,7 +19,7 @@
     },
     {
       "name": "Candid Photography",
-      "instruction": "Make the result feel like an unpolished candid photo, taken on a whim."
+      "instruction": "Make the result feel like an unpolished candid photo, taken on a whim. Environment is clean unless specified otherwise."
     },
     {
       "name": "Tag Dense",

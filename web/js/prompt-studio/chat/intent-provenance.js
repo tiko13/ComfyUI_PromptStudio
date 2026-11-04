@@ -79,6 +79,39 @@ export function recordManualFinal(intentProvenance,finalPrompt) {
   return intent;
 }
 
+function changedConstraints(intent) {
+  const ids=new Set([...intent.locked_literals,...intent.exclusions].map(item=>item.id));
+  intent.suppressed_sources=intent.suppressed_sources.filter(item=>ids.has(item.constraint_id));
+  intent.source_tags=intent.source_tags.map(item=>({...item, ...(item.conflicts_with ? {conflicts_with:item.conflicts_with.filter(id=>ids.has(id))} : {})}));
+  intent.edit_scope=null;
+  intent.last_turn_id='';
+  intent.revision++;
+  return intent;
+}
+
+/** Explicit editor input is user evidence; no model classification is needed. */
+export function addPromptConstraint(intentProvenance,{type,value,id}) {
+  const intent=normalizeIntentProvenance(intentProvenance)||normalizeIntentProvenance({version:1});
+  const quote=String(value??'').trim();
+  if(!['exclude','literal'].includes(type)||!quote||quote.length>8192||!text(id)||id.length>256)throw new TypeError('Enter a constraint of up to 8192 characters.');
+  const all=[...intent.locked_literals,...intent.exclusions];
+  if(all.some(item=>item.id===id||item.text.toLowerCase()===quote.toLowerCase()))throw new TypeError('This text already has a constraint. Delete that entry first to change its type.');
+  const key=type==='exclude'?'exclusions':'locked_literals';
+  if(intent[key].length>=128)throw new TypeError('This constraint list is full. Delete an entry before adding another.');
+  const item={id,text:quote,evidence:{source:'user',turn_id:id,quote}};
+  intent[key].push(type==='exclude'?{...item,aliases:[],origin:'user'}:{...item,kind:'literal'});
+  return changedConstraints(intent);
+}
+
+export function deletePromptConstraint(intentProvenance,{type,id}) {
+  const intent=normalizeIntentProvenance(intentProvenance);
+  if(!intent||!['exclude','literal'].includes(type))throw new TypeError('Unknown constraint.');
+  const key=type==='exclude'?'exclusions':'locked_literals';
+  if(!intent[key].some(item=>item.id===id))throw new TypeError('This constraint no longer exists.');
+  intent[key]=intent[key].filter(item=>item.id!==id);
+  return changedConstraints(intent);
+}
+
 /** Replay reads the stored executable envelope without rebuilding prompts. */
 export function intentReplayRecord(generation) {
   if(!object(generation))return null;

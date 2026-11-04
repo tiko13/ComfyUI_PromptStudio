@@ -8,6 +8,7 @@ try {
  await page.locator('#promptstudio-auto-generate').uncheck();
  assert.match(await imageSummary.innerText(),/Update prompts only/);
  await page.locator('#promptstudio-revision').fill('Make the dress casual');
+ await page.waitForFunction(()=>document.querySelector('#promptstudio-run-summary').textContent.includes('discussion or a prompt change; generation is off'));
  assert.match(await imageSummary.innerText(),/discussion or a prompt change; generation is off/);
  if (videoEnabled) {
    await attachVideo(page);

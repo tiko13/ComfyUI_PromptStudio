@@ -1,5 +1,6 @@
 // Reference preparation is baked into a new PNG before analysis and generation.
 // The original upload is never changed. No detector or image model is needed.
+import { coalesceFrame } from '../core/scheduling.js';
 export function paintReference(doc, image, width, height, strokes, visible = true) {
   const layer = doc.createElement("canvas"); layer.width = width; layer.height = height;
   const ctx = layer.getContext("2d"), mask = doc.createElement("canvas"); mask.width = width; mask.height = height;
@@ -78,6 +79,7 @@ export function referenceImageEditor({doc, image, imageUrl, label, apply, valid 
   }
   const point = event => {const r = canvas.getBoundingClientRect(); return {x: Math.max(0, Math.min(1, (event.clientX - r.left) / r.width)), y: Math.max(0, Math.min(1, (event.clientY - r.top) / r.height))};};
   const stroke = p => ({keep: mode === "keep", size: Number(brush.value) / 100, points: [p]});
+  const paintDrag = coalesceFrame(() => { if (root.isConnected) render(); }, () => doc.defaultView);
   canvas.addEventListener("pointerdown", event => {
     if (!loaded || busy || event.button !== 0) return;
     event.preventDefault(); canvas.focus(); remember(); const p = point(event); cursor = p; drag = {start: p, mode}; canvas.setPointerCapture(event.pointerId);
@@ -88,7 +90,8 @@ export function referenceImageEditor({doc, image, imageUrl, label, apply, valid 
     if (!drag) {renderBrush(); return;}
     if (drag.mode === "crop") {const start = drag.start; crop = {x: Math.min(start.x, p.x), y: Math.min(start.y, p.y), width: Math.max(.01, Math.abs(p.x - start.x)), height: Math.max(.01, Math.abs(p.y - start.y))}; crop.x = Math.min(crop.x, 1-crop.width); crop.y = Math.min(crop.y, 1-crop.height);}
     else if (strokes.at(-1).points.length < 2000) strokes.at(-1).points.push(p);
-    render();
+    // Keep every stroke point immediately; paint at most once per visible frame.
+    paintDrag();
   });
   canvas.addEventListener("pointerenter", event => {hovering = true; cursor = point(event); renderBrush();});
   canvas.addEventListener("pointerleave", () => {hovering = false; renderBrush();});

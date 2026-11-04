@@ -4372,31 +4372,37 @@ Return JSON {version:1,base_revision:CURRENT_REVISION,edit_scope:{...},operation
 
 
 def _resolve_image_intent_controls(data, metadata, additions):
-    resolved = _image_intent.resolve_final_sources(metadata, additions)
+    instruction_ids = {item["id"] for item in additions if item["id"] != "secondary_instructions"}
+    resolved = _image_intent.resolve_final_sources(metadata, additions, instruction_ids=instruction_ids)
     constraints = metadata["locked_literals"] + metadata["exclusions"]
-    accepted = resolved["additions"]
+    # Style/framing are shaping instructions, never all-or-nothing content.
+    # Reapply them on every render under the constraints, including saved chats
+    # whose previous response suppressed one of these sources.
+    accepted = [item for item in resolved["additions"] if item["source"] not in {"style", "framing"}]
     if constraints and accepted:
         system = """Compare optional Final-prompt control additions against explicit user constraints.
 Constraints win over known-reference expansions, style, framing, secondary instructions and embellishment.
 Return only semantic conflicts, not mere differences in wording. User literal text must remain exact, and excluded content must not be reintroduced indirectly.
+Additions other than secondary_instructions are instructions to the writer, not literal output. Mentioning a forbidden detail in an instruction to avoid it AGREES with the exclusion. A style or framing instruction does not conflict merely because it changes presentation, omits a literal from its own wording, or mentions a constraint's words. Report a conflict only if following the instruction requires violating that constraint; compatible parts can be followed while preserving constraints.
 Return JSON {conflicts:[{source_id:EXACT_ADDITION_ID,constraint_ids:[EXACT_CONSTRAINT_ID]}]}. An empty list means no conflict. Never create new constraints or modify Main."""
         request = {**data, "max_response_tokens": 1200, "messages": [{"role": "user", "text": json.dumps({"constraints": constraints, "additions": accepted}, ensure_ascii=False)}]}
         def review_response(parsed):
             conflicts = parsed.get("conflicts")
             if not isinstance(conflicts, list) or len(conflicts) > len(accepted):
                 raise ValueError("Invalid image control conflict review")
-            additions_by_id = {item["id"]: dict(item) for item in accepted}
+            additions_by_id = {item["id"]: dict(item) for item in resolved["additions"]}
+            reviewable_ids = {item["id"] for item in accepted}
             seen = set()
             for conflict in conflicts:
                 if (not isinstance(conflict, dict) or not isinstance(conflict.get("source_id"), str)
-                        or conflict["source_id"] not in additions_by_id or conflict["source_id"] in seen):
+                        or conflict["source_id"] not in reviewable_ids or conflict["source_id"] in seen):
                     raise ValueError("Image control review referenced an unknown or duplicate addition")
                 seen.add(conflict["source_id"])
                 identifiers = conflict.get("constraint_ids")
                 if not isinstance(identifiers, list) or not identifiers or any(not isinstance(item, str) for item in identifiers):
                     raise ValueError("Image control conflict needs nonempty constraint_ids")
                 additions_by_id[conflict["source_id"]]["conflicts_with"] = identifiers
-            return _image_intent.resolve_final_sources(metadata, list(additions_by_id.values()))
+            return _image_intent.resolve_final_sources(metadata, list(additions_by_id.values()), instruction_ids=instruction_ids)
 
         schema = {"type": "object", "additionalProperties": False, "required": ["conflicts"], "properties": {
             "conflicts": {"type": "array", "maxItems": len(accepted), "items": {
@@ -4450,8 +4456,15 @@ merely because an existing object looks the same. Reject unjustified no-op claim
         raise ValueError("The prompt did not preserve the reference edit: " + review["issue"][:1500])
 
 
+def _revision_known_references(data, current_prompt, revision):
+    # Main is the reference source when supplied, including an explicitly empty
+    # Main. Only legacy callers without Main use the edited prompt as the source.
+    source = data["current_main_prompt"] if "current_main_prompt" in data else current_prompt
+    return _matched_known_references(source, revision)
+
+
 def _revise_scoped_image_prompt(data, before, instruction, metadata, stage):
-    known_references = (_matched_known_references(before, instruction, data.get("current_main_prompt"))
+    known_references = (_revision_known_references(data, before, instruction)
                         if stage == "final" else [])
     spans = [span for span in (metadata.get("edit_scope") or {}).get("spans", []) if span["stage"] == stage]
     if not spans:
@@ -4543,6 +4556,11 @@ def _revise(data):
     if intent_metadata is not None and mode != "render" and _text(data.get("intent_user_text")).strip():
         # Router paraphrases are classification context, not new prompt content.
         revision = _text(data["intent_user_text"]).strip()
+
+    known_references = (
+        _matched_known_references(revision) if mode in ("create", "render") else
+        _revision_known_references(data, current_prompt, revision) if mode == "revise" else []
+    )
 
     profile = _get_profile(_text(data.get("model_profile"), "General Natural Language"))
     style_template = _get_style_template(_text(data.get("style_preset"), "None"))
@@ -4657,6 +4675,7 @@ def _revise(data):
             current_prompt,
             revision,
             additional_instructions,
+            known_references=known_references,
         )
     else:
         prompt = _build_main_revision_prompt(
@@ -4791,9 +4810,9 @@ def _revise(data):
             (lambda correction: _strip_response(generate(correction, _retry_seed(sampler_seed))))
             if scoped_proposal is None else None
         ))
-    known_references = (_matched_known_references(revision, current_prompt, intent_main)
-                        if intent_stage == "final" else [])
-    for attempt in range(2 if data.get("reference_grounding") and scoped_proposal is None else 1):
+    can_repair = scoped_proposal is None and (data.get("reference_grounding") or (
+        intent_metadata is not None and mode in ("create", "render")))
+    for attempt in range(2 if can_repair else 1):
         try:
             revised = _enforce_known_reference_output(revised, known_references, rewrite=(
                 (lambda correction: _forbidden_words.enforce(_strip_response(generate(
@@ -4803,7 +4822,7 @@ def _revise(data):
             validate_prepared(revised)
             break
         except ValueError as exc:
-            if attempt or not data.get("reference_grounding") or scoped_proposal is not None:
+            if attempt or not can_repair:
                 raise
             repaired_prompt = prompt + "\n\nCorrect the previous candidate while preserving all user constraints. Review: " + str(exc)[:1800]
             revised = _strip_response(generate(repaired_prompt, _retry_seed(sampler_seed)))

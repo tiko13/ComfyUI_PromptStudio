@@ -5,10 +5,12 @@ import {createWorkflowTemplateBuilder} from '../web/js/prompt-studio/generation/
 import {qwenReferenceAdapter} from '../web/js/prompt-studio/generation/qwen-references.js';
 import {structureAdapter} from '../web/js/prompt-studio/generation/structure-guide.js';
 import {applyImageOutputSettings} from '../web/js/prompt-studio/settings/image-output.js';
+import {applyQwenReferences, directQwenInstruction, validateQwenReferences} from '../web/js/prompt-studio/generation/qwen-references.js';
+import {maskAdapter} from '../web/js/prompt-studio/generation/reference-targeting.js';
 
 const catalog = JSON.parse(readFileSync(new URL('../setup/catalog.json', import.meta.url)));
 
-test('bundled Qwen workflows retain executable links, Studio roles and model controls', async () => {
+async function withWorkflowBuilder(check) {
   const originalRegistry = globalThis.LiteGraph;
   class Save_as_webp_cond {}
   Save_as_webp_cond.nodeData = {output_node: true, input: {required: {images: ['IMAGE']}}};
@@ -39,6 +41,12 @@ test('bundled Qwen workflows retain executable links, Studio roles and model con
   }};
   try {
     const build = createWorkflowTemplateBuilder({app, nodeClassName: n => n.type}).buildWorkflowTemplate;
+    await check(build);
+  } finally { globalThis.LiteGraph = originalRegistry; }
+}
+
+test('bundled Qwen workflows retain executable links, Studio roles and model controls', async () => {
+  await withWorkflowBuilder(async build => {
     const packs = catalog.packs.filter(p => p.family === 'Qwen Image 2.1');
     assert.equal(packs.length, 15);
     for (const pack of packs) {
@@ -64,5 +72,66 @@ test('bundled Qwen workflows retain executable links, Studio roles and model con
         assert.equal(saver.inputs.force, true, pack.file);
       }
     }
-  } finally { globalThis.LiteGraph = originalRegistry; }
+  });
+});
+
+test('FIBO presets use native conditioning and shared Studio contracts without model-specific adapters', async () => {
+  await withWorkflowBuilder(async build => {
+    const packs = catalog.packs.filter(p => p.family === 'FIBO 2');
+    assert.equal(packs.length, 3);
+    for (const pack of packs) {
+      const workflow = JSON.parse(readFileSync(new URL('../setup/workflows/' + pack.file, import.meta.url)));
+      const profile = await build({path: pack.file, modified: 1}, workflow);
+      const edit = pack.role === 'edit', turbo = pack.id === 'fibo2_turbo_edit';
+      assert.equal(profile.kind, pack.role);
+      assert.equal(profile.modelNodes[0].modelType, turbo ? 'Fibo2EditTurbo' : 'Fibo2Dev');
+      assert.equal(profile.loraNodes[0].loraType, 'Fibo2');
+      assert.equal(profile.resultNodeIds.length, 1);
+      const output = profile.snapshot.output;
+      const find = type => Object.entries(output).find(([, n]) => n.class_type === type);
+      const [encoderId, encoder] = find('TextEncodeFibo2');
+      const [, sampler] = find('KCPP_PromptStudioSampler');
+      assert.deepEqual(sampler.inputs.positive, [encoderId, 0]);
+      assert.deepEqual(sampler.inputs.negative, [encoderId, 1]);
+      assert.deepEqual(sampler.inputs.latent_image, [encoderId, 2]);
+      assert.equal(sampler.inputs.steps, turbo ? 4 : 50);
+      assert.equal(sampler.inputs.cfg, turbo ? 1 : 5);
+      assert.equal(sampler.inputs.denoise, 1);
+      assert.equal(sampler.inputs.scheduler, 'simple');
+      assert.equal(sampler.inputs.sampler_name, 'euler');
+      assert.equal(encoder.inputs.negative_prompt, '');
+      assert.equal(find('CLIPLoader')[1].inputs.type, 'fibo2');
+      assert.deepEqual(encoder.inputs.vae, [find('VAELoader')[0], 0]);
+      assert.deepEqual(find('VAEDecode')[1].inputs.vae, encoder.inputs.vae);
+      assert.equal(Object.keys(encoder.inputs).filter(k => k.startsWith('images.image_')).length, 4);
+      const adapter = qwenReferenceAdapter(profile);
+      assert.ok(adapter.explicit);
+      assert.equal(adapter.model, 'workflow');
+      assert.equal(adapter.limit, edit ? 3 : 4);
+      assert.equal(adapter.firstImage, edit ? 2 : 1);
+      assert.equal(adapter.token, '<image_{index}>');
+      assert.equal(adapter.promptMode, edit ? 'edit_instruction' : 'full_prompt');
+      assert.equal(structureAdapter(profile), null, 'No Qwen ControlNet capability leaks into FIBO');
+      assert.equal(Boolean(maskAdapter(profile)), edit);
+      if (edit) {
+        assert.deepEqual(encoder.inputs['images.image_1'], [profile.imageNodeId, 0]);
+        assert.equal(encoder.inputs.width, 0);
+        assert.equal(encoder.inputs.height, 0);
+        assert.deepEqual(find('PS_EditMask')[1].inputs.source, [profile.imageNodeId, 0]);
+      } else {
+        assert.deepEqual(encoder.inputs.width, [profile.promptNodeId, 2]);
+        assert.deepEqual(encoder.inputs.height, [profile.promptNodeId, 3]);
+      }
+      const references = Array.from({length: adapter.limit}, (_, i) => ({image:{filename:`ref${i}.png`,subfolder:'',type:'input'},role:'subject',instruction:''}));
+      assert.throws(() => validateQwenReferences([...references, references[0]], profile.kind, adapter), /at most/);
+      const snapshot = structuredClone(profile.snapshot);
+      applyQwenReferences(snapshot, profile, references);
+      assert.equal(JSON.parse(snapshot.output[adapter.collectionId].inputs.references_json).length, adapter.limit);
+      assert.equal(output[adapter.collectionId].inputs.references_json, '[]', 'Template stays clean');
+      if (edit) assert.match(directQwenInstruction('Replace the clothing.', references, adapter), /<image_4>/);
+      applyImageOutputSettings(snapshot, {format:'webp',mode:'lossy',quality:50});
+      assert.equal(snapshot.output[profile.resultNodeIds[0]].inputs.format, 'png');
+      assert.equal(snapshot.output[profile.resultNodeIds[0]].inputs.force, true);
+    }
+  });
 });

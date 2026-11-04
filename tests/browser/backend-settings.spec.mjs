@@ -53,7 +53,13 @@ try {
       }},
   ));
   const page = await fixture.newPage();
-  const saved = () => page.evaluate(key => JSON.parse(localStorage.getItem(key)), key);
+  const saved = async () => {
+    await page.waitForFunction(async key => {
+      const {readJsonSetting} = await import('/extensions/ComfyUI_PromptStudio/js/prompt-studio/settings/buffered-storage.js');
+      return localStorage.getItem(key) === JSON.stringify(readJsonSetting(key));
+    }, key);
+    return page.evaluate(key => JSON.parse(localStorage.getItem(key)), key);
+  };
   async function change(id, value) {
     await page.evaluate(({id, value}) => {
       const control = document.getElementById(id);

@@ -2,7 +2,7 @@ import { normalizeSnapshotWire } from "../core/wire-contracts.js";
 import { sha256 } from "./sha256.js";
 import { PROMPT_STUDIO_INPUT_PROFILE_VERSION, extractPromptStudioInputs, serializedWorkflowNodes } from "./prompt-studio-input.js";
 
-export const WORKFLOW_ADAPTER_VERSION = 1;
+export const WORKFLOW_ADAPTER_VERSION = 2;
 const conversions = new WeakMap();
 
 function canonical(value, seen = new Set()) {
@@ -132,7 +132,10 @@ export function createWorkflowAdapter({ app, adapterId, adapterVersion = 1, capa
         if (Array.isArray(errors) ? errors.length > 0 : Boolean(errors)) throw new Error("ComfyUI could not configure one or more workflow nodes.");
         const definitionIds = new Set((workflowData?.definitions?.subgraphs || []).map(definition => String(definition.id)));
         if ((graph._nodes || []).some(node => definitionIds.has(String(node.type)) && !node.isSubgraphNode?.())) throw new Error("ComfyUI could not resolve a serialized subgraph.");
-        const snapshot = normalizeSnapshotWire(await app.graphToPrompt(graph)).snapshot;
+        // Native widget state can contain reactive proxies (bounding-box arrays).
+        // Serialize at the same JSON boundary used by ComfyUI's queue API before
+        // taking immutable snapshots; structuredClone cannot clone proxies.
+        const snapshot = normalizeSnapshotWire(JSON.parse(JSON.stringify(await app.graphToPrompt(graph)))).snapshot;
         const nodes = executableWorkflowNodes(graph, snapshot, workflowData);
         const additionalInputs = extractPromptStudioInputs(graph, snapshot, workflowData);
         const result = await build({ file, workflowData, graph, snapshot, nodes, additionalInputs, cached });

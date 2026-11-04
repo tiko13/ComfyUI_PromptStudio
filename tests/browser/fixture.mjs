@@ -93,11 +93,12 @@ const server = createServer(async (req, res) => {
   else if (path.endsWith('/workflows')) data = {templates: [], workflows: [], revision: 1};
   else if (path === '/userdata') data = [];
   else if (path === '/queue') data = {queue_running: [], queue_pending: []};
+  else if (path === '/extensions') data = ['/extensions/ComfyUI_PromptStudio/js/prompt_studio.js'];
   else if (path.endsWith('/default-setup')) data = {status:'idle', installed: true, available: true};
   else if (path.endsWith('/default-workflows')) data = {workflows: []};
   else if (path.endsWith('/video-status')) data = {installed: videoEnabled, loaded: videoEnabled, state: videoEnabled ? 'loaded' : 'missing'};
   else if (path.endsWith('/capabilities') && path.startsWith('/promptstudio-video/')) data = {features: ['unified_studio_shell'], studio_instances: []};
-  else if (path.endsWith('/runtime-health')) data = {connected: true};
+  else if (path.endsWith('/runtime-health')) data = {connected: true, prompt_worker_alive: true};
   else if (path.endsWith('/status')) data = {status: 'idle', connected: true, available: true};
   else if (path.endsWith('/models')) data = {models: []};
   res.setHeader('Content-Type', 'application/json'); res.end(JSON.stringify(data));

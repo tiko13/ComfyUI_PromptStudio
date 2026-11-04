@@ -12,6 +12,7 @@ import { referenceImageEditor } from "./reference-image-editor.js";
 import { defaultPose, normalizePose } from "../generation/pose.js";
 import { openPoseEditor } from "./pose-editor.js";
 import { previewStructureGuide } from "../generation/structure-guide.js";
+import { coalesceFrame } from "../core/scheduling.js";
 
 export function createEditReferenceController({panel, tile: suppliedTile, activeChat, findChat, selectedProfile,
   upload, imageUrl, changed, refresh, report, fetchApi = (...args) => fetch(...args), sourceImage = () => null, analysisSettings = null, guideDimensions = () => ({}), clearChatDropState = () => {}}) {
@@ -68,7 +69,12 @@ export function createEditReferenceController({panel, tile: suppliedTile, active
     else { image.removeAttribute("src"); image.alt = ""; }
     if (dialog && dialogContext !== context()) dialog.close();
   }
-  function notify(chat) { changed(chat); render(); refresh(); }
+  const refreshPresentation = coalesceFrame(() => { render(); refresh(); }, () => panel.ownerDocument.defaultView);
+  function notify(chat, continuous = false) {
+    changed(chat, { continuous });
+    if (continuous) refreshPresentation();
+    else { render(); refresh(); }
+  }
   async function attach(files, destination = null, expected = null) {
     if (!destination) {
       const profile = selectedProfile(), descriptors = referenceInputDescriptors(profile?.snapshot);
@@ -203,7 +209,7 @@ export function createEditReferenceController({panel, tile: suppliedTile, active
         fields.append(summary); item.append(detail);
         const save = (patch, redraw = false) => {
           const saved = chat.qwenEditReferences?.find(e => e.id === entry.id);
-          if (saved) {Object.assign(saved, patch); Object.assign(entry, patch); notify(chat); if (redraw) renderDialog();}
+          if (saved) {Object.assign(saved, patch); Object.assign(entry, patch); notify(chat, !redraw); if (redraw) renderDialog();}
         };
         const sourceAtOpen = sourceImage();
         detail.append(structureControls({doc, entry, index, profile, entries, save, fetchApi, imageUrl, report, editPose: () => editPose(entry),

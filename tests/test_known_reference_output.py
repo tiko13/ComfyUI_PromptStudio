@@ -102,6 +102,63 @@ class KnownReferenceOutputTests(unittest.TestCase):
             self.assertEqual(self.routes._revise(payload), "A beautiful woman sits on a blue chair.")
         self.assertIn(self.definition, generate.call_args.args[0])
 
+    def test_create_and_render_ignore_references_from_previous_prompts(self):
+        for mode in ("create", "render"):
+            for provider in ("koboldcpp", "ollama", "llamacpp"):
+                with self.subTest(mode=mode, provider=provider):
+                    payload = self.payload(mode=mode, llm_provider=provider,
+                        revision="A toy shop window.", current_prompt="Doll in an office.",
+                        current_main_prompt="Doll in an office.", current_final_prompt="Doll in an office.")
+                    output = "A toy shop window with a small porcelain doll."
+                    with mock.patch.object(self.routes,
+                            "_generate_kcpp" if provider == "koboldcpp" else "_generate_" + provider,
+                            return_value=output) as generate:
+                        self.assertEqual(self.routes._revise(payload), output)
+                    self.assertEqual(generate.call_count, 1)
+                    self.assertNotIn(self.definition, generate.call_args.args[0])
+
+    def test_revision_does_not_activate_keys_from_generated_final_when_main_is_supplied(self):
+        for main in ("A toy shop window.", ""):
+            with self.subTest(main=main), mock.patch.object(self.routes, "_generate_kcpp",
+                    return_value="A porcelain doll in a blue shop window.") as generate:
+                result = self.routes._revise(self.payload(mode="revise",
+                    current_main_prompt=main, current_prompt="A porcelain doll in a shop window.",
+                    revision="Make the window blue."))
+                self.assertEqual(result, generate.return_value)
+                self.assertEqual(generate.call_count, 1)
+                self.assertNotIn(self.definition, generate.call_args.args[0])
+
+    def test_revision_supplies_main_reference_definitions_before_first_generation(self):
+        with mock.patch.object(self.routes, "_generate_kcpp", return_value="A beautiful woman on a blue chair.") as generate:
+            self.routes._revise(self.payload(mode="revise", current_main_prompt="Doll sitting.",
+                current_prompt="A beautiful woman sitting.", revision="Make the chair blue."))
+        self.assertEqual(generate.call_count, 1)
+        self.assertIn(self.definition, generate.call_args.args[0])
+
+    def test_expansion_retry_does_not_activate_keys_from_generated_wording(self):
+        with mock.patch.object(self.routes, "_needs_expansion_retry", return_value=True), mock.patch.object(
+                self.routes, "_generate_kcpp", side_effect=[
+                    "A shop window with a doll.", "A toy shop window with a small porcelain doll.",
+                ]) as generate:
+            self.routes._revise(self.payload(revision="A toy shop window."))
+        self.assertEqual(generate.call_count, 2)
+        for call in generate.call_args_list:
+            self.assertNotIn(self.definition, call.args[0])
+
+    def test_scoped_revision_ignores_unrelated_key_outside_edit(self):
+        before = "A porcelain doll in a red window."
+        metadata = self.routes._image_intent.empty_intent()
+        start = before.index("red")
+        metadata["edit_scope"] = {"kind": "local", "action": "modify", "targets": ["window"],
+            "evidence": {"source": "user", "turn_id": "u1", "quote": "Make the window blue"},
+            "spans": [{"stage": "final", "text": "red", "start": start, "end": start + 3, "target": "window"}]}
+        with mock.patch.object(self.routes, "_consult", return_value=json.dumps({
+                "replacements": [{"span": 0, "text": "blue"}]})) as consult:
+            result, _ = self.routes._revise_scoped_image_prompt(
+                {"current_main_prompt": "A toy shop window."}, before, "Make the window blue", metadata, "final")
+        self.assertEqual(result, "A porcelain doll in a blue window.")
+        self.assertEqual(consult.call_count, 1)
+
     def test_classifier_receives_reference_keys_without_definitions(self):
         delta = {"version": 1, "base_revision": 0, "operations": [], "needs_clarification": False,
                  "edit_scope": {"kind": "create", "targets": [], "evidence": "Doll in an office"}}

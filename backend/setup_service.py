@@ -189,8 +189,13 @@ class SetupService:
             path = self._file(requirement["category"], name)
             if path is None or not path.is_file():
                 continue
-            matched = next((a for a in assets if key(name).split("/")[-1] in
-                            {key(v).split("/")[-1] for v in [a["relative_path"], *a.get("aliases", [])]}), None)
+            named_assets = [a for a in assets if key(name).split("/")[-1] in
+                            {key(v).split("/")[-1] for v in [a["relative_path"], *a.get("aliases", [])]}]
+            # Official repackagings can share a filename but have different
+            # serialization sizes/hashes. Bind the matching variant so setup
+            # verifies its checksum instead of rejecting a reusable model.
+            matched = next((a for a in named_assets if path.stat().st_size == a["size"]),
+                           named_assets[0] if named_assets else None)
             if requirement["id"] == "krea2":
                 stamp = path.stat()
                 cache_key = (str(path), stamp.st_size, stamp.st_mtime_ns, stamp.st_ctime_ns, "OTUNetLoaderW8A8" in self.nodes)
@@ -296,6 +301,9 @@ class SetupService:
                     connected = any(i.get("name") == name and i.get("link") is not None for i in node.get("inputs", []))
                     if value is not None and entry and isinstance(entry[0], (list, tuple)) and value not in entry[0] and not connected:
                         blockers.append(f"{pack['name']}: {node['type']} does not offer {name} = {value}. Update ComfyUI or the node pack and restart.")
+                for name in node.get("properties", {}).get("promptstudio_required_inputs", []):
+                    if name not in inputs:
+                        blockers.append(f"{pack['name']}: update ComfyUI / Prompt Studio and restart; {node['type']} requires {name}.")
         node_rows = []
         third_party = {name for p in self.catalog["node_packs"] for name in p["classes"]}
         for dep in self.catalog["node_packs"]:

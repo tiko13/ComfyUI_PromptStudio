@@ -1,6 +1,20 @@
 import {revealResult} from './result-motion.js';
 /** Message identity belongs to its session; rendering never owns jobs/storage. */
 const histories = new WeakMap();
+const snapshotIds = new WeakMap();
+let nextSnapshotId = 0;
+
+// Saved execution graphs are immutable. Their identity is enough to invalidate
+// a card; walking megabytes of workflow data on every progress tick is not.
+export function historySignature(value) {
+  return JSON.stringify(value, (key, item) => {
+    if (['generationSnapshot', 'workflow_snapshot'].includes(key) && item && typeof item === 'object') {
+      if (!snapshotIds.has(item)) snapshotIds.set(item, ++nextSnapshotId);
+      return { snapshotIdentity: snapshotIds.get(item) };
+    }
+    return item;
+  });
+}
 
 function nodeKey(node) {
   if (node.nodeType !== 1) return `node:${node.nodeType}`;
@@ -99,7 +113,7 @@ export function forgetKeyedHistory(container) { histories.delete(container); }
  * state (for example, whether this message owns the active variant controls).
  */
 export function reconcileKeyedHistory(container, items, {
-  namespace = '', key = item => item.id, signature = item => JSON.stringify(item), create,
+  namespace = '', key = item => item.id, signature = historySignature, create,
   update = (node, item, index) => patchHistoryCard(node, prepareImages(create(item, index))),
   preserveViewport = true,
 } = {}) {
@@ -109,7 +123,16 @@ export function reconcileKeyedHistory(container, items, {
   const prior = histories.get(container);
   const records = prior?.namespace === namespace ? prior.records : new Map();
   const bounds = preserveViewport && container.getBoundingClientRect?.();
-  const anchor = bounds ? [...container.children].find(node => node.getBoundingClientRect().bottom > bounds.top) : null;
+  // Cards are vertically ordered. Locate the visible anchor without measuring
+  // every preceding message in a long conversation.
+  const children = container.children;
+  let low = 0, high = children.length;
+  if (bounds) while (low < high) {
+    const middle = (low + high) >>> 1;
+    if (children[middle].getBoundingClientRect().bottom <= bounds.top) low = middle + 1;
+    else high = middle;
+  }
+  const anchor = bounds ? children[low] : null;
   const anchorTop = anchor?.getBoundingClientRect().top;
   const scrollTop = container.scrollTop;
   const retained = new Map();

@@ -38,7 +38,56 @@ export function draftTabKey(product, storage) {
   } catch (_) { return `${product}:storage-unavailable`; }
 }
 
-export function createDraftOutbox({database='promptstudio-draft-outbox-v1', indexedDB=globalThis.indexedDB} = {}) {
+export function createDraftOutbox({database='promptstudio-draft-outbox-v1', indexedDB=globalThis.indexedDB, worker=true} = {}) {
+  // Size checks/encoding and IndexedDB transactions run outside the UI thread.
+  // Injected storage implementations and browsers without workers use the same
+  // transaction implementation below, including its explicit failure reporting.
+  if (worker && typeof Worker === 'function' && indexedDB === globalThis.indexedDB) {
+    let client;
+    try { client = new Worker(new URL('./draft-worker.js', import.meta.url), { type: 'module' }); } catch (_) { /* CSP fallback. */ }
+    if (client) {
+      let sequence = 0, failure = null;
+      const pending = new Map();
+      const baselines = new Map();
+      client.onmessage = ({ data }) => {
+        const request = pending.get(data.id);
+        if (!request) return;
+        pending.delete(data.id);
+        if (data.error) request.reject(new Error(data.error));
+        else request.resolve(data.result);
+      };
+      client.onerror = event => {
+        failure = new Error(event.message || 'Background draft storage is unavailable. Export unsaved changes before closing.');
+        for (const request of pending.values()) request.reject(failure);
+        pending.clear();
+      };
+      const call = (method, args) => new Promise((resolve, reject) => {
+        if (failure) { reject(failure); return; }
+        const id = ++sequence;
+        pending.set(id, { resolve, reject });
+        try {
+          let baseline;
+          const records = args[1]?.chatBaseline;
+          if ((method === 'put' || method === 'putReceipt') && records) {
+            const previous = baselines.get(args[0]) || {};
+            baseline = { updates: Object.entries(records).filter(([key, value]) => previous[key] !== value),
+              removed: Object.keys(previous).filter(key => !Object.hasOwn(records, key)) };
+            const record = { ...args[1] };
+            delete record.chatBaseline;
+            args = [args[0], record];
+          }
+          // An unchanged baseline can contain megabytes of serialized graphs.
+          // Its worker copy is already current; only send changed entries.
+          client.postMessage({ id, database, method, args, baseline });
+          if (baseline) baselines.set(args[0], { ...records });
+          if (method === 'close') baselines.clear();
+        }
+        catch (error) { pending.delete(id); reject(error); }
+      });
+      return Object.fromEntries(['put', 'putReceipt', 'get', 'list', 'acknowledge', 'remove', 'close']
+        .map(method => [method, (...args) => call(method, args)]));
+    }
+  }
   let opening;
   const open = () => opening ||= new Promise((resolve,reject) => {
     if (!indexedDB) { reject(new Error('Durable browser storage is unavailable. Export your unsaved draft.')); return; }
@@ -59,8 +108,18 @@ export function createDraftOutbox({database='promptstudio-draft-outbox-v1', inde
     });
   };
   return {
+    async putReceipt(key, record) {
+      const saved = await this.put(key, record);
+      return { mutation: saved.mutation, chatCount: saved.chats?.length || 0 };
+    },
     async put(key,record) {
       const draft={...structuredClone(record),key,version:1,saved_at:Date.now()};
+      if (draft.chatBaseline) {
+        const baseline = draft.chatBaseline;
+        draft.chats = draft.chats.filter(chat => baseline[chat.id] !== JSON.stringify(chat));
+        draft.baseChats = draft.chats.map(chat => baseline[chat.id]).filter(Boolean).map(text => JSON.parse(text));
+        delete draft.chatBaseline;
+      }
       if (new TextEncoder().encode(JSON.stringify(draft)).length>MAX_DRAFT_BYTES) throw new Error('Draft exceeds Prompt Studio’s 32 MiB recovery-copy limit. Server saving may still succeed. Export unsaved changes before closing.');
       return transaction('readwrite',(store,done)=>{ store.put(draft); done(draft); });
     },

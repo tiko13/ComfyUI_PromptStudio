@@ -23,7 +23,7 @@ try {
       if (flow.nodes.some(n=>n.type.startsWith('PS_') || n.widgets_values_named?.reference_mode==='grounded_edit')) flows.push({name:'installed/'+file.path, flow});
     }
   }
-  await page.waitForFunction(() => globalThis.LiteGraph?.registered_node_types?.TextEncodeQwenImage21 && globalThis.LiteGraph?.registered_node_types?.Note, null, {timeout:90000});
+  await page.waitForFunction(() => globalThis.LiteGraph?.registered_node_types?.TextEncodeQwenImage21 && globalThis.LiteGraph?.registered_node_types?.TextEncodeFibo2 && globalThis.LiteGraph?.registered_node_types?.Note, null, {timeout:90000});
   const results = await page.evaluate(async flows => {
     const {app} = await import('/scripts/app.js');
     const {createWorkflowTemplateBuilder} = await import('/extensions/ComfyUI_PromptStudio/js/prompt-studio/generation/workflow-template.js');
@@ -47,7 +47,7 @@ try {
   for (const result of results.filter(r=>r.adapter?.collectionId)) {
     const nodes = Object.values(result.snapshot.output);
     assert.equal(nodes.filter(n=>n.class_type==='PS_ReferenceItem').length,result.adapter.limit);
-    const encoder = nodes.find(n=>n.class_type==='TextEncodeQwenImage21');
+    const encoder = nodes.find(n=>['TextEncodeQwenImage21','TextEncodeFibo2'].includes(n.class_type));
     assert.equal(Object.keys(encoder.inputs).filter(k=>k.startsWith('images.image_')).length,result.adapter.limit+(result.kind==='edit'?1:0));
     assert.ok(Array.isArray(encoder.inputs.vae));
   }

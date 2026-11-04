@@ -98,9 +98,12 @@ class StructureInput:
         schema = {"required": {"width": ("INT", {"default": 1024, "min": 64, "max": 8192, "tooltip": "Prepared guide width in pixels. Usually connect Prompt Slot's width output so the guide matches the generation canvas."}),
                              "height": ("INT", {"default": 1024, "min": 64, "max": 8192, "tooltip": "Prepared guide height in pixels. Usually connect Prompt Slot's height output. Framing, crop and target placement are taken from the Studio guide settings."})},
                 "optional": {"reference_json": ("STRING", {"default": "", "tooltip": "Filled by Studio with the selected image, guide type, strength, framing, targeting and edited pose data. Normally leave empty. Empty or zero strength disables the guide. For manual canvas use, supply a saved Studio guide entry."})}}
-        schema["optional"].update(source=("IMAGE",),
+        schema["optional"].update(
+            source=("IMAGE",),
             preserve_background=("BOOLEAN", {"default": True, "tooltip": "Pose edits require a reviewed mask when enabled. Off allows scene changes; it does not remove the background."}),
-            edit_mask=("MASK", {"tooltip": "Manual canvas mask: white regenerates, black preserves. Otherwise uses Studio's reviewed mask."}))
+            edit_mask=("MASK", {"tooltip": "Manual canvas mask: white regenerates, black preserves. Otherwise uses Studio's reviewed mask."}),
+            control_key=("STRING", {"default": "", "tooltip": "Optional unique lowercase key for an independent Studio map slot. Leave empty for the existing single structure guide."}),
+            guide_types=("STRING", {"default": "pose,depth,edges,sketch", "tooltip": "Supported map types, comma separated. Named inputs support color and depth. Color requires a prepared region map; depth also supports extraction."}))
         return schema
 
     RETURN_TYPES = ("IMAGE", "FLOAT", "IMAGE", "MASK")
@@ -110,17 +113,21 @@ class StructureInput:
     DESCRIPTION = ("Prepares one optional structure guide independently of the image model. Connect width/height from Prompt Slot, then guide and strength to your model's compatible ControlNet or guide-application node. "
                    "For Qwen, use Apply Qwen Structure. Other models need their own application node. Photo extraction requires the corresponding installed extractor; prepared maps need no extraction. "
                    "For pose background preservation, connect the original source and a reviewed edit mask (Studio record or manual MASK). Wire inpaint_image/inpaint_mask to Apply Qwen Structure and the same mask to Edit Mask. White regenerates; black preserves. "
-                   "No active guide returns None and strength 0. Preservation off leaves both inpaint outputs empty. Use one connected Structure Input per workflow.")
+                   "No active guide returns None and strength 0. Preservation off leaves both inpaint outputs empty. Use one unnamed Structure Input or independent named color/depth inputs with unique control_key values.")
     OUTPUT_TOOLTIPS = ("Prepared guide IMAGE at the requested dimensions, including Studio's framing and targeting. None when no guide is active. This output does not apply conditioning by itself.",
                        "Studio guide strength from 0 to 1. Zero means disabled; wire to a compatible application node that passes the model through when inactive.",
                        "Source image for native pose inpainting, or None when disabled.",
                        "Reviewed mask for Apply Qwen Structure and Edit Mask. White regenerates; black preserves.")
 
-    def prepare(self, width, height, reference_json="", source=None, preserve_background=True, edit_mask=None):
+    def prepare(self, width, height, reference_json="", source=None, preserve_background=True, edit_mask=None, control_key="", guide_types="pose,depth,edges,sketch"):
+        from .structure_maps import validate_slot
+        kinds = validate_slot(control_key, guide_types)
         if not reference_json:
             return (None, 0.0, None, None)
         entry = json.loads(reference_json)
         guide = entry.get("guide", {})
+        if guide.get("type", "edges") not in kinds:
+            raise ValueError("This input does not support the selected guide type")
         strength = float(guide.get("strength", 0.8))
         if not 0 <= strength <= 1:
             raise ValueError("Guide strength must be between zero and one")
@@ -130,6 +137,15 @@ class StructureInput:
         from .controlnet import QwenStructureGuide
         edited = entry.get("pose", {}).get("image") if guide.get("type") == "pose" else None
         image = KCPP_ChatImageInput().load_image(json.dumps(edited or entry["image"]))[0]
+        if control_key and guide.get("type") in {"color", "depth"}:
+            from .structure_maps import prepare_map
+            kind = guide["type"]
+            if guide.get("input", "prepared") == "photo":
+                if kind != "depth":
+                    raise ValueError("Color regions require a prepared map")
+                image = QwenStructureGuide().prepare(image, "depth", "photo", "fit", image.shape[2], image.shape[1])[0]
+            prepared = prepare_map(image, kind, width, height, guide.get("fit", "fit"), guide.get("invert", False))
+            return (prepared, strength, None, None)
         targeting = dict(entry.get("targeting") or {})
         if edited:
             targeting["reference"] = None
@@ -148,7 +164,7 @@ class StructureInput:
         return (prepared, strength, None, None)
 
     @classmethod
-    def IS_CHANGED(cls, width, height, reference_json="", source=None, preserve_background=True, edit_mask=None):
+    def IS_CHANGED(cls, width, height, reference_json="", source=None, preserve_background=True, edit_mask=None, control_key="", guide_types="pose,depth,edges,sketch"):
         if not reference_json:
             return "no-guide"
         entry = json.loads(reference_json)

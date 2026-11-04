@@ -1,3 +1,4 @@
+import { normalizeSpatialStore } from "../generation/spatial-inputs.js";
 import { normalizeReferenceGrounding, normalizeReferenceClarification } from "../generation/reference-grounding.js";
 import { normalizeWorkflowReferences, normalizeReferenceState } from "../generation/reference-inputs.js";
 import { normalizeQwenReferences } from "../generation/qwen-references.js";
@@ -540,6 +541,7 @@ function normalizeChat(chat) {
     editReferenceImage: normalizeImageReference(chat?.editReferenceImage),
     workflowReferences: normalizeWorkflowReferences(chat?.workflowReferences),
     qwenEditReferences: normalizeQwenReferences(chat?.qwenEditReferences),
+    spatialInputs: normalizeSpatialStore(chat?.spatialInputs),
     referenceClarification: normalizeReferenceClarification(chat?.referenceClarification),
     lastGeneration: lastGeneration
       ? { ...lastGeneration, intentProvenance: normalizeIntentProvenance(chat.lastGeneration.intentProvenance) }

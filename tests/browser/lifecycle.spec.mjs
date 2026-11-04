@@ -70,6 +70,7 @@ try {
       const {api}=await import('/scripts/api.js');
       api.dispatchEvent(new CustomEvent('executing',{detail:{prompt_id:'video-a',node:null}}));
     });
+    await page.locator('#psvstudio-generation-list [data-progress-detail]').filter({hasText:'Finalizing'}).waitFor();
     assert.match(await page.locator('#psvstudio-generation-list').textContent(),/Finalizing/);
     const polling=page.waitForRequest(request=>new URL(request.url()).pathname==='/history/video-a');
     releaseAcceptedSave();await polling;

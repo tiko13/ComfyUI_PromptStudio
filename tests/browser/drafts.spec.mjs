@@ -8,7 +8,20 @@ try {
   const {createDraftOutbox}=await import(url);
   const outbox=createDraftOutbox({database:'test-drafts'});
   await outbox.put('video:tab',{mutation:1,revision:7,projects:[{id:'p1',name:'Unsent edit'}],deletedProjectIds:['intentionally-deleted']});
-  await outbox.put('video:tab',{mutation:2,revision:7,projects:[{id:'p1',name:'Newer unsent edit'}],deletedProjectIds:['intentionally-deleted']});
+  const receipt = await outbox.putReceipt('video:tab',{mutation:2,revision:7,projects:[{id:'p1',name:'Newer unsent edit'}],deletedProjectIds:['intentionally-deleted']});
+  if (JSON.stringify(receipt) !== JSON.stringify({mutation:2,chatCount:0})) throw new Error('Draft save copied the archive back to the UI');
+  const unchanged = {id:'same',messages:[{text:'saved'}]};
+  const changed = {id:'changed',messages:[{text:'new'}]};
+  const chatReceipt = await outbox.putReceipt('image:receipt',{mutation:3,chats:[unchanged,changed],chatBaseline:{same:JSON.stringify(unchanged)}});
+  if (chatReceipt.chatCount !== 1) throw new Error('Receipt lost changed-chat filtering');
+  const chatDraft = await outbox.get('image:receipt');
+  if (chatDraft.chats.length !== 1 || chatDraft.chats[0].id !== 'changed') throw new Error('Receipt did not persist the complete draft');
+  const secondReceipt = await outbox.putReceipt('image:receipt',{mutation:4,chats:[unchanged,changed],
+    chatBaseline:{same:JSON.stringify(unchanged),changed:JSON.stringify(changed)}});
+  if (secondReceipt.chatCount !== 0) throw new Error('Updated baseline was not delivered');
+  const thirdReceipt = await outbox.putReceipt('image:receipt',{mutation:5,chats:[unchanged,changed],
+    chatBaseline:{changed:JSON.stringify(changed)}});
+  if (thirdReceipt.chatCount !== 1 || (await outbox.get('image:receipt')).chats[0].id !== 'same') throw new Error('Removed baseline entry was reused');
   if(await outbox.acknowledge('video:tab',1)) throw new Error('Stale acknowledgement removed a newer edit');
   await outbox.close();
  },moduleUrl);

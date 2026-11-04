@@ -1,4 +1,5 @@
 import { SETTINGS_DEFAULTS, STORAGE_KEY } from "../core/constants.js";
+import { readJsonSetting } from './buffered-storage.js';
 
 export function migrateLlamacppConfigLocation(value) {
   const settings = value && typeof value === "object" && !Array.isArray(value) ? { ...value } : {};
@@ -16,7 +17,7 @@ export function getSettings() {
   try {
     return {
       ...SETTINGS_DEFAULTS,
-      ...migrateLlamacppConfigLocation(JSON.parse(localStorage.getItem(STORAGE_KEY) || "{}")),
+      ...migrateLlamacppConfigLocation(readJsonSetting(STORAGE_KEY)),
     };
   } catch (_) {
     return { ...SETTINGS_DEFAULTS };

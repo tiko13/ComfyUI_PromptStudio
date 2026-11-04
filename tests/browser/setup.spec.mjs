@@ -57,7 +57,8 @@ try {
  await wizard.getByRole('checkbox',{name:'Create',exact:true}).waitFor();
  const waitForModels = () => wizard.locator('[data-setup-content]').evaluate(async el=>{while(el.getAttribute('aria-busy')==='true') await new Promise(requestAnimationFrame);});
  const modelIds = () => wizard.locator('[data-setup-model]').evaluateAll(nodes=>nodes.map(node=>node.dataset.setupModel).sort());
- assert.equal(await wizard.getByRole('checkbox').count(),22);
+ assert.equal(await wizard.getByRole('checkbox').count(),catalog.packs.length+catalog.addons.length);
+ for(const pack of catalog.packs) assert.equal(await wizard.getByRole('checkbox',{name:pack.name,exact:true}).count(),1);
  assert.equal(await wizard.getByRole('checkbox',{checked:true}).count(),3);
  assert.deepEqual(await modelIds(),['encoder','identity_edit','krea2','textfusion','upscaler','vae']);
  await wizard.getByRole('checkbox',{name:'Depth extraction',exact:true}).check(); await waitForModels();
@@ -79,6 +80,21 @@ try {
  assert.equal(await wizard.getByRole('button',{name:'Set up selections',exact:true}).isDisabled(),true);
  assert.equal(await wizard.locator('.promptstudio-setup-requirement').count(),0);
  await wizard.getByText('Select a workflow or optional feature to see its required models.',{exact:true}).waitFor();
+ // FIBO uses the same selection/terms flow and shares one encoder/VAE row.
+ const fiboPacks=catalog.packs.filter(pack=>pack.family==='FIBO 2');
+ for(const pack of fiboPacks) {
+  await wizard.getByRole('checkbox',{name:pack.name,exact:true}).click();
+  const terms=page.locator('.promptstudio-setup-license');
+  await terms.waitFor({state:'visible'});
+  assert.match(await terms.textContent(),/non-commercial/);
+  await terms.getByRole('button',{name:'Accept',exact:true}).click();
+  await terms.waitFor({state:'detached'}); await waitForModels();
+ }
+ assert.deepEqual(await modelIds(),['encoder','fibo2_dev','fibo2_turbo','fibo2_vae']);
+ assert.equal(await wizard.getByLabel(encoder.name).inputValue(),encoder.choice);
+ assert.deepEqual(Object.keys(calls.filter(c=>c.action==='plan').at(-1).input.license_acceptances).sort(),fiboPacks.map(p=>p.id).sort());
+ for(const pack of fiboPacks) { await wizard.getByRole('checkbox',{name:pack.name,exact:true}).uncheck(); await waitForModels(); }
+ assert.deepEqual(await modelIds(),[]);
  for(const name of ['Create','Edit','Upscale']) {
   await wizard.getByRole('checkbox',{name,exact:true}).check();
   await wizard.locator('[data-setup-content]').evaluate(async el=>{while(el.getAttribute('aria-busy')==='true') await new Promise(requestAnimationFrame);});
@@ -180,5 +196,5 @@ try {
  await videoPage.evaluate(()=>{document.body.dataset.studioMode='image';window.__promptstudioPromptStudioHost.setStandaloneVisibility(true);});
  await videoPage.locator('.promptstudio-setup-dialog[open]').waitFor();
  await videoPage.close();
- console.log('Setup browser: 18 workflow choices, empty selection, license accept/cancel/Escape/dismiss/reselect, model choices, accessibility, desktop/mobile layout, progress and recovery passed.');
+ console.log(`Setup browser: ${catalog.packs.length} workflow choices, FIBO shared assets, empty selection, license accept/cancel/Escape/dismiss/reselect, model choices, accessibility, desktop/mobile layout, progress and recovery passed.`);
 } finally {await fixture.close();}

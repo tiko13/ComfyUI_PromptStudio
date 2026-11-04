@@ -1,3 +1,8 @@
+import { renderTextHighlights } from "./prompt-studio/ui/text-highlights.js";
+import { applySpatialInputs, normalizeSpatialSnapshot, layoutBinding, spatialDefaults, spatialValue, spatialDimensions } from "./prompt-studio/generation/spatial-inputs.js";
+import { validateMossRecipe } from "./prompt-studio/generation/moss-recipe.js";
+import { namedStructureInputs } from "./prompt-studio/generation/workflow-capabilities.js";
+import { openSpatialEditor } from "./prompt-studio/ui/spatial-editor.js";
 import { watchExternalGeneration } from "./prompt-studio/ui/external-generation.js";
 import { structureAdapter, semanticReferences, applyStructureGuide, isStructureReference } from "./prompt-studio/generation/structure-guide.js";
 import { validateTargetSource, applyReferenceMask } from "./prompt-studio/generation/reference-targeting.js";
@@ -18,9 +23,14 @@ import { normalizeReferenceGrounding, requestReferenceGrounding, referenceContex
 import { discoverWorkflowFiles } from "./prompt-studio/generation/workflow-adapter.js";
 import { createSetupWizard } from "./prompt-studio/settings/setup-wizard.js";
 import {normalizeIntentProvenance, promptIntentVersion, recordManualMain, recordManualFinal, createIntentSession, effectiveSecondaryInstructions} from "./prompt-studio/chat/intent-provenance.js";
+import {openPromptConstraints} from "./prompt-studio/ui/prompt-constraints.js";
 import { app } from "/scripts/app.js";
 import {normalizePromptAgentMetrics, rankPromptAgentIterations, repeatedPromptAgentDefects, explainPromptAgentWinner} from "./prompt-studio/consult/model.js";
-import { reconcileKeyedHistory } from "./prompt-studio/ui/keyed-history.js";
+import { reconcileKeyedHistory, historySignature, patchHistoryCard } from "./prompt-studio/ui/keyed-history.js";
+import { backgroundTask, coalesceFrame, createSubmissionOrder } from "./prompt-studio/core/scheduling.js";
+import { refreshSelectedWorkflow, workflowLibrarySignature } from "./prompt-studio/generation/selected-workflow.js";
+import { backgroundData } from "./prompt-studio/core/background-data.js";
+import { readJsonSetting, writeJsonSetting } from "./prompt-studio/settings/buffered-storage.js";
 import { tagSubmission, findSubmittedPrompt, interruptedSubmissionMessage, readPromptHistory } from "./prompt-studio/generation/recovery.js";
 import { createResultComparison, imageComparisonRecord, plotComparisonRecord } from "./prompt-studio/ui/result-comparison.js";
 import { captureRuntimeProvenance, reviewReplay } from "./prompt-studio/ui/replay-review.js";
@@ -233,6 +243,7 @@ const {
 const {
   loadChats,
   flushChatStore,
+  checkpointChatDraft,
   loadOlderChats,
   saveChats,
   setupChatSync,
@@ -273,10 +284,10 @@ function availableLlmProfiles() {
 
 function persistLlmProfiles() {
   try {
-    localStorage.setItem(LLM_PROFILE_STORAGE_KEY, JSON.stringify({
+    writeJsonSetting(LLM_PROFILE_STORAGE_KEY, {
       version: LLM_PROFILE_STORAGE_VERSION,
       profiles: state.llmProfiles.map((profile) => normalizeLlmProfile(profile)),
-    }));
+    }, error => setStatus(error.message || "LLM profiles could not be saved.", "warning"));
     return true;
   } catch (error) {
     setStatus(error.message || "LLM profiles could not be saved.", "warning");
@@ -552,7 +563,7 @@ function deleteLlmProfile() {
 function applyRememberedLlmConnection(settings) {
   let remembered = {};
   try {
-    remembered = JSON.parse(localStorage.getItem(STORAGE_KEY) || "{}");
+    remembered = readJsonSetting(STORAGE_KEY);
   } catch (_) {
     return settings;
   }
@@ -588,9 +599,9 @@ function saveSettings() {
   const value = (id) => state.panel.querySelector(`#${id}`)?.value;
   const checked = (id) => Boolean(state.panel.querySelector(`#${id}`)?.checked);
   try {
-    localStorage.setItem(
+    writeJsonSetting(
       STORAGE_KEY,
-      JSON.stringify({
+      {
       llm_backend_settings: {
         ...getSettings().llm_backend_settings,
         [selectedLlmProvider()]: {
@@ -633,7 +644,8 @@ function saveSettings() {
       resolution_aspect_ratio: value("promptstudio-resolution-aspect-ratio"),
       resolution_megapixels: Number(value("promptstudio-resolution-megapixels") || 1),
       resolution_multiple: Number(value("promptstudio-resolution-multiple") || 32),
-      }),
+      },
+      error => setStatus(error.message || "Prompt Studio settings could not be saved.", "warning"),
     );
   } catch (error) {
     setStatus(error.message || "Prompt Studio settings could not be saved.", "warning");
@@ -1163,7 +1175,7 @@ function getConsultSettings() {
   };
   let stored = {};
   try {
-    stored = JSON.parse(localStorage.getItem(CONSULT_STORAGE_KEY) || "{}");
+    stored = readJsonSetting(CONSULT_STORAGE_KEY);
   } catch (_) {
     return defaults;
   }
@@ -1192,7 +1204,7 @@ function saveConsultSettings() {
   if (!state.panel) return;
   const value = (id) => state.panel.querySelector(`#${id}`)?.value;
   try {
-    localStorage.setItem(CONSULT_STORAGE_KEY, JSON.stringify({
+    writeJsonSetting(CONSULT_STORAGE_KEY, {
       thinking_mode: value("promptstudio-consult-thinking"),
       max_response_tokens: Number(value("promptstudio-consult-max-tokens") || 800),
       temperature: Number(value("promptstudio-consult-temperature") || 0.7),
@@ -1203,7 +1215,7 @@ function saveConsultSettings() {
       rep_pen: Number(value("promptstudio-consult-rep-pen") || 1.05),
       rep_pen_range: Number(value("promptstudio-consult-rep-pen-range") || 360),
       sampler_seed: Number(value("promptstudio-consult-seed") || -1),
-    }));
+    }, error => setConsultStatus(error.message || "Chat generation settings could not be saved.", "warning"));
   } catch (error) {
     setConsultStatus(error.message || "Chat generation settings could not be saved.", "warning");
   }
@@ -1260,7 +1272,7 @@ function closeConsultSubpanels() {
 
 function loadLoraSelections() {
   try {
-    const stored = JSON.parse(localStorage.getItem(LORA_STORAGE_KEY) || "{}");
+    const stored = readJsonSetting(LORA_STORAGE_KEY);
     return normalizeSessionLoraSelections(stored);
   } catch (_) {
     return {};
@@ -1269,7 +1281,7 @@ function loadLoraSelections() {
 
 function saveLoraSelections() {
   try {
-    localStorage.setItem(LORA_STORAGE_KEY, JSON.stringify(state.loraSelections));
+    writeJsonSetting(LORA_STORAGE_KEY, state.loraSelections, error => setStatus(error.message, "warning"));
   } catch (error) {
     setStatus(error.message || "LoRA selections could not be saved.", "warning");
   }
@@ -1277,7 +1289,7 @@ function saveLoraSelections() {
 
 function loadModelSelections() {
   try {
-    const stored = JSON.parse(localStorage.getItem(MODEL_STORAGE_KEY) || "{}");
+    const stored = readJsonSetting(MODEL_STORAGE_KEY);
     return normalizeSessionModelSelections(stored);
   } catch (_) {
     return {};
@@ -1286,7 +1298,7 @@ function loadModelSelections() {
 
 function saveModelSelections() {
   try {
-    localStorage.setItem(MODEL_STORAGE_KEY, JSON.stringify(state.modelSelections));
+    writeJsonSetting(MODEL_STORAGE_KEY, state.modelSelections, error => setStatus(error.message, "warning"));
   } catch (error) {
     setStatus(error.message || "Model selections could not be saved.", "warning");
   }
@@ -1296,7 +1308,7 @@ function saveSidebarGroupOrder(deck) {
   const order = [...deck.querySelectorAll(":scope > details[data-promptstudio-sidebar-group]")]
     .map((group) => group.dataset.promptstudioSidebarGroup);
   try {
-    localStorage.setItem(SIDEBAR_GROUP_ORDER_STORAGE_KEY, JSON.stringify(order));
+    writeJsonSetting(SIDEBAR_GROUP_ORDER_STORAGE_KEY, order, error => setStatus(error.message, "warning"));
   } catch (error) {
     setStatus(error.message || "Sidebar group order could not be saved.", "warning");
   }
@@ -1309,7 +1321,7 @@ function installSidebarGroupReordering(panel) {
   const groupsByKey = new Map(groups.map((group) => [group.dataset.promptstudioSidebarGroup, group]));
   let storedOrder = [];
   try {
-    const stored = JSON.parse(localStorage.getItem(SIDEBAR_GROUP_ORDER_STORAGE_KEY) || "[]");
+    const stored = readJsonSetting(SIDEBAR_GROUP_ORDER_STORAGE_KEY, []);
     if (Array.isArray(stored)) storedOrder = stored;
   } catch (_) {
     storedOrder = [];
@@ -1743,7 +1755,7 @@ function captureStudioSettings(chat = activeChat()) {
 function applyStudioSettings(chat) {
   if (!chat) return;
   // Provider connection details are application preferences, not session state.
-  // Keep the synchronous localStorage copy authoritative when a restored or
+  // Keep the immediate in-memory preference authoritative when a restored or
   // remotely synchronized chat still contains an older provider selection.
   const settings = normalizeStudioSettings(applyRememberedLlmConnection(
     chat.studioSettings || getSettings(),
@@ -1846,7 +1858,7 @@ function syncActiveChatSettings({ persist = true } = {}) {
   if (JSON.stringify(settings) === JSON.stringify(chat.studioSettings)) return false;
   chat.studioSettings = settings;
   chat.updatedAt = Date.now();
-  if (persist) saveChats({ immediate: true });
+  if (persist) saveChats();
   return true;
 }
 
@@ -1857,7 +1869,7 @@ function captureWorkflowSelections(chat = activeChat()) {
   ]));
 }
 
-function syncActiveChat() {
+function syncActiveChat({ render = true } = {}) {
   const chat = activeChat();
   if (!chat) return;
   chat.mainPrompt = state.mainPrompt;
@@ -1874,10 +1886,14 @@ function syncActiveChat() {
   syncActiveChatSettings({ persist: false });
   chat.updatedAt = Date.now();
   saveChats();
-  renderChatList();
+  if (render) renderChatList();
 }
 
-function scheduleWorkflowRefresh({ broadcast = false } = {}) {
+const changedWorkflowPaths = new Set();
+let workflowSourceRevision = 0;
+function scheduleWorkflowRefresh({ broadcast = false, paths = [] } = {}) {
+  for (const path of paths) changedWorkflowPaths.add(String(path).replaceAll('\\', '/').replace(/^workflows\//, ''));
+  if (paths.length) workflowSourceRevision++;
   state.workflowRefreshBroadcast ||= broadcast;
   if (state.workflowRefreshTimer) clearTimeout(state.workflowRefreshTimer);
   const refreshWhenReady = () => {
@@ -1889,8 +1905,9 @@ function scheduleWorkflowRefresh({ broadcast = false } = {}) {
     const shouldBroadcast = state.workflowRefreshBroadcast;
     state.workflowRefreshBroadcast = false;
     refreshWorkflowTemplates()
-      .then(() => {
+      .then(async () => {
         if (!shouldBroadcast) return;
+        await state.workflowSaveChain;
         state.workflowSyncChannel?.postMessage({
           type: "saved-workflows-refreshed",
           issues: state.workflowIssues,
@@ -1937,20 +1954,20 @@ function installWorkflowSaveObserver() {
 
   api.storeUserData = async function observedStoreUserData(path, ...args) {
     const response = await storeUserData.call(this, path, ...args);
-    if (isPromptStudioWorkflowPath(path)) scheduleWorkflowRefresh({ broadcast: true });
+    if (isPromptStudioWorkflowPath(path)) scheduleWorkflowRefresh({ broadcast: true, paths: [path] });
     return response;
   };
   if (typeof moveUserData === "function") {
     api.moveUserData = async function observedMoveUserData(source, destination, ...args) {
       const response = await moveUserData.call(this, source, destination, ...args);
-      if (isPromptStudioWorkflowPath(source) || isPromptStudioWorkflowPath(destination)) scheduleWorkflowRefresh({ broadcast: true });
+      if (isPromptStudioWorkflowPath(source) || isPromptStudioWorkflowPath(destination)) scheduleWorkflowRefresh({ broadcast: true, paths: [source, destination] });
       return response;
     };
   }
   if (typeof deleteUserData === "function") {
     api.deleteUserData = async function observedDeleteUserData(path, ...args) {
       const response = await deleteUserData.call(this, path, ...args);
-      if (isPromptStudioWorkflowPath(path)) scheduleWorkflowRefresh({ broadcast: true });
+      if (isPromptStudioWorkflowPath(path)) scheduleWorkflowRefresh({ broadcast: true, paths: [path] });
       return response;
     };
   }
@@ -1971,14 +1988,14 @@ async function loadWorkflowProfiles() {
 
 async function saveWorkflowProfiles() {
   if (!state.workflowStoreLoaded) throw new Error("The workflow cache was not loaded, so saving is disabled to protect it.");
-  const snapshot = structuredClone(state.workflowProfiles);
+  const snapshot = state.workflowProfiles;
   const operation = state.workflowSaveChain
     .catch(() => {})
-    .then(async () => {
+    .then(() => backgroundTask(async () => {
       const response = await api.fetchApi("/promptstudio/prompt-studio/workflows", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ version: 4, revision: state.workflowRevision, templates: snapshot }),
+        body: await backgroundData('encode', { version: 4, revision: state.workflowRevision, templates: snapshot }),
       });
       const data = await response.json().catch(() => ({}));
       if (!response.ok) {
@@ -1986,7 +2003,7 @@ async function saveWorkflowProfiles() {
         throw new Error(data.error || `Workflow cache could not be saved (${response.status}).`);
       }
       state.workflowRevision = Number(data.revision || state.workflowRevision);
-    });
+    }));
   state.workflowSaveChain = operation;
   return operation;
 }
@@ -1996,6 +2013,7 @@ async function refreshWorkflowTemplates({ announce = true } = {}) {
   state.workflowBusy = true;
   renderWorkflowStatus();
   const previous = state.workflowProfiles;
+  const sourceRevision = workflowSourceRevision;
   const cachedByPath = new Map(previous.map((profile) => [profile.path, profile]));
   const next = [];
   const issues = [];
@@ -2023,9 +2041,12 @@ try {
       }
     }
     state.workflowProfiles = next;
+    if (sourceRevision === workflowSourceRevision) changedWorkflowPaths.clear();
     state.workflowIssues = issues;
     refreshWorkflowControls();
-    if (JSON.stringify(previous) !== JSON.stringify(next)) await saveWorkflowProfiles();
+    if (workflowLibrarySignature(previous) !== workflowLibrarySignature(next)) {
+      void saveWorkflowProfiles().catch(error => setStatus(error.message, "warning"));
+    }
     if (announce) {
       const cachedCount = next.filter((profile) => profile.stale).length;
       if (issues.length) {
@@ -2538,14 +2559,14 @@ function updatePlotChat(mutator, { render = true } = {}) {
   const chat = activeChat();
   if (!isPlotChat(chat)) return;
   const profile = plotProfile(chat.plotDraft);
-  chat.plotDraft = normalizePlotDraft(chat.plotDraft, profile);
+  if (render || !chat.plotDraft) chat.plotDraft = normalizePlotDraft(chat.plotDraft, profile);
   mutator(chat.plotDraft, chat);
-  chat.plotDraft = normalizePlotDraft(chat.plotDraft, plotProfile(chat.plotDraft));
+  if (render) chat.plotDraft = normalizePlotDraft(chat.plotDraft, plotProfile(chat.plotDraft));
   chat.updatedAt = Date.now();
   saveChats();
-  renderChatList();
-  syncPlotInspectorControls();
   if (render) {
+    renderChatList();
+    syncPlotInspectorControls();
     refreshModelSection();
     refreshLoraSection();
     renderPlotWorkspace();
@@ -3422,7 +3443,7 @@ async function renderPlotFinalPrompt(mainPrompt, controls, warnings, signal, int
   );
 }
 
-async function preparePlotBase(draft, mainPrompt, finalPrompt, controlSettings = null) {
+async function preparePlotBase(draft, mainPrompt, finalPrompt, controlSettings = null, spatialInputs = null) {
   const context = await workflowQueueContext("create", draft.workflowProfileId);
   if (draft.sourceSnapshot?.output) context.snapshot = structuredClone(draft.sourceSnapshot);
   const apiNode = context.snapshot.output?.[String(context.promptNodeId)];
@@ -3484,6 +3505,8 @@ async function preparePlotBase(draft, mainPrompt, finalPrompt, controlSettings =
     frozenSettings.additional_input_selections,
   );
   applyImageOutputSettings(context.snapshot);
+  if (!draft.sourceSnapshot?.output) applySpatialInputs(context.snapshot, context.profile, spatialInputs || spatialDefaults(context.profile));
+  validateMossRecipe(context.snapshot, context.profile);
   return {
     // ComfyUI's queue client needs both the executable output and the serialized
     // workflow. The latter carries widget metadata used while queueing subgraphs.
@@ -3536,6 +3559,7 @@ async function startPlotRun() {
       },
     });
     plot.controlSettings = captureStudioSettings(chat);
+    plot.spatialInputs = spatialValue(chat, profile);
     plot.prepared = false;
     plot.status = "preparing";
     state.plotRuns.set(plotId, plot);
@@ -3607,7 +3631,7 @@ async function prepareExistingPlot(plotId) {
       plot.preparationProgress.completed = 1;
     }
     if (!resumableBase) {
-      plot.base = await preparePlotBase(chat.plotDraft, mainPrompt, mainPrompt, controlSettings);
+      plot.base = await preparePlotBase(chat.plotDraft, mainPrompt, mainPrompt, controlSettings, plot.spatialInputs);
       plot.base.intentProvenance = plotIntent.snapshot();
     }
     let firstFinalPrompt = mainPrompt;
@@ -3940,7 +3964,7 @@ function renderChatHistory({ forceEnd = false } = {}) {
   const wasNearEnd = forceEnd || historyShouldStickToEnd(history);
   reconcileKeyedHistory(history, activeChat()?.messages || [], {
     namespace: state.activeChatId,
-    signature: message => JSON.stringify([message,
+    signature: message => historySignature([message,
       message.images?.length ? [state.busy, activeChat()?.selectedSource] : null,
       message.captionOffer ? activeChat()?.initialized : null,
       message.studioProposal ? [activeChat()?.studioDiscussion, selectedAction(), state.busy,
@@ -3958,6 +3982,11 @@ function renderChatHistory({ forceEnd = false } = {}) {
 
 function updateComposeMode() {
   if (!state.panel) return;
+  const constraintsButton = state.panel.querySelector("#promptstudio-constraints");
+  if (constraintsButton) {
+    constraintsButton.disabled = !activeChat() || state.busy || state.studioTurnBusyChatIds.has(state.activeChatId)
+      || [...state.studioPreparations.values()].some(item => item.chatId === state.activeChatId);
+  }
   renderRunSummary();
   const plotMode = isPlotChat();
   const compose = state.panel.querySelector(".promptstudio-compose");
@@ -4101,10 +4130,10 @@ function syncManualPrompt(value) {
     chat.mainPromptDirty = false;
     chat.finalPromptManuallyEdited = false;
   }
-  updatePromptEditors(value, value);
-  syncActiveChat();
-  refreshEmptyImageDropZone();
-  refreshStudioStatus();
+  updateMainPromptEditor(value, { render: false });
+  updatePromptEditor(value);
+  syncActiveChat({ render: false });
+  refreshEditorPresentation();
 }
 
 function createChat() {
@@ -4425,11 +4454,24 @@ function refreshAdditionalInputsSection() {
   if (!details || !container || !summary) return;
   const profile = selectedWorkflowProfile(selectedAction());
   const descriptors = Array.isArray(profile?.additionalInputs) ? profile.additionalInputs : [];
-  details.hidden = !descriptors.length;
+  const spatial = Boolean(layoutBinding(profile) || namedStructureInputs(profile).length);
+  details.hidden = !descriptors.length && !spatial;
   container.replaceChildren(...descriptors.map((descriptor) => buildAdditionalInputControl(profile, descriptor)));
+  if (spatial) {
+    const button = document.createElement("button"); button.type = "button";
+    button.textContent = "Layout and control maps";
+    button.addEventListener("click", () => {
+      const chat = activeChat(); if (!chat) return;
+      const dimensions = spatialDimensions(resolutionSettings());
+      openSpatialEditor({ownerDocument: button.ownerDocument, profile, value: spatialValue(chat, profile), defaults: spatialDefaults(profile),
+        upload: uploadPromptStudioImage, imageUrl: imageReferenceUrl, dimensions, aspect: dimensions.width / dimensions.height,
+        save: value => {chat.spatialInputs ||= {}; chat.spatialInputs[profile.id] = value; saveChats(); refreshStudioStatus();}});
+    });
+    container.prepend(button);
+  }
   summary.textContent = descriptors.length
     ? `${descriptors.length} workflow control${descriptors.length === 1 ? "" : "s"}`
-    : "No connected inputs";
+    : spatial ? "Layout and control maps" : "No connected inputs";
 }
 
 function generationUiFingerprint() {
@@ -4462,6 +4504,7 @@ function generationUiFingerprint() {
     loraState: generationLoraState(profile),
     modelState: generationModelState(profile),
     additionalInputSelections: state.additionalInputSelections,
+    spatialInputs: profile ? spatialValue(activeChat(), profile) : null,
     controls,
   });
 }
@@ -6292,9 +6335,9 @@ function renderMessageDeleteAction(message, data) {
 
 function renderGenerationProgress(message, data) {
   if (!message) return;
-  message.querySelector(".promptstudio-generation-progress")?.remove();
+  const existing = message.querySelector(".promptstudio-generation-progress");
   const activeOperation = data?.operationId && !["complete", "error", "cancelled"].includes(data.operationPhase);
-  if (!["queued", "generating"].includes(data?.generationState) && !activeOperation) return;
+  if (!["queued", "generating"].includes(data?.generationState) && !activeOperation) { existing?.remove(); return; }
 
   const progress = state.generationProgress.get(String(data.promptId || ""));
   const value = Number(progress?.value);
@@ -6316,8 +6359,11 @@ function renderGenerationProgress(message, data) {
       ? "Upscaling…"
       : "Generating…");
 
-  const container = document.createElement("div");
+  const signature = JSON.stringify([statusText, percent, data.llmTokenCount, data.operationId]);
+  if (existing?.dataset.progressSignature === signature) return;
+  const container = message.ownerDocument.createElement("div");
   container.className = "promptstudio-generation-progress";
+  container.dataset.progressSignature = signature;
   container.setAttribute("aria-live", "polite");
 
   const status = document.createElement("div");
@@ -6366,7 +6412,19 @@ function renderGenerationProgress(message, data) {
     container.appendChild(cancel);
   }
   if (hasTokenCount) container.appendChild(amount);
-  message.appendChild(container);
+  if (existing) {
+    existing.dataset.progressSignature = signature;
+    for (const child of [...existing.children]) {
+      if (![...container.children].some(next => next.className === child.className)) child.remove();
+    }
+    for (const child of [...container.children]) {
+      const previous = [...existing.children].find(node => node.className === child.className);
+      // Cancel owns a stable message ID. Preserve its focus/press through ticks.
+      if (previous && child.matches('button')) continue;
+      if (previous) patchHistoryCard(previous, child);
+      else existing.appendChild(child);
+    }
+  } else message.appendChild(container);
 }
 
 function studioControlChangeLabels(changes) {
@@ -6502,7 +6560,12 @@ function renderMessage(data, { scroll = true, append = true } = {}) {
 }
 
 function appendMessage(role, text, options = {}) {
-  const now = Date.now();
+  const chat = options.chatId
+    ? state.chats.find((item) => item.id === options.chatId)
+    : activeChat();
+  // Store merges sort by creation time. Two clicks within a clock tick must not
+  // fall back to random UUID ordering after a save/reload.
+  const now = Math.max(Date.now(), Number(chat?.messages?.at(-1)?.createdAt || 0) + 1);
   const data = {
     id: options.messageId || makeId(),
     role,
@@ -6550,9 +6613,6 @@ function appendMessage(role, text, options = {}) {
     createdAt: now,
     updatedAt: now,
   };
-  const chat = options.chatId
-    ? state.chats.find((item) => item.id === options.chatId)
-    : activeChat();
   if (chat) {
     const existing = options.messageId && chat.messages.find(message => message.id === options.messageId);
     if (existing) Object.assign(existing, data, { createdAt: existing.createdAt });
@@ -6566,12 +6626,26 @@ function appendMessage(role, text, options = {}) {
   return messageElement(data.id);
 }
 
+const generationRecordCache = new Map();
+let generationRecordVersion, generationRecordChats;
 function studioGenerationRecord(promptId) {
   const id = String(promptId || "");
   if (!id) return null;
+  if (generationRecordVersion !== state.chatMutationVersion || generationRecordChats !== state.chats) {
+    generationRecordCache.clear();
+    generationRecordVersion = state.chatMutationVersion;
+    generationRecordChats = state.chats;
+  }
+  const cached = generationRecordCache.get(id);
+  if (cached && cached.messages === cached.chat.messages) return cached;
   for (const chat of state.chats) {
     const message = chat.messages.find((item) => item.promptId === id);
-    if (message) return { chat, message };
+    if (message) {
+      if (generationRecordCache.size >= 64) generationRecordCache.clear();
+      const record = { chat, message, messages: chat.messages };
+      generationRecordCache.set(id, record);
+      return record;
+    }
   }
   return null;
 }
@@ -6682,11 +6756,11 @@ async function appendGenerationImages(promptId, images) {
   }
 }
 
-function updateMainPromptEditor(prompt) {
+function updateMainPromptEditor(prompt, { render = true } = {}) {
   state.mainPrompt = prompt;
   const editor = state.panel?.querySelector("#promptstudio-main-prompt");
-  if (editor) editor.value = prompt;
-  renderKnownReferenceHighlights();
+  if (editor && editor.value !== prompt) editor.value = prompt;
+  if (render) renderKnownReferenceHighlights();
 }
 
 function knownReferenceTokenCharacter(value) {
@@ -6731,24 +6805,7 @@ function renderKnownReferenceHighlights() {
   const layer = state.panel?.querySelector("#promptstudio-main-prompt-highlights");
   const content = state.panel?.querySelector("#promptstudio-main-prompt-highlight-content");
   if (!editor || !layer || !content) return;
-  const text = editor.value;
-  const ranges = knownReferenceHighlightRanges(text);
-  const fragment = document.createDocumentFragment();
-  let offset = 0;
-  for (const range of ranges) {
-    fragment.append(document.createTextNode(text.slice(offset, range.start)));
-    const mark = document.createElement("mark");
-    mark.textContent = text.slice(range.start, range.end);
-    fragment.append(mark);
-    offset = range.end;
-  }
-  fragment.append(document.createTextNode(`${text.slice(offset)}\n`));
-  content.replaceChildren(fragment);
-  layer.style.width = `${editor.clientWidth}px`;
-  layer.style.height = `${editor.clientHeight}px`;
-  content.style.width = `${editor.clientWidth}px`;
-  content.style.transform = `translate(${-editor.scrollLeft}px, ${-editor.scrollTop}px)`;
-  editor.closest(".promptstudio-main-prompt-editor")?.toggleAttribute("data-has-highlights", ranges.length > 0);
+  renderTextHighlights({ editor, layer, content, ranges: knownReferenceHighlightRanges(editor.value), wrapper: ".promptstudio-main-prompt-editor" });
 }
 
 function additionalInstructionTemplateHighlightRanges(text) {
@@ -6772,31 +6829,13 @@ function renderAdditionalInstructionTemplateHighlights() {
   const layer = state.panel?.querySelector("#promptstudio-additional-instruction-highlights");
   const content = state.panel?.querySelector("#promptstudio-additional-instruction-highlight-content");
   if (!editor || !layer || !content) return;
-  const text = editor.value;
-  const ranges = additionalInstructionTemplateHighlightRanges(text);
-  const fragment = document.createDocumentFragment();
-  let offset = 0;
-  for (const range of ranges) {
-    fragment.append(document.createTextNode(text.slice(offset, range.start)));
-    const mark = document.createElement("mark");
-    mark.textContent = text.slice(range.start, range.end);
-    fragment.append(mark);
-    offset = range.end;
-  }
-  fragment.append(document.createTextNode(`${text.slice(offset)}\n`));
-  content.replaceChildren(fragment);
-  layer.style.width = `${editor.clientWidth}px`;
-  layer.style.height = `${editor.clientHeight}px`;
-  content.style.width = `${editor.clientWidth}px`;
-  content.style.transform = `translate(${-editor.scrollLeft}px, ${-editor.scrollTop}px)`;
-  editor.closest(".promptstudio-additional-instructions-editor")
-    ?.toggleAttribute("data-has-highlights", ranges.length > 0);
+  renderTextHighlights({ editor, layer, content, ranges: additionalInstructionTemplateHighlightRanges(editor.value), wrapper: ".promptstudio-additional-instructions-editor" });
 }
 
 function updatePromptEditor(prompt) {
   state.currentPrompt = prompt;
   const editor = state.panel?.querySelector("#promptstudio-current-prompt");
-  if (editor) editor.value = prompt;
+  if (editor && editor.value !== prompt) editor.value = prompt;
 }
 
 function updatePromptEditors(mainPrompt, finalPrompt) {
@@ -6804,8 +6843,16 @@ function updatePromptEditors(mainPrompt, finalPrompt) {
   updatePromptEditor(finalPrompt);
 }
 
+const refreshEditorPresentation = coalesceFrame(() => {
+  renderKnownReferenceHighlights();
+  refreshEmptyImageDropZone();
+  updateComposeMode();
+  refreshStudioStatus();
+}, () => state.panel?.ownerDocument.defaultView);
+const refreshStatusPresentation = coalesceFrame(refreshStudioStatus, () => state.panel?.ownerDocument.defaultView);
+
 function syncMainPromptEditor(prompt, { userEdit = false } = {}) {
-  updateMainPromptEditor(prompt);
+  updateMainPromptEditor(prompt, { render: !userEdit });
   const chat = activeChat();
   if (!chat) return;
   chat.mainPrompt = prompt;
@@ -6815,8 +6862,8 @@ function syncMainPromptEditor(prompt, { userEdit = false } = {}) {
   }
   chat.updatedAt = Date.now();
   saveChats();
-  refreshEmptyImageDropZone();
-  if (userEdit) refreshStudioStatus();
+  if (userEdit) refreshEditorPresentation();
+  else refreshEmptyImageDropZone();
 }
 
 function syncCanonicalEditor(prompt, { userEdit = false } = {}) {
@@ -6837,8 +6884,8 @@ function syncCanonicalEditor(prompt, { userEdit = false } = {}) {
   }
   chat.updatedAt = Date.now();
   saveChats();
-  updateComposeMode();
-  if (userEdit) refreshStudioStatus();
+  if (userEdit) refreshEditorPresentation();
+  else updateComposeMode();
 }
 
 function commitPromptEditorVersion() {
@@ -6876,6 +6923,26 @@ function pushVersion(finalPrompt = state.currentPrompt, mainPrompt = state.mainP
   const undo = state.panel?.querySelector("#promptstudio-undo");
   if (undo) undo.disabled = state.versionIndex <= 0 || state.busy;
   syncActiveChat();
+}
+
+function showPromptConstraints() {
+  const button = state.panel?.querySelector("#promptstudio-constraints");
+  if (!button || button.disabled) return;
+  commitPromptEditorVersion();
+  const chat = activeChat();
+  if (!chat) return;
+  const original = JSON.stringify(chat.intentProvenance);
+  openPromptConstraints({ownerDocument:button.ownerDocument,intentProvenance:chat.intentProvenance,makeId,onSave(intent) {
+    if (activeChat()?.id !== chat.id || button.disabled || JSON.stringify(chat.intentProvenance) !== original) {
+      throw new Error("This chat changed while Constraints was open. Cancel and reopen to review its latest constraints.");
+    }
+    chat.intentProvenance = normalizeIntentProvenance(intent);
+    chat.pendingGeneration = null;
+    chat.controlsFingerprint = "";
+    pushVersion();
+    updateComposeMode();
+    setStatus("Constraints saved. They apply on the next revision or rebuild. Undo restores the previous constraints.", "ready");
+  }});
 }
 
 function setOptions(selectId, values, selected) {
@@ -7302,6 +7369,8 @@ function collectRevisionPayload(
 function captureGenerationQueueSettings(action, chat = activeChat()) {
   const profile = selectedWorkflowProfile(action);
   return {
+    spatialInputs: spatialValue(chat, profile),
+    additionalInputSelections: structuredClone(state.additionalInputSelections),
     originChatId: chat?.id || null,
     workflowProfileId: profile?.id || null,
     loraState: structuredClone(generationLoraState(profile)),
@@ -7503,9 +7572,31 @@ async function promptWorkerStopped() {
   return state.promptWorkerHealthRequest;
 }
 
+const generationMessageElements = new Map();
 function messageElement(messageId) {
-  return [...(state.panel?.querySelectorAll(".promptstudio-message") || [])]
-    .find((message) => message.dataset.messageId === messageId) || null;
+  const cached = generationMessageElements.get(messageId);
+  if (cached?.isConnected && state.panel?.contains(cached)) return cached;
+  const element = state.panel?.querySelector(`.promptstudio-message[data-message-id="${CSS.escape(String(messageId))}"]`) || null;
+  if (generationMessageElements.size >= 64) generationMessageElements.clear();
+  if (element) generationMessageElements.set(messageId, element);
+  else generationMessageElements.delete(messageId);
+  return element;
+}
+
+const pendingProgressMessages = new Set();
+const paintGenerationProgress = coalesceFrame(() => {
+  const chat = activeChat();
+  for (const id of pendingProgressMessages) {
+    const message = chat?.messages.find(item => item.id === id);
+    if (message) renderGenerationProgress(messageElement(id), message);
+  }
+  pendingProgressMessages.clear();
+}, () => state.panel?.ownerDocument.defaultView);
+
+function scheduleGenerationProgress(record) {
+  if (record?.chat.id !== state.activeChatId) return;
+  pendingProgressMessages.add(record.message.id);
+  paintGenerationProgress();
 }
 
 function updateGenerationProgress(promptId, progress = {}) {
@@ -7519,8 +7610,7 @@ function updateGenerationProgress(promptId, progress = {}) {
     setStudioGenerationState(id, "generating");
     return;
   }
-  const element = studioGenerationElement(record);
-  if (element) renderGenerationProgress(element, stored);
+  scheduleGenerationProgress(record);
 }
 
 function updateStudioGenerationText(promptId, text) {
@@ -7554,6 +7644,7 @@ function updateStudioGenerationText(promptId, text) {
 function setStudioGenerationState(promptId, generationState) {
   const record = studioGenerationRecord(promptId);
   if (!record) return;
+  if (record.message.generationState === generationState && record.message.operationPhase === generationState) return;
   record.message.generationState = generationState;
   record.message.operationPhase = generationState;
   record.message.operationStatus = generationState === "complete"
@@ -8201,8 +8292,19 @@ function writeCanonicalPrompt(prompt, { sync = true } = {}) {
 
 async function workflowQueueContext(action, profileId = null) {
   const requestedId = profileId == null ? selectedWorkflowProfileId(action) : String(profileId || "");
-  await refreshWorkflowTemplates({ announce: false });
-  const selectedProfile = workflowProfileById(requestedId);
+  const cached = workflowProfileById(requestedId);
+  const sourceRevision = workflowSourceRevision;
+  const selectedProfile = cached?.snapshot?.output && !changedWorkflowPaths.has(cached.path)
+    ? cached : await refreshSelectedWorkflow(api, cached, buildWorkflowTemplate);
+  if (sourceRevision === workflowSourceRevision && selectedProfile && !selectedProfile.stale) changedWorkflowPaths.delete(selectedProfile.path);
+  if (selectedProfile && selectedProfile !== cached) {
+    const index = state.workflowProfiles.indexOf(cached);
+    if (index >= 0) state.workflowProfiles[index] = selectedProfile;
+    if (selectedProfile.cacheIdentity?.contentHash !== cached?.cacheIdentity?.contentHash
+        || selectedProfile.cacheIdentity?.capabilityHash !== cached?.cacheIdentity?.capabilityHash) {
+      void backgroundTask(saveWorkflowProfiles).catch(error => setStatus(error.message, "warning"));
+    }
+  }
   const compatible = selectedProfile && (
     action === "create"
       ? selectedProfile.kind === "create" && Boolean(selectedProfile.promptNodeId)
@@ -8244,7 +8346,10 @@ async function cancelComfyPrompt(promptId) {
   }
 }
 
+const reserveGenerationSubmission = createSubmissionOrder();
 async function queueGeneration({
+  spatialInputs = undefined,
+  additionalInputSelections = undefined,
   action = selectedAction(),
   executionPrompt = state.currentPrompt,
   mainPrompt = state.mainPrompt,
@@ -8285,14 +8390,19 @@ async function queueGeneration({
   cancellationCheck = null,
   operationMessageId = null,
 } = {}) {
+  const submission = reserveGenerationSubmission();
+  try {
   if (!state.apiConnected) throw new Error("ComfyUI is disconnected. Wait for it to reconnect before generating.");
   const chat = originChatId
     ? state.chats.find((item) => item.id === originChatId)
     : activeChat();
   if (!chat && !consultTarget && !agentTarget) throw new Error("The originating chat no longer exists.");
   let operationMessage = operationMessageId ? studioOperationRecord(operationMessageId)?.message : null;
+  const queueProfile = workflowProfileById(workflowProfileId) || selectedWorkflowProfile(action);
+  const queueStatus = generationSnapshot || (queueProfile?.snapshot?.output && !changedWorkflowPaths.has(queueProfile.path))
+    ? "Queueing cached workflow…" : "Preparing workflow…";
   if (chat && !consultTarget && !agentTarget && !operationMessage) {
-    operationMessage = createStudioOperation(chat, action, "Preparing workflow…");
+    operationMessage = createStudioOperation(chat, action, queueStatus);
   }
   if (operationMessage?.operationId && !state.operationControllers.has(operationMessage.operationId)) {
     state.operationControllers.set(operationMessage.operationId, new AbortController());
@@ -8301,7 +8411,7 @@ async function queueGeneration({
     updateStudioOperation(operationMessage.id, {
       generationAction: action,
       operationPhase: "preparing_workflow",
-      operationStatus: "Preparing workflow…",
+      operationStatus: queueStatus,
     });
   }
   const operationToken = independent ? null : state.operationToken;
@@ -8317,6 +8427,8 @@ async function queueGeneration({
   }
   const replayExactGeneration = Boolean(storedGenerationSnapshot);
   const submittedProfile = workflowProfileById(workflowProfileId) || selectedWorkflowProfile(action);
+  const submittedSpatialInputs = structuredClone(spatialInputs === undefined ? spatialValue(chat, submittedProfile) : spatialInputs);
+  const submittedAdditionalInputs = structuredClone(additionalInputSelections ?? state.additionalInputSelections);
   const referenceState = normalizeReferenceState({
     workflowReferenceInputs: workflowReferenceInputs === undefined ? workflowReferenceValues(chat, submittedProfile) : workflowReferenceInputs,
     qwenReferences: qwenReferences === undefined && (qwenReferenceAdapter(submittedProfile) || structureAdapter(submittedProfile)) ? chat?.qwenEditReferences : qwenReferences,
@@ -8498,12 +8610,15 @@ async function queueGeneration({
     applyPromptStudioInputValues(
       context.snapshot,
       context.profile,
-      state.additionalInputSelections,
+      submittedAdditionalInputs,
     );
+    applySpatialInputs(context.snapshot, context.profile, submittedSpatialInputs);
+    validateMossRecipe(context.snapshot, context.profile);
     syncImageOutputWorkflow(context.snapshot);
   }
 
   if (operationCancelled()) return false;
+  normalizeSpatialSnapshot(context.snapshot);
   // Recheck the actual submission, including old snapshots and manually authored prompts.
   const promptInputs = Object.values(context.snapshot.output || {})
     .filter(node => [SLOT_TYPE, UPSCALE_TYPE].includes(node.class_type) && typeof node.inputs?.prompt === "string")
@@ -8561,6 +8676,8 @@ async function queueGeneration({
 
   let queued;
   let llmHandoffToken = "";
+  await submission.ready;
+  if (operationCancelled()) return false;
   state.queueing = true;
   try {
     llmHandoffToken = await releaseLlmBeforeGeneration();
@@ -8570,12 +8687,16 @@ async function queueGeneration({
       canonicalPrompt: finalPrompt,
       generationAction: action,
       operationPhase: "queueing",
-      operationStatus: "Queueing workflow…",
+      operationStatus: "Saving submission checkpoint…",
     });
-    // Save the submission identity and frozen inputs before ComfyUI can accept it.
-    saveChats({ immediate: true });
-    await state.chatSaveChain;
+    // Checkpoint recovery locally; a slow history server must not delay queueing.
+    // The browser draft carries the submission identity across a lost response.
+    saveChats();
+    await checkpointChatDraft(chat, operationMessage);
     if (operationCancelled()) return false;
+    if (operationMessage) updateStudioOperation(operationMessage.id, {
+      operationStatus: "Waiting for ComfyUI to accept workflow…",
+    });
     const submittedSnapshot = structuredClone(context.snapshot);
     if (operationMessage) tagSubmission(submittedSnapshot, operationMessage.operationId);
     queued = await api.queuePrompt(-1, submittedSnapshot);
@@ -8765,6 +8886,7 @@ async function queueGeneration({
     setStudioGenerationState(promptId, "error");
   });
   return true;
+  } finally { submission.release(); }
 }
 
 async function queueUpscale(source, generationData = null, factor = null, workflowProfileId = null) {
@@ -8862,7 +8984,7 @@ async function generateDirectPrompt(action = selectedAction(), {repeat = false} 
   input.value = prompt;
   saveSettings();
   const queueSettings = repeat ? captureRepeatQueueSettings(action, chat) : captureGenerationQueueSettings(action, chat);
-  const operation = createStudioOperation(chat, action, "Preparing workflow…");
+  const operation = createStudioOperation(chat, action, "Submitted…");
   try {
     await queueGeneration({
       ...queueSettings,
@@ -9463,15 +9585,18 @@ function updateActiveLlmOperationProgress(status = {}) {
       if (message.llmProvider && normalizeLlmProvider(message.llmProvider) !== provider) continue;
       const activity = llmActivityLabel(status, message.llmThinkingEnabled === true);
       const tokenCount = llmGeneratedTokenCount(status);
-      message.operationStatus = status.busy === true
+      const nextStatus = status.busy === true
         ? `${activity}…`
         : `${activity} · waiting…`;
+      if (message.operationStatus === nextStatus && (tokenCount == null || message.llmTokenCount === tokenCount)) continue;
+      const statusChanged = message.operationStatus !== nextStatus;
+      message.operationStatus = nextStatus;
       if (tokenCount != null) message.llmTokenCount = tokenCount;
-      activeChatChanged ||= chat.id === state.activeChatId;
+      scheduleGenerationProgress({ chat, message });
+      activeChatChanged ||= statusChanged && chat.id === state.activeChatId;
     }
   }
   if (activeChatChanged) {
-    renderChatHistory();
     refreshStudioStatus();
   }
 }
@@ -11818,7 +11943,7 @@ function renderConsultHistory({ forceEnd = false } = {}) {
   }
   for (const [messageIndex, message] of messages.entries()) {
     const last = messageIndex === messages.length - 1;
-    addRow(`message:${message.id}`, JSON.stringify([message, last,
+    addRow(`message:${message.id}`, historySignature([message, last,
       last || message.proposal ? [consultBusy, state.busy, state.consultBusy, activeConsultExperiment()?.id] : null]), () => {
     const bubble = document.createElement("article");
     bubble.dataset.messageId = message.id;
@@ -13661,7 +13786,7 @@ async function createNewFromCurrentPrompt({ applyControls = true, generationActi
     independent: true,
     releaseBusy: false,
   };
-  const operation = createStudioOperation(chat, generationAction, "Preparing workflow…");
+  const operation = createStudioOperation(chat, generationAction, "Submitted…");
   generationOptions.operationMessageId = operation.id;
   try {
     await queueGeneration(generationOptions);
@@ -14045,10 +14170,11 @@ function buildPanel() {
               Use latest image for LLM
             </label>
             <label><input id="promptstudio-randomize-seed" type="checkbox" ${settings.randomize_seed ? "checked" : ""} /> New seed on create / reroll</label>
-            <div class="promptstudio-generation-action" role="radiogroup" aria-label="Generation action">
+            <div class="promptstudio-action-and-constraints"><div class="promptstudio-generation-action" role="radiogroup" aria-label="Generation action">
               <label><input type="radio" name="promptstudio-generation-action" value="create" checked /><span>Create</span></label>
               <label><input type="radio" name="promptstudio-generation-action" value="edit" /><span>Edit</span></label>
             </div>
+            <button id="promptstudio-constraints" type="button" aria-haspopup="dialog" data-disable-busy>Constraints</button></div>
             <div id="promptstudio-edit-prompt-action" class="promptstudio-generation-action promptstudio-edit-prompt-action" role="radiogroup" aria-label="Editing prompt payload" hidden>
               <label><input type="radio" name="promptstudio-edit-prompt-mode" value="edit_instruction" /><span>Edit instruction</span></label>
               <label><input type="radio" name="promptstudio-edit-prompt-mode" value="full_prompt" checked /><span>Full prompt</span></label>
@@ -14695,7 +14821,7 @@ function buildPanel() {
     panel, activeChat, findChat: id => state.chats.find(chat => chat.id === id), selectedAction,
     selectedProfile: () => selectedWorkflowProfile(selectedAction()),
     upload: uploadPromptStudioImage, imageUrl: imageReferenceUrl,
-    changed: chat => { chat.updatedAt = Date.now(); saveChats({ immediate: true }); },
+    changed: (chat, { continuous } = {}) => { chat.updatedAt = Date.now(); saveChats({ immediate: !continuous }); },
     refresh: updateComposeMode, report: setStatus,
     clearChatDropState: () => {
       state.dragDepth = 0;
@@ -14708,7 +14834,7 @@ function buildPanel() {
     activeChat, findChat: id => state.chats.find(chat => chat.id === id),
     selectedProfile: () => workflowProfileById(panel.querySelector("#promptstudio-upscale-dialog")?._upscaleRequest?.workflowProfileId),
     upload: uploadPromptStudioImage, imageUrl: imageReferenceUrl,
-    changed: chat => {chat.updatedAt = Date.now(); saveChats({immediate: true});}, report: setStatus,
+    changed: (chat, { continuous } = {}) => {chat.updatedAt = Date.now(); saveChats({immediate: !continuous});}, report: setStatus,
     refresh: () => {panel.querySelector('#promptstudio-upscale-form button[type="submit"]').disabled = upscaleReferenceController?.uploading(state.activeChatId) || false;},
   });
   const imageImport = panel.querySelector("#promptstudio-image-import");
@@ -14872,7 +14998,7 @@ function buildPanel() {
     else closeMutationManager();
   });
   panel.querySelector("#promptstudio-mutation-add").addEventListener("click", () => openMutationEditor());
-  panel.querySelector("#promptstudio-mutation-search").addEventListener("input", renderMutationManager);
+  panel.querySelector("#promptstudio-mutation-search").addEventListener("input", coalesceFrame(renderMutationManager, () => panel.ownerDocument.defaultView));
   panel.querySelector("#promptstudio-mutation-list").addEventListener("click", handleMutationListAction);
   panel.querySelector("#promptstudio-mutation-manager-banner button").addEventListener("click", () => {
     if (state.mutationConfigPending) {
@@ -15130,6 +15256,7 @@ function buildPanel() {
   panel.addEventListener("change", renderRunSummary);
   panel.querySelector("#promptstudio-reroll").addEventListener("click", () => reroll());
   panel.querySelector("#promptstudio-undo").addEventListener("click", undoPrompt);
+  panel.querySelector("#promptstudio-constraints").addEventListener("click", showPromptConstraints);
   panel.querySelector("#promptstudio-stop").addEventListener("click", interrupt);
   panel.querySelector("#promptstudio-use-llm-amplification").addEventListener("change", () => updateAmplificationMode());
   panel.querySelector("#promptstudio-output-length").addEventListener("input", (event) => {
@@ -15151,8 +15278,10 @@ function buildPanel() {
     editor: panel.querySelector("#promptstudio-secondary-instructions"),
     getContext: triggerWordContext,
   });
-  panel.querySelector("#promptstudio-additional-instructions").addEventListener("input", renderAdditionalInstructionTemplateHighlights);
-  panel.querySelector("#promptstudio-additional-instructions").addEventListener("scroll", renderAdditionalInstructionTemplateHighlights);
+  const refreshInstructionHighlights = coalesceFrame(renderAdditionalInstructionTemplateHighlights, () => panel.ownerDocument.defaultView);
+  const refreshPromptHighlights = coalesceFrame(renderKnownReferenceHighlights, () => panel.ownerDocument.defaultView);
+  panel.querySelector("#promptstudio-additional-instructions").addEventListener("input", refreshInstructionHighlights);
+  panel.querySelector("#promptstudio-additional-instructions").addEventListener("scroll", refreshInstructionHighlights);
   panel.querySelector("#promptstudio-additional-instructions").addEventListener("change", markControlsChanged);
   panel.querySelector("#promptstudio-thinking").addEventListener("change", () => {
     syncLlmProfileControls();
@@ -15213,7 +15342,7 @@ function buildPanel() {
         const saved = getSettings();
         saved.llamacpp_config_profile = "";
         saved.llamacpp_generation_settings = null;
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(saved));
+        writeJsonSetting(STORAGE_KEY, saved);
         setBackendOptions("promptstudio-llamacpp-config-profile", profiles, "", "No JSON profiles found");
       } else {
         setBackendOptions("promptstudio-llamacpp-config-profile", profiles, select.value, "No JSON profiles found");
@@ -15225,10 +15354,10 @@ function buildPanel() {
   panel.querySelector("#promptstudio-main-prompt").addEventListener("input", (event) => {
     syncMainPromptEditor(event.target.value, { userEdit: true });
   });
-  panel.querySelector("#promptstudio-main-prompt").addEventListener("scroll", renderKnownReferenceHighlights);
+  panel.querySelector("#promptstudio-main-prompt").addEventListener("scroll", refreshPromptHighlights);
   if ("ResizeObserver" in window) {
-    new ResizeObserver(renderKnownReferenceHighlights).observe(panel.querySelector("#promptstudio-main-prompt"));
-    new ResizeObserver(renderAdditionalInstructionTemplateHighlights)
+    new ResizeObserver(refreshPromptHighlights).observe(panel.querySelector("#promptstudio-main-prompt"));
+    new ResizeObserver(refreshInstructionHighlights)
       .observe(panel.querySelector("#promptstudio-additional-instructions"));
   }
   panel.querySelector("#promptstudio-main-prompt").addEventListener("change", commitPromptEditorVersion);
@@ -15238,7 +15367,7 @@ function buildPanel() {
   panel.querySelector("#promptstudio-current-prompt").addEventListener("change", commitPromptEditorVersion);
   panel.querySelector("#promptstudio-revision").addEventListener("input", (event) => {
     syncManualPrompt(event.target.value);
-    updateComposeMode();
+    refreshEditorPresentation();
   });
   panel.querySelector("#promptstudio-revision").addEventListener("paste", handleMainImagePaste);
   panel.querySelector("#promptstudio-revision").addEventListener("keydown", (event) => {
@@ -15257,7 +15386,7 @@ function buildPanel() {
   panel.querySelectorAll(".promptstudio-settings input, .promptstudio-settings select, .promptstudio-settings textarea")
     .forEach((element) => element.addEventListener("change", markControlsChanged));
   RENDER_CONTROL_IDS.forEach((id) => {
-    panel.querySelector(`#${id}`)?.addEventListener("input", refreshStudioStatus);
+    panel.querySelector(`#${id}`)?.addEventListener("input", refreshStatusPresentation);
   });
   panel.querySelector("#promptstudio-kobold-url").addEventListener("change", () => {
     markControlsChanged();

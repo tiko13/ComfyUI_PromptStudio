@@ -2960,7 +2960,8 @@ def _build_expansion_retry_prompt(
     else:
         prompt_parts.extend(["", "Reasoning policy:", _thinking_instruction(thinking_mode)])
 
-    known_references = _matched_known_references(original_text, rewritten_text)
+    # Generated wording is not a request to activate another saved reference.
+    known_references = _matched_known_references(original_text)
     protected_word_lines = _protected_word_instruction_lines(
         original_text,
         rewritten_text,
@@ -3166,6 +3167,8 @@ def _build_revision_prompt(
     current_prompt,
     revision,
     additional_instructions="",
+    *,
+    known_references=None,
 ):
     """Build a stateless edit request for Prompt Studio."""
     prompt_parts = [
@@ -3245,7 +3248,8 @@ def _build_revision_prompt(
     else:
         prompt_parts.extend(["", "Reasoning policy:", _revision_thinking_instruction(thinking_mode)])
 
-    known_references = _matched_known_references(current_prompt, revision)
+    if known_references is None:
+        known_references = _matched_known_references(current_prompt, revision)
     protected_word_lines = _protected_word_instruction_lines(
         current_prompt,
         revision,

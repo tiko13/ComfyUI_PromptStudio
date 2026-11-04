@@ -9,6 +9,10 @@ import { consultMessagesAfterClear } from "../consult/model.js";
 
 import { validateStoreResponse } from "./store-response.js";
 import { newChatWorkflowSelections } from "../settings/workflow-defaults.js";
+import { backgroundTask } from "../core/scheduling.js";
+import { backgroundData } from "../core/background-data.js";
+import { storageSnapshot } from "../core/storage-snapshot.js";
+import { createSubmissionJournal } from "../generation/submission-journal.js";
 
 const CHAT_PAGE_SIZE = 20;
 const CHAT_PAGE_MAX = 100;
@@ -34,12 +38,12 @@ export function createChatStoreController({
 }) {
 const acknowledgedChats = new Map();
 const draftOutbox = createDraftOutbox();
+const submissionJournal = createSubmissionJournal('image', 'messages');
 let draftMutation = 0;
 let restoredComposerText = null;
-let draftChatsVersion = -1;
-let draftChats = [];
 let draftReviewInFlight = false;
 let savedMutationVersion = state.chatMutationVersion;
+let lastMaintenance = 0;
 const draftScheduler = createDraftScheduler(writeDraft);
 function draftContainer() { return state.panel?.querySelector('.promptstudio-chat-sidebar'); }
 function showChatFailure(error, loading = false) {
@@ -78,22 +82,20 @@ function showChatFailure(error, loading = false) {
 }
 async function writeDraft({ throwOnFailure = false } = {}) {
   draftScheduler.cancel();
-  if (draftChatsVersion !== state.chatMutationVersion) {
-    draftChats = structuredClone(state.chats.filter(chat => acknowledgedChats.get(chat.id) !== JSON.stringify(chat)));
-    draftChatsVersion = state.chatMutationVersion;
-  }
   const record = {
     mutation: ++draftMutation, revision: state.chatRevision,
     activeChatId: state.activeChatId,
-    chats: draftChats,
-    baseChats: draftChats.map(chat => acknowledgedChats.has(chat.id) ? JSON.parse(acknowledgedChats.get(chat.id)) : null).filter(Boolean),
+    chats: state.chats, chatBaseline: Object.fromEntries(acknowledgedChats),
     deletedChatIds: [...state.chatDeletedIds], deletedMessageIds: deletedMessageIdsPayload(),
     composerText: state.panel?.querySelector('#promptstudio-revision')?.value || '',
   };
   try {
-    if (record.chats.length || record.composerText || record.deletedChatIds.length || Object.keys(record.deletedMessageIds).length) {
-      await draftOutbox.put(draftTabKey('image'), record);
-    } else {
+    // Post the checkpoint synchronously, including on pagehide. Comparison,
+    // encoding and storage happen in one worker instead of awaiting a worker
+    // response on a page that may already be closing.
+    const receipt = await draftOutbox.putReceipt(draftTabKey('image'), record);
+    delete record.chatBaseline;
+    if (!receipt.chatCount && !record.composerText && !record.deletedChatIds.length && !Object.keys(record.deletedMessageIds).length) {
       await draftOutbox.acknowledge(draftTabKey('image'), record.mutation);
     }
     if (record.mutation === draftMutation) clearDraftStorageFailure(draftContainer(), record);
@@ -106,7 +108,6 @@ async function writeDraft({ throwOnFailure = false } = {}) {
 }
 function acknowledgeChats(chats) {
   for (const chat of chats || []) acknowledgedChats.set(chat.id, JSON.stringify(chat));
-  draftChatsVersion = -1;
 }
 
 async function readDraftReviewStore() {
@@ -373,29 +374,30 @@ function applyChatStoreSnapshot(stored, { preserveActive = true } = {}) {
 }
 
 async function writeChatStore(snapshot, revision, deletedChatIds = [], deletedMessageIds = {}) {
+  const body = await backgroundData('chat-store', {
+    snapshot, acknowledged: Object.fromEntries(acknowledgedChats), revision, deletedChatIds, deletedMessageIds,
+  });
   return api.fetchApi("/promptstudio/prompt-studio/chats", {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      ...snapshot,
-      chats: snapshot.chats.filter(chat => acknowledgedChats.get(chat.id) !== JSON.stringify(chat)),
-      revision,
-      partial: true,
-      deletedChatIds,
-      deletedMessageIds,
-    }),
+    body,
   });
 }
 
-async function persistChats() {
+async function persistChats({ force = false } = {}) {
   if (state.chatPersistenceBlocked || !state.chatStoreLoaded) return;
+  if (!force && savedMutationVersion === state.chatMutationVersion) return;
+  if (Date.now() - lastMaintenance > 60000) {
+    lastMaintenance = Date.now();
+    if (pruneExpiredConsultMessages()) renderConsultHistory();
+  }
   const saveMutationVersion = state.chatMutationVersion;
   await writeDraft();
   const deletedChatIds = [...state.chatDeletedIds];
   const deletedMessageIds = deletedMessageIdsPayload();
   state.chatSaveInFlight = true;
   try {
-    let snapshot = structuredClone({ activeChatId: state.activeChatId, chats: state.chats });
+    let snapshot = storageSnapshot({ activeChatId: state.activeChatId, chats: state.chats });
     let response = await writeChatStore(snapshot, state.chatRevision, deletedChatIds, deletedMessageIds);
     let data = await response.json().catch(() => ({}));
     if (response.status === 409) {
@@ -434,7 +436,8 @@ async function persistChats() {
     }
     if (!response.ok) throw new Error(data.error || `Chat save failed (${response.status}).`);
     validateStoreResponse(data);
-    acknowledgeChats(snapshot.chats);
+    void submissionJournal.acknowledge(snapshot.chats, deletedChatIds).catch(error => console.warn('Submission checkpoint cleanup failed.', error));
+    for (const [id, serialized] of await backgroundData('records', snapshot.chats)) acknowledgedChats.set(id, serialized);
     savedMutationVersion = saveMutationVersion;
     if (state.chatMutationVersion === savedMutationVersion) draftContainer()?.querySelector('[data-chat-save-failure]')?.remove();
     state.chatRevision = Number(data.revision || state.chatRevision);
@@ -464,7 +467,6 @@ function saveChats({ immediate = false } = {}) {
   previousChatIds.forEach((chatId) => {
     if (!retainedChatIds.has(chatId)) state.chatDeletedIds.add(chatId);
   });
-  if (pruneExpiredConsultMessages()) renderConsultHistory();
   state.chatMutationVersion += 1;
   draftScheduler.schedule();
   if (state.chatPersistenceBlocked || !state.chatStoreLoaded) return;
@@ -473,7 +475,7 @@ function saveChats({ immediate = false } = {}) {
     state.chatSaveTimer = null;
     state.chatSaveChain = state.chatSaveChain
       .catch(() => {})
-      .then(persistChats)
+      .then(() => backgroundTask(persistChats))
       .catch((error) => showChatFailure(error));
   };
   if (immediate) {
@@ -647,6 +649,20 @@ async function loadChats() {
       }
       await showRecoveredDrafts();
     } catch (error) { showDraftStorageFailure(draftContainer(),{chats:state.chats},error.message); }
+    try {
+      if (await submissionJournal.restore(state.chats, async id => {
+        const response = await api.fetchApi(`/promptstudio/prompt-studio/chats?chat_id=${encodeURIComponent(id)}`);
+        if (response.status === 404) return null;
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || 'Submission history could not be recovered.');
+        validateStoreResponse(data, 'chats');
+        return data.chats.find(chat => chat.id === id);
+      })) {
+        state.chats = state.chats.map(normalizeChat);
+        if (!state.chats.some(chat => chat.id === state.activeChatId)) state.activeChatId = state.chats[0]?.id || null;
+        recoveredOrMigratedPromptState = true;
+      }
+    } catch (error) { showChatFailure(error); }
     for (const chat of pendingChats) {
       if (!state.chats.some(saved => saved.id === chat.id)) {
         state.chats.push(chat);
@@ -697,8 +713,15 @@ async function loadChats() {
       clearTimeout(state.chatSaveTimer);
       state.chatSaveTimer = null;
       await state.chatSaveChain;
-      await persistChats();
+      await persistChats({ force: true });
       if (savedMutationVersion !== state.chatMutationVersion) throw new Error("History is still changing. Wait for current work to finish.");
+    },
+    checkpointChatDraft: (chat, message) => {
+      if (!chat || !message) return backgroundTask(() => writeDraft({ throwOnFailure: true }));
+      const { id, title, createdAt, updatedAt, mainPrompt, finalPrompt, studioSettings,
+        createWorkflowId, editWorkflowId, upscaleWorkflowId } = chat;
+      return submissionJournal.checkpoint({ id, title, createdAt, updatedAt, mainPrompt, finalPrompt,
+        studioSettings, createWorkflowId, editWorkflowId, upscaleWorkflowId, initialized: true }, message, acknowledgedChats.has(id));
     },
     applyChatStoreSnapshot,
     loadChats,

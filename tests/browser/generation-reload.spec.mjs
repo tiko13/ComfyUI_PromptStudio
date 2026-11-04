@@ -83,12 +83,25 @@ try {
 } finally {releaseFinish();await fixture.close();}
 
 // Exercise real submission/persistence code at both sides of queue acceptance.
-for (const boundary of ['queue-response','handoff']) {
+for (const boundary of ['queue-response','handoff','journal-only']) {
   const f = await startFixture();
   let release, accepted = null, submissions = 0, handoffWaiting = false;
   const gate = new Promise(resolve=>{release=resolve;});
   const snapshot = {workflow:{nodes:[],extra:{saved:true}},output:{'2':{class_type:'SaveImage',inputs:{}}}};
   try {
+    if (boundary === 'journal-only') {
+      await f.context.addInitScript(() => {
+        const post = Worker.prototype.postMessage;
+        Worker.prototype.postMessage = function(message, ...args) {
+          if (message.database === 'promptstudio-draft-outbox-v1' && message.method === 'put') return;
+          return post.call(this,message,...args);
+        };
+      });
+      await f.context.route('**/promptstudio/prompt-studio/chats',async route=>{
+        if (route.request().method() === 'PUT') await gate;
+        await route.continue().catch(()=>{});
+      });
+    }
     await f.context.route('**/js/prompt_studio.js',async route=>{
       const response=await route.fetch();
       await route.fulfill({response,body:await response.text()+'\nexport {queueGeneration};'});
@@ -101,7 +114,7 @@ for (const boundary of ['queue-response','handoff']) {
     await f.context.route('**/test-submit',async route=>{
       submissions++;
       accepted = route.request().postDataJSON();
-      if (boundary==='queue-response') await gate;
+      if (boundary==='queue-response' || boundary==='journal-only') await gate;
       await route.fulfill({json:{prompt_id:'real-submission'}}).catch(()=>{});
     });
     await f.context.route('**/llm/release',route=>route.fulfill({json:{handoff_token:'test-handoff'}}));
@@ -124,10 +137,27 @@ for (const boundary of ['queue-response','handoff']) {
     await page.getByRole('button',{name:'Replay saved inputs',exact:true}).click();
     for(let attempt=0;attempt<100 && (!accepted || (boundary==='handoff' && !handoffWaiting));attempt++) await new Promise(resolve=>setTimeout(resolve,50));
     assert.ok(accepted,`${boundary}: queue accepted`);
+    if (boundary === 'queue-response') assert.equal(await page.evaluate(async()=>{
+      const {state}=await import('/extensions/ComfyUI_PromptStudio/js/prompt-studio/core/state.js');
+      return state.chats.flatMap(chat=>chat.messages).find(message=>message.operationPhase==='queueing')?.operationStatus;
+    }),'Waiting for ComfyUI to accept workflow…');
     const operationId=accepted.workflow.extra.promptstudio_submission;
     const saved=()=>f.chats.chats.flatMap(c=>c.messages).find(m=>m.operationId===operationId);
-    assert.ok(saved(),`${boundary}: intent is durable before submission`);
-    assert.deepEqual(saved().generationSnapshot.output,snapshot.output);
+    const checkpoint = await page.evaluate(async operationId => {
+      const {createDraftOutbox} = await import('/extensions/ComfyUI_PromptStudio/js/prompt-studio/chat/draft-outbox.js');
+      const {SUBMISSION_DATABASE} = await import('/extensions/ComfyUI_PromptStudio/js/prompt-studio/generation/submission-journal.js');
+      const outbox = createDraftOutbox({database:SUBMISSION_DATABASE});
+      const drafts = await outbox.list();
+      await outbox.close();
+      return drafts.map(draft=>draft.entry).find(message=>message.operationId===operationId);
+    },operationId);
+    const durable = saved() || checkpoint;
+    if (boundary === 'journal-only') {
+      assert.equal(saved(),undefined,'No server history save contains the submission');
+      assert.ok(checkpoint,'Only the isolated generation checkpoint protects this request');
+    }
+    assert.ok(durable,`${boundary}: intent is durable locally or on server before submission`);
+    assert.deepEqual(durable.generationSnapshot.output,snapshot.output);
     if(boundary==='handoff') {
       for(let attempt=0;attempt<100 && !saved()?.promptId;attempt++) await new Promise(resolve=>setTimeout(resolve,50));
       assert.equal(saved().promptId,'real-submission','Prompt ID is durable while handoff is still waiting');

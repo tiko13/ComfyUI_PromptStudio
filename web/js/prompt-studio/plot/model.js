@@ -1,4 +1,6 @@
 import { samplerSupportsField } from "../generation/sampling.js";
+import {validateMossRecipe} from "../generation/moss-recipe.js";
+import {normalizeSpatialSnapshot} from "../generation/spatial-inputs.js";
 import {effectiveSecondaryInstructions} from "../chat/intent-provenance.js";
 import {
   LORA_LOADER_TYPE,
@@ -311,6 +313,8 @@ export function snapshotForPlotCell(plot, cell) {
         : ["cfg", "denoise"].includes(axis.type) ? Number(selected.value) : String(selected.value);
     }
   }
+  normalizeSpatialSnapshot(snapshot);
+  validateMossRecipe(snapshot, {snapshot, promptNodeId:plot.base.promptNodeId, resultNodeIds:plot.base.resultNodeIds});
   return snapshot;
 }
 

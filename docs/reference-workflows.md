@@ -32,6 +32,24 @@ The structure extractor is shared, but guide conditioning is model-specific. A p
 
 ## Compatibility and setup
 
+### FIBO 2 presets
+
+Setup includes `[PS] - FIBO2 Dev Create`, `Dev Edit` and `Turbo Edit`. All use native `TextEncodeFibo2`, `CLIPLoader` with type `fibo2`, and `VAELoader`. The existing Studio Model Loader, optional LoRA Loader, Prompt Slot, Reference Collection/Item/Prompt, Sampler and save nodes supply the Studio contract. No FIBO-specific Studio node, runtime prompt injection or third-party node pack is required.
+
+Dev Create declares four optional reference items, numbered `<image_1>` through `<image_4>`, and full-prompt preparation. Dev/Turbo Edit reserve `<image_1>` for Image Source and declare three optional donors starting at `<image_2>`, with edit-instruction preparation. Missing optional items return None and are filtered by the native encoder. Preserve consecutive ordering. The native sixteen-socket ceiling is not the supported reference count advertised by these presets.
+
+Connect the VAE to the encoder and sample its latent output. Create connects Prompt Slot width/height; Edit leaves native width/height at zero for source-aspect output near 1 MP. Changing those dimensions may crop/reframe the source. Edit Mask is a post-decode composite against the original source, not FIBO mask conditioning. Forced lossless PNG avoids an additional lossy save. Structure Input/Qwen ControlNet and RGBA decoding are not included.
+
+Dev defaults to 50 Euler/simple steps, CFG 5; Edit Turbo uses four Euler/simple steps, CFG 1. Both use denoise 1 and the native model's sampling shift. Empty negatives are intentional; Turbo's CFG 1 gives negative prompting no guidance effect. Sampler settings remain explicit and editable. Separate `Fibo2Dev` and `Fibo2EditTurbo` download folders keep default model menus separate; Setup preserves already-installed model names and their folders. The optional user LoRA family is `Fibo2` and requires compatible weights.
+
+Setup pins the BF16 Dev/Turbo checkpoints and Flux2 VAE by revision, size and SHA-256, and shares the existing Qwen3-VL 4B BF16/FP8 requirement with Krea2. Model terms use the existing opt-in acceptance flow. Adding catalog entries does not download weights automatically. Video consumes shared Studio services and images, while its workflow adapter remains specific to H3; FIBO templates are only offered as Image workflows.
+
+Sources: [Comfy-Org weights](https://huggingface.co/Comfy-Org/Fibo-2.0), [Dev model card](https://huggingface.co/briaai/Fibo-2.0-dev), [Turbo model card](https://huggingface.co/briaai/Fibo-2.0-edit-turbo), [native encoder](https://github.com/Comfy-Org/ComfyUI/blob/master/comfy_extras/nodes_fibo2.py).
+
+The Flux2 VAE requirement also recognizes the official Diffusers serialization from [Comfy-Org/flux2-dev](https://huggingface.co/Comfy-Org/flux2-dev). Both releases use `flux2-vae.safetensors` but have different sizes and hashes. Setup selects the matching published variant and verifies its own checksum before reuse; it does not replace an existing file to normalize serialization.
+
+### Existing workflows
+
 The bundled Qwen workflows retain 10 Create entries and 9 Edit entries, their prompt conventions and model/sampler settings. Krea Edit explicitly declares its existing single donor behavior. RGBA output paths retain their previous mask availability.
 
 Setup installs these explicit workflows. When an installed workflow is exactly equivalent to an older bundle after migration, Setup backs it up as `.json.pre-reference-nodes.bak` and upgrades it in place. Customized or ambiguous graphs are preserved; Setup installs a numbered copy instead. `reference_workflow_migration.upgrade_reference_workflow` is an idempotent, conservative migration helper for compatible serialized Qwen/Krea graphs.

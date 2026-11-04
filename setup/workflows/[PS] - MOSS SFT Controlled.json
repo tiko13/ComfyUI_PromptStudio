@@ -1,0 +1,1689 @@
+{
+  "last_node_id": 99,
+  "last_link_id": 37,
+  "nodes": [
+    {
+      "id": 1,
+      "type": "KCPP_PromptStudioModelLoader",
+      "pos": [
+        0,
+        0
+      ],
+      "size": [
+        400,
+        260
+      ],
+      "flags": {},
+      "order": 0,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "MODEL",
+          "type": "MODEL",
+          "links": [
+            1
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "KCPP_PromptStudioModelLoader"
+      },
+      "widgets_values": [
+        "MOSS-SFT",
+        "MOSS-SFT/moss_image_sft_bf16.safetensors"
+      ],
+      "widgets_values_named": {
+        "model_type": "MOSS-SFT",
+        "unet_name": "MOSS-SFT/moss_image_sft_bf16.safetensors"
+      }
+    },
+    {
+      "id": 2,
+      "type": "CLIPLoader",
+      "pos": [
+        0,
+        310
+      ],
+      "size": [
+        400,
+        260
+      ],
+      "flags": {},
+      "order": 1,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "CLIP",
+          "type": "CLIP",
+          "links": [
+            15,
+            16
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "CLIPLoader"
+      },
+      "widgets_values": [
+        "qwen3.5_9b_bf16.safetensors",
+        "moss_image",
+        "default"
+      ],
+      "widgets_values_named": {
+        "clip_name": "qwen3.5_9b_bf16.safetensors",
+        "type": "moss_image",
+        "device": "default"
+      }
+    },
+    {
+      "id": 3,
+      "type": "VAELoader",
+      "pos": [
+        0,
+        620
+      ],
+      "size": [
+        400,
+        260
+      ],
+      "flags": {},
+      "order": 2,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "VAE",
+          "type": "VAE",
+          "links": [
+            21,
+            36
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "VAELoader"
+      },
+      "widgets_values": [
+        "flux2-vae.safetensors"
+      ],
+      "widgets_values_named": {
+        "vae_name": "flux2-vae.safetensors"
+      }
+    },
+    {
+      "id": 4,
+      "type": "KCPP_PromptSlot",
+      "pos": [
+        0,
+        930
+      ],
+      "size": [
+        400,
+        260
+      ],
+      "flags": {},
+      "order": 3,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "prompt",
+          "type": "STRING",
+          "links": [
+            8
+          ]
+        },
+        {
+          "name": "secondary_instructions",
+          "type": "STRING",
+          "links": []
+        },
+        {
+          "name": "width",
+          "type": "INT",
+          "links": [
+            10,
+            12,
+            17,
+            22,
+            25
+          ]
+        },
+        {
+          "name": "height",
+          "type": "INT",
+          "links": [
+            11,
+            13,
+            18,
+            23,
+            26
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "KCPP_PromptSlot"
+      },
+      "widgets_values": [
+        "",
+        "Scene prompt",
+        ""
+      ],
+      "widgets_values_named": {
+        "prompt": "",
+        "slot_name": "Scene prompt",
+        "secondary_instructions": ""
+      }
+    },
+    {
+      "id": 5,
+      "type": "KCPP_PromptStudioLoraLoader",
+      "pos": [
+        440,
+        0
+      ],
+      "size": [
+        400,
+        260
+      ],
+      "flags": {},
+      "order": 4,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "model",
+          "type": "MODEL",
+          "link": 1
+        }
+      ],
+      "outputs": [
+        {
+          "name": "model",
+          "type": "MODEL",
+          "links": [
+            2
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "KCPP_PromptStudioLoraLoader"
+      },
+      "widgets_values": [
+        "MOSS-SFT",
+        "[]"
+      ],
+      "widgets_values_named": {
+        "lora_type": "MOSS-SFT",
+        "lora_stack_json": "[]"
+      }
+    },
+    {
+      "id": 6,
+      "type": "LoraLoaderModelOnly",
+      "pos": [
+        440,
+        310
+      ],
+      "size": [
+        400,
+        260
+      ],
+      "flags": {},
+      "order": 5,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "model",
+          "type": "MODEL",
+          "link": 2
+        },
+        {
+          "name": "strength_model",
+          "type": "FLOAT",
+          "link": 3,
+          "widget": {
+            "name": "strength_model"
+          }
+        }
+      ],
+      "outputs": [
+        {
+          "name": "MODEL",
+          "type": "MODEL",
+          "links": [
+            4
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "LoraLoaderModelOnly",
+        "promptstudio_asset": "moss_destripe"
+      },
+      "widgets_values": [
+        "MOSS-Required/moss_sft_destripe_top64_bf16.safetensors",
+        0
+      ],
+      "widgets_values_named": {
+        "lora_name": "MOSS-Required/moss_sft_destripe_top64_bf16.safetensors",
+        "strength_model": 0
+      },
+      "title": "SFT Destripe · 0 disables"
+    },
+    {
+      "id": 7,
+      "type": "PromptStudioInput",
+      "title": "Destripe strength (0 off; 1–1.5 typical)",
+      "pos": [
+        440,
+        585
+      ],
+      "size": [
+        320,
+        80
+      ],
+      "flags": {},
+      "order": 6,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "FLOAT",
+          "type": "FLOAT",
+          "links": [
+            3
+          ],
+          "widget": {
+            "name": "strength_model",
+            "config": [
+              "FLOAT",
+              {
+                "default": 1,
+                "min": -100,
+                "max": 100,
+                "step": 0.01
+              }
+            ]
+          }
+        }
+      ],
+      "properties": {},
+      "widgets_values": [
+        0
+      ]
+    },
+    {
+      "id": 8,
+      "type": "LoraLoaderModelOnly",
+      "pos": [
+        440,
+        930
+      ],
+      "size": [
+        400,
+        260
+      ],
+      "flags": {},
+      "order": 7,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "model",
+          "type": "MODEL",
+          "link": 4
+        }
+      ],
+      "outputs": [
+        {
+          "name": "MODEL",
+          "type": "MODEL",
+          "links": [
+            5
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "LoraLoaderModelOnly",
+        "promptstudio_asset": "moss_control"
+      },
+      "widgets_values": [
+        "MOSS-Required/moss_image_color_depth_control.safetensors",
+        1
+      ],
+      "widgets_values_named": {
+        "lora_name": "MOSS-Required/moss_image_color_depth_control.safetensors",
+        "strength_model": 1
+      },
+      "title": "Required color/depth adapter"
+    },
+    {
+      "id": 9,
+      "type": "ModelSamplingAuraFlow",
+      "pos": [
+        880,
+        0
+      ],
+      "size": [
+        400,
+        260
+      ],
+      "flags": {},
+      "order": 8,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "model",
+          "type": "MODEL",
+          "link": 5
+        },
+        {
+          "name": "shift",
+          "type": "FLOAT",
+          "link": 6,
+          "widget": {
+            "name": "shift"
+          }
+        }
+      ],
+      "outputs": [
+        {
+          "name": "MODEL",
+          "type": "MODEL",
+          "links": [
+            7
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "ModelSamplingAuraFlow"
+      },
+      "widgets_values": [
+        5,
+        "flow"
+      ],
+      "widgets_values_named": {
+        "shift": 5,
+        "sampling": "flow"
+      }
+    },
+    {
+      "id": 10,
+      "type": "PromptStudioInput",
+      "title": "Flow shift",
+      "pos": [
+        880,
+        275
+      ],
+      "size": [
+        320,
+        80
+      ],
+      "flags": {},
+      "order": 9,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "FLOAT",
+          "type": "FLOAT",
+          "links": [
+            6
+          ],
+          "widget": {
+            "name": "shift",
+            "config": [
+              "FLOAT",
+              {
+                "default": 1.73,
+                "min": 0,
+                "max": 100,
+                "step": 0.01
+              }
+            ]
+          }
+        }
+      ],
+      "properties": {},
+      "widgets_values": [
+        5
+      ]
+    },
+    {
+      "id": 11,
+      "type": "SkipLayerGuidanceDiTSimple",
+      "pos": [
+        880,
+        620
+      ],
+      "size": [
+        400,
+        260
+      ],
+      "flags": {},
+      "order": 10,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "model",
+          "type": "MODEL",
+          "link": 7
+        }
+      ],
+      "outputs": [
+        {
+          "name": "MODEL",
+          "type": "MODEL",
+          "links": [
+            31
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "SkipLayerGuidanceDiTSimple"
+      },
+      "widgets_values": [
+        "",
+        "22",
+        0,
+        1
+      ],
+      "widgets_values_named": {
+        "double_layers": "",
+        "single_layers": "22",
+        "start_percent": 0,
+        "end_percent": 1
+      }
+    },
+    {
+      "id": 12,
+      "type": "CreateBoundingBoxes",
+      "pos": [
+        880,
+        930
+      ],
+      "size": [
+        400,
+        260
+      ],
+      "flags": {},
+      "order": 11,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "background",
+          "type": "IMAGE",
+          "link": null
+        },
+        {
+          "name": "bboxes",
+          "type": "BOUNDING_BOX,ARRAY,STRING",
+          "link": null
+        },
+        {
+          "name": "width",
+          "type": "INT",
+          "link": 10,
+          "widget": {
+            "name": "width"
+          }
+        },
+        {
+          "name": "height",
+          "type": "INT",
+          "link": 11,
+          "widget": {
+            "name": "height"
+          }
+        }
+      ],
+      "outputs": [
+        {
+          "name": "preview",
+          "type": "IMAGE",
+          "links": []
+        },
+        {
+          "name": "bboxes",
+          "type": "BOUNDING_BOX",
+          "links": []
+        },
+        {
+          "name": "elements",
+          "type": "ARRAY",
+          "links": [
+            9
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "CreateBoundingBoxes"
+      },
+      "widgets_values": [
+        1024,
+        1024,
+        [],
+        []
+      ],
+      "widgets_values_named": {
+        "width": 1024,
+        "height": 1024,
+        "editor_state": [],
+        "last_incoming": []
+      }
+    },
+    {
+      "id": 13,
+      "type": "MOSSImageLayoutPrompt",
+      "pos": [
+        1320,
+        0
+      ],
+      "size": [
+        400,
+        260
+      ],
+      "flags": {},
+      "order": 12,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "element",
+          "type": "ARRAY",
+          "link": 9
+        },
+        {
+          "name": "prompt",
+          "type": "STRING",
+          "link": 8,
+          "widget": {
+            "name": "prompt"
+          }
+        },
+        {
+          "name": "width",
+          "type": "INT",
+          "link": 12,
+          "widget": {
+            "name": "width"
+          }
+        },
+        {
+          "name": "height",
+          "type": "INT",
+          "link": 13,
+          "widget": {
+            "name": "height"
+          }
+        }
+      ],
+      "outputs": [
+        {
+          "name": "prompt",
+          "type": "STRING",
+          "links": [
+            14
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "MOSSImageLayoutPrompt"
+      },
+      "widgets_values": [
+        "",
+        1024,
+        1024,
+        ""
+      ],
+      "widgets_values_named": {
+        "prompt": "",
+        "width": 1024,
+        "height": 1024,
+        "character_boxes": ""
+      }
+    },
+    {
+      "id": 14,
+      "type": "CLIPTextEncode",
+      "pos": [
+        1320,
+        310
+      ],
+      "size": [
+        400,
+        260
+      ],
+      "flags": {},
+      "order": 13,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "clip",
+          "type": "CLIP",
+          "link": 15
+        },
+        {
+          "name": "text",
+          "type": "STRING",
+          "link": 14,
+          "widget": {
+            "name": "text"
+          }
+        }
+      ],
+      "outputs": [
+        {
+          "name": "CONDITIONING",
+          "type": "CONDITIONING",
+          "links": [
+            19
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "CLIPTextEncode"
+      },
+      "widgets_values": [
+        ""
+      ],
+      "widgets_values_named": {
+        "text": ""
+      }
+    },
+    {
+      "id": 15,
+      "type": "CLIPTextEncode",
+      "pos": [
+        1320,
+        620
+      ],
+      "size": [
+        400,
+        260
+      ],
+      "flags": {},
+      "order": 14,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "clip",
+          "type": "CLIP",
+          "link": 16
+        }
+      ],
+      "outputs": [
+        {
+          "name": "CONDITIONING",
+          "type": "CONDITIONING",
+          "links": [
+            20
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "CLIPTextEncode"
+      },
+      "widgets_values": [
+        ""
+      ],
+      "widgets_values_named": {
+        "text": ""
+      }
+    },
+    {
+      "id": 16,
+      "type": "EmptyFlux2LatentImage",
+      "pos": [
+        1320,
+        930
+      ],
+      "size": [
+        400,
+        260
+      ],
+      "flags": {},
+      "order": 15,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "width",
+          "type": "INT",
+          "link": 17,
+          "widget": {
+            "name": "width"
+          }
+        },
+        {
+          "name": "height",
+          "type": "INT",
+          "link": 18,
+          "widget": {
+            "name": "height"
+          }
+        }
+      ],
+      "outputs": [
+        {
+          "name": "LATENT",
+          "type": "LATENT",
+          "links": [
+            34
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "EmptyFlux2LatentImage"
+      },
+      "widgets_values": [
+        1024,
+        1024,
+        1
+      ],
+      "widgets_values_named": {
+        "width": 1024,
+        "height": 1024,
+        "batch_size": 1
+      }
+    },
+    {
+      "id": 17,
+      "type": "MOSSImageControl",
+      "pos": [
+        1760,
+        0
+      ],
+      "size": [
+        400,
+        260
+      ],
+      "flags": {},
+      "order": 16,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "positive",
+          "type": "CONDITIONING",
+          "link": 19
+        },
+        {
+          "name": "negative",
+          "type": "CONDITIONING",
+          "link": 20
+        },
+        {
+          "name": "vae",
+          "type": "VAE",
+          "link": 21
+        },
+        {
+          "name": "color_map",
+          "type": "IMAGE",
+          "link": 24
+        },
+        {
+          "name": "depth_map",
+          "type": "IMAGE",
+          "link": 27
+        },
+        {
+          "name": "strength",
+          "type": "FLOAT",
+          "link": 28,
+          "widget": {
+            "name": "strength"
+          }
+        },
+        {
+          "name": "start_percent",
+          "type": "FLOAT",
+          "link": 29,
+          "widget": {
+            "name": "start_percent"
+          }
+        },
+        {
+          "name": "end_percent",
+          "type": "FLOAT",
+          "link": 30,
+          "widget": {
+            "name": "end_percent"
+          }
+        }
+      ],
+      "outputs": [
+        {
+          "name": "positive",
+          "type": "CONDITIONING",
+          "links": [
+            32
+          ]
+        },
+        {
+          "name": "negative",
+          "type": "CONDITIONING",
+          "links": [
+            33
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "MOSSImageControl"
+      },
+      "widgets_values": [
+        1,
+        0,
+        0.5
+      ],
+      "widgets_values_named": {
+        "strength": 1,
+        "start_percent": 0,
+        "end_percent": 0.5
+      }
+    },
+    {
+      "id": 18,
+      "type": "PS_StructureInput",
+      "pos": [
+        1760,
+        310
+      ],
+      "size": [
+        400,
+        260
+      ],
+      "flags": {},
+      "order": 17,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "source",
+          "type": "IMAGE",
+          "link": null
+        },
+        {
+          "name": "edit_mask",
+          "type": "MASK",
+          "link": null
+        },
+        {
+          "name": "width",
+          "type": "INT",
+          "link": 22,
+          "widget": {
+            "name": "width"
+          }
+        },
+        {
+          "name": "height",
+          "type": "INT",
+          "link": 23,
+          "widget": {
+            "name": "height"
+          }
+        }
+      ],
+      "outputs": [
+        {
+          "name": "guide",
+          "type": "IMAGE",
+          "links": [
+            24
+          ]
+        },
+        {
+          "name": "strength",
+          "type": "FLOAT",
+          "links": []
+        },
+        {
+          "name": "inpaint_image",
+          "type": "IMAGE",
+          "links": []
+        },
+        {
+          "name": "inpaint_mask",
+          "type": "MASK",
+          "links": []
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "PS_StructureInput",
+        "promptstudio_required_inputs": [
+          "control_key",
+          "guide_types"
+        ]
+      },
+      "widgets_values": [
+        1024,
+        1024,
+        "",
+        true,
+        "color",
+        "color"
+      ],
+      "widgets_values_named": {
+        "width": 1024,
+        "height": 1024,
+        "reference_json": "",
+        "preserve_background": true,
+        "control_key": "color",
+        "guide_types": "color"
+      },
+      "title": "color map"
+    },
+    {
+      "id": 19,
+      "type": "PS_StructureInput",
+      "pos": [
+        1760,
+        620
+      ],
+      "size": [
+        400,
+        260
+      ],
+      "flags": {},
+      "order": 18,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "source",
+          "type": "IMAGE",
+          "link": null
+        },
+        {
+          "name": "edit_mask",
+          "type": "MASK",
+          "link": null
+        },
+        {
+          "name": "width",
+          "type": "INT",
+          "link": 25,
+          "widget": {
+            "name": "width"
+          }
+        },
+        {
+          "name": "height",
+          "type": "INT",
+          "link": 26,
+          "widget": {
+            "name": "height"
+          }
+        }
+      ],
+      "outputs": [
+        {
+          "name": "guide",
+          "type": "IMAGE",
+          "links": [
+            27
+          ]
+        },
+        {
+          "name": "strength",
+          "type": "FLOAT",
+          "links": []
+        },
+        {
+          "name": "inpaint_image",
+          "type": "IMAGE",
+          "links": []
+        },
+        {
+          "name": "inpaint_mask",
+          "type": "MASK",
+          "links": []
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "PS_StructureInput",
+        "promptstudio_required_inputs": [
+          "control_key",
+          "guide_types"
+        ]
+      },
+      "widgets_values": [
+        1024,
+        1024,
+        "",
+        true,
+        "depth",
+        "depth"
+      ],
+      "widgets_values_named": {
+        "width": 1024,
+        "height": 1024,
+        "reference_json": "",
+        "preserve_background": true,
+        "control_key": "depth",
+        "guide_types": "depth"
+      },
+      "title": "depth map"
+    },
+    {
+      "id": 20,
+      "type": "PromptStudioInput",
+      "title": "Map strength",
+      "pos": [
+        1760,
+        275
+      ],
+      "size": [
+        320,
+        80
+      ],
+      "flags": {},
+      "order": 19,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "FLOAT",
+          "type": "FLOAT",
+          "links": [
+            28
+          ],
+          "widget": {
+            "name": "strength",
+            "config": [
+              "FLOAT",
+              {
+                "tooltip": "Scales the maps' contribution to the image tokens. 0.0 is the same as no maps, 1.0 is the trained strength.",
+                "default": 1,
+                "min": 0,
+                "max": 10,
+                "step": 0.01
+              }
+            ]
+          }
+        }
+      ],
+      "properties": {},
+      "widgets_values": [
+        1
+      ]
+    },
+    {
+      "id": 21,
+      "type": "PromptStudioInput",
+      "title": "Control start",
+      "pos": [
+        1760,
+        275
+      ],
+      "size": [
+        320,
+        80
+      ],
+      "flags": {},
+      "order": 20,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "FLOAT",
+          "type": "FLOAT",
+          "links": [
+            29
+          ],
+          "widget": {
+            "name": "start_percent",
+            "config": [
+              "FLOAT",
+              {
+                "tooltip": "Sampling percent at which the control starts.",
+                "default": 0,
+                "min": 0,
+                "max": 1,
+                "step": 0.001
+              }
+            ]
+          }
+        }
+      ],
+      "properties": {},
+      "widgets_values": [
+        0
+      ]
+    },
+    {
+      "id": 22,
+      "type": "PromptStudioInput",
+      "title": "Control end (0.5 synthetic; 1 photo)",
+      "pos": [
+        1760,
+        275
+      ],
+      "size": [
+        320,
+        80
+      ],
+      "flags": {},
+      "order": 21,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "FLOAT",
+          "type": "FLOAT",
+          "links": [
+            30
+          ],
+          "widget": {
+            "name": "end_percent",
+            "config": [
+              "FLOAT",
+              {
+                "tooltip": "Sampling percent at which the control ends. Ending early keeps the layout and depth while the rest of the steps loosen the shapes.",
+                "default": 1,
+                "min": 0,
+                "max": 1,
+                "step": 0.001
+              }
+            ]
+          }
+        }
+      ],
+      "properties": {},
+      "widgets_values": [
+        0.5
+      ]
+    },
+    {
+      "id": 23,
+      "type": "KCPP_PromptStudioSampler",
+      "pos": [
+        2200,
+        620
+      ],
+      "size": [
+        400,
+        260
+      ],
+      "flags": {},
+      "order": 22,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "model",
+          "type": "MODEL",
+          "link": 31
+        },
+        {
+          "name": "positive",
+          "type": "CONDITIONING",
+          "link": 32
+        },
+        {
+          "name": "negative",
+          "type": "CONDITIONING",
+          "link": 33
+        },
+        {
+          "name": "latent_image",
+          "type": "LATENT",
+          "link": 34
+        }
+      ],
+      "outputs": [
+        {
+          "name": "samples",
+          "type": "LATENT",
+          "links": [
+            35
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "KCPP_PromptStudioSampler"
+      },
+      "widgets_values": [
+        0,
+        "fixed",
+        50,
+        3,
+        "euler",
+        "sgm_uniform",
+        1
+      ],
+      "widgets_values_named": {
+        "seed": 0,
+        "steps": 50,
+        "cfg": 3,
+        "sampler_name": "euler",
+        "scheduler": "sgm_uniform",
+        "denoise": 1
+      }
+    },
+    {
+      "id": 24,
+      "type": "VAEDecode",
+      "pos": [
+        2200,
+        930
+      ],
+      "size": [
+        400,
+        260
+      ],
+      "flags": {},
+      "order": 23,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "samples",
+          "type": "LATENT",
+          "link": 35
+        },
+        {
+          "name": "vae",
+          "type": "VAE",
+          "link": 36
+        }
+      ],
+      "outputs": [
+        {
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "links": [
+            37
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "VAEDecode"
+      },
+      "widgets_values": [],
+      "widgets_values_named": {}
+    },
+    {
+      "id": 25,
+      "type": "Save_as_webp_cond",
+      "pos": [
+        2640,
+        0
+      ],
+      "size": [
+        400,
+        260
+      ],
+      "flags": {},
+      "order": 24,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "link": 37
+        }
+      ],
+      "outputs": [
+        {
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "links": []
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "Save_as_webp_cond"
+      },
+      "widgets_values": [
+        "PromptStudio/MOSS",
+        "lossless",
+        80,
+        "yes",
+        "png",
+        4,
+        false,
+        6,
+        false
+      ],
+      "widgets_values_named": {
+        "filename_prefix": "PromptStudio/MOSS",
+        "mode": "lossless",
+        "compression": 80,
+        "save": "yes",
+        "format": "png",
+        "png_compression": 4,
+        "png_optimize": false,
+        "webp_method": 6,
+        "force": false
+      }
+    },
+    {
+      "id": 99,
+      "type": "MarkdownNote",
+      "pos": [
+        0,
+        -350
+      ],
+      "size": [
+        800,
+        300
+      ],
+      "flags": {},
+      "order": 25,
+      "mode": 0,
+      "properties": {},
+      "widgets_values": [
+        "# MOSS SFT Controlled\nNative ComfyUI MOSS support required. Use a Qwen3.5 9B encoder and Flux2 VAE. Layout dimensions come from Prompt Slot. Edit layout/maps in Studio Additional Inputs.\nSFT: 50 steps, CFG 3, shift 5. Destripe is optional: 0 off; author starting values 1 at 768 and 1.5 at 1024.\nControl adapter stays loaded even with maps disabled. For an unpatched baseline select MOSS SFT Create. Both maps share strength and interval.\nUser LoRAs belong in the separate model-family folder; required recipe adapters are in MOSS-Required."
+      ]
+    }
+  ],
+  "links": [
+    [
+      1,
+      1,
+      0,
+      5,
+      0,
+      "MODEL"
+    ],
+    [
+      2,
+      5,
+      0,
+      6,
+      0,
+      "MODEL"
+    ],
+    [
+      3,
+      7,
+      0,
+      6,
+      1,
+      "FLOAT"
+    ],
+    [
+      4,
+      6,
+      0,
+      8,
+      0,
+      "MODEL"
+    ],
+    [
+      5,
+      8,
+      0,
+      9,
+      0,
+      "MODEL"
+    ],
+    [
+      6,
+      10,
+      0,
+      9,
+      1,
+      "FLOAT"
+    ],
+    [
+      7,
+      9,
+      0,
+      11,
+      0,
+      "MODEL"
+    ],
+    [
+      8,
+      4,
+      0,
+      13,
+      1,
+      "STRING"
+    ],
+    [
+      9,
+      12,
+      2,
+      13,
+      0,
+      "ARRAY"
+    ],
+    [
+      10,
+      4,
+      2,
+      12,
+      2,
+      "INT"
+    ],
+    [
+      11,
+      4,
+      3,
+      12,
+      3,
+      "INT"
+    ],
+    [
+      12,
+      4,
+      2,
+      13,
+      2,
+      "INT"
+    ],
+    [
+      13,
+      4,
+      3,
+      13,
+      3,
+      "INT"
+    ],
+    [
+      14,
+      13,
+      0,
+      14,
+      1,
+      "STRING"
+    ],
+    [
+      15,
+      2,
+      0,
+      14,
+      0,
+      "CLIP"
+    ],
+    [
+      16,
+      2,
+      0,
+      15,
+      0,
+      "CLIP"
+    ],
+    [
+      17,
+      4,
+      2,
+      16,
+      0,
+      "INT"
+    ],
+    [
+      18,
+      4,
+      3,
+      16,
+      1,
+      "INT"
+    ],
+    [
+      19,
+      14,
+      0,
+      17,
+      0,
+      "CONDITIONING"
+    ],
+    [
+      20,
+      15,
+      0,
+      17,
+      1,
+      "CONDITIONING"
+    ],
+    [
+      21,
+      3,
+      0,
+      17,
+      2,
+      "VAE"
+    ],
+    [
+      22,
+      4,
+      2,
+      18,
+      2,
+      "INT"
+    ],
+    [
+      23,
+      4,
+      3,
+      18,
+      3,
+      "INT"
+    ],
+    [
+      24,
+      18,
+      0,
+      17,
+      3,
+      "IMAGE"
+    ],
+    [
+      25,
+      4,
+      2,
+      19,
+      2,
+      "INT"
+    ],
+    [
+      26,
+      4,
+      3,
+      19,
+      3,
+      "INT"
+    ],
+    [
+      27,
+      19,
+      0,
+      17,
+      4,
+      "IMAGE"
+    ],
+    [
+      28,
+      20,
+      0,
+      17,
+      5,
+      "FLOAT"
+    ],
+    [
+      29,
+      21,
+      0,
+      17,
+      6,
+      "FLOAT"
+    ],
+    [
+      30,
+      22,
+      0,
+      17,
+      7,
+      "FLOAT"
+    ],
+    [
+      31,
+      11,
+      0,
+      23,
+      0,
+      "MODEL"
+    ],
+    [
+      32,
+      17,
+      0,
+      23,
+      1,
+      "CONDITIONING"
+    ],
+    [
+      33,
+      17,
+      1,
+      23,
+      2,
+      "CONDITIONING"
+    ],
+    [
+      34,
+      16,
+      0,
+      23,
+      3,
+      "LATENT"
+    ],
+    [
+      35,
+      23,
+      0,
+      24,
+      0,
+      "LATENT"
+    ],
+    [
+      36,
+      3,
+      0,
+      24,
+      1,
+      "VAE"
+    ],
+    [
+      37,
+      24,
+      0,
+      25,
+      0,
+      "IMAGE"
+    ]
+  ],
+  "groups": [],
+  "config": {},
+  "extra": {
+    "ds": {
+      "scale": 0.5,
+      "offset": [
+        80,
+        380
+      ]
+    },
+    "promptstudio_moss": {
+      "version": 1,
+      "recipe": "sft-control"
+    }
+  },
+  "version": 0.4
+}

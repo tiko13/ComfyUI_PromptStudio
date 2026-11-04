@@ -212,5 +212,157 @@
     "sha256": "30a534781061f34e83bb9406b4335da4ff2616c95d22a585c1245aa8363e74e0",
     "url": "https://huggingface.co/lllyasviel/Annotators/resolve/982e7edaec38759d914a963c48c4726685de7d96/sk_model2.pth?download=true",
     "source_url": "https://huggingface.co/lllyasviel/Annotators"
+  },
+  {
+    "id": "fibo2_dev_bf16",
+    "name": "FIBO 2 Dev BF16",
+    "category": "diffusion_models",
+    "relative_path": "Fibo2Dev/fibo2_dev_bf16.safetensors",
+    "aliases": [
+      "fibo2_dev_bf16.safetensors"
+    ],
+    "size": 16452934194,
+    "sha256": "2a09866ff073cae9114f5fd93c0f530f84d41f74dc06e3d0c1372587bb3e9984",
+    "url": "https://huggingface.co/Comfy-Org/Fibo-2.0/resolve/b2bffaf57d48825a6989b986f24d5cfb8c71231b/diffusion_models/fibo2_dev_bf16.safetensors?download=true",
+    "source_url": "https://huggingface.co/Comfy-Org/Fibo-2.0"
+  },
+  {
+    "id": "fibo2_edit_turbo_bf16",
+    "name": "FIBO 2 Edit Turbo BF16",
+    "category": "diffusion_models",
+    "relative_path": "Fibo2EditTurbo/fibo2_edit_turbo_bf16.safetensors",
+    "aliases": [
+      "fibo2_edit_turbo_bf16.safetensors"
+    ],
+    "size": 16452934194,
+    "sha256": "028f6cf13af75840d7cc7346a5784fe55887c6b9299d173c8271161ba5ccf7d0",
+    "url": "https://huggingface.co/Comfy-Org/Fibo-2.0/resolve/b2bffaf57d48825a6989b986f24d5cfb8c71231b/diffusion_models/fibo2_edit_turbo_bf16.safetensors?download=true",
+    "source_url": "https://huggingface.co/Comfy-Org/Fibo-2.0"
+  },
+  {
+    "id": "flux2_vae",
+    "name": "Flux2 VAE",
+    "category": "vae",
+    "relative_path": "flux2-vae.safetensors",
+    "aliases": [],
+    "size": 336211292,
+    "sha256": "868fe7b343cc8f3a19dbcfcafbc3d5f888802be3f89bd81b65b3621a066ce8f3",
+    "url": "https://huggingface.co/Comfy-Org/Fibo-2.0/resolve/b2bffaf57d48825a6989b986f24d5cfb8c71231b/vae/flux2-vae.safetensors?download=true",
+    "source_url": "https://huggingface.co/Comfy-Org/Fibo-2.0"
+  },
+  {
+    "id": "moss_sft_bf16",
+    "name": "MOSS Image SFT BF16",
+    "category": "diffusion_models",
+    "relative_path": "MOSS-SFT/moss_image_sft_bf16.safetensors",
+    "aliases": [
+      "moss_image_sft_bf16.safetensors"
+    ],
+    "size": 10164655808,
+    "sha256": "f96738d8116d78b7316b57c663d8c98591ddafab7488f48e3099b7655e34ab6f",
+    "url": "https://huggingface.co/Comfy-Org/MOSS-Image/resolve/24147db865fcdc207270f844777587223fed8d6e/diffusion_models/moss_image_sft_bf16.safetensors?download=true",
+    "source_url": "https://huggingface.co/Comfy-Org/MOSS-Image"
+  },
+  {
+    "id": "kromoss_bf16",
+    "name": "Kromoss BF16",
+    "category": "diffusion_models",
+    "relative_path": "Kromoss/kromoss_bf16.safetensors",
+    "aliases": [
+      "kromoss_bf16.safetensors"
+    ],
+    "size": 10164655808,
+    "sha256": "54c863b9392f7b6a02f557d32a416b22765b4ffbee322ade9945e379f09adaba",
+    "url": "https://huggingface.co/lodestones/Kromoss/resolve/a4fe97449297af2e3be7841e1c18e431f3b06031/diffusion_models/kromoss_bf16.safetensors?download=true",
+    "source_url": "https://huggingface.co/lodestones/Kromoss"
+  },
+  {
+    "id": "moss_encoder_bf16",
+    "name": "Qwen3.5 9B BF16 encoder",
+    "category": "text_encoders",
+    "relative_path": "qwen3.5_9b_bf16.safetensors",
+    "aliases": [
+      "qwen3.5_9b_bf16.safetensors"
+    ],
+    "size": 19306312328,
+    "sha256": "7e6e9f08d598f829cb940e60ac0c698e1f1c27a47daffd7e598cd78c78b4cc53",
+    "url": "https://huggingface.co/Comfy-Org/MOSS-Image/resolve/24147db865fcdc207270f844777587223fed8d6e/text_encoders/qwen3.5_9b_bf16.safetensors?download=true",
+    "source_url": "https://huggingface.co/Comfy-Org/MOSS-Image"
+  },
+  {
+    "id": "moss_control",
+    "name": "MOSS color/depth control",
+    "category": "loras",
+    "relative_path": "MOSS-Required/moss_image_color_depth_control.safetensors",
+    "aliases": [
+      "moss_image_color_depth_control.safetensors"
+    ],
+    "size": 313063368,
+    "sha256": "e5c0c3efd05e4269207a39de6005798f14c90c6687c89c54eaffe4b76c43a763",
+    "url": "https://huggingface.co/Comfy-Org/MOSS-Image/resolve/24147db865fcdc207270f844777587223fed8d6e/loras/moss_image_color_depth_control.safetensors?download=true",
+    "source_url": "https://huggingface.co/Comfy-Org/MOSS-Image"
+  },
+  {
+    "id": "moss_destripe",
+    "name": "MOSS SFT Destripe",
+    "category": "loras",
+    "relative_path": "MOSS-Required/moss_sft_destripe_top64_bf16.safetensors",
+    "aliases": [
+      "moss_sft_destripe_top64_bf16.safetensors"
+    ],
+    "size": 1900586,
+    "sha256": "fcd0d025f6a62dfe3171ab11fe9b3119eac735e22b94913c4efe45d8c69c2da9",
+    "url": "https://huggingface.co/nynxz/MOSS-Image/resolve/138539ab15d94841c2736503953c4f7c45ae7dbc/loras/moss_sft_destripe_top64_bf16.safetensors?download=true",
+    "source_url": "https://huggingface.co/nynxz/MOSS-Image"
+  },
+  {
+    "id": "kromoss_dmd2",
+    "name": "Kromoss 8-step DMD2",
+    "category": "loras",
+    "relative_path": "MOSS-Required/8-steps-dmd2-lora.safetensors",
+    "aliases": [
+      "8-steps-dmd2-lora.safetensors"
+    ],
+    "size": 1189176800,
+    "sha256": "7683fe1fb51f73f5d690f24dd6b7f46f31ab9a9873729a854ac5c9a420ffe6f2",
+    "url": "https://huggingface.co/lodestones/Kromoss/resolve/a4fe97449297af2e3be7841e1c18e431f3b06031/8-steps-dmd2-lora.safetensors?download=true",
+    "source_url": "https://huggingface.co/lodestones/Kromoss"
+  },
+  {
+    "id": "flux2_vae_diffusers",
+    "name": "Flux2 VAE (official Diffusers serialization)",
+    "category": "vae",
+    "relative_path": "flux2-vae.safetensors",
+    "aliases": [],
+    "size": 336213556,
+    "sha256": "d64f3a68e1cc4f9f4e29b6e0da38a0204fe9a49f2d4053f0ec1fa1ca02f9c4b5",
+    "url": "https://huggingface.co/Comfy-Org/flux2-dev/resolve/be27b9cf1b7212b3a281c2abbd9ecf6985242bb8/split_files/vae/flux2-vae.safetensors?download=true",
+    "source_url": "https://huggingface.co/Comfy-Org/flux2-dev"
+  },
+  {
+    "id": "kromoss_dmd",
+    "name": "MOSS 8-step DMD (older adapter)",
+    "category": "loras",
+    "relative_path": "MOSS-Required/8-steps-dmd-lora.safetensors",
+    "aliases": [
+      "8-steps-dmd-lora.safetensors"
+    ],
+    "size": 1189176800,
+    "sha256": "f0e6cd07f222dfaea798afe3b796e2c2995cadfd44ad56e02ca616f0467aec28",
+    "url": "https://huggingface.co/lodestones/Kromoss/resolve/a4fe97449297af2e3be7841e1c18e431f3b06031/8-steps-dmd-lora.safetensors?download=true",
+    "source_url": "https://huggingface.co/lodestones/Kromoss"
+  },
+  {
+    "id": "moss_snapshot",
+    "name": "MOSS Smartphone Snapshot Photo Reality v14",
+    "category": "loras",
+    "relative_path": "MOSS-Required/moss_smartphone_snapshot_v14.safetensors",
+    "aliases": [
+      "MOSS-Image-Base_LoRa_by-AI_Characters_STYLE_SmartphoneSnapshotPhotoReality_v14_TRIGGER$photo$.safetensors"
+    ],
+    "size": 39755064,
+    "sha256": "e7442190461c6b96b5e0f45ae41c432adc57ac1a6c84590338afc310935dad9c",
+    "url": "https://civitai.com/api/download/models/3417017?fileId=3310231",
+    "source_url": "https://civitai.com/models/3010926?modelVersionId=3417017"
   }
 ]

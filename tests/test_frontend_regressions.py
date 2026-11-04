@@ -9,6 +9,7 @@ class FrontendRegressionTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.source = (REPO_ROOT / "web" / "js" / "prompt_studio.js").read_text(encoding="utf-8")
+        cls.text_highlights = (REPO_ROOT / "web/js/prompt-studio/ui/text-highlights.js").read_text(encoding="utf-8")
         cls.focus_controller = (REPO_ROOT / "web/js/prompt-studio/ui/focus-controller.js").read_text(encoding="utf-8")
         cls.progress_controller = (REPO_ROOT / "web/js/prompt-studio/ui/generation-progress-controller.js").read_text(encoding="utf-8")
         cls.shell = (
@@ -434,7 +435,7 @@ class FrontendRegressionTests(unittest.TestCase):
         remembered = self.function_source("applyRememberedLlmConnection", "saveSettings")
         applied = self.function_source("applyStudioSettings", "syncActiveChatSettings")
 
-        self.assertIn('localStorage.getItem(STORAGE_KEY)', remembered)
+        self.assertIn('readJsonSetting(STORAGE_KEY)', remembered)
         self.assertIn('Object.hasOwn(remembered, "llm_provider")', remembered)
         self.assertIn("normalizeLlmProvider(remembered.llm_provider)", remembered)
         self.assertIn("kobold_url:", remembered)
@@ -621,14 +622,15 @@ class FrontendRegressionTests(unittest.TestCase):
         self.assertIn("state.config?.known_reference_names", ranges)
         self.assertIn("right.end - right.start", ranges)
         self.assertIn("candidate.start < range.end", ranges)
-        self.assertIn('document.createElement("mark")', render)
-        self.assertIn("editor.scrollLeft", render)
-        self.assertIn("editor.scrollTop", render)
+        self.assertIn("renderTextHighlights({ editor, layer, content, ranges:", render)
+        self.assertIn("doc.createElement('mark')", self.text_highlights)
+        self.assertIn("editor.scrollLeft", self.text_highlights)
+        self.assertIn("editor.scrollTop", self.text_highlights)
         self.assertIn("renderKnownReferenceHighlights();", update)
         self.assertIn('class="promptstudio-main-prompt-editor"', self.source)
-        self.assertIn('addEventListener("scroll", renderKnownReferenceHighlights)', self.source)
+        self.assertIn('addEventListener("scroll", refreshPromptHighlights)', self.source)
         self.assertIn('if ("ResizeObserver" in window)', self.source)
-        self.assertIn("new ResizeObserver(renderKnownReferenceHighlights)", self.source)
+        self.assertIn("new ResizeObserver(refreshPromptHighlights)", self.source)
         self.assertIn(".promptstudio-main-prompt-highlights mark", self.styles)
         self.assertIn("color: #b9a8ff", self.styles)
 
@@ -644,22 +646,23 @@ class FrontendRegressionTests(unittest.TestCase):
 
         self.assertIn("state.config?.additional_instruction_template_names", ranges)
         self.assertIn('new RegExp(`^${escaped}$`, "iu")', ranges)
-        self.assertIn('document.createElement("mark")', render)
-        self.assertIn("editor.scrollLeft", render)
-        self.assertIn("editor.scrollTop", render)
+        self.assertIn("renderTextHighlights({ editor, layer, content, ranges:", render)
+        self.assertIn("doc.createElement('mark')", self.text_highlights)
+        self.assertIn("editor.scrollLeft", self.text_highlights)
+        self.assertIn("editor.scrollTop", self.text_highlights)
         self.assertIn(
             'class="promptstudio-main-prompt-editor promptstudio-additional-instructions-editor"',
             self.source,
         )
         self.assertIn(
-            'addEventListener("input", renderAdditionalInstructionTemplateHighlights)',
+            'addEventListener("input", refreshInstructionHighlights)',
             self.source,
         )
         self.assertIn(
-            'addEventListener("scroll", renderAdditionalInstructionTemplateHighlights)',
+            'addEventListener("scroll", refreshInstructionHighlights)',
             self.source,
         )
-        self.assertIn("new ResizeObserver(renderAdditionalInstructionTemplateHighlights)", self.source)
+        self.assertIn("new ResizeObserver(refreshInstructionHighlights)", self.source)
         self.assertIn(".promptstudio-additional-instructions-editor[data-has-highlights]", self.styles)
 
     def test_prompt_agent_failure_does_not_leave_iteration_generating(self):
@@ -693,7 +696,7 @@ class FrontendRegressionTests(unittest.TestCase):
         self.assertIn("chatPageUrl({ includeActive: true })", self.chat_store)
         self.assertIn("cursor: state.chatPageCursor", loader)
         self.assertIn("state.chatPageLoading", loader)
-        self.assertIn("partial: true", writer)
+        self.assertIn("backgroundData('chat-store'", writer)
         self.assertIn("deletedChatIds", writer)
         self.assertIn('chatList.addEventListener("scroll"', build)
         self.assertIn("if (remaining <= 160) loadOlderChats();", build)

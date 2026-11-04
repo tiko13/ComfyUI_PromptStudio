@@ -15,11 +15,11 @@
     },
     {
       "name": "Candid Unaware",
-      "instruction": "Frame the scene as if the subject is not posing and is unaware of being photographed. Choose one of the following: 1. Subject might be doing an activity normal to the prompt environment; do not use 'normal activity', invent an activity that is natural for the environment subject is in 2. Subject is moving somewhere 3. Subject is captured in a random moment in time. - Prefer natural body language and an off-center composition. Subject does not look at the camera. This framing changes only pose, viewpoint, and composition; do not add props, events, extra subjects, landmarks, or new actions."
+      "instruction": "Frame the scene as if the subject is not posing and is unaware of being photographed. Choose one of the following: 1. Subject might be doing an activity normal to the prompt environment; do not use 'normal activity', invent an activity that is natural for the environment subject is in 2. Subject is moving somewhere 3. Subject is captured in a random moment in time. - Prefer natural body language and an off-center composition. Subject does not look at the camera. This framing changes only pose, viewpoint, and composition; do not add props, events, extra subjects, landmarks, or new actions. Avoid environment or furniture damage or wear unless requested."
     },
     {
       "name": "Close-Up Portrait",
-      "instruction": "Frame the subject as a close-up of the face, expression, and nearby details. Ignore things that are not visible from this angle, such as clothes on lower body etc"
+      "instruction": "Frame the subject as a close-up of the face and expression only. Ignore things that are not visible from this angle, such as clothes that should not be visible etc"
     },
     {
       "name": "Medium Shot",
