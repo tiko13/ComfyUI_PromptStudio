@@ -1,4 +1,5 @@
 import { installDialogFocus } from '../ui/dialog-focus.js';
+import { storageSnapshot } from '../core/storage-snapshot.js';
 
 // Durable intent only: recovering a record never executes a queue request.
 const MAX_DRAFT_BYTES = 32 * 1024 * 1024;
@@ -38,7 +39,7 @@ export function draftTabKey(product, storage) {
   } catch (_) { return `${product}:storage-unavailable`; }
 }
 
-export function createDraftOutbox({database='promptstudio-draft-outbox-v1', indexedDB=globalThis.indexedDB, worker=true} = {}) {
+export function createDraftOutbox({database='promptstudio-draft-outbox-v1', indexedDB=globalThis.indexedDB, worker=true, ownsRecords=false} = {}) {
   // Size checks/encoding and IndexedDB transactions run outside the UI thread.
   // Injected storage implementations and browsers without workers use the same
   // transaction implementation below, including its explicit failure reporting.
@@ -84,8 +85,60 @@ export function createDraftOutbox({database='promptstudio-draft-outbox-v1', inde
         }
         catch (error) { pending.delete(id); reject(error); }
       });
-      return Object.fromEntries(['put', 'putReceipt', 'get', 'list', 'acknowledge', 'remove', 'close']
+      const methods = Object.fromEntries(['put', 'putReceipt', 'get', 'list', 'acknowledge', 'remove', 'close']
         .map(method => [method, (...args) => call(method, args)]));
+      // Slow IndexedDB writes must not accumulate unlimited cloned archives in
+      // the worker's message queue. Keep only the latest pending checkpoint per
+      // tab; all callers settle after that newer checkpoint is durable.
+      const active = new Map(), queued = new Map();
+      const send = (key, entry) => {
+        active.set(key, (active.get(key) || 0) + 1);
+        call('putReceipt', [key, entry.record]).then(
+          result => entry.waiters.forEach(waiter => waiter.resolve(result)),
+          error => entry.waiters.forEach(waiter => waiter.reject(error)),
+        ).finally(() => {
+          const remaining = active.get(key) - 1;
+          if (remaining) { active.set(key, remaining); return; }
+          active.delete(key);
+          const next = queued.get(key);
+          if (next) { queued.delete(key); send(key, next); }
+        });
+      };
+      const flush = () => {
+        for (const [key, entry] of queued) { queued.delete(key); send(key, entry); }
+      };
+      let exiting = false;
+      const onPageHide = () => { exiting = true; flush(); };
+      const onPageShow = () => { exiting = false; };
+      globalThis.addEventListener?.('pagehide', onPageHide);
+      globalThis.addEventListener?.('pageshow', onPageShow);
+      const result = {
+        ...methods,
+        putReceipt(key, record) {
+          return new Promise((resolve, reject) => {
+            if (exiting || !active.has(key)) { send(key, {record, waiters:[{resolve, reject}]}); return; }
+            const entry = queued.get(key) || {waiters:[]};
+            // Preserve call-time metadata, sharing only immutable saved graphs.
+            entry.record = storageSnapshot(record);
+            entry.waiters.push({resolve, reject});
+            queued.set(key, entry);
+          });
+        },
+      };
+      // Reads, acknowledgements, and explicit puts are ordering barriers.
+      for (const method of ['put', 'get', 'list', 'acknowledge', 'remove', 'close']) {
+        result[method] = (...args) => {
+          flush();
+          const operation = methods[method](...args);
+          if (method === 'close') return operation.finally(() => {
+            globalThis.removeEventListener?.('pagehide', onPageHide);
+            globalThis.removeEventListener?.('pageshow', onPageShow);
+            client.terminate();
+          });
+          return operation;
+        };
+      }
+      return result;
     }
   }
   let opening;
@@ -113,13 +166,16 @@ export function createDraftOutbox({database='promptstudio-draft-outbox-v1', inde
       return { mutation: saved.mutation, chatCount: saved.chats?.length || 0 };
     },
     async put(key,record) {
-      const draft={...structuredClone(record),key,version:1,saved_at:Date.now()};
+      // Worker messages already own their structured clone. Filter unchanged
+      // records before taking a copy in the no-worker fallback too.
+      let draft={...record,key,version:1,saved_at:Date.now()};
       if (draft.chatBaseline) {
         const baseline = draft.chatBaseline;
         draft.chats = draft.chats.filter(chat => baseline[chat.id] !== JSON.stringify(chat));
         draft.baseChats = draft.chats.map(chat => baseline[chat.id]).filter(Boolean).map(text => JSON.parse(text));
         delete draft.chatBaseline;
       }
+      if (!ownsRecords) draft = structuredClone(draft);
       if (new TextEncoder().encode(JSON.stringify(draft)).length>MAX_DRAFT_BYTES) throw new Error('Draft exceeds Prompt Studio’s 32 MiB recovery-copy limit. Server saving may still succeed. Export unsaved changes before closing.');
       return transaction('readwrite',(store,done)=>{ store.put(draft); done(draft); });
     },

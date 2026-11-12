@@ -1,4 +1,5 @@
 import { normalizeSpatialStore } from "../generation/spatial-inputs.js";
+import { normalizeChoiceStages } from "../generation/intermediate-choice.js";
 import { normalizeReferenceGrounding, normalizeReferenceClarification } from "../generation/reference-grounding.js";
 import { normalizeWorkflowReferences, normalizeReferenceState } from "../generation/reference-inputs.js";
 import { normalizeQwenReferences } from "../generation/qwen-references.js";
@@ -421,6 +422,7 @@ function normalizeChat(chat) {
         text: String(message?.text || ""),
         label: String(message?.label || ""),
         images: Array.isArray(message?.images) ? message.images.map(normalizeImageReference).filter(Boolean) : [],
+        ...(Array.isArray(message?.choiceStages) ? {choiceStages: normalizeChoiceStages(message.choiceStages)} : {}),
         mainPrompt: String(message?.mainPrompt || message?.canonicalPrompt || ""),
         intentProvenance: normalizeIntentProvenance(message?.intentProvenance),
         canonicalPrompt: String(message?.canonicalPrompt || ""),

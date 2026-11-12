@@ -62,8 +62,8 @@ def install_runtime_stubs(storage_root):
             self.cookies[name] = {"value": "", "deleted": True, **kwargs}
 
     class FakeFileResponse(FakeResponse):
-        def __init__(self, path):
-            super().__init__()
+        def __init__(self, path, **kwargs):
+            super().__init__(**kwargs)
             self.path = path
 
     aiohttp = types.ModuleType("aiohttp")
@@ -1118,6 +1118,8 @@ class RegressionTests(unittest.TestCase):
         self.assertIsNone(self.routes._llm_handoff_error(payload))
 
     def test_random_seed_invalidates_llm_nodes(self):
+        # This seed-only contract must not depend on the user's vocabulary file.
+        self.enterContext(mock.patch.object(self.nodes._forbidden_words, "load_rules", return_value=[]))
         self.assertTrue(math.isnan(self.nodes.KCPP_PromptAmplify.IS_CHANGED(sampler_seed=-1)))
         self.assertTrue(math.isnan(self.nodes.KCPP_Apply.IS_CHANGED(sampler_seed=-1)))
         self.assertTrue(math.isnan(self.nodes.KCPP_Ideogram4.IS_CHANGED(sampler_seed=-1)))
@@ -1394,7 +1396,11 @@ class RegressionTests(unittest.TestCase):
             self.assertEqual(self.routes._password_from_environment(), "plain password wins")
 
     def test_lan_login_redirects_remain_same_origin(self):
-        default = "/extensions/ComfyUI_PromptStudio/prompt_studio.html"
+        default = "/PromptStudio"
+        self.assertEqual(self.routes._safe_next_path(""), default)
+        self.assertEqual(self.routes._safe_next_path("/PromptStudio?mode=video"), "/PromptStudio?mode=video")
+        self.assertEqual(self.routes._safe_next_path("/promptstudio"), default)
+        self.assertEqual(self.routes._safe_next_path("/PROMPTSTUDIO/?mode=video"), "/PromptStudio?mode=video")
         self.assertEqual(self.routes._safe_next_path("/extensions/example.html?mode=studio#ignored"), "/extensions/example.html?mode=studio")
         self.assertEqual(self.routes._safe_next_path("https://example.com/steal"), default)
         self.assertEqual(self.routes._safe_next_path("//example.com/steal"), default)
@@ -1403,13 +1409,21 @@ class RegressionTests(unittest.TestCase):
         self.assertEqual(self.routes._safe_next_path("not-a-path"), default)
 
     def test_standalone_short_alias_keeps_the_short_url(self):
-        response = asyncio.run(self.routes.prompt_studio_alias(types.SimpleNamespace()))
+        response = asyncio.run(self.routes.prompt_studio_alias(types.SimpleNamespace(path="/PromptStudio")))
         self.assertEqual(Path(response.path), REPO_ROOT / "web" / "prompt_studio.html")
+        self.assertEqual(response.headers["Content-Type"], "text/html; charset=utf-8")
+        self.assertEqual(response.headers["Content-Disposition"], "inline")
 
         request = types.SimpleNamespace(query_string="session=example")
         redirect = asyncio.run(self.routes.prompt_studio_alias_redirect(request))
         self.assertEqual(redirect.status, 308)
         self.assertEqual(redirect.headers["Location"], "/PromptStudio?session=example")
+
+    def test_lan_login_preserves_form_origin_for_mutation_boundary(self):
+        response = self.routes._login_page("/PromptStudio?mode=video")
+        self.assertEqual(response.headers["Referrer-Policy"], "same-origin")
+        self.assertIn('action="/promptstudio/lan/login"', response.text)
+        self.assertIn('value="/PromptStudio?mode=video"', response.text)
 
     def test_lan_gate_allows_cross_site_navigation_but_not_cross_origin_actions(self):
         request = types.SimpleNamespace(

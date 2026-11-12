@@ -56,10 +56,11 @@ try {
   await mkdir(resolve(root, 'test-results/browser'), {recursive: true});
   for (const width of [1440, 390]) {
     await page.setViewportSize({width, height: 844});
+    await page.waitForFunction(() => { const panel=document.querySelector('#promptstudio-prompt-studio'), drawer=panel.querySelector('.promptstudio-inspector'); return getComputedStyle(drawer).position !== 'absolute' || drawer.inert === !panel.classList.contains('promptstudio-inspector-open'); });
     // The mobile Controls drawer must be open for the sidebar controls.
     if (width === 390) {
-      const toggle = page.locator('#promptstudio-toggle-settings');
-      if (await toggle.isVisible()) await toggle.click();
+      const toggle = page.locator('#promptstudio-mobile-toggle-inspector');
+      if (await toggle.getAttribute('aria-expanded') !== 'true') await toggle.click();
     }
     const select = page.locator('#promptstudio-style');
     await select.scrollIntoViewIfNeeded();

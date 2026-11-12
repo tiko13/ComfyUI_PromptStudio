@@ -52,10 +52,12 @@ try {
   const sourceBefore = await current();
   for (const width of [1440,390]) {
     await page.setViewportSize({width,height:1000});
-    const a = await page.locator('.promptstudio-video-handoff').boundingBox();
-    const b = await xyz.boundingBox();
-    assert.ok(b.x >= a.x+a.width && b.y === a.y, 'XYZ is immediately to the right on the same row');
-    assert.equal(b.width,a.width);
+    if (width === 1440) {
+      const a = await page.locator('.promptstudio-video-handoff').boundingBox();
+      const b = await xyz.boundingBox();
+      assert.ok(b.x >= a.x+a.width && b.y === a.y, 'XYZ is immediately to the right on the same row');
+      assert.equal(b.width,a.width);
+    } else await page.locator('.promptstudio-image-compact-more').click();
     await xyz.click();
     const main = await dialog.locator('[data-plot-prompt="main"]').boundingBox();
     const final = await dialog.locator('[data-plot-prompt="final"]').boundingBox();

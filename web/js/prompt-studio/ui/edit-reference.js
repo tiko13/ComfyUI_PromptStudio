@@ -207,6 +207,16 @@ export function createEditReferenceController({panel, tile: suppliedTile, active
         summary.className = "ps-reference-summary";
         heading.replaceChildren(toggle);
         fields.append(summary); item.append(detail);
+        if (entry.semanticTurn) {
+          const scope = el("small", "From chat · this edit and its rerolls");
+          const keep = el("button", "Keep for future edits"); keep.type = "button";
+          keep.addEventListener("click", () => {
+            const saved = chat.qwenEditReferences?.find(e => e.id === entry.id);
+            if (saved) delete saved.semanticTurn;
+            notify(chat); renderDialog();
+          });
+          detail.append(scope, keep);
+        }
         const save = (patch, redraw = false) => {
           const saved = chat.qwenEditReferences?.find(e => e.id === entry.id);
           if (saved) {Object.assign(saved, patch); Object.assign(entry, patch); notify(chat, !redraw); if (redraw) renderDialog();}

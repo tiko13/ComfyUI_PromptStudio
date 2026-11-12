@@ -18,6 +18,7 @@ export function normalizeQwenReferences(value) {
   return value.map((entry, index) => ({id: String(entry?.id || `reference-${index}`),
     image: normalizeImageReference(entry?.image), role: /^[a-z][a-z0-9_]{0,63}$/.test(entry?.role) ? entry.role : "custom",
     instruction: String(entry?.instruction || "").slice(0, 4000),
+    ...(entry?.semanticTurn === true ? {semanticTurn: true} : {}),
     ...(entry?.analysis === "deep" ? {analysis: "deep"} : {}),
     ...(normalizePoseReference(entry?.pose) ? {pose: normalizePoseReference(entry.pose)} : {}),
     ...(normalizeEditMask(entry?.editMask) ? {editMask: normalizeEditMask(entry.editMask)} : {}),

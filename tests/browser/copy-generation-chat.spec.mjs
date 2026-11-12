@@ -15,8 +15,18 @@ try {
     }},
     additionalInputs:[{id:'steps',targetNodeId:'2',targetInputName:'steps',schema:{type:'INT',min:1,max:100},defaultValue:20}],
   };
-  await fixture.context.route('**/prompt-studio/workflows', route => route.fulfill({json:{templates:[profile],revision:1}}));
+  const profiles = [profile, ...['create','edit','upscale'].flatMap(kind => ['first','source','saved'].map(suffix => ({
+    ...structuredClone(profile), id:`${kind}-${suffix}`, name:`${kind} ${suffix}`, kind,
+    imageNodeId:'6', upscaleNodeId:'7',
+  })))];
+  await fixture.context.route('**/prompt-studio/workflows', route => route.fulfill({json:{templates:profiles,revision:1}}));
   await fixture.context.route('**/userdata?*', route => route.fulfill({status:503,json:{error:'Use cached workflows'}}));
+  // Exercise save ordering with delayed acknowledgements, not arbitrary waits
+  // before assertions. Setup below flushes the actual pending save lifecycle.
+  await fixture.context.route('**/promptstudio/prompt-studio/chats',async route=>{
+    if(route.request().method()==='PUT')await new Promise(resolve=>setTimeout(resolve,75));
+    await route.continue();
+  });
   await fixture.context.route('**/scripts/api.js',async route => {
     const response = await route.fetch();
     await route.fulfill({response,body:await response.text()+
@@ -25,7 +35,7 @@ try {
   await fixture.context.route('**/js/prompt_studio.js',async route => {
     const response = await route.fetch();
     await route.fulfill({response,body:await response.text()+
-      '\nexport {appendMessage,activateChat,saveChats,renderChatHistory};'});
+      '\nexport {appendMessage,activateChat,saveChats,flushChatStore,renderChatHistory,refreshWorkflowControls};'});
   });
   const page = await fixture.newPage();
   const current = () => page.evaluate(async () => {
@@ -39,7 +49,15 @@ try {
       const m = await import('/extensions/ComfyUI_PromptStudio/js/prompt_studio.js');
       const {state} = await import('/extensions/ComfyUI_PromptStudio/js/prompt-studio/core/state.js');
       window.copyTest = {m,state};
+      // Finish startup/replay saves before directly preparing this synthetic
+      // source record; an older acknowledgement must not replace its setup.
+      await m.flushChatStore();
       const chat = state.chats.find(c => c.id === state.activeChatId);
+      const workflows = Object.fromEntries(['create','edit','upscale'].map(kind => [`${kind}WorkflowId`,`${kind}-source`]));
+      const {setWorkflowDefault} = await import('/extensions/ComfyUI_PromptStudio/js/prompt-studio/settings/workflow-defaults.js');
+      for (const kind of ['create','edit','upscale']) setWorkflowDefault(kind,`${kind}-first`);
+      Object.assign(chat,workflows,{editPromptMode:'edit_instruction'});
+      m.refreshWorkflowControls();
       const snapshot = structuredClone(state.workflowProfiles[0].snapshot);
       Object.assign(snapshot.output['1'].inputs,{prompt:'Execution only',aspect_ratio:'16:9 (Widescreen)',megapixels:1.5,secondary_instructions:'Keep the horizon'});
       Object.assign(snapshot.output['2'].inputs,{seed:98765,steps:37,cfg:6.5});
@@ -50,7 +68,7 @@ try {
         mainPrompt:'Main with  exact spacing',canonicalPrompt:'Final saved prompt',executionPrompt:'Execution only',
         images:[{filename:'synthetic.png',type:'output',subfolder:''},
           ...(previewCopy ? [{filename:'selected.png',type:'output',subfolder:'batch'}] : [])],generationAction:action,
-        workflowProfileId:action==='create' ? state.workflowProfiles[0].id : 'removed-'+action,
+        workflowProfileId:action==='create' ? state.workflowProfiles[0].id : previewCopy ? `${action}-saved` : 'removed-'+action,
         workflowName:'Original workflow',generationSnapshot:snapshot,
         llmAmplified:index===1,controlsFingerprint:JSON.stringify(['Default','None','None','warm palette','','Keep the tower','None',90]),
         loraState:[{nodeId:'3',selections:[{name:'saved.safetensors',strength:0.65}]}],
@@ -60,26 +78,37 @@ try {
         upscaleFactor:action==='upscale' ? 2 : null,
         resultNodeIds:['5'],resultFields:['images'],
       });
-      m.saveChats({immediate:true});await state.chatSaveChain;
-      return {id:chat.id,record:structuredClone(chat.messages.at(-1)),messages:JSON.stringify(chat.messages)};
+      m.saveChats({immediate:true});await m.flushChatStore();
+      return {id:chat.id,record:structuredClone(chat.messages.at(-1)),messages:JSON.stringify(chat.messages),workflows};
     },{action,index,previewCopy});
     await page.setViewportSize({width:index===1 ? 390 : 1440,height:1000});
     const info = page.locator('.promptstudio-prompt-info').last();
     const preview = page.getByRole('dialog',{name:'Image preview',exact:true});
     if (previewCopy) await page.locator('.promptstudio-image-preview').last().click();
+    else if (index===1) await page.locator('.promptstudio-image-compact-more').last().click();
     else await info.locator(':scope > summary').click();
-    const copy = (previewCopy ? preview : info).getByRole('button',{name:'Copy to new chat',exact:true});
+    const copy = (previewCopy ? preview : index===1 ? page.getByRole('dialog',{name:'Image actions',exact:true}) : info).getByRole('button',{name:'Copy to new chat',exact:true});
     assert.equal(await copy.isEnabled(),true);
     if (index===1) {await copy.focus();await page.keyboard.press('Enter');} else await copy.click();
     await page.waitForFunction(id => window.copyTest.state.activeChatId !== id,source.id);
     await page.evaluate(async()=>{await window.copyTest.state.chatSaveChain;});
     let chat = await current();
+    const expectedWorkflows = {...source.workflows,[`${action}WorkflowId`]:source.record.workflowProfileId};
+    const assertWorkflows = async () => {
+      for (const kind of ['create','edit','upscale']) {
+        const key = `${kind}WorkflowId`;
+        assert.equal(chat[key],expectedWorkflows[key],`Copied ${action} retains ${kind} workflow`);
+        assert.equal(await page.locator(`#promptstudio-${kind}-workflow`).inputValue(),expectedWorkflows[key]);
+      }
+      assert.equal(chat.editPromptMode,'edit_instruction');
+    };
+    await assertWorkflows();
     assert.equal(chat.mainPrompt,source.record.mainPrompt);
     assert.equal(chat.finalPrompt,source.record.canonicalPrompt);
-    assert.equal(chat.messages.length,previewCopy ? 1 : 0);
-    if (previewCopy) {
+    assert.equal(chat.messages.length,previewCopy || index===1 ? 1 : 0);
+    if (previewCopy || index===1) {
       assert.equal(await preview.isHidden(),true);
-      assert.deepEqual(chat.messages[0].images,[source.record.images[1]],'Copy only the opened image from a batch');
+      assert.deepEqual(chat.messages[0].images,[source.record.images[previewCopy ? 1 : 0]],'Copy only the opened image from a batch');
       assert.equal(chat.messages[0].generationState,'complete');
       assert.deepEqual(chat.messages[0].generationSnapshot,source.record.generationSnapshot);
       assert.equal(await page.locator('.promptstudio-image-preview img').count(),1);
@@ -102,6 +131,7 @@ try {
     const copiedId = chat.id;
     await page.reload();await page.waitForFunction(()=>window.studioReady);
     chat = await current();
+    await assertWorkflows();
     assert.equal(chat.id,copiedId);
     assert.deepEqual(chat.pendingGeneration.generationSnapshot,source.record.generationSnapshot);
     assert.match(await page.locator('#promptstudio-run-summary').textContent(),/Next generation uses saved inputs/);

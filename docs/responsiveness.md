@@ -94,3 +94,93 @@ Replay invalidation remains immediate for discrete edits. Continuous typing
 checkpoints flush before discrete controls and Undo/Redo, including controls in
 the global settings dialog. Browser tests cover these boundaries explicitly.
 No live GPU render benchmark, commit, push or hosted CI run was performed.
+
+## Phone and tablet layout
+
+Both studios use a phone layout through 780 CSS pixels, plus short landscape
+windows through 900 pixels wide and 600 pixels high. Tablet layouts extend to
+1400 pixels, and remain active on wider touch devices: sessions/projects are
+drawers, while the inspector remains beside the workspace. Mouse-only desktop
+retains three columns. These are viewport/input rules, not user-agent detection,
+so rotation, zoomed-out tablets and split view select the appropriate layout.
+
+The shared responsive shell follows VisualViewport height at normal zoom,
+excludes closed drawers from keyboard focus, contains Tab navigation in open
+drawers, and restores focus when they close. Its listeners are rebound when a
+panel moves between documents. Pinch zoom is left to the browser.
+
+Video's workflow stays visible and secondary project commands use Tools on compact screens;
+Image's composer can use up to 48% of the phone shell and scrolls as needed.
+Use device testing for Safari keyboard, safe-area and browser-toolbar behavior;
+Chromium viewport tests alone cannot establish those behaviors on an iPad.
+
+Image cards use a single Edit image / Details / More row on compact and touch
+layouts. Details and actions use a phone bottom sheet or centered tablet sheet;
+dragging its header down dismisses it, while the body remains scrollable.
+Delete remains a separate, explicitly confirmed message action.
+
+Image previews in both studios share touch-media.js: thumbnail expansion,
+two-finger pinch, bounded pan, double-tap zoom, and downward drag/flick dismissal
+at fit scale. Short/cancelled drags return to rest; zoomed panning cannot dismiss.
+Close and Zoom/Fit buttons provide alternatives. Reduced Motion removes opening
+and settling animations, and dismissal never mutates stored media. Native page
+zoom remains available outside the image gesture surface. Touch buttons have
+44 CSS-pixel hit regions and a visible pressed state; timeline handles retain
+their intentional drag geometry.
+
+These web patterns follow the relevant Apple HIG guidance for
+[gestures](https://developer.apple.com/design/human-interface-guidelines/gestures),
+[sheets](https://developer.apple.com/design/human-interface-guidelines/sheets),
+[layout](https://developer.apple.com/design/human-interface-guidelines/layout),
+and [accessibility](https://developer.apple.com/design/human-interface-guidelines/accessibility).
+They do not imply native UIKit behavior or device-tested Safari parity.
+
+## Touch interface and material audit
+
+The shared `touch-interface.css` adapts the relevant HIG patterns across both
+studios. Regular, high-opacity glass styling is limited to navigation/action
+groups and the Tools popover; editors, settings, history and media stay solid.
+`backdrop-filter` has an opaque fallback, including its WebKit spelling.
+Reduced transparency, increased contrast and forced colors remove translucency;
+reduced motion remains supported. No refraction shaders or continuous effects
+run during generation or timeline playback.
+
+| Surface | Applied behavior | Verification |
+| --- | --- | --- |
+| Navigation and drawers | Clear titles, Close controls, isolated background, focus return, header-only swipe dismissal | Touch cancellation, immediate reopening, keyboard/Escape, screen-reader roles |
+| Image composer | Landscape tablet input, More and Send share a 44px row with one small status line; More floats upward with options and secondary actions; long drafts expand while editing | Default composer <=80px at 844–1600px landscape widths; checkbox/draft preservation, rotation, accessibility and keyboard viewport |
+| Video toolbar | Workflow remains visible; occasional commands in Tools; destructive Reset separated | Outside/Escape dismissal, menu action routing, rotation |
+| Inspector | Smaller prompt-editor initial height; touch adapters collapsed by default with expansion preserved during rerender | Phone/tablet screenshots, reachable shots and fields |
+| Conversations | Open at the newest message; follow late image sizing until the reader scrolls up; native lazy images with reserved space for older dimensionless records | Long-history image request counts, scroll-up loading, phone/tablet reopen and reload, Video Director opening |
+| Image scale | Touch cards honor the saved scale; very small cards retain a 48px minimum and move Edit/Details into More | Actual slider at 100/50/10%, narrow and wide touch viewports, no action overflow, details and reload persistence; Video's independent player fit controls are unaffected |
+| Settings and consultation | 44 CSS-pixel controls, larger labels, fixed profile-selector flex spacing | Backend/global settings, Director, consultation and shot-editor audit |
+| Timeline | Existing pointer drag, numeric edits, keyboard alternatives and exact frame geometry retained | Timeline suite and narrow-layout checks; dense spatial handles are not expanded over adjacent cues |
+| Accessibility | Relative text sizes, opaque material preferences, native disclosure semantics, safe-area spacing | Large-text layout, axe, contrast/transparency emulation, host isolation |
+
+The implementation also follows Apple's
+[Materials](https://developer.apple.com/design/human-interface-guidelines/materials)
+and [Toolbars](https://developer.apple.com/design/human-interface-guidelines/toolbars)
+guidance. This is a browser adaptation, not the platform's native Liquid Glass
+renderer. Physical Safari keyboard, toolbar and assistive-technology behavior
+still requires device testing.
+
+## Image layout editor gestures
+
+The layout editor retains its canvas boxes and property fields when moving,
+resizing or nudging an existing segment. Pointer events update draft geometry
+immediately, while visual changes are coalesced to one animation frame using
+the selected box's cached DOM reference. Moving uses a temporary transform;
+release commits normalized coordinates and one undo entry. Pending paints are
+flushed on release and cancelled on abort/close. Pan only updates the canvas
+transform, and panel dividers also coalesce their width updates. Canvas layout
+is contained, and the editor backdrop dims without a full-screen blur.
+
+`tests/browser/spatial-performance.spec.mjs` uses 64 segments with long
+descriptions on an ultrawide viewport. It checks node retention, bounded visual
+writes, absence of per-event box scans, single-step undo, keyboard nudging, and
+release/cancellation before the next frame. A local 240-event drag burst changed
+from 226 box scans and 452 style writes to zero scans and one visual write;
+resizing uses at most four geometry writes per frame. These are browser work
+counts, not a guarantee of frame rate on every display or GPU. Existing gesture,
+overlap, hidden-host and accessibility tests still apply. Video does not consume
+this Image-only editor, so its full integration modes are unaffected.

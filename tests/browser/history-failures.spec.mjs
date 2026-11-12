@@ -79,6 +79,12 @@ await scenario('Failed save survives background synchronization and explicit ret
   const notice = page.locator('[data-chat-save-failure]');
   await notice.getByRole('button', {name: 'Export unsaved draft', exact: true}).waitFor();
   await page.setViewportSize({width: 390, height: 844});
+  // Rotation preserves focus by opening the inspector containing the edited
+  // prompt. Close that drawer before navigating to Chats.
+  await page.waitForFunction(() => parseFloat(document.querySelector('#promptstudio-prompt-studio').style.getPropertyValue('--studio-viewport-height')) === innerHeight);
+  if (await page.locator('#promptstudio-close-inspector').isVisible()) {
+    await page.locator('#promptstudio-close-inspector').click();
+  }
   await page.locator('#promptstudio-mobile-toggle-chats').click();
   assert.equal(await notice.isVisible(), true);
   assert.equal(await notice.evaluate(el => el.scrollWidth <= el.clientWidth), true);

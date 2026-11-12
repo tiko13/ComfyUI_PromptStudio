@@ -19,7 +19,8 @@ export function normalizeSpatialInput(value = {}) {
     guides[key] = {image: {filename: text(g.image.filename), subfolder: text(g.image.subfolder), type: g.image.type === "output" ? "output" : "input",
       width: Number(g.image.width) || 0, height: Number(g.image.height) || 0},
       enabled: g.enabled !== false, kind: g.kind === "color" ? "color" : "depth", input: g.input === "photo" ? "photo" : "prepared",
-      fit: ["crop", "stretch"].includes(g.fit) ? g.fit : "fit", invert: g.invert === true};
+      fit: ["crop", "stretch"].includes(g.fit) ? g.fit : "fit", invert: g.invert === true,
+      ...(typeof g.layoutSignature === "string" && g.layoutSignature ? {layoutSignature: text(g.layoutSignature)} : {})};
   }
   return {version: 1, contract: text(value.contract), alignment: ["crop", "stretch"].includes(value.alignment) ? value.alignment : "fit", enabled: value.enabled !== false, elements, guides};
 }

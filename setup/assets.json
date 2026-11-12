@@ -264,19 +264,6 @@
     "source_url": "https://huggingface.co/Comfy-Org/MOSS-Image"
   },
   {
-    "id": "kromoss_bf16",
-    "name": "Kromoss BF16",
-    "category": "diffusion_models",
-    "relative_path": "Kromoss/kromoss_bf16.safetensors",
-    "aliases": [
-      "kromoss_bf16.safetensors"
-    ],
-    "size": 10164655808,
-    "sha256": "54c863b9392f7b6a02f557d32a416b22765b4ffbee322ade9945e379f09adaba",
-    "url": "https://huggingface.co/lodestones/Kromoss/resolve/a4fe97449297af2e3be7841e1c18e431f3b06031/diffusion_models/kromoss_bf16.safetensors?download=true",
-    "source_url": "https://huggingface.co/lodestones/Kromoss"
-  },
-  {
     "id": "moss_encoder_bf16",
     "name": "Qwen3.5 9B BF16 encoder",
     "category": "text_encoders",
@@ -316,19 +303,6 @@
     "source_url": "https://huggingface.co/nynxz/MOSS-Image"
   },
   {
-    "id": "kromoss_dmd2",
-    "name": "Kromoss 8-step DMD2",
-    "category": "loras",
-    "relative_path": "MOSS-Required/8-steps-dmd2-lora.safetensors",
-    "aliases": [
-      "8-steps-dmd2-lora.safetensors"
-    ],
-    "size": 1189176800,
-    "sha256": "7683fe1fb51f73f5d690f24dd6b7f46f31ab9a9873729a854ac5c9a420ffe6f2",
-    "url": "https://huggingface.co/lodestones/Kromoss/resolve/a4fe97449297af2e3be7841e1c18e431f3b06031/8-steps-dmd2-lora.safetensors?download=true",
-    "source_url": "https://huggingface.co/lodestones/Kromoss"
-  },
-  {
     "id": "flux2_vae_diffusers",
     "name": "Flux2 VAE (official Diffusers serialization)",
     "category": "vae",
@@ -340,29 +314,16 @@
     "source_url": "https://huggingface.co/Comfy-Org/flux2-dev"
   },
   {
-    "id": "kromoss_dmd",
-    "name": "MOSS 8-step DMD (older adapter)",
+    "id": "moss_sft_dmd8",
+    "name": "MOSS SFT 8-step DMD v0.1",
     "category": "loras",
-    "relative_path": "MOSS-Required/8-steps-dmd-lora.safetensors",
+    "relative_path": "MOSS-Required/MOSS_Image_SFT_8_steps_dmd_v0.1.safetensors",
     "aliases": [
-      "8-steps-dmd-lora.safetensors"
+      "MOSS_Image_SFT_8_steps_dmd_v0.1.safetensors"
     ],
     "size": 1189176800,
-    "sha256": "f0e6cd07f222dfaea798afe3b796e2c2995cadfd44ad56e02ca616f0467aec28",
-    "url": "https://huggingface.co/lodestones/Kromoss/resolve/a4fe97449297af2e3be7841e1c18e431f3b06031/8-steps-dmd-lora.safetensors?download=true",
-    "source_url": "https://huggingface.co/lodestones/Kromoss"
-  },
-  {
-    "id": "moss_snapshot",
-    "name": "MOSS Smartphone Snapshot Photo Reality v14",
-    "category": "loras",
-    "relative_path": "MOSS-Required/moss_smartphone_snapshot_v14.safetensors",
-    "aliases": [
-      "MOSS-Image-Base_LoRa_by-AI_Characters_STYLE_SmartphoneSnapshotPhotoReality_v14_TRIGGER$photo$.safetensors"
-    ],
-    "size": 39755064,
-    "sha256": "e7442190461c6b96b5e0f45ae41c432adc57ac1a6c84590338afc310935dad9c",
-    "url": "https://civitai.com/api/download/models/3417017?fileId=3310231",
-    "source_url": "https://civitai.com/models/3010926?modelVersionId=3417017"
+    "sha256": "4abb14e39c1a59018907581e609f43616ec6810126144ec2b1d2e6f8969628fe",
+    "url": "https://civitai.com/api/download/models/3411385?fileId=3303549",
+    "source_url": "https://civitai.red/models/3006599/moss-image-turbo-loras?modelVersionId=3411385"
   }
 ]

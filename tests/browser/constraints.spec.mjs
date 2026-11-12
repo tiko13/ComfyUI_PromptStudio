@@ -52,7 +52,9 @@ try {
  assert.equal(await page.evaluate(()=>window.bootError),undefined);
  chat=await current();assert.deepEqual(chat.intentProvenance.exclusions.map(item=>item.text),['lamp']);
  assert.deepEqual(chat.intentProvenance.locked_literals,metadata.locked_literals);
- await page.setViewportSize({width:390,height:844});await button.scrollIntoViewIfNeeded();await button.click();
+ await page.setViewportSize({width:390,height:844});
+ await page.locator('.promptstudio-compose-options > summary').click();
+ await button.scrollIntoViewIfNeeded();await button.click();
  const bounds=await dialog.boundingBox();assert.ok(bounds.x>=0&&bounds.x+bounds.width<=390);
  await dialog.getByLabel('Constraint text',{exact:true}).fill('lamp');
  await dialog.getByRole('button',{name:'Add constraint',exact:true}).click();

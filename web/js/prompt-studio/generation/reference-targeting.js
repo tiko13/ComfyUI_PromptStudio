@@ -71,7 +71,7 @@ export function applyReferenceMask(snapshot, profile, entries, source) {
   if (adapter.explicit) {
     snapshot.output[adapter.nodeId].inputs.mask_json = JSON.stringify(masks[0]);
     for (const node of Object.values(snapshot.output)) {
-      if (node.class_type === "Save_as_webp_cond" && dependsOn(snapshot.output, node.inputs.images, adapter.nodeId)) node.inputs.mode = "lossless";
+      if (["Save_as_webp_cond", "PS_IntermediateChoice"].includes(node.class_type) && dependsOn(snapshot.output, node.inputs.images, adapter.nodeId)) node.inputs.mode = "lossless";
     }
     return;
   }

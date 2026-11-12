@@ -176,6 +176,7 @@ try {
  await wizard.getByRole('button',{name:'Resume setup',exact:true}).click();
  await wizard.getByRole('button',{name:'Pause',exact:true}).waitFor();
  await wizard.getByRole('button',{name:'Close',exact:true}).first().click();
+ if (await page.locator('#promptstudio-mobile-toggle-inspector').getAttribute('aria-expanded') !== 'true') await page.locator('#promptstudio-mobile-toggle-inspector').click();
  await page.locator('#promptstudio-setup-activity').waitFor({state:'visible'});
  assert.equal(state.job.status,'running');
  await page.locator('#promptstudio-setup-activity').click();
@@ -183,6 +184,7 @@ try {
  assert.equal(calls.filter(c=>c.action==='start').length,1);
  await page.reload();await page.waitForFunction(()=>window.studioReady);
  assert.equal(await page.locator('.promptstudio-setup-dialog[open]').count(),0);
+ await page.locator('#promptstudio-mobile-toggle-inspector').click();
  await page.locator('#promptstudio-setup-activity').waitFor({state:'visible'});
  await page.locator('#promptstudio-setup-activity').click();
  await page.locator('.promptstudio-setup-dialog[open]').waitFor();

@@ -82,6 +82,12 @@ try {
   await picker.press('Tab');
   assert.equal(await picker.getAttribute('aria-expanded'), 'false');
   await page.setViewportSize({ width: 390, height: 844 });
+  // The responsive shell may close the drawer after Tab moves focus out of it.
+  // Wait for that resize transition, then open Controls as a phone user would.
+  await page.waitForFunction(() => document.querySelector('#promptstudio-prompt-studio')
+    .style.getPropertyValue('--studio-viewport-height') === `${window.visualViewport?.height || innerHeight}px`);
+  const controls = page.locator('#promptstudio-mobile-toggle-inspector');
+  if (await controls.getAttribute('aria-expanded') !== 'true') await controls.click();
   await picker.click();
   const bounds = await group.getByRole('listbox').boundingBox();
   assert.ok(bounds.x >= 0 && bounds.x + bounds.width <= 390);

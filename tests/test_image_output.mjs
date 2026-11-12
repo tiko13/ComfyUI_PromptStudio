@@ -3,6 +3,18 @@ import { test } from "node:test";
 import { applyImageOutputSettings, syncImageOutputWorkflow, normalizeImageOutputSettings, IMAGE_OUTPUT_DEFAULTS } from "../web/js/prompt-studio/settings/image-output.js";
 
 const saver = inputs => ({class_type:"Save_as_webp_cond", inputs:{images:["decoder",0],filename_prefix:"nested/frame",save:"yes",mode:"lossy",compression:80,...inputs}});
+test("Choice output settings preserve save toggle and widget order, including legacy nodes", () => {
+  const snapshot={workflow:{nodes:[{id:1,type:"PS_IntermediateChoice",widgets_values:["Continue?","Refine"]}]},
+    output:{'1':{class_type:"PS_IntermediateChoice",inputs:{images:['decoder',0],message:'Continue?',options:'Refine',save_intermediate:false}}}};
+  applyImageOutputSettings(snapshot,{format:'png',png_compression:9});
+  assert.equal(snapshot.output['1'].inputs.save_intermediate,false);
+  assert.equal(snapshot.output['1'].inputs.png_compression,9);
+  assert.deepEqual(snapshot.workflow.nodes[0].widgets_values.slice(0,4),['Continue?','Refine',false,'PromptStudio/Intermediate']);
+  snapshot.output['1'].inputs.force=true;
+  const before=structuredClone(snapshot.output);
+  applyImageOutputSettings(snapshot,{format:'webp'});
+  assert.deepEqual(snapshot.output,before);
+});
 test("output preferences update only unforced savers and their embedded workflow", () => {
   const forced = saver({format:"png",force:true,mode:"lossless",png_compression:9});
   const snapshot = {workflow:{nodes:[{id:1,type:"Save_as_webp_cond",widgets_values:["nested/frame","lossy",80,"yes"]}]},

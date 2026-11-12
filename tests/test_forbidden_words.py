@@ -42,15 +42,48 @@ class ForbiddenWordsTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.rules.enforce("A dreamlike forest")
 
-    def test_replacement_conflicts_duplicates_and_emerging_phrase(self):
-        for entries in ([{"name": "cat", "replacement": "cat"}],
-                        [{"name": "cat"}, {"name": "CAT"}],
-                        [{"name": "cat", "replacement": "dog"}, {"name": "dog", "replacement": "cat"}]):
-            with self.assertRaises(ValueError):
-                self.rules.normalize_rules(entries)
+    def test_duplicates_and_emerging_phrase(self):
+        with self.assertRaises(ValueError):
+            self.rules.normalize_rules([{"name": "cat"}, {"name": "CAT"}])
         self.save(("red", "blue"), ("blue sky", ""))
         with self.assertRaisesRegex(ValueError, "blue sky"):
             self.rules.enforce("red sky")
+
+    def test_self_containing_literals_are_saved_applied_once_and_revalidated(self):
+        spec = {"path": str(self.path), "collection": "forbidden_words", "text_field": "replacement", "label": "forbidden phrase"}
+        with mock.patch.object(self.routes, "MUTATION_CONFIG_SPECS", {"forbidden_words": spec}):
+            initial = self.routes._read_mutation_config()
+            self.routes._update_mutation_config({"revision": initial["revision"], "category": "forbidden_words",
+                "items": [{"name": "cat", "replacement": "fluffy cat", "replacement_mode": "verbatim"}]})
+        rewrite = mock.Mock(side_effect=AssertionError("Completed literals must not need an LLM"))
+        expected = "fluffy cat, fluffy cat; fluffy cats, catapult."
+        result = self.rules.enforce("CAT, fluffy cat; fluffy cats, catapult.", rewrite=rewrite)
+        self.assertEqual(result, expected)
+        self.assertEqual(self.rules.enforce(result, rewrite=rewrite), expected)
+        request = types.SimpleNamespace(content_length=100, json=mock.AsyncMock(return_value={"prompts": [result, "cat"]}))
+        self.assertEqual(asyncio.run(self.routes.prompt_studio_validate_final_prompts(request)),
+                         ({"prompts": [expected, "fluffy cat"]}, 200))
+        self.assertEqual(self.nodes._apply_profile_wrappers(result, {}), expected)
+        rewrite.assert_not_called()
+
+    def test_literals_allow_other_forbidden_words_but_not_unprotected_occurrences(self):
+        self.save(("cat", "dreamlike cat"), ("dreamlike", ""))
+        self.assertEqual(self.rules.enforce("cat"), "dreamlike cat")
+        with self.assertRaisesRegex(ValueError, "dreamlike"):
+            self.rules.enforce("dreamlike cat and dreamlike forest")
+        rewrite = mock.Mock(return_value="dreamlike cat and surreal forest")
+        self.assertEqual(self.rules.enforce("cat and dreamlike forest", rewrite=rewrite),
+                         "dreamlike cat and surreal forest")
+        self.assertEqual(rewrite.call_count, 1)
+        self.save(("cat", "cat"))
+        self.assertEqual(self.rules.enforce("cat"), "cat")
+
+    def test_literal_boundaries_punctuation_and_longest_source_phrase(self):
+        self.save(("cat", "fluffy cat"), ("wild cat", "wild spotted cat"), ("C++", "modern C++"))
+        expected = "wild spotted cat, fluffy cat, modern C++."
+        self.assertEqual(self.rules.enforce("wild cat, CAT, C++."), expected)
+        self.assertEqual(self.rules.enforce(expected), expected)
+        self.assertEqual(self.rules.enforce("unfluffy cat"), "unfluffy fluffy cat")
 
     def test_missing_disabled_reload_and_malformed_file(self):
         self.assertEqual(self.rules.enforce("cat"), "cat")

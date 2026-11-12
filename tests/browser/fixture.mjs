@@ -33,10 +33,11 @@ try {
 </script></body></html>`;
 export const config = {profiles: ['Default'], styles: ['None'], framings: ['None'],
  embellishment_levels: ['None'], known_references: [], additional_instruction_templates: [],
- task_modes: ['t2v'], defaults: {}, capabilities: {}, camera_types: ['Static Shot'],
+ task_modes: ['t2v'], modes: ['auto','t2va'], defaults: {}, capabilities: {}, camera_types: ['Static Shot'],
+ aspect_presets: [{label:'Landscape',width:1344,height:768},{label:'Portrait',width:768,height:1344}],
  default_document: {version:1,mode:'auto',duration_seconds:5,width:1344,height:768,target_megapixels:1.032192,canvas_reference_id:'',ref_image_size:'match',main_description:'',prompt_override:'',style:'Live-action, cinematic',shots:[{id:'shot-1',start:0,transition:'the camera cuts to',composition:'A medium-wide shot establishes the scene.',subjects:'',environment:'',lighting:'',camera:{type:'Static Shot',amplitude:'default',speed:'default',target:''},steps:[],visible_text:[],sounds:[],sound_cues:[],audio_clips:[],notes:''}],references:[],overall_soundscape:'',non_diegetic_music:'N/A',complete_silence:false,task_types:[],subject_definitions:[],summary:'',retention_analysis:[],resolved_mode:'t2va'}};
 
-export async function startFixture() {
+export async function startFixture({contextOptions = {}} = {}) {
 let chats = {revision: 1, chats: [], activeChatId: null, deletedChatIds: []};
 let projects = {revision: 1, projects: [], activeProjectId: null, deletedProjectIds: []};
 const requests = [];
@@ -49,6 +50,9 @@ const server = createServer(async (req, res) => {
    res.statusCode = 404; return res.end('Video Studio is not installed');
   }
   if (path === '/') {res.setHeader('Content-Type', 'text/html'); return res.end(html);}
+  if (path === '/PromptStudio') {
+   res.setHeader('Content-Type', 'text/html'); return res.end(await readFile(resolve(root, 'web/prompt_studio.html')));
+  }
   if (path === '/scripts/api.js' || path === '/scripts/app.js') {
    res.setHeader('Content-Type', 'text/javascript'); return res.end(path.includes('api.js') ? apiSource : appSource);
   }
@@ -107,7 +111,7 @@ const server = createServer(async (req, res) => {
 await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
 
  const browser = await chromium.launch({headless:true, ...(process.env.BROWSER_EXECUTABLE ? {executablePath:process.env.BROWSER_EXECUTABLE} : {})});
- const context = await browser.newContext({viewport:{width:1440,height:1000},reducedMotion:'reduce'});
+ const context = await browser.newContext({viewport:{width:1440,height:1000},reducedMotion:'reduce',...contextOptions});
  const origin = 'http://127.0.0.1:' + server.address().port;
  const errors=[];
  await context.route('**/*', route => new URL(route.request().url()).origin === origin ? route.continue() : route.abort());

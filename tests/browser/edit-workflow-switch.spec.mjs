@@ -41,12 +41,21 @@ try {
   const tile = page.locator('#promptstudio-edit-reference');
   await input.fill('Keep this unsent edit.');
   const switchWorkflow = async id => {
+    const controls = page.locator('#promptstudio-mobile-toggle-inspector');
+    const compact = await controls.isVisible();
+    if (compact && await controls.getAttribute('aria-expanded') !== 'true') await controls.click();
     await page.locator('#promptstudio-toggle-studio-settings').click();
     await page.locator('#promptstudio-edit-workflow').selectOption(id);
     await page.locator('#promptstudio-close-studio-settings').click();
+    if (compact) await page.locator('#promptstudio-close-inspector').click();
   };
   for (const width of [1440, 390]) {
     await page.setViewportSize({width, height: 1000});
+    await page.waitForFunction(() => { const panel=document.querySelector('#promptstudio-prompt-studio'), drawer=panel.querySelector('.promptstudio-inspector'); return getComputedStyle(drawer).position !== 'absolute' || drawer.inert === !panel.classList.contains('promptstudio-inspector-open'); });
+    if (width === 390) {
+      if (await page.locator('#promptstudio-mobile-toggle-inspector').getAttribute('aria-expanded') === 'true') await page.locator('#promptstudio-close-inspector').click();
+      await page.locator('.promptstudio-compose-options > summary').click();
+    }
     await switchWorkflow('plain');
     assert.equal(await modes.isVisible(), true, 'Prompt modes appear immediately after leaving Qwen');
     assert.equal(await tile.isVisible(), false, 'A workflow without references immediately hides the tile');
@@ -66,6 +75,7 @@ try {
     assert.equal(await modes.locator('input[value="full_prompt"]').isChecked(), true, 'Switching preserves the chosen prompt mode');
     assert.equal(await input.inputValue(), 'Keep this unsent edit.', 'Switching preserves the draft');
   }
+  await page.locator('#promptstudio-mobile-toggle-inspector').click();
   await page.locator('#promptstudio-toggle-studio-settings').click();
   const selector = page.locator('#promptstudio-edit-workflow');
   await selector.focus();
@@ -76,6 +86,7 @@ try {
   assert.equal(await modes.isVisible(), false, 'Keyboard selection also refreshes the composer');
   assert.match(await input.getAttribute('placeholder'), /Optional.*reference edit/);
   await page.locator('#promptstudio-use-llm-amplification').uncheck();
+  await page.locator('#promptstudio-close-inspector').click();
   await input.fill('Keep this direct edit.');
   await switchWorkflow('plain');
   assert.equal(await tile.isVisible(), false);

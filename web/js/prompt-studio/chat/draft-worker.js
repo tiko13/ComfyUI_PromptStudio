@@ -7,7 +7,7 @@ let chain = Promise.resolve();
 self.onmessage = ({ data: { id, database, method, args, baseline } }) => {
   chain = chain.catch(() => {}).then(async () => {
     try {
-      if (!stores.has(database)) stores.set(database, createDraftOutbox({ database, worker: false }));
+      if (!stores.has(database)) stores.set(database, createDraftOutbox({ database, worker: false, ownsRecords: true }));
       if (baseline) {
         const key = JSON.stringify([database, args[0]]);
         const records = baselines.get(key) || new Map();

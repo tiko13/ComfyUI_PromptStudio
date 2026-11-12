@@ -114,11 +114,17 @@ try {
     assert.equal(await videoPage.locator('#psvstudio-workflow').inputValue(),'video-b','New Video project uses its own default');
     for (const width of [1440,390]) {
       await videoPage.setViewportSize({width,height:844});
-      const fits = await videoPage.locator('.psvstudio-workflow-choice').evaluate(root => {
-        const r = root.getBoundingClientRect(), s = root.querySelector('select').getBoundingClientRect(), b = root.querySelector('button').getBoundingClientRect();
-        return r.left >= 0 && r.right <= window.innerWidth && s.right <= b.left && b.right <= r.right + 1;
-      });
-      assert.equal(fits,true,`Video workflow and default button fit at ${width}px`);
+      if (width === 390) {
+        await videoPage.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+        if (await videoPage.locator('#psvstudio-close-projects').isVisible()) await videoPage.locator('#psvstudio-close-projects').click();
+        await videoPage.locator('.psvstudio-tools-menu > summary').click();
+      }
+      const fits = await videoPage.evaluate(() => ['#psvstudio-workflow','#psvstudio-default-workflow'].every(selector => {
+        const r=document.querySelector(selector).getBoundingClientRect();
+        return r.width>0&&r.left>=0&&r.right<=innerWidth&&r.top>=0&&r.bottom<=innerHeight;
+      }));
+      assert.equal(fits,true,`Video workflow and its default command fit at ${width}px`);
+      if (width === 390) await videoPage.keyboard.press('Escape');
       await videoPage.locator('.psvstudio-workflow-choice').screenshot({path:`test-results/browser/video-workflow-defaults-${width}.png`});
     }
     assert.equal(await videoPage.evaluate(async () => {

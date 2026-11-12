@@ -98,8 +98,8 @@ test('temporary subgraphs restore after errors and Image/Video conversion serial
 });
 
 test('Video retains native Director/SaveVideo rules with flattened IDs',videoTestOptions,async()=>{
-  const shared = new URL('../web/js/prompt-studio/generation/workflow-adapter.js', import.meta.url).href;
-  const videoSource = readFileSync(new URL('../../PromptStudio_Video/web/js/workflow-adapter.js',import.meta.url),'utf8').replaceAll('/extensions/ComfyUI_PromptStudio/js/prompt-studio/generation/workflow-adapter.js',shared);
+  const shared = new URL('../web/js/prompt-studio/generation/', import.meta.url).href;
+  const videoSource = readFileSync(new URL('../../PromptStudio_Video/web/js/workflow-adapter.js',import.meta.url),'utf8').replaceAll('/extensions/ComfyUI_PromptStudio/js/prompt-studio/generation/',shared);
   const {createVideoWorkflowTemplateBuilder} = await import(`data:text/javascript;base64,${Buffer.from(videoSource).toString('base64')}`);
   const env=setup();const workflow=nested();workflow.definitions.subgraphs[1].nodes=[{id:1,type:'PSV_MiniMaxH3Director'},{id:2,type:'SaveVideo'}];
   workflow.executable={'30:10:1':{class_type:'PSV_MiniMaxH3Director',inputs:{}},'30:10:2':{class_type:'SaveVideo',inputs:{}}};

@@ -11,7 +11,7 @@ import { validateStoreResponse } from "./store-response.js";
 import { newChatWorkflowSelections } from "../settings/workflow-defaults.js";
 import { backgroundTask } from "../core/scheduling.js";
 import { backgroundData } from "../core/background-data.js";
-import { storageSnapshot } from "../core/storage-snapshot.js";
+import { storageSnapshot, storageSignature, changedRecords } from "../core/storage-snapshot.js";
 import { createSubmissionJournal } from "../generation/submission-journal.js";
 
 const CHAT_PAGE_SIZE = 20;
@@ -37,6 +37,7 @@ export function createChatStoreController({
   setStatus,
 }) {
 const acknowledgedChats = new Map();
+const acknowledgedSignatures = new Map();
 const draftOutbox = createDraftOutbox();
 const submissionJournal = createSubmissionJournal('image', 'messages');
 let draftMutation = 0;
@@ -85,10 +86,12 @@ async function writeDraft({ throwOnFailure = false } = {}) {
   const record = {
     mutation: ++draftMutation, revision: state.chatRevision,
     activeChatId: state.activeChatId,
-    chats: state.chats, chatBaseline: Object.fromEntries(acknowledgedChats),
+    chats: changedRecords(state.chats, acknowledgedSignatures),
     deletedChatIds: [...state.chatDeletedIds], deletedMessageIds: deletedMessageIdsPayload(),
     composerText: state.panel?.querySelector('#promptstudio-revision')?.value || '',
   };
+  record.chatBaseline = Object.fromEntries(record.chats
+    .filter(chat => acknowledgedChats.has(chat.id)).map(chat => [chat.id, acknowledgedChats.get(chat.id)]));
   try {
     // Post the checkpoint synchronously, including on pagehide. Comparison,
     // encoding and storage happen in one worker instead of awaiting a worker
@@ -106,8 +109,18 @@ async function writeDraft({ throwOnFailure = false } = {}) {
   }
   return record;
 }
-function acknowledgeChats(chats) {
-  for (const chat of chats || []) acknowledgedChats.set(chat.id, JSON.stringify(chat));
+function acknowledgeChats(chats, normalized = chats) {
+  const current = new Map((normalized || []).map(chat => [chat.id, chat]));
+  for (const chat of chats || []) {
+    const serialized = JSON.stringify(chat);
+    acknowledgedChats.set(chat.id, serialized);
+    const candidate = current.get(chat.id);
+    // Normalization clones saved graphs. Adopt those identities only when the
+    // complete normalized record still matches the acknowledged server value.
+    // Otherwise its migration remains dirty and must be persisted normally.
+    const equivalent = candidate && (candidate === chat || JSON.stringify(candidate) === serialized);
+    acknowledgedSignatures.set(chat.id, storageSignature(equivalent ? candidate : chat));
+  }
 }
 
 async function readDraftReviewStore() {
@@ -346,7 +359,9 @@ function applyChatStoreSnapshot(stored, { preserveActive = true } = {}) {
     storedChats.map(normalizeChat),
     previousActiveId || stored?.activeChatId,
   );
-  acknowledgeChats(storedChats);
+  acknowledgedChats.clear();
+  acknowledgedSignatures.clear();
+  acknowledgeChats(storedChats, state.chats);
   state.chatRevision = Number(stored?.revision || state.chatRevision);
   state.chatPageOffset = Number(stored?.nextOffset ?? storedChats.length);
   state.chatPageCursor = stored?.nextCursor || null;
@@ -374,8 +389,9 @@ function applyChatStoreSnapshot(stored, { preserveActive = true } = {}) {
 }
 
 async function writeChatStore(snapshot, revision, deletedChatIds = [], deletedMessageIds = {}) {
-  const body = await backgroundData('chat-store', {
-    snapshot, acknowledged: Object.fromEntries(acknowledgedChats), revision, deletedChatIds, deletedMessageIds,
+  const body = await backgroundData('encode', {
+    ...snapshot, chats: changedRecords(snapshot.chats, acknowledgedSignatures),
+    partial: true, revision, deletedChatIds, deletedMessageIds,
   });
   return api.fetchApi("/promptstudio/prompt-studio/chats", {
     method: "PUT",
@@ -437,7 +453,17 @@ async function persistChats({ force = false } = {}) {
     if (!response.ok) throw new Error(data.error || `Chat save failed (${response.status}).`);
     validateStoreResponse(data);
     void submissionJournal.acknowledge(snapshot.chats, deletedChatIds).catch(error => console.warn('Submission checkpoint cleanup failed.', error));
-    for (const [id, serialized] of await backgroundData('records', snapshot.chats)) acknowledgedChats.set(id, serialized);
+    const changed = changedRecords(snapshot.chats, acknowledgedSignatures);
+    const signatures = new Map(changed.map(chat => [chat.id, storageSignature(chat)]));
+    for (const [id, serialized] of await backgroundData('records', changed)) {
+      acknowledgedChats.set(id, serialized);
+      acknowledgedSignatures.set(id, signatures.get(id));
+    }
+    const retained = new Set(state.chats.map(chat => chat.id));
+    for (const id of acknowledgedChats.keys()) if (!retained.has(id)) {
+      acknowledgedChats.delete(id);
+      acknowledgedSignatures.delete(id);
+    }
     savedMutationVersion = saveMutationVersion;
     if (state.chatMutationVersion === savedMutationVersion) draftContainer()?.querySelector('[data-chat-save-failure]')?.remove();
     state.chatRevision = Number(data.revision || state.chatRevision);
@@ -614,7 +640,9 @@ async function loadChats() {
     state.chatRevision = Number(stored.revision || 0);
     state.chatDeletedIds.clear();
     state.chats = deduplicateEmptyChats(normalizedChats, stored.activeChatId);
-    acknowledgeChats(storedChats);
+    acknowledgedChats.clear();
+    acknowledgedSignatures.clear();
+    acknowledgeChats(storedChats, state.chats);
     const retainedIds = new Set(state.chats.map((chat) => chat.id));
     normalizedChats.forEach((chat) => {
       if (!retainedIds.has(chat.id)) state.chatDeletedIds.add(chat.id);

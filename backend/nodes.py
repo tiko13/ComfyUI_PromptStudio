@@ -3989,6 +3989,7 @@ class Save_as_webp_cond:
         png_optimize=False,
         webp_method=6,
         force=False,
+        _preview_thumbnail=False,
     ):
         def map_filename(filename):
             prefix_len = len(os.path.basename(filename_prefix))
@@ -4054,6 +4055,16 @@ class Save_as_webp_cond:
                     "type": output_type,
                 }
             )
+            if _preview_thumbnail:
+                thumbnail = pil_image.copy()
+                thumbnail.thumbnail((128, 128))
+                buffer = io.BytesIO()
+                thumbnail.save(buffer, format="WEBP", quality=45, method=3)
+                if buffer.tell() > 12000:
+                    thumbnail.thumbnail((64, 64))
+                    buffer = io.BytesIO()
+                    thumbnail.save(buffer, format="WEBP", quality=45, method=3)
+                results[-1]["previewThumbnail"] = "data:image/webp;base64," + base64.b64encode(buffer.getvalue()).decode("ascii")
             counter += 1
 
         return {"ui": {"images": results}, "result": (images,)}
@@ -4978,8 +4989,11 @@ class KCPP_PromptStudioSampler:
 
 
 from .reference_nodes import NODE_CLASS_MAPPINGS as REFERENCE_NODES
+from .intermediate import IntermediateChoice, IntermediateSource
 
 NODE_CLASS_MAPPINGS = {
+    "PS_IntermediateChoice": IntermediateChoice,
+    "PS_IntermediateSource": IntermediateSource,
     **REFERENCE_NODES,
     "KCPP_QwenStructureGuide": QwenStructureGuide,
     "KCPP_ReferenceRegionComposite": ReferenceRegionComposite,
@@ -5000,6 +5014,8 @@ NODE_CLASS_MAPPINGS = {
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
+    "PS_IntermediateChoice": "Intermediate / Choice",
+    "PS_IntermediateSource": "Intermediate Source (internal)",
     "PS_ReferenceCollection": "Prompt Studio Reference Collection",
     "PS_ReferenceItem": "Prompt Studio Reference Item",
     "PS_ReferencePrompt": "Prompt Studio Reference Prompt Settings",

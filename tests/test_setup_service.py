@@ -381,11 +381,7 @@ class SetupTests(unittest.TestCase):
             for node in SETUP.workflow_nodes(self.service.workflow_source(pack["id"])):
                 for key, index in fields.get(node["type"], {}).items():
                     with self.subTest(pack=pack["id"], node=node["id"], field=key):
-                        # Recipe trigger words are conditioning, not sample scene prompts.
-                        trigger = (pack["id"] == "kromoss_realism_create" and node["type"] == "StringConcatenate"
-                                   and node.get("properties", {}).get("promptstudio_trigger") == "moss_snapshot"
-                                   and key == "string_a")
-                        expected = "photo" if trigger else ""
+                        expected = ""
                         self.assertEqual(node["widgets_values"][index], expected)
                         self.assertEqual(node.get("widgets_values_named", {}).get(key, ""), expected)
 

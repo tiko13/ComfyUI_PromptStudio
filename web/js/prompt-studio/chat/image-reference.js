@@ -9,6 +9,11 @@ export function normalizeImageReference(value) {
     subfolder: String(value.subfolder || ""),
     type: ["input", "output", "temp", "promptstudio"].includes(value.type) ? value.type : "output",
   };
+  if (value.intermediate === true) normalized.intermediate = true;
+  if (value.type === "temp" && typeof value.previewThumbnail === "string" && value.previewThumbnail.length <= 16384
+      && /^data:image\/webp;base64,[A-Za-z0-9+/]+=*$/.test(value.previewThumbnail)) {
+    normalized.previewThumbnail = value.previewThumbnail;
+  }
   if (Number.isInteger(width) && width > 0 && Number.isInteger(height) && height > 0) {
     normalized.width = width;
     normalized.height = height;

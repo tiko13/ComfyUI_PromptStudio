@@ -43,6 +43,10 @@ if (!videoEnabled) {
       await switchTo('video');
       await switchTo('image');
       await page.setViewportSize({width: 390, height: 844});
+      // Rotation preserves a focused inspector by opening its drawer. Close
+      // that modal navigation surface before using the main studio switch.
+      await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+      if (await page.locator('#promptstudio-mobile-toggle-inspector').getAttribute('aria-expanded') === 'true') await page.locator('#promptstudio-close-inspector').click();
       await switchTo('video', true);
       await switchTo('image', true);
       await page.setViewportSize({width: 1440, height: 1000});

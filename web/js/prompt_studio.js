@@ -1,6 +1,9 @@
+import { syncLanReconnect } from "./prompt-studio/ui/lan-reconnect.js";
 import { renderTextHighlights } from "./prompt-studio/ui/text-highlights.js";
 import { applySpatialInputs, normalizeSpatialSnapshot, layoutBinding, spatialDefaults, spatialValue, spatialDimensions } from "./prompt-studio/generation/spatial-inputs.js";
 import { validateMossRecipe } from "./prompt-studio/generation/moss-recipe.js";
+import { createChoiceController, hasChoices, recordChoiceStage, choiceStageOutputs, choiceMediaKey } from "./prompt-studio/generation/intermediate-choice.js";
+import { watchIntermediatePreview } from "./prompt-studio/ui/intermediate-preview.js";
 import { namedStructureInputs } from "./prompt-studio/generation/workflow-capabilities.js";
 import { openSpatialEditor } from "./prompt-studio/ui/spatial-editor.js";
 import { watchExternalGeneration } from "./prompt-studio/ui/external-generation.js";
@@ -8,7 +11,8 @@ import { structureAdapter, semanticReferences, applyStructureGuide, isStructureR
 import { validateTargetSource, applyReferenceMask } from "./prompt-studio/generation/reference-targeting.js";
 import { supportsEditReference, applyEditReference } from "./prompt-studio/generation/edit-reference.js";
 import { applyWorkflowReferences, workflowReferenceValues, normalizeReferenceState, referenceInputsMatch } from "./prompt-studio/generation/reference-inputs.js";
-import { qwenReferenceAdapter, referenceEditAdapter, referenceContractKey, normalizeQwenReferences, validateQwenReferences, applyQwenReferences, directQwenInstruction, requestQwenEdit, qwenCreateInstruction, canReuseQwenPosePrompt, QWEN_POSE_PROMPT_VERSION } from "./prompt-studio/generation/qwen-references.js";
+import { assignSemanticReference, persistentReferences, semanticReferenceAdapter } from "./prompt-studio/generation/semantic-reference.js";
+import { qwenReferenceAdapter, referenceEditAdapter, referenceContractKey, normalizeQwenReferences, validateQwenReferences, applyQwenReferences, directQwenInstruction, requestQwenEdit, qwenCreateInstruction, canReuseQwenPosePrompt, QWEN_POSE_PROMPT_VERSION, REFERENCE_ROLES } from "./prompt-studio/generation/qwen-references.js";
 import { referenceDetection } from "./prompt-studio/generation/reference-detection.js";
 import { createEditReferenceController } from "./prompt-studio/ui/edit-reference.js";
 import { createSearchableSelect } from "./prompt-studio/ui/searchable-select.js";
@@ -39,6 +43,10 @@ import {readSharedHealth} from "./prompt-studio/ui/shared-health.js";
 import {downloadJobDiagnostics,fetchJobActivity,jobActivityText,jobRetryText,recoveredJobError} from "./prompt-studio/ui/job-diagnostics.js";
 import { createFeatureController, movePanelPreservingFocus } from "./prompt-studio/ui/feature-controller.js";
 import { createImageFocusController } from "./prompt-studio/ui/focus-controller.js";
+import { createResponsiveShell } from "./prompt-studio/ui/responsive-shell.js";
+import { createCompactComposer } from "./prompt-studio/ui/compact-composer.js";
+import { openImageCardSheet } from "./prompt-studio/ui/image-card-sheet.js";
+import { createTouchImageViewer } from "./prompt-studio/ui/touch-media.js";
 import { createImageGenerationProgressController } from "./prompt-studio/ui/generation-progress-controller.js";
 import { api } from "/scripts/api.js";
 
@@ -1449,7 +1457,7 @@ function setModalOpen(dialog, open) {
 function openPromptStudioDialog() {
   return state.panel?.ownerDocument.querySelector('dialog[open]')
     || state.panel?.querySelector('#promptstudio-mutation-editor[aria-modal="true"]:not([hidden])')
-    || state.panel?.querySelector('dialog[open], [role="dialog"][aria-modal="true"]:not(dialog):not([hidden])');
+    || state.panel?.querySelector('dialog[open], [role="dialog"][aria-modal="true"]:not(dialog):not([hidden]):not([data-studio-drawer-modal])');
 }
 
 function closeSystemStatus({ restoreFocus = false } = {}) {
@@ -1518,7 +1526,14 @@ function typeAnywhereInput(ownerDocument) {
 }
 
 let imageFocusController = null;
+const compactComposer = createCompactComposer({ panel: () => state.panel });
+const responsiveShell = createResponsiveShell({ panel: () => state.panel, drawers: [
+  { selector: '.promptstudio-chat-sidebar', open: '.promptstudio-chats-open', trigger: '#promptstudio-mobile-toggle-chats', label: 'Chats', handle: '.promptstudio-chat-sidebar-title', side: 'left' },
+  { selector: '.promptstudio-inspector', open: '.promptstudio-inspector-open', trigger: '#promptstudio-mobile-toggle-inspector', label: 'Controls', handle: '.promptstudio-header', side: 'right' },
+] });
 function installTypeAnywhereFocus(ownerDocument) {
+  compactComposer.mount(ownerDocument);
+  responsiveShell.mount(ownerDocument);
   imageFocusController ||= createImageFocusController({ state, closeSystemStatus, openPromptStudioDialog,
     toggleConsult, toggleStudioSettings, trapDialogFocus, closeMutationManager, closePanelDrawers,
     isEditableTarget, typeAnywhereInput, insertTypedCharacter });
@@ -2424,11 +2439,10 @@ function setHistoryShouldStickToEnd(history, value) {
 }
 
 function placeHistoryAtEnd(history, { revisionKey = "historyScrollRevision" } = {}) {
-  state[revisionKey] += 1;
-  setHistoryShouldStickToEnd(history, true);
-  history.classList.add("promptstudio-instant-scroll");
-  history.scrollTop = history.scrollHeight;
-  history.classList.remove("promptstudio-instant-scroll");
+  // Opening a thread must also follow its final layout and uncached images.
+  // The revision and stickiness guards stop late loads moving a different chat
+  // or pulling the reader back down after they deliberately scroll up.
+  scrollElementToEnd(history, { instant: true, revisionKey });
 }
 
 function keepHistoryViewportStable(
@@ -3753,6 +3767,7 @@ async function submitPlotCells(plotId, requestedIds = null) {
       if (activeChat()?.plotId === plotId) renderPlotWorkspace();
       try {
         const snapshot = snapshotForPlotCell(plot, cell);
+        if (hasChoices(snapshot)) throw new Error("Interactive Choice workflows run from the chat. Use a generation-only workflow for XYZ plots.");
         cell.provenance = await captureRuntimeProvenance(snapshot, "image", {plotId, cellId:cell.id});
         if (plot.status === "cancelled") break;
         const queued = await api.queuePrompt(-1, snapshot);
@@ -4179,6 +4194,7 @@ function createChat() {
 }
 
 function deleteChat(chatId) {
+  imageChoices.invalidate(chatId);
   if (state.busy) return;
   if (chatId === state.activeChatId) commitPromptEditorVersion();
   const index = state.chats.findIndex((chat) => chat.id === chatId);
@@ -4868,6 +4884,7 @@ function announceWorkflowSelection(action, { persist = true } = {}) {
 
 function fillWorkflowSelect(select, kind, remembered) {
   if (!select) return;
+  remembered ||= workflowDefaults()[kind] || "";
   select.replaceChildren();
   const compatible = state.workflowProfiles.filter((item) => (
     kind === "create"
@@ -5017,6 +5034,7 @@ function setApiConnected(connected, { announce = true } = {}) {
   const panel = state.panel;
   if (!panel) return;
   const banner = panel.querySelector("#promptstudio-api-connection");
+  syncLanReconnect(api, banner, connected);
   panel.dataset.apiConnected = connected ? "true" : "false";
   if (banner) banner.hidden = connected;
   renderSystemStatusSummary();
@@ -5105,7 +5123,9 @@ function setBusy(busy) {
   updateComposeMode();
 }
 
+let imageTouchViewer = null;
 function closeImageLightbox() {
+  imageTouchViewer?.dispose(); imageTouchViewer = null;
   const lightbox = state.panel?.querySelector("#promptstudio-lightbox");
   if (!lightbox || lightbox.hidden) return;
   setModalOpen(lightbox, false);
@@ -5118,6 +5138,7 @@ function closeImageLightbox() {
 function openImageLightbox(url, alt, trigger, compareResult = null, copyToChat = null, copyUnavailable = "") {
   const lightbox = state.panel?.querySelector("#promptstudio-lightbox");
   if (!lightbox) return;
+  imageTouchViewer?.dispose();
   lightbox.querySelector("[data-compare-result]")?.remove();
   lightbox.querySelector("[data-copy-to-chat]")?.remove();
   if (compareResult) {
@@ -5151,6 +5172,7 @@ function openImageLightbox(url, alt, trigger, compareResult = null, copyToChat =
   state.lightboxTrigger = trigger;
   setModalOpen(lightbox, true);
   lightbox.focus({ preventScroll: true });
+  imageTouchViewer = createTouchImageViewer({ host: lightbox, image, trigger, dismiss: closeImageLightbox });
 }
 
 function closeGenerationFailureDialog({ clearRetry = true, restoreFocus = true } = {}) {
@@ -5507,6 +5529,8 @@ function refreshRenderedImageSources() {
     card.dataset.source = selected ? "true" : "false";
     const button = card.querySelector(".promptstudio-use-source");
     if (button) button.textContent = selected ? "Editing source" : "Edit this image";
+    const compact = card.querySelector(".promptstudio-image-compact-edit");
+    if (compact) compact.textContent = selected ? "Editing source" : "Edit image";
   }
 }
 
@@ -5527,10 +5551,10 @@ function renderImageGallery(message, images, generationData = null) {
     preview.className = "promptstudio-image-preview";
     const url = imageReferenceUrl(reference, generationData?.promptId || generationData?.id);
     const image = document.createElement("img");
-    image.src = url;
-    image.alt = item.filename || "Generated image";
     image.loading = "lazy";
     image.decoding = "async";
+    image.src = url;
+    image.alt = item.filename || "Generated image";
     if (reference.width && reference.height) {
       image.width = reference.width;
       image.height = reference.height;
@@ -5571,10 +5595,83 @@ function renderImageGallery(message, images, generationData = null) {
     caption.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12s4-7 10-7 10 7 10 7-4 7-10 7S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/></svg>';
     caption.addEventListener("click", () => captionImageIntoPrompts(reference));
     actions.append(useSource, caption, upscale);
-    card.append(preview, actions);
+    let choicePreview = preview;
+    const imageStage = generationData?.choiceStages?.findLast(stage => stage.outputs.some(output => choiceMediaKey(output) === choiceMediaKey(reference)));
+    const choicePromptId = imageStage?.promptId || generationData?.promptId;
+    if (imageChoices.pending(choicePromptId)) {
+      choicePreview = document.createElement("div");
+      choicePreview.className = "studio-choice-preview";
+      choicePreview.append(preview);
+      imageChoices.mount(choicePreview, choicePromptId, !state.apiConnected);
+    }
+    card.append(choicePreview, actions, compactImageActions(reference, generationData));
+    watchIntermediatePreview(image, reference, {container: preview,
+      intermediate: Boolean(generationData?.choiceStages?.length || hasChoices(generationData?.generationSnapshot)),
+      unavailable: () => {
+        card.querySelectorAll(".promptstudio-image-actions, .promptstudio-image-compact-actions").forEach(row => { row.hidden = true; });
+      }});
     gallery.appendChild(card);
   }
   message.appendChild(gallery);
+}
+
+function compactImageActions(reference, data) {
+  const row = document.createElement('div');
+  row.className = 'promptstudio-image-compact-actions';
+  const blocked = () => state.busy || !state.apiConnected;
+  const reportError = error => setStatus(error.message || String(error), 'error');
+  const button = (text, className, handler) => {
+    const node = document.createElement('button');
+    node.type = 'button'; node.textContent = text; node.className = className;
+    node.addEventListener('click', event => handler(event.currentTarget));
+    return node;
+  };
+  const edit = button(imageReferenceKey(activeChat()?.selectedSource) === imageReferenceKey(reference)
+    ? 'Editing source' : 'Edit image', 'promptstudio-image-compact-edit', () => selectImageSource(reference, data));
+  edit.dataset.disableBusy = ''; edit.disabled = blocked();
+  const showDetails = trigger => {
+    const content = trigger.ownerDocument.createElement('div');
+    if (data?.canonicalPrompt) {
+      renderPromptInfo(content, data);
+      const info = content.querySelector('.promptstudio-prompt-info-panel');
+      info.querySelectorAll(':scope > button').forEach(node => node.remove());
+      content.replaceChildren(info);
+    } else content.textContent = 'No saved generation prompts for this image.';
+    openImageCardSheet(trigger, { title: 'Image details',
+      description: [reference.filename, data?.workflowName].filter(Boolean).join(' · '), content, reportError,
+      actions: [
+        ...(data?.canonicalPrompt ? [{ label: 'Use these prompts', busy: true, disabled: blocked, run: () => useStoredCanonicalPrompt(data, null) }] : []),
+        ...(data?.generationSnapshot?.output ? [{ label: 'Compare saved inputs', run: anchor => openImageResultComparison(data, anchor) }] : []),
+      ],
+    });
+  };
+  const details = button('Details', 'promptstudio-image-compact-details', showDetails);
+  const more = button('⋯', 'promptstudio-image-compact-more', trigger => {
+    const profile = workflowProfileById(data?.workflowProfileId);
+    const canCopy = Boolean(data?.generationSnapshot?.output && data?.canonicalPrompt?.trim());
+    openImageCardSheet(trigger, { title: 'Image actions', description: reference.filename, reportError, actions: [
+      ...(!details.getClientRects().length ? [
+        { label: 'Edit image', busy: true, disabled: blocked, run: () => selectImageSource(reference, data) },
+        { label: 'Details', run: showDetails },
+      ] : []),
+      { label: 'Caption image', busy: true, disabled: blocked, run: () => captionImageIntoPrompts(reference) },
+      { label: 'Upscale image', busy: true, disabled: blocked, run: () => requestImageUpscale(reference, data) },
+      { label: 'Copy to new chat', busy: true, disabled: () => blocked() || !canCopy,
+        hint: canCopy ? '' : 'This image has no complete saved generation inputs to copy',
+        run: () => copyGenerationToNewChat({ ...data, images: [reference] }, { includeImage: true }) },
+      { label: 'Send to Video', disabled: () => !videoHandoffAvailability().available,
+        hint: videoHandoffAvailability().reason, run: anchor => handoffImageToVideoStudio(reference, anchor) },
+      { label: 'Create XYZ plot', busy: true,
+        disabled: () => blocked() || !data?.canonicalPrompt || !profile || profile.kind !== 'create' || !profile.promptNodeId,
+        run: anchor => createPlotFromGeneration(data, anchor) },
+      ...(data?.id ? [{ label: 'Delete message…', danger: true,
+        hint: 'Applies to the entire message, including all its images', run: anchor => deleteChatMessage(data.id, anchor) }] : []),
+    ] });
+  });
+  more.setAttribute('aria-label', `More actions for ${reference.filename}`);
+  for (const control of [details, more]) control.setAttribute('aria-haspopup', 'dialog');
+  row.append(edit, details, more);
+  return row;
 }
 
 function directVideoStudioTarget() {
@@ -5937,7 +6034,11 @@ async function copyGenerationToNewChat(data, { includeImage = false } = {}) {
     initialized: true,
     mainPrompt: data.mainPrompt || data.canonicalPrompt, finalPrompt: data.canonicalPrompt,
     studioSettings: storedGenerationSettings(data),
+    // Saved inputs identify only the generating workflow; retain the source
+    // chat's other routes instead of letting empty selectors choose the first.
+    ...captureWorkflowSelections(),
     [`${action}WorkflowId`]: data.workflowProfileId,
+    editPromptMode: selectedEditPromptMode(),
     selectedSource: data.sourceImage,
     intentProvenance: data.intentProvenance,
     messages: [], consultMessages: [],
@@ -6637,7 +6738,7 @@ function studioGenerationRecord(promptId) {
     generationRecordChats = state.chats;
   }
   const cached = generationRecordCache.get(id);
-  if (cached && cached.messages === cached.chat.messages) return cached;
+  if (cached && cached.messages === cached.chat.messages && cached.message.promptId === id) return cached;
   for (const chat of state.chats) {
     const message = chat.messages.find((item) => item.promptId === id);
     if (message) {
@@ -6677,7 +6778,11 @@ function updateStudioOperation(messageId, changes = {}) {
   return record.message;
 }
 
-function createStudioOperation(chat, kind, status = "Submitted…") {
+const imageChoices = createChoiceController({fetchApi: (...args) => api.fetchApi(...args),
+  changed: () => { if (state.panel) renderChatHistory(); }, reportError: error => setStatus(error.message || String(error), "error")});
+
+function createStudioOperation(chat, kind, status = "Submitted…", preserveChoice = false) {
+  if (!preserveChoice) imageChoices.invalidate(chat.id);
   const operationId = makeId();
   state.operationControllers.set(operationId, new AbortController());
   appendMessage("assistant", "", {
@@ -6696,6 +6801,7 @@ function createStudioOperation(chat, kind, status = "Submitted…") {
 async function cancelStudioOperation(messageId) {
   const record = studioOperationRecord(messageId);
   const message = record?.message;
+  if (record?.chat) imageChoices.invalidate(record.chat.id);
   if (!record || !message?.operationId || ["complete", "error", "cancelled"].includes(message.operationPhase)) return;
   state.operationControllers.get(message.operationId)?.abort();
   state.operationControllers.delete(message.operationId);
@@ -6729,7 +6835,10 @@ async function appendGenerationImages(promptId, images) {
   const record = studioGenerationRecord(promptId);
   if (!record) return;
   const { chat, message: stored } = record;
-  stored.images = enrichedImages;
+  if (Array.isArray(stored.choiceStages)) {
+    stored.choiceStages = recordChoiceStage(stored.choiceStages, promptId, enrichedImages);
+    stored.images = choiceStageOutputs(stored.choiceStages);
+  } else stored.images = enrichedImages;
   stored.updatedAt = Date.now();
   const autoAdvanceSource = state.generationJobs.get(String(promptId))?.autoAdvanceSource
     ?? state.panel?.querySelector("#promptstudio-auto-advance-source")?.checked;
@@ -6932,6 +7041,8 @@ function showPromptConstraints() {
   const chat = activeChat();
   if (!chat) return;
   const original = JSON.stringify(chat.intentProvenance);
+  // The compact menu closes after this command; return to its visible opener.
+  button.closest('[data-studio-menu]')?.querySelector('summary')?.focus({ preventScroll: true });
   openPromptConstraints({ownerDocument:button.ownerDocument,intentProvenance:chat.intentProvenance,makeId,onSave(intent) {
     if (activeChat()?.id !== chat.id || button.disabled || JSON.stringify(chat.intentProvenance) !== original) {
       throw new Error("This chat changed while Constraints was open. Cancel and reopen to review its latest constraints.");
@@ -7415,15 +7526,15 @@ function generationMatchesLatestQueuedPrompt(
   chat = activeChat(),
   mainPrompt = state.mainPrompt,
   finalPrompt = state.currentPrompt,
-  fingerprint = String(chat?.controlsFingerprint || ""),
 ) {
   const latestGeneration = [...(chat?.messages || [])]
     .reverse()
-    .find((message) => Boolean(message.canonicalPrompt));
+    .find((message) => Boolean(message.promptId && message.canonicalPrompt));
   if (!latestGeneration) return false;
+  // Compare submitted prompts, not editor/control bookkeeping. A manual Final
+  // or restored draft can differ from state even on an unchanged repeat.
   return latestGeneration.mainPrompt === mainPrompt
-    && latestGeneration.canonicalPrompt === finalPrompt
-    && latestGeneration.controlsFingerprint === fingerprint;
+    && latestGeneration.canonicalPrompt === finalPrompt;
 }
 
 function historyImages(historyItem, resultNodeIds = [], resultFields = ["images", "gifs"]) {
@@ -7486,6 +7597,7 @@ function rememberGenerationFailure(promptId, message) {
 }
 
 function failTrackedGeneration(promptId, message) {
+  void imageChoices.complete(promptId, false);
   const id = String(promptId || "");
   if (!id) return false;
   const failure = compactErrorText(message) || "Generation failed because ComfyUI stopped processing it.";
@@ -7878,6 +7990,7 @@ async function waitForConsultAgentResult(
         const completed = Boolean(item.status?.completed);
         const failure = generationFailureMessage(item);
         if (failure || images.length || completed) {
+          await imageChoices.complete(promptId, !failure && images.length > 0);
           const enrichedImages = await Promise.all(images.map(async (image) => {
             try {
               return await imageReferenceWithDimensions(image);
@@ -7954,6 +8067,7 @@ async function waitForConsultExperimentResult(
         const completed = Boolean(item.status?.completed);
         const failure = generationFailureMessage(item);
         if (failure || images.length || completed) {
+          await imageChoices.complete(promptId, !failure && images.length > 0);
           const chat = consultTarget.chatId
             ? state.chats.find((entry) => entry.id === consultTarget.chatId)
             : activeChat();
@@ -8030,6 +8144,7 @@ async function followConsultExperimentGeneration(target, storedGeneration) {
           const completed = Boolean(item.status?.completed);
           const failure = generationFailureMessage(item);
           if (failure || images.length || completed) {
+          await imageChoices.complete(promptId, !failure && images.length > 0);
             const enrichedImages = await Promise.all(images.map(async (image) => {
               try {
                 return await imageReferenceWithDimensions(image);
@@ -8255,6 +8370,7 @@ async function waitForResult(
       const completed = Boolean(item.status?.completed);
       const failureMessage = generationFailureMessage(item);
       if (failureMessage || images.length || completed) {
+        await imageChoices.complete(id, !failureMessage && images.length > 0);
         await appendGenerationImages(promptId, images);
         if (failureMessage) {
           updateStudioGenerationText(promptId, failureMessage);
@@ -8348,6 +8464,7 @@ async function cancelComfyPrompt(promptId) {
 
 const reserveGenerationSubmission = createSubmissionOrder();
 async function queueGeneration({
+  choiceContinuation = null,
   spatialInputs = undefined,
   additionalInputSelections = undefined,
   action = selectedAction(),
@@ -8398,12 +8515,19 @@ async function queueGeneration({
     : activeChat();
   if (!chat && !consultTarget && !agentTarget) throw new Error("The originating chat no longer exists.");
   let operationMessage = operationMessageId ? studioOperationRecord(operationMessageId)?.message : null;
+  if (choiceContinuation && !operationMessage && !consultTarget && !agentTarget) throw new Error("The originating Choice message no longer exists.");
+  if (choiceContinuation && operationMessage) {
+    operationMessage.operationId = makeId();
+    operationMessage.promptId = "";
+    operationMessage.operationPhase = "submitted";
+  }
   const queueProfile = workflowProfileById(workflowProfileId) || selectedWorkflowProfile(action);
   const queueStatus = generationSnapshot || (queueProfile?.snapshot?.output && !changedWorkflowPaths.has(queueProfile.path))
     ? "Queueing cached workflow…" : "Preparing workflow…";
   if (chat && !consultTarget && !agentTarget && !operationMessage) {
-    operationMessage = createStudioOperation(chat, action, queueStatus);
+    operationMessage = createStudioOperation(chat, action, queueStatus, Boolean(choiceContinuation));
   }
+  const choiceRevision = choiceContinuation ? null : imageChoices.invalidate(chat?.id);
   if (operationMessage?.operationId && !state.operationControllers.has(operationMessage.operationId)) {
     state.operationControllers.set(operationMessage.operationId, new AbortController());
   }
@@ -8456,7 +8580,7 @@ async function queueGeneration({
   } : await workflowQueueContext(action, workflowProfileId);
   if (operationCancelled()) return false;
   if (replayExactGeneration) {
-    if (!(await reviewReplay(state.panel, storedGenerationSnapshot, storedGenerationSnapshot.provenance, "image"))) return false;
+    if (!choiceContinuation && !(await reviewReplay(state.panel, storedGenerationSnapshot, storedGenerationSnapshot.provenance, "image"))) return false;
     context.snapshot.workflow ||= {nodes: [], links: []};
     delete context.snapshot.provenance;
   }
@@ -8477,7 +8601,6 @@ async function queueGeneration({
       chat,
       mainPrompt,
       finalPrompt,
-      controlsFingerprintOverride ?? String(chat?.controlsFingerprint || ""),
     )))
     && shouldRandomizeSeed
   );
@@ -8638,7 +8761,7 @@ async function queueGeneration({
   if (!replayExactGeneration) queuedGenerationSnapshot.promptStudioSettings = captureStudioSettings(chat);
   queuedGenerationSnapshot.provenance = await captureRuntimeProvenance(context.snapshot, "image", {chatId:chat?.id || "", action});
   if (operationCancelled()) return false;
-  const queuedResultNodeIds = replayExactGeneration && Array.isArray(resultNodeIds) && resultNodeIds.length
+  let queuedResultNodeIds = replayExactGeneration && Array.isArray(resultNodeIds) && resultNodeIds.length
     ? resultNodeIds.map(String)
     : context.resultNodeIds;
   const queuedResultFields = replayExactGeneration && Array.isArray(resultFields) && resultFields.length
@@ -8697,9 +8820,28 @@ async function queueGeneration({
     if (operationMessage) updateStudioOperation(operationMessage.id, {
       operationStatus: "Waiting for ComfyUI to accept workflow…",
     });
-    const submittedSnapshot = structuredClone(context.snapshot);
+    const preparedChoice = await imageChoices.prepare(chat?.id, context.snapshot,
+      choiceContinuation?.resultIds || queuedResultNodeIds, choiceContinuation, choiceRevision);
+    if (operationCancelled()) { imageChoices.invalidate(chat?.id); return false; }
+    queuedResultNodeIds = preparedChoice.resultIds;
+    const submittedSnapshot = structuredClone(preparedChoice.snapshot);
     if (operationMessage) tagSubmission(submittedSnapshot, operationMessage.operationId);
-    queued = await api.queuePrompt(-1, submittedSnapshot);
+    try { queued = await api.queuePrompt(-1, submittedSnapshot); }
+    catch (error) { imageChoices.abort(preparedChoice); throw error; }
+    if (!queued?.prompt_id) imageChoices.abort(preparedChoice);
+    if (queued?.prompt_id) imageChoices.bind(preparedChoice, queued.prompt_id, async continuation => {
+      try {
+        return await queueGeneration({
+          ...retryOptions, resultNodeIds: continuation.resultIds, choiceContinuation: continuation,
+          independent: true, preserveUiSelections: true, operationMessageId: operationMessage?.id || null,
+        });
+      } catch (error) {
+        if (operationMessage) updateStudioOperation(operationMessage.id, {
+          generationState: "error", operationPhase: "error", operationStatus: "Failed", text: error.message || String(error),
+        });
+        throw error;
+      }
+    });
     if (queued?.prompt_id && operationMessage && !operationCancelled()) {
       updateStudioOperation(operationMessage.id, {
         promptId: String(queued.prompt_id), generationState: "queued", operationPhase: "queued", operationStatus: "Queued",
@@ -8865,6 +9007,9 @@ async function queueGeneration({
     operationStatus: "Queued",
   };
   if (operationMessage) {
+    if (hasChoices(queuedGenerationSnapshot) && !Array.isArray(operationMessage.choiceStages)) {
+      resultData.choiceStages = [];
+    }
     updateStudioOperation(operationMessage.id, resultData);
     operationMessage = studioOperationRecord(operationMessage.id)?.message || operationMessage;
   } else {
@@ -8992,7 +9137,6 @@ async function generateDirectPrompt(action = selectedAction(), {repeat = false} 
       executionPrompt: prompt,
       mainPrompt,
       finalPrompt,
-      preserveSeed: promptChanged,
       independent: true,
       releaseBusy: false,
       operationMessageId: operation.id,
@@ -9891,7 +10035,8 @@ function clearMainPastedImage() {
 }
 
 function showMainPastedImageForChat(chatId) {
-  state.mainPastedImage = normalizeImageReference(state.mainPastedImagesByChat.get(String(chatId || "")));
+  state.mainPastedImage = normalizeImageReference(state.mainPastedImagesByChat.get(String(chatId || ""))
+    || state.chats.find(chat => chat.id === chatId)?.referenceClarification?.semanticAttachment);
   renderMainPastedImage();
 }
 
@@ -11960,10 +12105,10 @@ function renderConsultHistory({ forceEnd = false } = {}) {
       message.images.forEach((reference, index) => {
         const figure = document.createElement("figure");
         const image = document.createElement("img");
-        image.src = imageReferenceUrl(reference);
-        image.alt = attached[index]?.label || `Image ${index + 1}`;
         image.loading = "lazy";
         image.decoding = "async";
+        image.src = imageReferenceUrl(reference);
+        image.alt = attached[index]?.label || `Image ${index + 1}`;
         if (reference.width && reference.height) {
           image.width = reference.width;
           image.height = reference.height;
@@ -13151,11 +13296,13 @@ async function handleStudioTurn() {
   const input = state.panel?.querySelector("#promptstudio-revision");
   if (!chat || !input) return;
   const text = input.value.trim();
-  const reference = normalizeImageReference(state.mainPastedImage);
+  const reference = normalizeImageReference(state.mainPastedImage || chat.referenceClarification?.semanticAttachment);
+  if (reference && selectedAction() === "edit" && !useLlmAmplification()) return setStatus("Enable Use LLM amplification to assign this reference automatically.", "warning");
   // Bind the answer to the submitted edit. The router can still discuss or cancel it.
   if (text && selectedAction() === "edit" && ["qwen_image_2_1", "workflow"].includes(chat.referenceClarification?.editPromptModel)) {
     const pending = chat.referenceClarification, settings = captureRepeatQueueSettings("edit", chat);
-    if (!referenceContextMatches(pending, settings) || pending.mainPrompt !== chat.mainPrompt || pending.finalPrompt !== chat.finalPrompt) {
+    if (!referenceContextMatches(pending, settings) || pending.mainPrompt !== chat.mainPrompt || pending.finalPrompt !== chat.finalPrompt
+        || (pending.semanticAttachment && imageReferenceKey(reference) !== imageReferenceKey(pending.semanticAttachment))) {
       chat.referenceClarification = null; saveChats();
       return setStatus("The source, references or workflow changed. The old clarification was cleared; send a new edit request for the current inputs.", "warning");
     }
@@ -13185,6 +13332,11 @@ async function handleStudioTurn() {
     ? chat.referenceClarification : null;
   if (!clarification) chat.referenceClarification = null;
   const submittedUserText = clarification ? `${clarification.userText}\nClarification question: ${clarification.question}\nYour answer: ${text}` : text;
+  if (clarification?.semanticAttachment) Object.assign(submittedSettings, {
+    semanticAttachment: clarification.semanticAttachment,
+    semanticBaseReferences: clarification.semanticBaseReferences,
+    semanticReferenceId: clarification.semanticReferenceId,
+  });
   appendMessage("user", text, { messageId, chatId: chat.id, images: reference ? [reference] : [],
     sourceImage: submittedSettings.sourceImage, referenceImage: submittedSettings.referenceImage });
   input.value = "";
@@ -13240,6 +13392,16 @@ async function handleStudioTurn() {
       }
       if (chat.id !== state.activeChatId) throw new Error("Return to the originating session and send the change again.");
       const instruction = routed.resolvedInstruction || text;
+      if (submittedAction === "edit") {
+        if (reference) {
+          semanticReferenceAdapter(state.workflowProfiles.find(item => item.id === submittedSettings.workflowProfileId));
+          submittedSettings.semanticAttachment = reference;
+          submittedSettings.semanticBaseReferences ||= structuredClone(submittedSettings.qwenReferences);
+        }
+        if (!clarification || submittedSettings.semanticAttachment) {
+          submittedSettings.qwenReferences = persistentReferences(submittedSettings.qwenReferences);
+        }
+      }
       appendMessage("user", text, {
         messageId,
         chatId: chat.id,
@@ -13289,7 +13451,12 @@ async function handleStudioTurn() {
         studioMessageKind: "discussion",
         studioDiscussionId: active.id,
       });
-      if (reference) clearMainPastedImage();
+      if (reference && submittedAction === "edit") {
+        chat.referenceClarification = normalizeReferenceClarification({...submittedSettings,
+          editPromptModel: qwenReferenceAdapter(selectedWorkflowProfile("edit"))?.model || "workflow",
+          semanticAttachment: reference, semanticBaseReferences: submittedSettings.qwenReferences,
+          userText: submittedUserText, question, mainPrompt: chat.mainPrompt, finalPrompt: chat.finalPrompt});
+      } else if (reference) clearMainPastedImage();
       saveChats();
       renderChatHistory();
       setStatus("Waiting for clarification.", "warning");
@@ -13305,6 +13472,34 @@ async function handleStudioTurn() {
   }
 }
 
+function commitSemanticEditReferences(chat, settings) {
+  if (!settings.semanticAttachment && !normalizeQwenReferences(chat.qwenEditReferences).some(entry => entry.semanticTurn)) return;
+  if (settings.semanticAttachment) {
+    const current = captureGenerationQueueSettings("edit", chat);
+    if (chat.id !== state.activeChatId || !referenceContextMatches({...settings,
+      editPromptModel: "workflow", qwenReferences: settings.semanticBaseReferences}, current)) {
+      throw new Error("The source, workflow or references changed while preparing this edit. Send it again for the current inputs.");
+    }
+  }
+  chat.qwenEditReferences = normalizeQwenReferences(settings.qwenReferences);
+  if (settings.semanticAttachment) {
+    const entry = chat.qwenEditReferences.find(item => item.semanticTurn);
+    appendMessage("system", `Reference assigned: ${REFERENCE_ROLES[entry?.role] || entry?.role} · ${entry?.instruction}`, {chatId: chat.id});
+    if (imageReferenceKey(state.mainPastedImagesByChat.get(chat.id)) === imageReferenceKey(settings.semanticAttachment)
+        || (chat.id === state.activeChatId && imageReferenceKey(state.mainPastedImage) === imageReferenceKey(settings.semanticAttachment))) {
+      state.mainPastedImagesByChat.delete(chat.id);
+      if (chat.id === state.activeChatId) clearMainPastedImage();
+    }
+  }
+  editReferenceController?.render();
+}
+
+function restoreSemanticAttachment(chat, settings) {
+  if (!settings.semanticAttachment || !state.chats.some(item => item.id === chat.id)) return;
+  if (!state.mainPastedImagesByChat.has(chat.id)) state.mainPastedImagesByChat.set(chat.id, settings.semanticAttachment);
+  if (chat.id === state.activeChatId) showMainPastedImageForChat(chat.id);
+}
+
 async function prepareQwenReferenceEdit({revisionOverride = null, userTextOverride = null,
   queueSettingsOverride = null, forceGenerate = false, recordRevision = true, repeat = false} = {}) {
   if (!state.apiConnected) return setStatus("ComfyUI is disconnected.", "error");
@@ -13317,7 +13512,7 @@ async function prepareQwenReferenceEdit({revisionOverride = null, userTextOverri
     ["qwen_image_2_1", "workflow"].includes(saved?.editPromptModel) && saved.workflowProfileId === settings.workflowProfileId
     && (saved.referenceContractKey || "") === (settings.referenceContractKey || "")
     && referenceInputsMatch(saved, settings) && imageReferenceKey(saved.sourceImage) === imageReferenceKey(settings.sourceImage));
-  const instruction = text || previous?.qwenInstruction || "";
+  let instruction = text || previous?.qwenInstruction || "";
   const amplified = useLlmAmplification();
   const autoGenerate = forceGenerate || !amplified || state.panel.querySelector("#promptstudio-auto-generate")?.checked !== false;
   const mainPrompt = chat.mainPrompt, finalPrompt = chat.finalPrompt;
@@ -13326,12 +13521,19 @@ async function prepareQwenReferenceEdit({revisionOverride = null, userTextOverri
   settings.qwenInstruction = instruction; settings.editPromptModel = referenceAdapter?.model || "qwen_image_2_1";
   if (text && recordRevision) appendMessage("user", text, {chatId: chat.id, ...normalizeReferenceState(settings)});
   if (input.value.trim() === text) input.value = "";
-  const operation = createStudioOperation(chat, "edit", "Preparing reference edit instruction…");
+  const operation = createStudioOperation(chat, "edit", "Preparing reference edit instruction…", !autoGenerate);
   const controller = state.operationControllers.get(operation.operationId);
   state.studioPreparations.set(operation.operationId, {chatId: chat.id, kind: "reference_edit"});
   state.latestStudioPreparationByChat.set(chat.id, operation.operationId);
   updateComposeMode(); syncBackgroundActivityIndicator();
   try {
+    if (settings.semanticAttachment) {
+      if (!amplified) throw new Error("Enable Use LLM amplification to assign this reference automatically.");
+      updateStudioOperation(operation.id, {operationPhase: "llm_processing", operationStatus: "Assigning the pasted reference…"});
+      instruction = await assignSemanticReference(api.fetchApi.bind(api), settings, referenceProfile,
+        userTextOverride || instruction, llmConnectionPayload(), controller?.signal);
+      settings.qwenInstruction = instruction;
+    }
     settings.qwenReferences = validateQwenReferences(settings.qwenReferences, "edit", referenceAdapter);
     validateTargetSource(settings.qwenReferences, settings.sourceImage, referenceProfile);
     const activeGuides = settings.qwenReferences.filter(entry => isStructureReference(entry) && Number(entry.guide?.strength ?? .8) > 0);
@@ -13363,7 +13565,12 @@ async function prepareQwenReferenceEdit({revisionOverride = null, userTextOverri
     } else prompt = directQwenInstruction(instruction, settings.qwenReferences, referenceAdapter);
     settings.qwenPosePromptVersion = QWEN_POSE_PROMPT_VERSION;
     if (controller?.signal.aborted || !state.chats.some(item => item.id === chat.id)) return false;
-    if (state.latestStudioPreparationByChat.get(chat.id) === operation.operationId) chat.referenceClarification = null;
+    if (state.latestStudioPreparationByChat.get(chat.id) !== operation.operationId) return false;
+    if (settings.semanticAttachment && (chat.mainPrompt !== mainPrompt || chat.finalPrompt !== finalPrompt)) {
+      throw new Error("The prompt changed while assigning the reference. Send the edit again for the current prompt.");
+    }
+    commitSemanticEditReferences(chat, settings);
+    chat.referenceClarification = null;
     const generation = {action: "edit", mainPrompt, canonicalPrompt: finalPrompt,
       executionPrompt: prompt, workflowProfileId: settings.workflowProfileId, sourceImage: settings.sourceImage,
       ...normalizeReferenceState(settings)};
@@ -13380,6 +13587,7 @@ async function prepareQwenReferenceEdit({revisionOverride = null, userTextOverri
     return true;
   } catch (error) {
     const cancelled = controller?.signal.aborted;
+    restoreSemanticAttachment(chat, settings);
     if (!cancelled && error.name === "QwenClarificationNeeded") {
       if (state.latestStudioPreparationByChat.get(chat.id) === operation.operationId) {
         chat.referenceClarification = normalizeReferenceClarification({...settings, userText: instruction,
@@ -13456,7 +13664,7 @@ async function reviseAndMaybeGenerate({
   if (!creating && !state.mainPrompt.trim()) return setStatus("The main prompt is empty.", "warning");
   const contextImage = contextImageOverride !== undefined
     ? normalizeImageReference(contextImageOverride)
-    : pastedContextImage || (
+    : (queueSettingsOverride?.semanticAttachment ? null : pastedContextImage) || (
       state.panel.querySelector("#promptstudio-use-latest-image-context")?.checked
         ? latestGeneratedImage(chat)
         : null
@@ -13504,7 +13712,7 @@ async function reviseAndMaybeGenerate({
     llamacpp_model: basePayload.llamacpp_model,
   };
   const providerName = llmProviderDisplayName(basePayload.llm_provider);
-  const operationMessage = createStudioOperation(chat, generationAction, "Submitted…");
+  const operationMessage = createStudioOperation(chat, generationAction, "Submitted…", !autoGenerate);
   const operationSignal = state.operationControllers.get(operationMessage.operationId)?.signal || null;
   const preparationId = makeId();
   state.studioPreparations.set(preparationId, { chatId: chat.id, kind: "revision" });
@@ -13531,6 +13739,12 @@ async function reviseAndMaybeGenerate({
   });
 
   try {
+    if (queueSettings.semanticAttachment) {
+      updateStudioOperation(operationMessage.id, {operationPhase: "llm_processing", operationStatus: "Assigning the pasted reference…"});
+      revision = await assignSemanticReference(api.fetchApi.bind(api), queueSettings,
+        state.workflowProfiles.find(item => item.id === queueSettings.workflowProfileId),
+        userTextOverride || revision, basePayload, operationSignal);
+    }
     const analyzeReference = generationAction === "edit" && queueSettings.referenceImage && revision && !controlsOnly;
     if (contextImage || analyzeReference) {
       await requireVisionCapability(visionPayload, operationSignal);
@@ -13616,6 +13830,13 @@ async function reviseAndMaybeGenerate({
       && revision
       ? revision
       : finalPrompt);
+    if (operationSignal?.aborted) return false;
+    if (queueSettings.semanticAttachment && (state.latestStudioPreparationByChat.get(targetChat.id) !== preparationId
+        || targetChat.mainPrompt !== previousMainPrompt || targetChat.finalPrompt !== previousFinalPrompt)) {
+      throw new Error("The prompt changed while assigning the reference. Send the edit again for the current prompt.");
+    }
+    if (generationAction === "edit") commitSemanticEditReferences(targetChat, queueSettings);
+    if (queueSettings.semanticAttachment) targetChat.referenceClarification = null;
     applyPreparedPromptToChat(
       targetChat,
       preparationId,
@@ -13644,7 +13865,6 @@ async function reviseAndMaybeGenerate({
         executionPrompt,
         mainPrompt,
         finalPrompt,
-        preserveSeed: true,
         forceNewSeed: regenerateFinal,
         ...queueSettings,
         controlsFingerprintOverride: requestedControlsFingerprint,
@@ -13663,6 +13883,7 @@ async function reviseAndMaybeGenerate({
     }
     return true;
   } catch (error) {
+    restoreSemanticAttachment(chat, queueSettings);
     if (operationSignal?.aborted) {
       updateStudioOperation(operationMessage.id, {
         operationPhase: "cancelled",
@@ -13672,8 +13893,9 @@ async function reviseAndMaybeGenerate({
       });
       return false;
     }
-    if (error.name === "ReferenceClarificationNeeded") {
+    if (["ReferenceClarificationNeeded", "QwenClarificationNeeded"].includes(error.name)) {
       chat.referenceClarification = normalizeReferenceClarification({...queueSettings,
+        ...(queueSettings.semanticAttachment ? {editPromptModel: "workflow"} : {}),
         userText: userTextOverride ?? revision, question: error.message,
         mainPrompt: previousMainPrompt, finalPrompt: previousFinalPrompt});
       appendMessage("assistant", error.message, {chatId: chat.id, label: "Reference clarification"});
@@ -13767,7 +13989,7 @@ async function createNewFromCurrentPrompt({ applyControls = true, generationActi
       : repeatLastConfiguration
         ? (lastGeneration.executionPrompt || state.currentPrompt)
         : state.currentPrompt,
-    preserveSeed: replayStoredGeneration || promptChanged,
+    preserveSeed: replayStoredGeneration,
     mainPrompt: state.mainPrompt,
     finalPrompt: state.currentPrompt,
     workflowProfileId: replayStoredGeneration ? pendingGeneration.workflowProfileId : queueSettings.workflowProfileId,
@@ -14108,7 +14330,7 @@ function buildPanel() {
       <div class="promptstudio-chat-sidebar-header">
         <div class="promptstudio-chat-sidebar-title">
           <div><span>Prompt Studio</span><strong>Sessions</strong></div>
-          <button id="promptstudio-close-chats" class="promptstudio-mobile-drawer-close" type="button">Done</button>
+          <button id="promptstudio-close-chats" class="promptstudio-mobile-drawer-close" type="button" aria-label="Close chats">Close</button>
         </div>
         <button id="promptstudio-new-chat" type="button">New chat</button>
       </div>
@@ -14163,6 +14385,8 @@ function buildPanel() {
           <button type="button" title="Remove pasted reference" aria-label="Remove pasted reference" data-disable-busy>×</button>
         </div>
         <div class="promptstudio-compose-footer">
+          <details class="studio-compact-disclosure promptstudio-compose-options" data-studio-disclosure="phone" open>
+          <summary>Options</summary>
           <div class="promptstudio-toggles">
             <label class="promptstudio-auto-generate-toggle"><input id="promptstudio-auto-generate" type="checkbox" ${settings.auto_generate ? "checked" : ""} /> Generate after revision</label>
             <label id="promptstudio-latest-image-context-control" class="promptstudio-image-context-toggle" data-available="false">
@@ -14180,6 +14404,7 @@ function buildPanel() {
               <label><input type="radio" name="promptstudio-edit-prompt-mode" value="full_prompt" checked /><span>Full prompt</span></label>
             </div>
           </div>
+          </details>
           <div class="promptstudio-actions">
             <button id="promptstudio-toggle-inspector" class="promptstudio-inspector-button" type="button">Settings</button>
             <button id="promptstudio-undo" type="button" data-disable-busy disabled>Undo</button>
@@ -14193,6 +14418,7 @@ function buildPanel() {
     </main>
     <aside class="promptstudio-inspector">
       <header class="promptstudio-header">
+        <strong class="promptstudio-controls-title">Controls</strong>
         <div class="promptstudio-brand">
           <img class="promptstudio-brand-mark" src="${ICON_URL}" alt="" aria-hidden="true" />
           <div><strong>Prompt Studio</strong><span>by tiko13</span></div>
@@ -14249,7 +14475,7 @@ function buildPanel() {
           <button id="promptstudio-popout" type="button" title="Open Prompt Studio in its own tab" aria-label="Open Prompt Studio in its own tab">↗</button>
           <button id="promptstudio-toggle-studio-settings" type="button" title="Prompt Studio settings" aria-label="Prompt Studio settings" aria-expanded="false">⚙</button>
           <button id="promptstudio-setup-activity" type="button" hidden>Setup</button>
-          <button id="promptstudio-close-inspector" class="promptstudio-mobile-drawer-close" type="button">Done</button>
+          <button id="promptstudio-close-inspector" class="promptstudio-mobile-drawer-close" type="button" aria-label="Close controls">Close</button>
           <button id="promptstudio-close" type="button" title="Close Prompt Studio" aria-label="Close Prompt Studio">×</button>
         </div>
       </header>
@@ -15377,6 +15603,11 @@ function buildPanel() {
     }
   });
   panel.querySelector("#promptstudio-pasted-image button").addEventListener("click", () => {
+    const chat = activeChat();
+    if (chat?.referenceClarification?.semanticAttachment) {
+      chat.referenceClarification = null;
+      saveChats();
+    }
     clearMainPastedImage();
     setStatus("Pasted reference removed.", "ready");
   });
@@ -15552,7 +15783,7 @@ function togglePopout({ returnToEmbedded = false } = {}) {
     return;
   }
 
-  const pageUrl = new URL("../prompt_studio.html", import.meta.url).href;
+  const pageUrl = new URL("/PromptStudio", import.meta.url).href;
   const popup = window.open(pageUrl, "_blank");
   if (!popup) {
     setStatus("The browser blocked the Prompt Studio tab. Allow pop-ups for ComfyUI and try again.", "warning");
@@ -15571,12 +15802,12 @@ function togglePopout({ returnToEmbedded = false } = {}) {
     });
   };
   const onStandaloneLoad = () => {
-    if (!popup.location.pathname.endsWith("/prompt_studio.html")) return;
+    if (popup.location.pathname !== "/PromptStudio") return;
     popup.removeEventListener("load", onStandaloneLoad);
     mountPanel();
   };
   popup.addEventListener("load", onStandaloneLoad);
-  if (popup.location.pathname.endsWith("/prompt_studio.html") && popup.document.readyState === "complete") {
+  if (popup.location.pathname === "/PromptStudio" && popup.document.readyState === "complete") {
     onStandaloneLoad();
   }
   popup.focus();

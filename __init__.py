@@ -15,6 +15,8 @@ publish_services(**{name: getattr(routes, name) for name in (
     "shared_llm_check_admission", "shared_llm_shutdown", "LlmOverloadedError",
 )}, shared_job_ledger=shared_job_ledger, shared_job_status=shared_job_status)
 register_job_routes(routes.PromptServer.instance)
+from .backend.intermediate import register_choice_routes
+register_choice_routes(routes.PromptServer.instance)
 from .backend import provenance_routes  # noqa: F401
 from .backend.setup_routes import register_setup_routes
 register_setup_routes(routes.PromptServer.instance)

@@ -5,30 +5,16 @@ import {layoutBinding, spatialDimensions} from "./spatial-inputs.js";
 export function validateMossRecipe(snapshot, profile) {
   const recipe = snapshot.workflow?.extra?.promptstudio_moss;
   if (!recipe) return;
-  if (recipe.version !== 1 || !["sft", "sft-control", "dmd2", "dmd2-realism"].includes(recipe.recipe)) throw new Error("Unknown MOSS recipe version. Refresh the workflow.");
+  if (recipe.version !== 1 || !["sft", "sft-control", "sft-dmd8"].includes(recipe.recipe)) throw new Error("Unknown MOSS recipe version. Refresh the workflow.");
   const output = snapshot.output, records = serializedWorkflowNodes(snapshot.workflow);
   const marked = marker => records.filter(r=>r.node.properties?.promptstudio_asset === marker).map(r=>output[r.id]);
-  const realism = recipe.recipe === "dmd2-realism";
-  const dmd = recipe.recipe === "dmd2" || realism, controlled = recipe.recipe === "sft-control";
-  const required = dmd ? "kromoss_dmd2" : "moss_destripe";
+  const sftTurbo = recipe.recipe === "sft-dmd8";
+  const dmd = sftTurbo, controlled = recipe.recipe === "sft-control";
+  const required = sftTurbo ? "moss_sft_dmd8" : "moss_destripe";
   const adapters = marked(required);
   if (adapters.length !== 1 || adapters[0]?.class_type !== "LoraLoaderModelOnly") throw new Error("The MOSS recipe is missing its adapter loader. Restore the setup workflow.");
   const strength = adapters[0].inputs.strength_model;
-  if (dmd ? strength !== 1 : !Number.isFinite(strength) || strength < 0 || strength > 100) throw new Error(dmd ? "DMD2 requires adapter strength 1." : "Destripe strength must be between 0 and 100 (0 disables it; 1–1.5 is the usual starting range).");
-  if (realism) {
-    let previous = records.find(r=>r.node.properties?.promptstudio_asset === required).id;
-    for (const asset of ["kromoss_dmd", "moss_snapshot"]) {
-      const loaders = marked(asset), input = loaders[0]?.inputs;
-      if (loaders.length !== 1 || loaders[0]?.class_type !== "LoraLoaderModelOnly" || input?.strength_model !== 0.5
-        || !Array.isArray(input.model) || String(input.model[0]) !== previous || input.model[1] !== 0) {
-        throw new Error("Realism requires DMD2 → older DMD → Snapshot Photo, with both extra adapters at 0.5. Restore the setup workflow.");
-      }
-      previous = records.find(r=>r.node.properties?.promptstudio_asset === asset).id;
-    }
-    if (!Object.values(output).some(n=>n.class_type === "ModelSamplingAuraFlow" && String(n.inputs?.model?.[0]) === previous)) {
-      throw new Error("Realism adapters must feed the flow sampler. Restore the setup workflow.");
-    }
-  }
+  if (dmd ? strength !== 1 : !Number.isFinite(strength) || strength < 0 || strength > 100) throw new Error(dmd ? "The DMD speed adapter requires strength 1." : "Destripe strength must be between 0 and 100 (0 disables it; 1–1.5 is the usual starting range).");
   const controls = Object.values(output).filter(n=>n.class_type === "MOSSImageControl");
   if (controlled !== (controls.length === 1) || controls.length > 1) throw new Error("MOSS control wiring does not match the selected recipe.");
   if (controlled) {

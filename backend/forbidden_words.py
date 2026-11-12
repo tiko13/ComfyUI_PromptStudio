@@ -24,12 +24,12 @@ class ForbiddenWordsError(ValueError):
     pass
 
 
-def _pattern(phrase):
+def _pattern(phrase, flags=re.IGNORECASE):
     return re.compile(
         (r"(?<!\w)" if phrase[0].isalnum() or phrase[0] == "_" else "")
         + re.escape(phrase)
         + (r"(?!\w)" if phrase[-1].isalnum() or phrase[-1] == "_" else ""),
-        re.IGNORECASE,
+        flags,
     )
 
 
@@ -63,12 +63,6 @@ def normalize_rules(items):
         seen.add(name.casefold())
         rules.append({"name": name, "replacement": replacement, "replacement_mode": mode,
                       "enabled": item.get("enabled", True)})
-    active = [rule for rule in rules if rule["enabled"]]
-    for rule in active:
-        if rule["replacement_mode"] == "verbatim" and rule["replacement"] and any(
-            _pattern(other["name"]).search(rule["replacement"]) for other in active
-        ):
-            raise ValueError(f"Replacement for '{rule['name']}' contains an enabled forbidden phrase")
     return rules
 
 
@@ -83,9 +77,11 @@ def instruction(rules=None):
         return ""
     return (
         "\n\nForbidden words (mandatory final-prompt constraints):\n"
-        "Never output the listed phrases in the final prompt, ignoring case and matching whole words/phrases. "
+        "Avoid the listed phrases in the final prompt, ignoring case and matching whole words/phrases, "
+        "except inside an exact configured verbatim replacement. "
         "Each rule has a replacement_mode. In verbatim mode, use the replacement text exactly as written, "
-        "without paraphrasing or asking for confirmation. "
+        "without paraphrasing or asking for confirmation. Verbatim replacements may contain listed phrases; "
+        "keep completed replacements unchanged and never recursively replace words inside them. "
         "In guidance mode, replacement is guidance for rephrasing the forbidden phrase, NOT text to paste "
         "into the prompt. Follow that guidance while preserving meaning and unrelated details. An empty "
         "replacement in EITHER mode means choose natural alternative wording; do not simply delete the content. These rules override "
@@ -96,11 +92,25 @@ def instruction(rules=None):
     )
 
 
+def _replacement_spans(text, rules):
+    # Recognize completed literals on every pass: prompts are validated again
+    # by wrappers, submission and Video compilation, and may come from the LLM.
+    return [match.span() for rule in rules
+            if replacement_mode(rule) == "verbatim" and rule["replacement"].strip()
+            for match in _pattern(rule["replacement"], flags=0).finditer(text)]
+
+
+def _unprotected_matches(text, phrase, protected):
+    return (match for match in _pattern(phrase).finditer(text)
+            if not any(start <= match.start() and match.end() <= end for start, end in protected))
+
+
 def apply_replacements(text, rules=None):
     rules = load_rules() if rules is None else rules
+    protected = _replacement_spans(text, rules)
     spans = []
     for rule in rules:
-        for match in _pattern(rule["name"]).finditer(text):
+        for match in _unprotected_matches(text, rule["name"], protected):
             replacement = rule["replacement"] if replacement_mode(rule) == "verbatim" and rule["replacement"].strip() else None
             spans.append((match.start(), match.end(), replacement))
     # Longest phrase owns overlapping spans, even without a replacement.
@@ -118,7 +128,9 @@ def enforce(text, *, rewrite=None, rules=None):
     rules = load_rules() if rules is None else rules
     for attempt in range(3 if rewrite else 1):
         text = apply_replacements(text, rules)
-        remaining = [rule["name"] for rule in rules if _pattern(rule["name"]).search(text)]
+        protected = _replacement_spans(text, rules)
+        remaining = [rule["name"] for rule in rules
+                     if any(_unprotected_matches(text, rule["name"], protected))]
         if not remaining:
             return text
         error = "Final prompt contains forbidden words: " + ", ".join(remaining) + ". Rephrase them or configure a replacement."

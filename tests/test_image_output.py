@@ -1,4 +1,7 @@
 import json
+import base64
+import io
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -83,6 +86,53 @@ class ImageOutputTests(unittest.TestCase):
                 if node["type"] == "Save_as_webp_cond":
                     self.assertEqual(node["widgets_values"][4], "png")
                     self.assertIs(node["widgets_values"][8], True)
+
+    def choice(self, **settings):
+        module = sys.modules[self.nodes.IntermediateChoice.__module__]
+        token = module.CHOICES.reserve()
+        self.addCleanup(module.CHOICES.release, token)
+        result = self.nodes.IntermediateChoice().pause([Tensor(self.pixels)], "Continue?", "Refine",
+            _choice_token=token, filename_prefix="nested/choice", **settings)
+        return result["ui"]["images"][0], module, token
+
+    def test_choice_saves_permanently_without_temporary_duplicate(self):
+        for format in ("png", "webp"):
+            with self.subTest(format=format):
+                ref, module, token = self.choice(format=format, mode="lossless", prompt={"node": 1})
+                self.assertEqual(ref["type"], "output")
+                self.assertTrue(ref["intermediate"])
+                self.assertNotIn("previewThumbnail", ref)
+                path = Path(self.temp.name) / ref["subfolder"] / ref["filename"]
+                self.assertEqual(path.parent, Path(self.temp.name) / "nested" / str(self.nodes.date.today()))
+                with Image.open(path) as image:
+                    np.testing.assert_array_equal(np.asarray(image), self.pixels)
+                self.assertEqual(module.CHOICES.status(token), "ready")
+        self.assertFalse(list(Path(self.temp.name).glob("*.png")))
+        self.assertFalse(list(Path(self.temp.name).glob("*.webp")))
+        inputs = self.nodes.IntermediateChoice.INPUT_TYPES()["optional"]
+        self.assertTrue(inputs["save_intermediate"][1]["default"])
+        for key, schema in self.nodes.Save_as_webp_cond.INPUT_TYPES()["optional"].items():
+            self.assertEqual(inputs[key], schema)
+
+    def test_unsaved_choice_retains_thumbnail_after_cache_deletion(self):
+        ref, _, _ = self.choice(save_intermediate=False, format="png")
+        self.assertEqual(ref["type"], "temp")
+        self.assertEqual(ref["subfolder"], "")
+        path = Path(self.temp.name) / ref["filename"]
+        self.assertTrue(path.exists())
+        path.unlink()
+        self.assertLessEqual(len(ref["previewThumbnail"]), 16384)
+        with Image.open(io.BytesIO(base64.b64decode(ref["previewThumbnail"].split(",", 1)[1]))) as thumbnail:
+            self.assertLessEqual(max(thumbnail.size), 128)
+
+    def test_choice_save_failure_releases_the_handoff(self):
+        from unittest.mock import patch
+        module = sys.modules[self.nodes.IntermediateChoice.__module__]
+        token = module.CHOICES.reserve()
+        with patch.object(self.nodes.Save_as_webp_cond, "Save_as_webp_cond", side_effect=OSError("Disk full")):
+            with self.assertRaisesRegex(OSError, "Disk full"):
+                self.nodes.IntermediateChoice().pause([Tensor(self.pixels)], "Next", "Refine", _choice_token=token)
+        self.assertEqual(module.CHOICES.status(token), "expired")
 
 
 if __name__ == "__main__":

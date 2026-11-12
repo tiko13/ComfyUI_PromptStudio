@@ -439,34 +439,17 @@
       "nodes": []
     },
     {
-      "id": "kromoss_dmd2_create",
-      "name": "Kromoss DMD2 Create",
-      "label": "Kromoss DMD2 Create",
+      "id": "moss_sft_dmd8_choice",
+      "name": "MOSS SFT 8-step · Optional Refine",
+      "label": "SFT 8-step · Optional Refine",
       "family": "MOSS Image",
       "role": "create",
-      "file": "[PS] - Kromoss DMD2 Create.json",
+      "file": "[PS] - MOSS SFT 8-step Choice.json",
       "requirements": [
-        "kromoss",
+        "moss_sft",
         "moss_encoder",
         "fibo2_vae",
-        "kromoss_dmd2"
-      ],
-      "nodes": []
-    },
-    {
-      "id": "kromoss_realism_create",
-      "name": "Kromoss Realism Create",
-      "label": "Kromoss Realism Create",
-      "family": "MOSS Image",
-      "role": "create",
-      "file": "[PS] - Kromoss Realism Create.json",
-      "requirements": [
-        "kromoss",
-        "moss_encoder",
-        "fibo2_vae",
-        "kromoss_dmd2",
-        "kromoss_dmd",
-        "moss_snapshot"
+        "moss_sft_dmd8"
       ],
       "nodes": []
     }
@@ -690,17 +673,6 @@
       }
     },
     {
-      "id": "kromoss",
-      "name": "Kromoss BF16",
-      "category": "diffusion_models",
-      "default_asset": "kromoss_bf16",
-      "binding": {
-        "type": "KCPP_PromptStudioModelLoader",
-        "field": "unet_name",
-        "index": 1
-      }
-    },
-    {
       "id": "moss_encoder",
       "name": "Qwen3.5 9B BF16 encoder",
       "category": "text_encoders",
@@ -736,39 +708,15 @@
       }
     },
     {
-      "id": "kromoss_dmd2",
-      "name": "Kromoss 8-step DMD2",
+      "id": "moss_sft_dmd8",
+      "name": "MOSS SFT 8-step DMD v0.1",
       "category": "loras",
-      "default_asset": "kromoss_dmd2",
+      "default_asset": "moss_sft_dmd8",
       "binding": {
         "type": "LoraLoaderModelOnly",
         "field": "lora_name",
         "index": 0,
-        "asset": "kromoss_dmd2"
-      }
-    },
-    {
-      "id": "kromoss_dmd",
-      "name": "MOSS 8-step DMD (older adapter)",
-      "category": "loras",
-      "default_asset": "kromoss_dmd",
-      "binding": {
-        "type": "LoraLoaderModelOnly",
-        "field": "lora_name",
-        "index": 0,
-        "asset": "kromoss_dmd"
-      }
-    },
-    {
-      "id": "moss_snapshot",
-      "name": "MOSS Smartphone Snapshot Photo Reality v14",
-      "category": "loras",
-      "default_asset": "moss_snapshot",
-      "binding": {
-        "type": "LoraLoaderModelOnly",
-        "field": "lora_name",
-        "index": 0,
-        "asset": "moss_snapshot"
+        "asset": "moss_sft_dmd8"
       }
     }
   ],
@@ -839,10 +787,6 @@
     {
       "name": "Comfy-Org/MOSS-Image model card and terms",
       "url": "https://huggingface.co/Comfy-Org/MOSS-Image"
-    },
-    {
-      "name": "lodestones/Kromoss model card and terms",
-      "url": "https://huggingface.co/lodestones/Kromoss"
     },
     {
       "name": "nynxz/MOSS-Image model card and terms",

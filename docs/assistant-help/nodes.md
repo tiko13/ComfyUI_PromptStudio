@@ -2,6 +2,8 @@
 {"id":"nodes","topic":"nodes","studio":"shared","summary":"List all Prompt Studio suite nodes and what each does; node names, canvas inventory, and which node to choose. Video companion nodes have a separate video-nodes catalog."}
 ---
 Prompt Studio supplies these nodes (display name followed by class ID):
+- Intermediate / Choice (PS_IntermediateChoice).
+- Intermediate Source (internal) (PS_IntermediateSource).
 - KoboldCpp Prompt Slot (KCPP_PromptSlot).
 - KoboldCpp Prompt Amplify (KCPP_PromptAmplify).
 - KoboldCpp Apply (KCPP_Apply).

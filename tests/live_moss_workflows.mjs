@@ -14,18 +14,12 @@ try {
   const {validateMossRecipe}=await import('/extensions/ComfyUI_PromptStudio/js/prompt-studio/generation/moss-recipe.js');
   const original=app.graph,results=[];
   for(const {pack,flow} of flows){try{
-   const source=installed&&pack.id==='kromoss_realism_create'
+   const source=installed&&pack.id==='moss_sft_dmd8_choice'
     ? await (await fetch('/userdata/'+encodeURIComponent('workflows/'+pack.file))).json() : flow;
    const p=await createWorkflowTemplateBuilder({app,nodeClassName:n=>n.comfyClass||n.type}).buildWorkflowTemplate({path:pack.file},source);
    const slots=namedStructureInputs(p),binding=layoutBinding(p),value=spatialValue({},p);value.elements=[{id:'test',type:'character',x:.1,y:.2,width:.3,height:.4,description:'person'}];
    applySpatialInputs(p.snapshot,p,value);
-   if(pack.id.startsWith('kromoss'))validateMossRecipe(p.snapshot,p);
-   if(pack.id==='kromoss_realism_create'){
-    const out=p.snapshot.output,join=Object.entries(out).find(([,n])=>n.class_type==='StringConcatenate');
-    if(join?.[1].inputs.string_a!=='photo'||String(join[1].inputs.string_b[0])!==p.promptNodeId
-      ||String(out[binding.id].inputs.prompt[0])!==join[0]
-      ||p.samplingNodes[0].controls.steps!==12)throw Error('Realism native conditioning/sampling changed');
-   }
+   if(pack.id==='moss_sft_dmd8_choice')validateMossRecipe(p.snapshot,p);
    results.push({id:pack.id,outputs:p.resultNodeIds.length,controls:p.additionalInputs.length,slots:slots.map(s=>s.key),binding,
     characters:p.snapshot.output[binding.id].inputs.character_boxes,invalid:p.additionalInputs.filter(i=>Array.isArray(i.defaultValue)),
     boxes:p.snapshot.output[binding.boxesId].inputs,
@@ -34,7 +28,7 @@ try {
   if(app.graph!==original)throw Error('Canvas was replaced');return results;
  },{flows:mossCatalog.map(pack=>({pack,flow:mossWorkflow(pack)})),installed:process.env.STUDIO_TEST_MOSS_INSTALLED==='1'});
  console.log(JSON.stringify(results,null,2));
- for(const result of results){assert.equal(result.error,undefined);assert.equal(result.outputs,1);assert.equal(result.characters,'1');assert.deepEqual(result.invalid,[]);assert.equal(result.controls,result.id.startsWith('kromoss')?1:result.id.endsWith('controlled')?5:2);}
+ for(const result of results){assert.equal(result.error,undefined);assert.equal(result.outputs,1);assert.equal(result.characters,'1');assert.deepEqual(result.invalid,[]);assert.equal(result.controls,(result.id==='moss_sft_dmd8_choice')?1:result.id.endsWith('controlled')?5:2);}
  assert.deepEqual(results.find(r=>r.id==='moss_sft_controlled').slots,['color','depth']);
  for(const result of results){assert.deepEqual(result.boxes.editor_state,{__value__:[]});assert.deepEqual(result.boxes.last_incoming,{__value__:[]});}
 }finally{await browser.close();}

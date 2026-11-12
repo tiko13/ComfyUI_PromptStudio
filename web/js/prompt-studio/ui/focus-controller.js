@@ -58,6 +58,8 @@ export function createImageFocusController({ state, closeSystemStatus, openPromp
           && state.panel.ownerDocument === ownerDocument
           && !openPromptStudioDialog()
         ) {
+          // Let the focused picker close its list before dismissing its drawer.
+          if (event.target.matches?.('[role="combobox"][aria-expanded="true"]')) return;
           if (closeSystemStatus({ restoreFocus: true })) {
             event.preventDefault();
             event.stopPropagation();

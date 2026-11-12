@@ -45,6 +45,13 @@ try {
   assert.equal(await page.locator('input[name="promptstudio-generation-action"][value="edit"]').isDisabled(),false);
   for(const width of [1440,390]) {
     await page.setViewportSize({width,height:1000});
+    if (width===390) {
+      const compact=page.locator('.promptstudio-image-compact-actions');
+      assert.equal(await compact.isVisible(),true);
+      assert.ok((await compact.boundingBox()).height>=44);
+      assert.equal(await page.locator('.promptstudio-image-actions').isVisible(),false);
+      continue;
+    }
     const bounds=await page.locator('.promptstudio-image-actions').evaluate(el=>{
       const a=el.querySelector('.promptstudio-caption-image').getBoundingClientRect(),b=el.querySelector('.promptstudio-upscale-image').getBoundingClientRect();
       return {left:a.right,right:b.left,w:a.width,h:a.height,edge:b.right,viewport:innerWidth,scroll:el.scrollWidth,client:el.clientWidth};
@@ -59,9 +66,13 @@ try {
   assert.equal(await offer.count(),0,'Dismissal survives reload');
   assert.equal((await chat()).selectedSource.filename,image.filename);
   assert.equal(captions,0);assert.equal(visions,0);
-  // The square control is keyboard-accessible and independent of amplification.
-  const captionButton=page.getByRole('button',{name:'Caption this image into Main and Final prompts',exact:true});
-  await captionButton.focus();await page.keyboard.press('Enter');
+  // The compact menu remains keyboard-accessible and independent of amplification.
+  const caption=async()=>{
+    await page.locator('.promptstudio-image-compact-more').click();
+    await page.getByRole('dialog',{name:'Image actions',exact:true}).getByRole('button',{name:'Caption image',exact:true}).focus();
+    await page.keyboard.press('Enter');
+  };
+  await caption();
   await page.waitForFunction(()=>!window.captionTest.state.busy && window.captionTest.state.currentPrompt.includes('cinematic'));
   let result=await chat();assert.equal(result.finalPrompt,final);assert.equal(result.mainPrompt,main);
   assert.equal(result.messages.filter(m=>m.images.length).length,1);
@@ -69,11 +80,11 @@ try {
   assert.equal(captions,1);assert.equal(visions,1);
   assert.equal(fixture.requests.filter(r=>r.path.endsWith('/revise')||r.path==='/prompt').length,0);
   // Failed captioning is atomic and the imported image remains usable.
-  fail=true;await captionButton.click();
+  fail=true;await caption();
   await page.waitForFunction(()=>!window.captionTest.state.busy && document.querySelector('#promptstudio-status').textContent.includes('Caption failed'));
   assert.equal((await chat()).finalPrompt,final);assert.equal((await chat()).mainPrompt,main);
   // A stale result cannot overwrite a newer manual edit.
-  fail=false;release=null;await captionButton.click();
+  fail=false;release=null;await caption();
   await page.waitForFunction(()=>window.captionTest.state.busy);
   while(typeof release!=='function') await new Promise(r=>setTimeout(r,10));
   await page.evaluate(()=>{const {state}=window.captionTest;state.chats.find(c=>c.id===state.activeChatId).mainPrompt='Newer scene';});

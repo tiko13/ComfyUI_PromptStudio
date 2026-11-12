@@ -3206,8 +3206,11 @@ def _safe_next_path(value):
         or "\r" in decoded_path
         or "\n" in decoded_path
     ):
-        return "/extensions/ComfyUI_PromptStudio/prompt_studio.html"
-    return urllib.parse.urlunsplit(("", "", parsed.path, parsed.query, ""))
+        return STANDALONE_ALIAS_PATH
+    path = parsed.path
+    if path.lower() in {STANDALONE_ALIAS_PATH.lower(), f"{STANDALONE_ALIAS_PATH.lower()}/"}:
+        path = STANDALONE_ALIAS_PATH
+    return urllib.parse.urlunsplit(("", "", path, parsed.query, ""))
 
 
 def _same_origin_request(request):
@@ -3289,7 +3292,9 @@ def _login_page(next_path, message="", status=200):
         {
             "Cache-Control": "no-store",
             "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
-            "Referrer-Policy": "no-referrer",
+            # HTML form POSTs under no-referrer send Origin: null, which the
+            # shared mutation boundary correctly rejects before LAN sign-in.
+            "Referrer-Policy": "same-origin",
             "X-Content-Type-Options": "nosniff",
         }
     )
@@ -3300,7 +3305,7 @@ def _auth_error(request):
     accepts_html = "text/html" in request.headers.get("Accept", "")
     if request.method in {"GET", "HEAD"} and accepts_html:
         target = urllib.parse.quote(_safe_next_path(str(request.rel_url)), safe="")
-        return web.Response(status=303, headers={"Location": f"{LAN_LOGIN_PATH}?next={target}"})
+        return web.Response(status=303, content_type="text/html", headers={"Location": f"{LAN_LOGIN_PATH}?next={target}"})
     return web.json_response({"error": "Prompt Studio LAN authentication required"}, status=401)
 
 
@@ -3338,7 +3343,7 @@ async def _lan_access_middleware(request, handler):
             )
             if len(LAN_PASSWORD) >= LAN_PASSWORD_MIN_LENGTH and password_matches:
                 LAN_LOGIN_FAILURES.pop(remote, None)
-                response = web.Response(status=303, headers={"Location": next_path, "Cache-Control": "no-store"})
+                response = web.Response(status=303, content_type="text/html", headers={"Location": next_path, "Cache-Control": "no-store"})
                 response.set_cookie(
                     LAN_SESSION_COOKIE,
                     _session_token(),
@@ -3354,7 +3359,7 @@ async def _lan_access_middleware(request, handler):
         return web.Response(status=405, headers={"Allow": "GET, POST"})
 
     if request.path == LAN_LOGOUT_PATH and request.method == "POST":
-        response = web.Response(status=303, headers={"Location": LAN_LOGIN_PATH, "Cache-Control": "no-store"})
+        response = web.Response(status=303, content_type="text/html", headers={"Location": LAN_LOGIN_PATH, "Cache-Control": "no-store"})
         response.del_cookie(LAN_SESSION_COOKIE, path="/")
         return response
 
@@ -6568,15 +6573,23 @@ async def _read_uploaded_image(request):
     return image_data
 
 
-@PromptServer.instance.routes.get(f"{STANDALONE_ALIAS_PATH}/")
+@PromptServer.instance.routes.get("/{studio_alias:(?i:promptstudio)}/")
 async def prompt_studio_alias_redirect(request):
     query = f"?{request.query_string}" if request.query_string else ""
-    return web.Response(status=308, headers={"Location": f"{STANDALONE_ALIAS_PATH}{query}"})
+    return web.Response(status=308, content_type="text/html", headers={"Location": f"{STANDALONE_ALIAS_PATH}{query}"})
 
 
-@PromptServer.instance.routes.get(STANDALONE_ALIAS_PATH)
+@PromptServer.instance.routes.get("/{studio_alias:(?i:promptstudio)}")
 async def prompt_studio_alias(request):
-    return web.FileResponse(STANDALONE_PAGE_PATH)
+    if request.path != STANDALONE_ALIAS_PATH:
+        return await prompt_studio_alias_redirect(request)
+    # The public URL has no extension. Keep browser rendering explicit for
+    # authenticated navigation instead of relying on host MIME inference.
+    return web.FileResponse(STANDALONE_PAGE_PATH, headers={
+        "Content-Type": "text/html; charset=utf-8",
+        "Content-Disposition": "inline",
+        "Cache-Control": "no-cache",
+    })
 
 
 def _comfyui_restart_busy():
@@ -7116,6 +7129,33 @@ async def prompt_studio_plot_composite(request):
         return web.json_response({"error": str(exc)}, status=400)
     except Exception as exc:
         return web.json_response({"error": str(exc)}, status=500)
+
+
+def _interpret_semantic_reference(data):
+    from . import semantic_reference
+    images, context = semantic_reference.request_context(data)
+    request = {**data, "max_response_tokens": 1800, "messages": [{
+        "role": "user", "text": json.dumps(context, ensure_ascii=False), "images": images,
+    }]}
+    _, result = _consult_json_object(request, semantic_reference.SYSTEM, semantic_reference.SCHEMA,
+        validate_response=lambda value: semantic_reference.validate_result(value, context["supported_roles"]))
+    return result
+
+
+@PromptServer.instance.routes.post("/promptstudio/prompt-studio/semantic-reference")
+async def prompt_studio_semantic_reference(request):
+    try:
+        if request.content_length is not None and request.content_length > MAX_CONSULT_REQUEST_BYTES:
+            raise ValueError("Semantic reference request exceeds the 1 MB limit")
+        data = await request.json()
+        if not isinstance(data, dict):
+            raise ValueError("JSON body must be an object")
+        result = await _run_llm_request(data, LLM_PRIORITY_STUDIO, _interpret_semantic_reference)
+        return web.json_response(result)
+    except (ValueError, json.JSONDecodeError, OSError) as exc:
+        return web.json_response({"error": str(exc)}, status=400)
+    except Exception as exc:
+        return _llm_error_response(exc)
 
 
 def _build_qwen_edit_prompt(data):
@@ -7948,6 +7988,7 @@ _install_api_boundary(PromptServer.instance.app, {
     "/promptstudio/prompt-studio/qwen-edit-prompt": MAX_REVISE_REQUEST_BYTES,
     "/promptstudio/prompt-studio/reference-edit-prompt": MAX_REVISE_REQUEST_BYTES,
     "/promptstudio/prompt-studio/route-turn": MAX_CONSULT_REQUEST_BYTES,
+    "/promptstudio/prompt-studio/semantic-reference": MAX_CONSULT_REQUEST_BYTES,
     "/promptstudio/prompt-studio/llamacpp-models": MAX_LLM_CONFIG_REQUEST_BYTES,
     "/promptstudio/prompt-studio/discuss": MAX_CONSULT_REQUEST_BYTES,
     "/promptstudio/prompt-studio/chat": MAX_CONSULT_REQUEST_BYTES,

@@ -8,7 +8,7 @@ export function referenceContextMatches(saved, current) {
   };
   return Boolean(saved && current)
     && key(saved.sourceImage) === key(current.sourceImage)
-    && (!["qwen_image_2_1", "workflow"].includes(saved.editPromptModel) || (saved.workflowProfileId === current.workflowProfileId && referenceInputsMatch(saved, current)
+    && (!["qwen_image_2_1", "workflow"].includes(saved.editPromptModel) || (saved.workflowProfileId === current.workflowProfileId && referenceInputsMatch(saved.semanticBaseReferences ? {...saved, qwenReferences: saved.semanticBaseReferences} : saved, current)
       && (saved.referenceContractKey || "") === (current.referenceContractKey || "")))
     && key(saved.referenceImage) === key(current.referenceImage);
 }
@@ -17,6 +17,11 @@ export function normalizeReferenceClarification(value) {
   if (["qwen_image_2_1", "workflow"].includes(value?.editPromptModel)) {
     if (!normalizeImageReference(value.sourceImage) || !value.workflowProfileId || !String(value.question || "").trim()) return null;
     return {...normalizeReferenceState(value), workflowProfileId: String(value.workflowProfileId),
+      ...(normalizeImageReference(value.semanticAttachment) ? {
+        semanticAttachment: normalizeImageReference(value.semanticAttachment),
+        semanticBaseReferences: normalizeReferenceState({qwenReferences: value.semanticBaseReferences}).qwenReferences,
+        semanticReferenceId: String(value.semanticReferenceId || "").slice(0, 128),
+      } : {}),
       userText: String(value.userText || "").slice(0, 16000), question: String(value.question).slice(0, 4000),
       sourceImage: normalizeImageReference(value.sourceImage), referenceImage: null,
       mainPrompt: String(value.mainPrompt || ""), finalPrompt: String(value.finalPrompt || "")};

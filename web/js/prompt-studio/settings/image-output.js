@@ -33,25 +33,30 @@ export function saveImageOutputSettings(value) {
 
 const widgetNames = ["filename_prefix", "mode", "compression", "save", "format", "png_compression", "png_optimize", "webp_method", "force"];
 const widgetDefaults = ["ComfyUI", "lossy", 80, "yes", "webp", 4, false, 6, false];
+const choiceWidgetNames = ["message", "options", "save_intermediate", "filename_prefix", "mode", "compression", "format", "png_compression", "png_optimize", "webp_method", "force"];
+const choiceWidgetDefaults = ["Continue with this image?", "Refine", true, "PromptStudio/Intermediate", "lossy", 80, "webp", 4, false, 6, false];
+export const isImageOutputNode = type => ["Save_as_webp_cond", "PS_IntermediateChoice"].includes(type);
 
 // Keep the embedded, draggable workflow consistent with the executable prompt.
 export function syncImageOutputWorkflow(snapshot) {
   for (const { id, node } of serializedWorkflowNodes(snapshot?.workflow)) {
     const output = snapshot.output?.[id];
-    if (node.type !== "Save_as_webp_cond" || output?.class_type !== node.type) continue;
+    if (!isImageOutputNode(node.type) || output?.class_type !== node.type) continue;
+    const names = node.type === "PS_IntermediateChoice" ? choiceWidgetNames : widgetNames;
+    const defaults = node.type === "PS_IntermediateChoice" ? choiceWidgetDefaults : widgetDefaults;
     const values = Array.isArray(node.widgets_values) ? node.widgets_values : [];
-    node.widgets_values = widgetNames.map((name, index) => {
+    node.widgets_values = names.map((name, index) => {
       const value = output.inputs?.[name];
-      return value !== undefined && !Array.isArray(value) ? value : values[index] ?? widgetDefaults[index];
+      return value !== undefined && !Array.isArray(value) ? value : values[index] ?? defaults[index];
     });
-    if (node.widgets_values_named) node.widgets_values_named = Object.fromEntries(widgetNames.map((name, index) => [name, node.widgets_values[index]]));
+    if (node.widgets_values_named) node.widgets_values_named = Object.fromEntries(names.map((name, index) => [name, node.widgets_values[index]]));
   }
 }
 
 export function applyImageOutputSettings(snapshot, value = getImageOutputSettings()) {
   const settings = normalizeImageOutputSettings(value);
   for (const node of Object.values(snapshot?.output || {})) {
-    if (node.class_type !== "Save_as_webp_cond") continue;
+    if (!isImageOutputNode(node.class_type)) continue;
     const inputs = node.inputs ||= {};
     // Connected controls are workflow-authored expressions, including a dynamic force input.
     if (inputs.force === true || widgetNames.slice(1).some(name => Array.isArray(inputs[name]))) continue;

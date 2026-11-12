@@ -10,7 +10,7 @@ class MossSetupTests(unittest.TestCase):
     def test_recipes_share_encoder_and_vae_without_optional_runtime_packages(self):
         catalog = SETUP.load_catalog()
         packs = [p for p in catalog["packs"] if p["family"] == "MOSS Image"]
-        self.assertEqual(len(packs), 4)
+        self.assertEqual({p["id"] for p in packs}, {"moss_sft_create", "moss_sft_controlled", "moss_sft_dmd8_choice"})
         requirements = {r["id"]: r for r in catalog["requirements"]}
         assets = {a["id"]: a for a in catalog["assets"]}
         self.assertEqual(requirements["fibo2_vae"]["default_asset"], "flux2_vae")
@@ -21,16 +21,14 @@ class MossSetupTests(unittest.TestCase):
             for name in pack["requirements"]:
                 asset = assets[requirements[name]["default_asset"]]
                 self.assertRegex(asset["sha256"], r"^[0-9a-f]{64}$")
-                if name == "moss_snapshot":
-                    self.assertEqual(asset["url"], "https://civitai.com/api/download/models/3417017?fileId=3310231")
+                if name == "moss_sft_dmd8":
+                    self.assertEqual(asset["url"], "https://civitai.com/api/download/models/3411385?fileId=3303549")
                 else:
                     self.assertRegex(asset["url"], r"/resolve/[0-9a-f]{40}/")
-        dmd = next(p for p in packs if p["id"] == "kromoss_dmd2_create")
+        dmd = next(p for p in packs if p["id"] == "moss_sft_dmd8_choice")
         self.assertNotIn("moss_destripe", dmd["requirements"])
         self.assertNotIn("moss_control", dmd["requirements"])
-        realism = next(p for p in packs if p["id"] == "kromoss_realism_create")
-        self.assertEqual(set(realism["requirements"]), set(dmd["requirements"]) | {"kromoss_dmd", "moss_snapshot"})
-        for name in ("moss_destripe", "moss_control", "kromoss_dmd2", "kromoss_dmd", "moss_snapshot"):
+        for name in ("moss_destripe", "moss_control", "moss_sft_dmd8"):
             self.assertEqual(requirements[name]["binding"]["asset"], name)
 
     def test_setup_reports_outdated_named_map_schema_and_encoder_enum(self):

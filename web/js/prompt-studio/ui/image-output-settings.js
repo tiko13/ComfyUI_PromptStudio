@@ -1,4 +1,4 @@
-import { getImageOutputSettings, saveImageOutputSettings } from "../settings/image-output.js";
+import { getImageOutputSettings, saveImageOutputSettings, isImageOutputNode } from "../settings/image-output.js";
 
 export function updateImageOutputWorkflowNotice(container, workflows = []) {
   const notice = container?.querySelector("[data-output-workflow-notice]");
@@ -6,7 +6,7 @@ export function updateImageOutputWorkflowNotice(container, workflows = []) {
   const lines = [];
   for (const workflow of workflows.filter(Boolean)) {
     for (const [id, node] of Object.entries(workflow.snapshot?.output || {})) {
-      if (node.class_type !== "Save_as_webp_cond" || node.inputs?.force !== true) continue;
+      if (!isImageOutputNode(node.class_type) || node.inputs?.force !== true) continue;
       const format = node.inputs.format === "png" ? "PNG (always lossless; preserves transparency)"
         : `WebP (${node.inputs.mode || "lossy"})`;
       lines.push(`${workflow.name || "Selected workflow"}: node ${id} forces ${format}. Uses node settings.`);
@@ -34,7 +34,7 @@ export function mountImageOutputSettings(container, workflows = []) {
     </div>
     <p data-output-help></p>
     <p data-output-workflow-notice role="status" hidden></p>
-    <details class="promptstudio-image-output-about"><summary>How overrides work</summary><p>Saved automatically in this browser. Applies to Save as WebP Conditional nodes on future generations. Enable <strong>force</strong> on a node to keep its settings. Exact replays retain saved settings.</p></details>
+    <details class="promptstudio-image-output-about"><summary>How overrides work</summary><p>Saved automatically in this browser. Applies to Save as WebP Conditional and Intermediate / Choice nodes on future generations. Enable <strong>force</strong> on a node to keep its settings. Exact replays retain saved settings.</p></details>
     <p data-output-error role="status" hidden></p>`;
   function refresh() {
     const settings = getImageOutputSettings();

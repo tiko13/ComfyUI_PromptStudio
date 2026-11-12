@@ -1,5 +1,6 @@
 import { isStudioSampler, samplingControls } from "./sampling.js";
 import { layoutBinding } from "./spatial-inputs.js";
+import { CHOICE_TYPE, hasChoices, validateChoiceGraph } from "./intermediate-choice.js";
 import {
   AMPLIFY_TYPE,
   IMAGE_SOURCE_TYPE,
@@ -69,11 +70,16 @@ export function createWorkflowTemplateBuilder({ app, nodeClassName }) {
           label: String(nodes.find(record => record.id === id)?.node?.title || `Sampler ${id}`).trim(),
           controls: samplingControls(node),
         }));
-      const imageOutputs = nodes.filter(record => imageOutputNode(record.node));
-      if (imageOutputs.length !== 1) {
+      const imageOutputs = nodes.filter(record => record.type !== CHOICE_TYPE && imageOutputNode(record.node));
+      if (!hasChoices(snapshot) && imageOutputs.length !== 1) {
         throw new Error(`Workflow must have exactly one image output; found ${imageOutputs.length}.`);
       }
 
+      validateChoiceGraph(snapshot, imageOutputs.map(record => String(record.id)));
+      if (hasChoices(snapshot)) {
+        snapshot.workflow.extra ||= {};
+        snapshot.workflow.extra.promptstudio_choice_results = imageOutputs.map(record => String(record.id));
+      }
       const profile = normalizeWorkflowProfile({
         id: file.path,
         path: file.path,
@@ -87,7 +93,7 @@ export function createWorkflowTemplateBuilder({ app, nodeClassName }) {
         samplingNodes,
         additionalInputs,
         promptStudioInputVersion: PROMPT_STUDIO_INPUT_PROFILE_VERSION,
-        resultNodeIds: [String(imageOutputs[0].id)],
+        resultNodeIds: imageOutputs.map(record => String(record.id)),
         snapshot,
         updatedAt: Date.now(),
         sourceModified: Number(file.modified || 0),

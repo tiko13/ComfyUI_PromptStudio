@@ -1,0 +1,206 @@
+/* Solid top-layer privacy surface, including over open media previews. */
+dialog.studio-privacy-guard {
+  position: fixed;
+  inset: 0;
+  box-sizing: border-box;
+  width: 100%;
+  height: 100%;
+  max-width: none;
+  max-height: none;
+  margin: 0;
+  padding: max(24px, env(safe-area-inset-top)) max(24px, env(safe-area-inset-right)) max(24px, env(safe-area-inset-bottom)) max(24px, env(safe-area-inset-left));
+  border: 0;
+  border-radius: 0;
+  background: #0c0d12;
+  color: #ffe9eb;
+  opacity: 1;
+  color-scheme: dark;
+  font: 16px/1.5 system-ui, sans-serif;
+  text-align: center;
+}
+dialog.studio-privacy-guard[open] { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 16px; }
+dialog.studio-privacy-guard::backdrop { background: #0c0d12; opacity: 1; }
+dialog.studio-privacy-guard h2 { margin: 0; font-size: 20px; }
+dialog.studio-privacy-guard > div { display: grid; gap: 8px; max-width: 36rem; }
+dialog.studio-privacy-guard span { display: none; }
+dialog.studio-privacy-guard small { font-size: 14px; color: #c5bfca; }
+dialog.studio-privacy-guard a { display: inline-block; padding: 12px; color: inherit; text-decoration: underline; }
+
+/* Shared web adaptation of the HIG: glass belongs to navigation, not content.
+   Opaque defaults also cover browsers without backdrop-filter support. */
+:is(#promptstudio-prompt-studio, .psvstudio-app, dialog[class*="psvstudio-"], body.promptstudio-popout-body) {
+  --studio-glass-fill: #242632;
+  --studio-glass-filter: none;
+  --studio-glass-border: rgba(255,255,255,.2);
+  --studio-glass-shadow: inset 0 1px 0 #ffffff12, 0 8px 24px #0003;
+}
+@supports ((backdrop-filter: blur(16px)) or (-webkit-backdrop-filter: blur(16px))) {
+  :is(#promptstudio-prompt-studio, .psvstudio-app, dialog[class*="psvstudio-"], body.promptstudio-popout-body) {
+    --studio-glass-fill: rgba(30,32,43,.88);
+    --studio-glass-filter: blur(20px) saturate(135%);
+  }
+}
+.studio-compact-disclosure, .studio-disclosure-content { display: contents; }
+.studio-compact-disclosure > summary { display: none; }
+.promptstudio-controls-title { display: none; }
+.promptstudio-compose-extras { display: none; }
+.studio-drawer-drag-header { touch-action: pan-y; }
+.studio-drawer-dragging { transition: none !important; }
+
+@media (max-width: 1400px), (any-pointer: coarse) {
+  :is(#promptstudio-prompt-studio, .psvstudio-app, dialog[class*="psvstudio-"]) {
+    --studio-control-height: 44px;
+    --studio-muted: #afb4c5;
+    --studio-font: .9375rem/1.5 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  }
+  /* A minimum hit region is an accessibility constraint, including controls
+     with older ID-specific sizing. Timeline drag handles keep their geometry. */
+  :is(#promptstudio-prompt-studio, .psvstudio-app, dialog[class*="psvstudio-"]) :is(button:not(.psvstudio-guide-range, .psvstudio-shot-cue, .psvstudio-trim-handle), summary) { min-height: 44px !important; min-width: 44px !important; }
+  /* One material treatment for each top/bottom navigation group. */
+  :is(#promptstudio-prompt-studio .promptstudio-mobile-header, .psvstudio-app .psvstudio-topbar,
+      #promptstudio-prompt-studio .promptstudio-actions, .psvstudio-app .psvstudio-action-footer) {
+    background: var(--studio-glass-fill);
+    -webkit-backdrop-filter: var(--studio-glass-filter);
+    backdrop-filter: var(--studio-glass-filter);
+    border: 1px solid var(--studio-glass-border);
+    box-shadow: var(--studio-glass-shadow);
+    border-radius: 24px;
+    margin: 8px max(8px, env(safe-area-inset-right)) 8px max(8px, env(safe-area-inset-left));
+    padding: 8px;
+    min-width: 0;
+    position: relative;
+    z-index: 2;
+  }
+  :is(#promptstudio-prompt-studio .promptstudio-mobile-header, .psvstudio-app .psvstudio-topbar) { margin-top: max(8px, env(safe-area-inset-top)); }
+  :is(#promptstudio-prompt-studio .promptstudio-actions, .psvstudio-app .psvstudio-action-footer) { margin-bottom: max(8px, env(safe-area-inset-bottom)); }
+  :is(#promptstudio-prompt-studio .promptstudio-mobile-header, .psvstudio-app .psvstudio-topbar,
+      #promptstudio-prompt-studio .promptstudio-actions, .psvstudio-app .psvstudio-action-footer) :is(button,summary) { border-radius: 18px; }
+  :is(#promptstudio-prompt-studio .promptstudio-studio-switch, .psvstudio-app .psvstudio-studio-switch) { border-radius: 22px; padding: 3px; border-color: transparent; background: #ffffff0a; }
+  :is(#promptstudio-prompt-studio .promptstudio-studio-switch, .psvstudio-app .psvstudio-studio-switch) button { border-radius: 18px; font-size: .8125rem; }
+  :is(#promptstudio-prompt-studio .promptstudio-compose, .psvstudio-app .psvstudio-workspace) { background: var(--studio-bg); }
+  #promptstudio-prompt-studio .promptstudio-actions { width: auto; margin-inline: 0; gap: 6px; flex-shrink: 0; }
+  #promptstudio-prompt-studio .promptstudio-actions button { font-size: .875rem; }
+  :is(#promptstudio-prompt-studio .promptstudio-message-text, #promptstudio-prompt-studio .promptstudio-consult-message, .psvstudio-app .psvstudio-shot-summary, .psvstudio-director-message) { font-size: .9375rem; line-height: 1.55; }
+  :is(#promptstudio-prompt-studio .promptstudio-settings-grid, #promptstudio-prompt-studio .promptstudio-control-deck,
+      .psvstudio-app, dialog[class*="psvstudio-"]) :is(.promptstudio-field > span, .psvstudio-field > span, .psvstudio-help, .psvstudio-field small, .psvstudio-shot-nav-select p) { font-size: .8125rem; line-height: 1.5; }
+  #promptstudio-prompt-studio :is(.promptstudio-sidebar-group > summary, .promptstudio-section-title, .promptstudio-label) { font-size: .875rem; }
+  #promptstudio-prompt-studio .promptstudio-studio-setting-copy strong { font-size: .875rem; }
+  #promptstudio-prompt-studio .promptstudio-studio-setting-copy small { font-size: .8125rem; line-height: 1.5; }
+  :is(#promptstudio-prompt-studio, .psvstudio-app, dialog[class*="psvstudio-"]) label:has(> input:is([type="checkbox"],[type="radio"])) { min-height: 44px; align-items: center; }
+  :is(#promptstudio-prompt-studio, .psvstudio-app, dialog[class*="psvstudio-"]) input[type="range"] { min-height: 44px; touch-action: pan-y; }
+  :is(#promptstudio-prompt-studio, .psvstudio-app, dialog[class*="psvstudio-"]) :is(input,textarea,select) { scroll-margin-block: 72px; }
+  :is(#promptstudio-prompt-studio, .psvstudio-app, dialog[class*="psvstudio-"]) :is(input:not([type="checkbox"]):not([type="radio"]):not([type="range"]),textarea,select) { font-size: max(16px, 1rem) !important; }
+  #promptstudio-prompt-studio :is(#promptstudio-main-prompt, #promptstudio-current-prompt) { min-height: 112px; height: 144px; max-height: 36dvh; }
+  #promptstudio-prompt-studio .promptstudio-main-prompt-highlights { max-height: 36dvh; }
+  /* Drawers keep a readable content surface with a clear, stable header. */
+  :is(#promptstudio-prompt-studio .promptstudio-header, #promptstudio-prompt-studio .promptstudio-chat-sidebar-title,
+      .psvstudio-app .psvstudio-sidebar-header, .psvstudio-app .psvstudio-inspector-header) { padding: 12px; min-height: 64px; gap: 8px; background: var(--studio-panel); border-bottom: 1px solid var(--studio-border); }
+  :is(#promptstudio-prompt-studio .promptstudio-brand-mark, #promptstudio-prompt-studio .promptstudio-brand > div > span,
+      #promptstudio-prompt-studio .promptstudio-brand .promptstudio-studio-switch, .psvstudio-app .psvstudio-inspector-brand) { display: none; }
+  :is(#promptstudio-prompt-studio .promptstudio-chat-sidebar-title strong, .psvstudio-app .psvstudio-sidebar-header h2, .psvstudio-app .psvstudio-inspector-header h2) { font-size: 1.25rem; letter-spacing: -.3px; }
+  #promptstudio-prompt-studio .promptstudio-header { flex-wrap: wrap; }
+  #promptstudio-prompt-studio .promptstudio-header > .promptstudio-brand { display: none; }
+  #promptstudio-prompt-studio .promptstudio-controls-title { display: block; font-size: 1.25rem; }
+  #promptstudio-prompt-studio .promptstudio-header-actions { margin-left: auto; }
+  :is(#promptstudio-prompt-studio .promptstudio-chat-item, .psvstudio-app .psvstudio-project-item) { border-radius: 16px; padding-block: 12px; }
+  :is(#promptstudio-prompt-studio .promptstudio-chat-title, .psvstudio-app .psvstudio-project-title) { font-size: .9375rem; }
+  /* Workflow stays visible; occasional commands are disclosed together. */
+  .psvstudio-app .psvstudio-project-tools { position: relative; overflow: visible; display: flex; gap: 8px; padding: 0; align-items: center; }
+  .psvstudio-app .psvstudio-workflow-choice { flex: 1 1 100px; min-width: 0; }
+  .psvstudio-app .psvstudio-workflow-select { width: 100%; min-width: 0; font-size: 16px; }
+  .psvstudio-app .psvstudio-tools-menu { display: block; flex: 0 0 auto; }
+  .psvstudio-app .psvstudio-tools-menu > summary { display: flex; align-items: center; justify-content: center; list-style: none; min-width: 64px; padding: 8px 12px; border: 1px solid var(--studio-border); cursor: pointer; font-size: .875rem; }
+  .psvstudio-app .psvstudio-tools-menu > summary::-webkit-details-marker { display: none; }
+  .psvstudio-app .psvstudio-tools-menu > summary::after { content: ''; margin-left: 8px; width: 6px; height: 6px; border-right: 2px solid currentColor; border-bottom: 2px solid currentColor; transform: rotate(45deg); }
+  .psvstudio-app .psvstudio-tools-menu[open] > .studio-disclosure-content { display: flex; flex-direction: column; gap: 6px; position: absolute; top: calc(100% + 12px); right: 0; width: min(340px, calc(100vw - 40px)); max-height: min(560px, calc(var(--studio-viewport-height, 100dvh) - 180px)); overflow-y: auto; overscroll-behavior: contain; padding: 12px; border: 1px solid var(--studio-glass-border); border-radius: 22px; background: var(--studio-glass-fill); -webkit-backdrop-filter: var(--studio-glass-filter); backdrop-filter: var(--studio-glass-filter); box-shadow: 0 16px 48px #0008; z-index: 25; }
+  .psvstudio-app .psvstudio-tools-menu .studio-disclosure-content > button { justify-content: flex-start; text-align: left; width: 100%; font-size: .9375rem; }
+  .psvstudio-app .psvstudio-tools-menu #psvstudio-reset { margin-top: 8px; border-top: 1px solid var(--studio-border); }
+  .psvstudio-app .psvstudio-tools-menu .psvstudio-kobold-popover { position: static; width: 100%; max-width: none; max-height: none; box-shadow: none; margin-top: 8px; }
+  .psvstudio-app .psvstudio-tools-menu #psvstudio-kobold-control > summary { min-height: 44px; display: flex; align-items: center; }
+  .psvstudio-app .psvstudio-action-footer { gap: 12px; }
+  .psvstudio-app .psvstudio-action-footer #psvstudio-generate { min-width: 112px; width: auto; }
+  .psvstudio-app .psvstudio-timeline-tools { gap: 8px; }
+  .psvstudio-app .psvstudio-adapters > summary { font-size: .875rem; padding: 10px; }
+  .psvstudio-app :is(.psvstudio-adapters small, .psvstudio-shots-intro small, .psvstudio-shot-nav-head span) { font-size: .75rem; line-height: 1.5; }
+  .psvstudio-app :is(.psvstudio-timeline-heading h2, .psvstudio-section-heading h2) { font-size: 1.0625rem; }
+  /* Content stays solid. Headers/footers remain available in tall forms. */
+  :is(#promptstudio-prompt-studio, dialog[class*="psvstudio-"]) :is(.promptstudio-settings-actions, .psvstudio-global-settings-footer, .psvstudio-shot-editor-footer) { gap: 8px; padding-bottom: max(12px, env(safe-area-inset-bottom)); flex-wrap: wrap; }
+  :is(.psvstudio-global-settings-header, .psvstudio-shot-editor-header, .psvstudio-director-dialog > header, .psvstudio-media-library-header) { padding-top: max(12px, env(safe-area-inset-top)); }
+}
+@media (max-width: 780px), (max-width: 900px) and (max-height: 600px) {
+  #promptstudio-prompt-studio .promptstudio-mobile-header { gap: 4px; padding: 6px; min-height: 58px; flex-wrap: wrap; }
+  #promptstudio-prompt-studio .promptstudio-mobile-header-actions { gap: 2px; }
+  #promptstudio-prompt-studio .promptstudio-mobile-header button { padding-inline: 8px; font-size: .8125rem; }
+  #promptstudio-prompt-studio .promptstudio-compose-options { display: block; width: 100%; }
+  #promptstudio-prompt-studio .promptstudio-compose-options > summary { display: flex; align-items: center; min-height: 44px; padding: 6px 10px; color: var(--studio-text); font-size: .875rem; cursor: pointer; }
+  #promptstudio-prompt-studio .promptstudio-compose-options > summary::after { content: ''; margin-left: auto; width: 6px; height: 6px; border-right: 2px solid currentColor; border-bottom: 2px solid currentColor; transform: rotate(45deg); }
+  #promptstudio-prompt-studio .promptstudio-compose-options[open] > summary::after { transform: rotate(225deg); }
+  #promptstudio-prompt-studio .promptstudio-toggles { display: flex; flex-direction: column; align-items: stretch; overflow: visible; gap: 4px; padding: 4px 10px 8px; border-radius: 16px; background: var(--studio-panel); }
+  #promptstudio-prompt-studio .promptstudio-toggles > label { white-space: normal; font-size: .875rem; }
+  #promptstudio-prompt-studio .promptstudio-action-and-constraints { justify-content: space-between; }
+  #promptstudio-prompt-studio .promptstudio-compose-footer { gap: 0; }
+  #promptstudio-prompt-studio .promptstudio-llm-profile-field { flex: 0 0 auto; }
+  #promptstudio-prompt-studio .promptstudio-compose { padding: 8px 12px 0; max-height: calc(var(--studio-viewport-height, 100dvh) * .55); }
+  #promptstudio-prompt-studio .promptstudio-actions { margin-top: 4px; width: 100%; }
+  #promptstudio-prompt-studio .promptstudio-run-summary { font-size: .75rem; }
+  #promptstudio-prompt-studio .promptstudio-inspector { width: min(420px, calc(100% - 16px)); top: max(8px, env(safe-area-inset-top)); bottom: max(8px, env(safe-area-inset-bottom)); right: 8px; border-radius: 24px; border: 1px solid var(--studio-border); }
+  #promptstudio-prompt-studio .promptstudio-chat-sidebar { border-radius: 0 24px 24px 0; }
+  .psvstudio-app .psvstudio-inspector { width: min(420px, calc(100% - 16px)); inset: max(8px, env(safe-area-inset-top)) 8px max(8px, env(safe-area-inset-bottom)) auto; border-radius: 24px; border: 1px solid var(--studio-border); }
+  .psvstudio-app .psvstudio-sidebar { border-radius: 0 24px 24px 0; padding-top: env(safe-area-inset-top); padding-bottom: env(safe-area-inset-bottom); }
+  .psvstudio-app .psvstudio-topbar { gap: 6px; padding: 6px; }
+  .psvstudio-app .psvstudio-title-field { font-size: 16px; }
+  .psvstudio-app .psvstudio-save-state { max-width: 52px; overflow-wrap: anywhere; }
+}
+/* Landscape conversations get one input/action row, plus a small live status.
+   Secondary actions open upward without increasing the composer height. */
+#promptstudio-prompt-studio[data-compact-composer] .promptstudio-compose {
+  display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: end;
+  gap: 3px 6px; padding: 6px 10px max(6px, env(safe-area-inset-bottom));
+  max-height: none; overflow: visible; position: relative; z-index: 3;
+}
+#promptstudio-prompt-studio[data-compact-composer] .promptstudio-compose-input-row { grid-column: 1; grid-row: 1; min-width: 0; margin: 0; }
+#promptstudio-prompt-studio[data-compact-composer] #promptstudio-revision { height: 44px; min-height: 44px; max-height: 112px; padding: 10px 12px; line-height: 22px; resize: none; overflow-y: auto; }
+#promptstudio-prompt-studio[data-compact-composer] .promptstudio-compose-footer { display: contents; }
+#promptstudio-prompt-studio[data-compact-composer] .promptstudio-compose-options { display: block; grid-column: 2; grid-row: 1; width: auto; }
+#promptstudio-prompt-studio[data-compact-composer] .promptstudio-compose-options > summary { display: flex; align-items: center; justify-content: center; padding: 8px 12px; border: 1px solid var(--studio-border); border-radius: 16px; list-style: none; cursor: pointer; font-size: .875rem; }
+#promptstudio-prompt-studio[data-compact-composer] .promptstudio-compose-options > summary::after { display: none; }
+#promptstudio-prompt-studio[data-compact-composer] .promptstudio-compose-options > summary::-webkit-details-marker { display: none; }
+#promptstudio-prompt-studio[data-compact-composer] .promptstudio-compose-options[open] {
+  position: absolute; right: 10px; bottom: calc(100% + 6px); z-index: 10;
+  width: min(400px, calc(100% - 20px)); max-height: min(520px, calc(var(--studio-viewport-height, 100dvh) - 100px)); overflow-y: auto;
+  padding: 10px; border-radius: 20px; border: 1px solid var(--studio-glass-border);
+  background: var(--studio-glass-fill); backdrop-filter: var(--studio-glass-filter); -webkit-backdrop-filter: var(--studio-glass-filter); box-shadow: 0 12px 40px #0008;
+}
+#promptstudio-prompt-studio[data-compact-composer] .promptstudio-compose-options[open] > summary { justify-content: flex-start; }
+#promptstudio-prompt-studio[data-compact-composer] .promptstudio-toggles { display: flex; flex-direction: column; align-items: stretch; gap: 4px; padding: 8px 0; overflow: visible; }
+#promptstudio-prompt-studio[data-compact-composer] .promptstudio-toggles label { white-space: normal; font-size: .875rem; }
+#promptstudio-prompt-studio[data-compact-composer] .promptstudio-action-and-constraints { justify-content: space-between; }
+#promptstudio-prompt-studio[data-compact-composer] .promptstudio-compose-extras { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }
+#promptstudio-prompt-studio[data-compact-composer] #promptstudio-run-summary { grid-column: 1 / -1; padding: 6px 0 0; font-size: .75rem; white-space: normal; }
+#promptstudio-prompt-studio[data-compact-composer] .promptstudio-actions { grid-column: 3; grid-row: 1; display: flex; margin: 0; padding: 0; border: 0; background: none; box-shadow: none; backdrop-filter: none; }
+#promptstudio-prompt-studio[data-compact-composer] #promptstudio-send { min-width: 88px; max-width: 190px; padding: 8px 14px; margin: 0; }
+#promptstudio-prompt-studio[data-compact-composer] .promptstudio-compose-heading { grid-column: 1 / -1; grid-row: 2; display: block; margin: 0; min-width: 0; }
+#promptstudio-prompt-studio[data-compact-composer] .promptstudio-compose-heading > :not(#promptstudio-status) { display: none; }
+#promptstudio-prompt-studio[data-compact-composer] #promptstudio-status { display: block; min-height: 0; padding: 0; font-size: 11px; line-height: 16px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#promptstudio-prompt-studio[data-compact-composer] #promptstudio-status:empty { display: none; }
+#promptstudio-prompt-studio[data-compact-composer] :is(.promptstudio-pasted-image,.promptstudio-discussion-context) { grid-column: 1 / -1; margin-top: 0; }
+#promptstudio-prompt-studio[data-compact-composer] #promptstudio-edit-reference { max-height: 44px; }
+#promptstudio-prompt-studio[data-compact-composer] .promptstudio-edit-reference-choose { height: 44px; min-height: 44px; }
+#promptstudio-prompt-studio[data-compact-composer] .promptstudio-edit-reference-empty svg { display: none; }
+#promptstudio-prompt-studio[data-compact-composer] .promptstudio-edit-reference-remove { top: 0; }
+
+/* Readability takes precedence over translucency, including the no-filter fallback. */
+@media (prefers-reduced-transparency: reduce), (prefers-contrast: more) {
+  :is(#promptstudio-prompt-studio, .psvstudio-app, dialog[class*="psvstudio-"], body.promptstudio-popout-body) {
+    --studio-glass-fill: #242632; --studio-glass-filter: none; --studio-glass-border: #9ca2b6; --studio-glass-shadow: none;
+  }
+}
+@media (forced-colors: active) {
+  :is(#promptstudio-prompt-studio, .psvstudio-app, dialog[class*="psvstudio-"], body.promptstudio-popout-body) {
+    --studio-glass-fill: Canvas; --studio-glass-filter: none; --studio-glass-border: ButtonText; --studio-glass-shadow: none;
+  }
+}
+@media (prefers-contrast: more) {
+  :is(#promptstudio-prompt-studio, .psvstudio-app, dialog[class*="psvstudio-"]) { --studio-border: #8a90a0; --studio-muted: #d0d4df; }
+  :is(#promptstudio-prompt-studio, .psvstudio-app, dialog[class*="psvstudio-"]) button:disabled { opacity: .65; }
+}

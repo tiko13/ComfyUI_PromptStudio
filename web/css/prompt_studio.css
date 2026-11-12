@@ -61,6 +61,8 @@ body.promptstudio-popout-body {
   pointer-events: none;
 }
 
+.promptstudio-api-connection a { color: inherit; text-decoration: underline; pointer-events: auto; }
+.promptstudio-api-connection small:has(a) { white-space: normal; }
 .promptstudio-api-connection[hidden] {
   display: none;
 }
@@ -2586,6 +2588,14 @@ body.promptstudio-popout-body .promptstudio-header-actions {
   object-fit: contain;
 }
 
+/* Older saved images may lack dimensions. Reserve a real thumbnail area so
+   native lazy loading cannot treat dozens of collapsed images as nearby.
+   Replaced elements switch to their natural ratio once the image is loaded. */
+.promptstudio-image-grid img:not([width]) {
+  width: 100%;
+  aspect-ratio: auto 1 / 1;
+}
+
 .promptstudio-lightbox {
   position: absolute;
   inset: 0;
@@ -4808,7 +4818,7 @@ body.promptstudio-popout-body #promptstudio-prompt-studio.promptstudio-chats-ope
   font-weight: 700;
 }
 
-@media (max-width: 760px), (max-width: 900px) and (max-height: 600px) {
+@media (max-width: 780px), (max-width: 900px) and (max-height: 600px) {
   .promptstudio-studio-view {
     height: 100vh;
     height: 100dvh;
@@ -5047,7 +5057,7 @@ body.promptstudio-popout-body #promptstudio-prompt-studio.promptstudio-chats-ope
   }
 
   .promptstudio-message.promptstudio-has-images {
-    width: 100%;
+    width: var(--ps-image-scale);
   }
 
   #promptstudio-prompt-studio .promptstudio-prompt-info > summary {
@@ -5862,3 +5872,127 @@ body.promptstudio-popout-body #promptstudio-prompt-studio.promptstudio-chats-ope
 .promptstudio-model-profile-actions { display: flex; flex-wrap: wrap; gap: 8px; margin: 10px 0; }
 .promptstudio-model-profile-body summary { cursor: pointer; margin-top: 12px; }
 .promptstudio-model-profile-settings [hidden] { display: none !important; }
+
+/* Tablet workspace: a persistent inspector and a session drawer, in either
+   orientation. Width-based rules also support Android tablets and split view. */
+@media (max-width: 1400px), (any-pointer: coarse) {
+  body.promptstudio-popout-body .promptstudio-studio-view { height: 100dvh; align-items: start; }
+  .promptstudio-main { grid-template-columns: minmax(0, 1fr); }
+}
+@media (min-width: 781px) and (max-width: 1400px) and (min-height: 601px),
+       (min-width: 901px) and (max-width: 1400px),
+       (min-width: 901px) and (any-pointer: coarse) {
+  #promptstudio-prompt-studio,
+  body.promptstudio-popout-body #promptstudio-prompt-studio {
+    inset: 0;
+    width: 100%;
+    height: var(--studio-viewport-height, 100dvh);
+    grid-template-columns: minmax(0, 1fr) clamp(300px, 32vw, 380px);
+    border: 0;
+    border-radius: 0;
+  }
+  body.promptstudio-popout-body .promptstudio-popout-mount { padding: 0; }
+  .promptstudio-main, body.promptstudio-popout-body .promptstudio-main {
+    grid-column: 1;
+    grid-template-rows: auto minmax(0, 1fr) auto;
+  }
+  .promptstudio-inspector, body.promptstudio-popout-body .promptstudio-inspector { grid-column: 2; }
+  .promptstudio-mobile-header { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 8px 12px; border-bottom: 1px solid var(--ps-border); }
+  .promptstudio-mobile-brand, .promptstudio-mobile-header-actions { display: flex; align-items: center; gap: 6px; }
+  .promptstudio-mobile-brand > strong, #promptstudio-mobile-toggle-inspector { display: none; }
+  body.promptstudio-popout-body #promptstudio-mobile-close { display: none; }
+  .promptstudio-chat-sidebar, body.promptstudio-popout-body .promptstudio-chat-sidebar {
+    position: absolute;
+    inset: 0 auto 0 0;
+    z-index: 14;
+    width: min(360px, 85vw);
+    transform: translateX(-102%);
+    visibility: hidden;
+    box-shadow: 20px 0 50px #0008;
+  }
+  #promptstudio-prompt-studio.promptstudio-chats-open .promptstudio-chat-sidebar { transform: none; visibility: visible; }
+  #promptstudio-close-chats { display: inline-flex; }
+  #promptstudio-prompt-studio.promptstudio-chats-open .promptstudio-mobile-scrim {
+    display: block; position: absolute; inset: 0; z-index: 12;
+    width: 100%; height: 100%; background: #03040899; border: 0; border-radius: 0;
+  }
+  body.promptstudio-popout-body .promptstudio-compose-footer { flex-direction: column; align-items: stretch; gap: 8px; }
+  .promptstudio-compose-heading { grid-template-columns: 1fr; gap: 3px; }
+  #promptstudio-compose-hint { display: none; }
+  .promptstudio-compose { max-height: calc(var(--studio-viewport-height, 100dvh) * .42); overflow-y: auto; overscroll-behavior: contain; }
+  .promptstudio-actions { flex-wrap: wrap; }
+  .promptstudio-header { flex-wrap: wrap; gap: 8px; padding: 10px; }
+}
+
+/* Compact shell: keep the composer and its actions in the usable viewport. */
+@media (max-width: 780px), (max-width: 900px) and (max-height: 600px) {
+  #promptstudio-prompt-studio, body.promptstudio-popout-body #promptstudio-prompt-studio { height: var(--studio-viewport-height, 100dvh); }
+  .promptstudio-mobile-brand > strong { display: none; }
+  .promptstudio-mobile-header { gap: 4px; padding-left: max(8px, env(safe-area-inset-left)); padding-right: max(8px, env(safe-area-inset-right)); }
+  .promptstudio-mobile-header-actions { gap: 4px; }
+  #promptstudio-prompt-studio .promptstudio-mobile-header button { padding-inline: 8px; }
+  .promptstudio-inspector, .promptstudio-chat-sidebar,
+  body.promptstudio-popout-body .promptstudio-inspector, body.promptstudio-popout-body .promptstudio-chat-sidebar { visibility: hidden; }
+  #promptstudio-prompt-studio.promptstudio-inspector-open .promptstudio-inspector,
+  #promptstudio-prompt-studio.promptstudio-chats-open .promptstudio-chat-sidebar { visibility: visible; }
+  .promptstudio-compose { max-height: calc(var(--studio-viewport-height, 100dvh) * .48); scrollbar-width: thin; }
+  .promptstudio-compose::-webkit-scrollbar { display: initial; }
+  #promptstudio-revision { min-height: 48px; max-height: 120px; }
+  .promptstudio-toggles { scrollbar-width: thin; }
+  .promptstudio-toggles > label, .promptstudio-generation-action label { min-height: 44px; }
+  .promptstudio-action-and-constraints { flex-shrink: 0; }
+}
+@media (min-width: 621px) and (max-width: 900px) and (max-height: 600px) {
+  .promptstudio-compose { display: block; overflow-y: auto; }
+  .promptstudio-toggles { display: flex; }
+  .promptstudio-compose-footer, body.promptstudio-popout-body .promptstudio-compose-footer { display: flex; }
+}
+
+/* Image-first cards for the phone and tablet shells. Desktop keeps its tools. */
+.promptstudio-lightbox.studio-touch-viewer { position: fixed; background: rgb(5 6 10 / calc(.94 * var(--studio-viewer-dim))); backdrop-filter: none; padding: calc(68px + env(safe-area-inset-top)) max(12px, env(safe-area-inset-right)) calc(96px + env(safe-area-inset-bottom)) max(12px, env(safe-area-inset-left)); }
+.studio-touch-viewer .promptstudio-lightbox-actions { top: max(12px, env(safe-area-inset-top)); right: max(12px, env(safe-area-inset-right)); max-width: calc(100% - 24px); flex-wrap: wrap; justify-content: end; }
+#promptstudio-prompt-studio .studio-touch-viewer .promptstudio-lightbox-actions :is(button,a) { min-width: 44px; min-height: 44px; border-radius: 22px; }
+.promptstudio-image-compact-actions { display: none; }
+#promptstudio-prompt-studio .promptstudio-image-sheet {
+  width: min(520px, calc(100vw - 32px)); max-height: min(760px, calc(var(--studio-viewport-height, 100dvh) - 32px));
+  padding: 0; overflow: hidden; color: var(--ps-text); background: var(--ps-panel);
+  border: 1px solid var(--ps-border); border-radius: 16px; box-shadow: 0 24px 80px #0009;
+  font: inherit; white-space: normal;
+}
+#promptstudio-prompt-studio .promptstudio-image-sheet[open] { display: flex; flex-direction: column; }
+.promptstudio-image-sheet::backdrop { background: #030408a6; }
+.promptstudio-image-sheet > header { display: flex; flex: 0 0 auto; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 12px; border-bottom: 1px solid var(--ps-border); }
+.promptstudio-image-sheet > .studio-sheet-drag-header { padding-top: 20px; position: relative; }
+.promptstudio-image-sheet > .studio-sheet-drag-header::before { content: ''; position: absolute; top: 7px; left: calc(50% - 18px); width: 36px; height: 4px; border-radius: 2px; background: var(--ps-muted); opacity: .6; }
+.promptstudio-image-sheet-body { min-height: 0; overflow: auto; overscroll-behavior: contain; padding: 12px; }
+.promptstudio-image-sheet-body > p { margin: 0 0 12px; color: var(--ps-muted); overflow-wrap: anywhere; }
+.promptstudio-image-sheet-actions { display: grid; gap: 6px; }
+#promptstudio-prompt-studio .promptstudio-image-sheet button { min-height: 44px; }
+#promptstudio-prompt-studio .promptstudio-image-sheet-actions button { text-align: left; padding: 10px 12px; }
+#promptstudio-prompt-studio .promptstudio-image-sheet-danger { color: var(--ps-error); margin-top: 8px; border-top: 1px solid var(--ps-border); }
+.promptstudio-image-sheet .promptstudio-prompt-info-panel { margin: 0 0 12px; overflow-wrap: anywhere; }
+@media (max-width: 1400px), (any-pointer: coarse) {
+  #promptstudio-prompt-studio .promptstudio-message.promptstudio-has-images { padding: 0; width: max(48px, var(--ps-image-scale)); max-width: 100%; }
+  #promptstudio-prompt-studio .promptstudio-has-images > :is(.promptstudio-message-delete, .promptstudio-video-handoff, .promptstudio-plot-handoff, .promptstudio-prompt-info, .promptstudio-generation-provenance) { display: none; }
+  #promptstudio-prompt-studio .promptstudio-has-images .promptstudio-image-actions { display: none; }
+  .promptstudio-has-images .promptstudio-image-grid { margin-top: 0; gap: 8px; }
+  .promptstudio-has-images .promptstudio-image-card { gap: 0; container: promptstudio-image-card / inline-size; }
+  #promptstudio-prompt-studio .promptstudio-has-images .promptstudio-image-preview { border-radius: 12px 12px 0 0; }
+  .promptstudio-image-compact-actions { display: grid; grid-template-columns: minmax(0, 1fr) auto 44px; align-items: stretch; min-height: 44px; border: 1px solid var(--ps-border); border-top: 0; border-radius: 0 0 12px 12px; }
+  #promptstudio-prompt-studio .promptstudio-image-compact-actions button { min-height: 44px; padding: 6px 12px; border: 0; background: transparent; border-radius: 8px; font-size: 12px; }
+  #promptstudio-prompt-studio .promptstudio-image-compact-edit { text-align: left; }
+  #promptstudio-prompt-studio .promptstudio-image-compact-more { padding: 0; font-size: 24px; }
+  .promptstudio-image-card[data-source="true"] .promptstudio-image-compact-edit { color: var(--ps-accent-strong); }
+  .promptstudio-has-images > :is(.promptstudio-message-text, .promptstudio-message-label, .promptstudio-caption-offer, .promptstudio-generation-progress) { margin: 8px 10px; }
+  @container promptstudio-image-card (max-width: 240px) {
+    .promptstudio-image-compact-actions { grid-template-columns: minmax(0, 1fr); }
+    #promptstudio-prompt-studio :is(.promptstudio-image-compact-edit, .promptstudio-image-compact-details) { display: none; }
+  }
+}
+@media (max-width: 780px), (max-width: 900px) and (max-height: 600px) {
+  #promptstudio-prompt-studio .promptstudio-image-sheet {
+    inset: auto 0 0; margin: 0 auto; width: 100%; max-width: 100%;
+    max-height: calc(var(--studio-viewport-height, 100dvh) - 12px); border-radius: 18px 18px 0 0;
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+}

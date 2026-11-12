@@ -2,7 +2,7 @@ import { normalizeSnapshotWire } from "../core/wire-contracts.js";
 import { sha256 } from "./sha256.js";
 import { PROMPT_STUDIO_INPUT_PROFILE_VERSION, extractPromptStudioInputs, serializedWorkflowNodes } from "./prompt-studio-input.js";
 
-export const WORKFLOW_ADAPTER_VERSION = 2;
+export const WORKFLOW_ADAPTER_VERSION = 3;
 const conversions = new WeakMap();
 
 function canonical(value, seen = new Set()) {

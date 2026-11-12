@@ -30,7 +30,7 @@ try {
   assert.equal(await host.locator('.ps-spatial-editor').count(),0);
   assert.equal(await page.locator('link[data-spatial-editor]').count(),1);
   await dialog.getByRole('button',{name:'Add character',exact:true}).click();
-  await dialog.getByRole('button',{name:'Apply',exact:true}).click();await dialog.waitFor({state:'detached'});
+  await dialog.getByRole('button',{name:'Apply changes',exact:true}).click();await dialog.waitFor({state:'detached'});
   await host.evaluate(()=>window.mossHostActions.flushChatStore());
   const chat=fixture.chats.chats.find(c=>c.spatialInputs?.[profile.id]);
   assert.equal(chat.spatialInputs[profile.id].elements[0].type,'character');

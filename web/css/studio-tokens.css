@@ -1,3 +1,4 @@
+@import url("./touch-interface.css");
 /* Shared semantic tokens scoped to Studio surfaces, never the ComfyUI host. */
 :where(#promptstudio-prompt-studio, .psvstudio-app, body.promptstudio-popout-body, body.psvstudio-popout-body, dialog[class*="psvstudio-"]) {
   --studio-bg: #0c0d12;
@@ -138,4 +139,25 @@ dialog[class*="psvstudio-"][open] {
     --studio-accent-fill: Highlight;
     --studio-accent-fill-hover: Highlight;
   }
+}
+
+/* Shared touch ergonomics. A tablet with a trackpad still has a touch screen. */
+@media (any-pointer: coarse), (max-width: 1400px) {
+  /* Timeline handles and cues retain their lane geometry and drag gestures. */
+  :is(#promptstudio-prompt-studio, .psvstudio-app, dialog[class*="psvstudio-"]) :is(button:not(.psvstudio-guide-range, .psvstudio-shot-cue, .psvstudio-trim-handle), summary) { min-height: 44px; }
+  :is(#promptstudio-prompt-studio, .psvstudio-app, dialog[class*="psvstudio-"]) :is(input:not([type="checkbox"]):not([type="radio"]):not([type="range"]), select, textarea) { font-size: 16px; }
+  :is(#promptstudio-prompt-studio, .psvstudio-app, dialog[class*="psvstudio-"]) :is(input:not([type="checkbox"]):not([type="radio"]):not([type="range"]), select) { min-height: 44px; }
+}
+
+/* Direct manipulation is confined to media previews; page zoom stays native. */
+.studio-touch-image { touch-action: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
+.studio-touch-viewer { overflow: hidden; --studio-viewer-dim: 1; }
+.studio-touch-viewer-hint { position: absolute; bottom: max(12px, env(safe-area-inset-bottom)); left: 12px; right: 12px; margin: 0; color: #eee; text-align: center; font: 12px/1.5 system-ui; pointer-events: none; }
+.studio-touch-viewer .studio-touch-viewer-zoom { position: absolute; left: max(12px, env(safe-area-inset-left)); bottom: calc(42px + env(safe-area-inset-bottom)); min-width: 44px; min-height: 44px; padding: 8px 16px; border-radius: 22px; background: #242530; border: 1px solid #ffffff45; color: #fff; font: 14px/1.3 system-ui; }
+.studio-sheet-drag-header { touch-action: none; user-select: none; -webkit-user-select: none; }
+@media (any-pointer: coarse), (max-width: 1400px) {
+  :is(#promptstudio-prompt-studio, .psvstudio-app, dialog[class*="psvstudio-"]) :is(button:not(.psvstudio-guide-range, .psvstudio-shot-cue, .psvstudio-trim-handle), a[aria-label]) { min-width: 44px; }
+  :is(#promptstudio-prompt-studio, .psvstudio-app, dialog[class*="psvstudio-"]) button { touch-action: manipulation; }
+  :is(#promptstudio-prompt-studio, .psvstudio-app, dialog[class*="psvstudio-"]) button:active:not(:disabled) { filter: brightness(1.18); }
+  .studio-touch-viewer button:focus-visible { outline: 2px solid #cbbaff; outline-offset: 3px; }
 }

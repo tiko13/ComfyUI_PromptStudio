@@ -8,19 +8,18 @@ import {createChatModel} from '../web/js/prompt-studio/chat/model.js';
 import {snapshotForPlotCell} from '../web/js/prompt-studio/plot/model.js';
 
 test('MOSS presets reuse Studio roles and native layout, loaders, samplers and conditioning',async()=>{
- assert.equal(mossCatalog.length,4);
+ assert.equal(mossCatalog.length,3);
  for(const pack of mossCatalog){
-  const p=await mossProfile(pack),dmd=pack.id.startsWith('kromoss'),controlled=pack.id.endsWith('controlled');
+  const p=await mossProfile(pack),dmd=pack.id==='moss_sft_dmd8_choice',controlled=pack.id.endsWith('controlled');
   const out=Object.values(p.snapshot.output),get=type=>out.find(n=>n.class_type===type);
   assert.equal(p.kind,'create');assert.equal(p.resultNodeIds.length,1);assert.equal(get('CLIPLoader').inputs.type,'moss_image');
   assert.equal(p.loraNodes.length,1);assert.equal(p.modelNodes.length,1);
-  const realism=pack.id==='kromoss_realism_create';
-  assert.equal(p.samplingNodes[0].controls.steps,realism?12:dmd?8:50);assert.equal(p.samplingNodes[0].controls.cfg,dmd?1:3);
-  assert.equal(p.samplingNodes[0].controls.scheduler,dmd?'simple':'sgm_uniform');
+  assert.equal(p.samplingNodes[0].controls.steps,dmd?8:50);assert.equal(p.samplingNodes[0].controls.cfg,dmd?1:3);
+  assert.equal(p.samplingNodes[0].controls.scheduler,dmd?'normal':'sgm_uniform');
   assert.equal(Boolean(get('SkipLayerGuidanceDiTSimple')),!dmd);
   assert.ok(layoutBinding(p));assert.equal(p.additionalInputs.length,dmd?1:controlled?5:2);
   assert.equal(namedStructureInputs(p).length,controlled?2:0);assert.equal(capabilityNode(p,'PS_StructureInput'),null);
-  assert.equal(out.filter(n=>n.class_type==='LoraLoaderModelOnly').length,realism?3:controlled?2:1);
+  assert.equal(out.filter(n=>n.class_type==='LoraLoaderModelOnly').length,controlled?2:1);
   assert.deepEqual(get('EmptyFlux2LatentImage').inputs.width,[p.promptNodeId,2]);
   const snap=structuredClone(p.snapshot),value=spatialValue({},p);
   if(controlled)value.guides.depth={image:{filename:'depth.png'},kind:'depth',enabled:true};
@@ -35,35 +34,6 @@ test('MOSS presets reuse Studio roles and native layout, loaders, samplers and c
   }
   if(controlled){get('MOSSImageControl').inputs.end_percent=-1;assert.throws(()=>validateMossRecipe(p.snapshot,p),/Control requires/);}
  }
-});
-
-test('realism keeps BF16, chains both turbo adapters and photo style, and rejects bypasses and duplicates',async()=>{
- const p=await mossProfile(mossCatalog.find(p=>p.id==='kromoss_realism_create'));
- const out=p.snapshot.output;
- const get=type=>Object.entries(out).find(([,n])=>n.class_type===type);
- assert.equal(get('KCPP_PromptStudioModelLoader')[1].inputs.unet_name,'Kromoss/kromoss_bf16.safetensors');
- const join=get('StringConcatenate');
- assert.equal(join[1].inputs.string_a,'photo');
- assert.deepEqual(join[1].inputs.string_b,[p.promptNodeId,0]);
- assert.deepEqual(out[layoutBinding(p).id].inputs.prompt,[join[0],0]);
- assert.doesNotThrow(()=>validateMossRecipe(p.snapshot,p));
- const record=asset=>p.snapshot.workflow.nodes.find(n=>n.properties?.promptstudio_asset===asset);
- for(const asset of ['kromoss_dmd','moss_snapshot']) {
-  const id=String(record(asset).id),snap=structuredClone(p.snapshot);
-  snap.output[id].inputs.strength_model=1;
-  assert.throws(()=>validateMossRecipe(snap,p),/Realism requires/);
-  snap.output[id].inputs.strength_model=0.5;
-  snap.output[id].inputs.model=[get('KCPP_PromptStudioModelLoader')[0],0];
-  assert.throws(()=>validateMossRecipe(snap,p),/Realism requires/);
-  delete snap.output[id];
-  assert.throws(()=>validateMossRecipe(snap,p),/Realism requires/);
-  const duplicate=structuredClone(p.snapshot);
-  duplicate.output[get('KCPP_PromptStudioLoraLoader')[0]].inputs.lora_stack_json=JSON.stringify([{name:out[id].inputs.lora_name,strength:0.5}]);
-  assert.throws(()=>validateMossRecipe(duplicate,p),/duplicate/);
- }
- const bypass=structuredClone(p.snapshot);
- bypass.output[get('ModelSamplingAuraFlow')[0]].inputs.model=[String(record('kromoss_dmd2').id),0];
- assert.throws(()=>validateMossRecipe(bypass,p),/feed the flow sampler/);
 });
 
 test('layouts, maps, character numbering and snapshots stay isolated across chats and recipes',async()=>{
